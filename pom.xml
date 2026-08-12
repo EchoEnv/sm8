@@ -26,15 +26,17 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <scala.version>2.13.18</scala.version>
     <scala.binary.version>2.13</scala.binary.version>
+    <scalatest.version>3.2.19</scalatest.version>
     <maven.compiler.release>17</maven.compiler.release>
   </properties>
 
   <modules>
     <module>sm8-core</module>
+    <module>connectors/in-memory-connector</module>
     <!--
       Step 0: sm8-sdk (thin re-export of sm8.sdk)
-      Step 8: connectors/* (repackaged from adapters/)
-      Step 9: plugins/* (extracted from inline runtime knobs)
+      Step 8: connectors/{spark,trino,duckdb,...}-connector
+      Step 9: plugins/{cache,audit,row-cap,broadcast,materialize,skew}-plugin
       Steps 10-11: semanticdf-platform, semanticdf-mcp, semanticdf-cli
     -->
   </modules>
@@ -49,7 +51,7 @@
       <dependency>
         <groupId>org.scalatest</groupId>
         <artifactId>scalatest_${scala.binary.version}</artifactId>
-        <version>3.2.19</version>
+        <version>${scalatest.version}</version>
       </dependency>
       <dependency>
         <groupId>com.fasterxml.jackson.core</groupId>
@@ -71,6 +73,31 @@
           <groupId>net.alchim31.maven</groupId>
           <artifactId>scala-maven-plugin</artifactId>
           <version>4.9.2</version>
+          <executions>
+            <execution>
+              <id>scala-compile</id>
+              <goals><goal>compile</goal></goals>
+              <phase>process-resources</phase>
+            </execution>
+            <execution>
+              <id>scala-test-compile</id>
+              <goals><goal>testCompile</goal></goals>
+              <phase>process-test-resources</phase>
+            </execution>
+            <execution>
+              <id>scala-doc-jar</id>
+              <goals><goal>doc-jar</goal></goals>
+              <phase>package</phase>
+            </execution>
+          </executions>
+          <configuration>
+            <scalaVersion>${scala.version}</scalaVersion>
+            <args>
+              <arg>-deprecation</arg>
+              <arg>-feature</arg>
+              <arg>-unchecked</arg>
+            </args>
+          </configuration>
         </plugin>
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
