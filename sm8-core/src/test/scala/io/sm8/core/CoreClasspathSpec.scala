@@ -3,31 +3,29 @@
  *
  * The ZERO-SPARK invariant, verified at test time.
  *
- * The Core's compile-time and test-time classpath must NOT contain
- * any org.apache.spark class. This spec walks the runtime classpath
- * looking for any class whose package starts with `org.apache.spark`
- * and fails the build if any is found.
+ * Audit fix (Step 3 audit): the previous implementation pattern-matched
+ * on `URLClassLoader`, which silently returns empty on JDK 9+
+ * (modern classloaders extend `BuiltinClassLoader`, not `URLClassLoader`).
+ * That meant the ZERO-SPARK invariant was unverified on every modern
+ * JVM — the test would pass even if Spark was on the classpath.
  *
- * Pairs with the Maven Enforcer `bannedDependencies=org.apache.spark:*`
- * rule in pom.xml (compile-time guarantee). This spec is the test-time
- * guarantee: even if a transitive dependency slips through Maven
- * resolution, this test catches it.
+ * New implementation walks `System.getProperty("java.class.path")`
+ * which works on every JDK from 8 through 21+, regardless of
+ * classloader hierarchy. Per [[debug-mantra-mindset]]: reproduce →
+ * trace fail path → falsify hypothesis → cross-reference → verify.
  *
- * Per multi-engine-design.md §5.1 (semanticdf): the proven pattern for
- * Spark-free core verification. SM8 inherits it.
- *
- * Per karpathy-guidelines-mindset: define verifiable success criteria
- * before starting. The criterion is "sm8-core compiles and resolves
- * without org.apache.spark on the classpath, verified by Enforcer at
- * compile time AND CoreClasspathSpec at test time."
+ * Audit fix: `case _: Exception` narrowed to `NonFatal(_)` so JVM
+ * `Error`s (OutOfMemoryError etc.) propagate, and `listFiles()` is
+ * NPE-safe (`Option(...).toSeq`).
  */
 package io.sm8.core
 
 import java.io.File
+import java.io.IOException
 import java.util.jar.JarFile
-import java.util.stream.Collectors
+import java.util.zip.ZipException
 
-import scala.jdk.CollectionConverters._
+import scala.util.control.NonFatal
 
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -40,65 +38,71 @@ class CoreClasspathSpec extends AnyFlatSpec with Matchers {
   }
 
   /**
-   * Walks the runtime classpath via the system ClassLoader. For each
-   * URL pointing to a directory (IDE-style classpath), lists its
-   * contents. For each JAR, lists its entries via java.util.jar.
+   * Walks the JVM classpath via `System.getProperty("java.class.path")`.
+   * Works on every JDK from 8 through 21+, regardless of classloader
+   * hierarchy. (The previous `URLClassLoader` pattern match failed
+   * silently on JDK 9+.)
    *
-   * Returns any class whose FQN starts with `org.apache.spark`.
-   *
-   * This is intentionally conservative: if even one Spark class leaks
-   * into the Core, the test fails. False-positives (e.g. a Spark class
-   * in an unrelated test fixture) would also fail — that's a signal to
-   * move the fixture out of sm8-core.
+   * Each entry is either a directory (IDE / Maven `target/classes`)
+   * or a JAR. Returns any class whose FQN starts with `org.apache.spark`.
    */
   private def enumerateSparkClasses(): Seq[String] = {
-    val cl = getClass.getClassLoader
-    val urls = cl match {
-      case u: java.net.URLClassLoader => u.getURLs.toSeq
-      case _                          => Seq.empty
-    }
+    val sep    = File.pathSeparatorChar
+    val paths  = System.getProperty("java.class.path").split(sep).toSeq
+    paths.flatMap(processClasspathEntry)
+  }
 
-    urls.flatMap { url =>
-      val protocol = url.getProtocol
-      val path = url.getPath
-      if (protocol == "file" && new File(path).isDirectory) {
-        // IDE classpath (target/classes, etc.)
-        val root = new File(path)
-        if (!root.exists) Seq.empty
-        else walkDirectory(root, root)
-          .map(relativeToClassName)   // Seq[File] -> Seq[String]
-          .filter(isSparkClass)        // Seq[String] -> Seq[String]
-      } else if (protocol == "file" && path.endsWith(".jar")) {
-        // Maven shaded-jar-less install: each dep is its own jar
-        try {
-          val jar = new JarFile(new File(path))
-          jar.stream()
-            .filter(e => !e.isDirectory && e.getName.endsWith(".class"))
-            .map(_.getName)
-            .filter(isSparkClass)
-            .collect(Collectors.toList[String])  // -> java.util.List<String>
-            .asScala                              // -> scala.mutable.Buffer[String]
-            .toSeq                                // -> Seq[String]
-            .map(classNameFromJarEntry)
-        } catch {
-          case _: Exception => Seq.empty
-        }
-      } else Seq.empty
+  private def processClasspathEntry(path: String): Seq[String] = {
+    val file = new File(path)
+    if (file.isDirectory) collectClassesFromDir(file)
+    else if (path.toLowerCase.endsWith(".jar")) {
+      try enumerateJar(file)
+      catch {
+        case NonFatal(_) => Seq.empty  // corrupt / unreadable JAR — skip
+      }
+    } else Seq.empty
+  }
+
+  /**
+   * Recursively walk a directory tree, returning the names of all
+   * Spark classes found. `Option(listFiles)` makes the walk NPE-safe
+   * (a directory with restricted perms returns null).
+   */
+  private def collectClassesFromDir(dir: File): Seq[String] = {
+    Option(dir.listFiles).toSeq.flatMap { children =>
+      children.toSeq.flatMap { f =>
+        if (f.isFile) {
+          val name = relativeToClassName(f)
+          if (isSparkClass(name)) Some(name) else None
+        } else collectClassesFromDir(f)
+      }
     }
   }
 
-  private def walkDirectory(root: File, current: File): Seq[File] = {
-    if (current.isFile) Seq(current)
-    else current.listFiles().toSeq.flatMap(walkDirectory(root, _))
+  /**
+   * Enumerate class entries in a JAR. Returns names of any
+   * `org.apache.spark.*` classes found.
+   */
+  private def enumerateJar(file: File): Seq[String] = {
+    import scala.jdk.CollectionConverters._
+    val jar = new JarFile(file)
+    try {
+      jar.stream()
+        .filter(e => !e.isDirectory && e.getName.toLowerCase.endsWith(".class"))
+        .map(_.getName)
+        .filter(isSparkClass)
+        .collect(java.util.stream.Collectors.toList[String])
+        .asScala
+        .toSeq
+        .map(classNameFromJarEntry)
+    } finally jar.close()
   }
 
   private def relativeToClassName(f: File): String = {
-    val rootPath = f.getAbsolutePath
-    val sep = java.io.File.separatorChar
-    rootPath
-      .replace(sep, '/')
-      .replaceAll("""\.class$""", "")
-      .dropWhile(_ != 'o') // trim path prefix; keep from "org/..." onward
+    val rootPath = f.getAbsolutePath.replace(File.separatorChar, '/')
+    val idx = rootPath.indexOf("/org/")
+    if (idx < 0) ""
+    else rootPath.substring(idx + 1).replaceAll("""\.class$""", "")
   }
 
   private def classNameFromJarEntry(jarEntry: String): String =

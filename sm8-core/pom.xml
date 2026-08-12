@@ -81,34 +81,10 @@
 
   <build>
     <plugins>
-      <!-- Scala 2.13 compiler -->
+      <!-- Scala 2.13 compiler. Phase bindings inherited from parent's pluginManagement. -->
       <plugin>
         <groupId>net.alchim31.maven</groupId>
         <artifactId>scala-maven-plugin</artifactId>
-        <version>4.9.2</version>
-        <executions>
-          <execution>
-            <id>scala-compile</id>
-            <goals><goal>compile</goal></goals>
-          </execution>
-          <execution>
-            <id>scala-test-compile</id>
-            <goals><goal>testCompile</goal></goals>
-          </execution>
-          <execution>
-            <id>scala-doc-jar</id>
-            <phase>package</phase>
-            <goals><goal>doc-jar</goal></goals>
-          </execution>
-        </executions>
-        <configuration>
-          <scalaVersion>${scala.version}</scalaVersion>
-          <args>
-            <arg>-deprecation</arg>
-            <arg>-feature</arg>
-            <arg>-unchecked</arg>
-          </args>
-        </configuration>
       </plugin>
 
       <!--
@@ -151,8 +127,15 @@
           <rules>
             <bannedDependencies>
               <excludes>
+                <!--
+                  `org.apache.spark:*` covers every published Spark
+                  artifact (spark-core, spark-sql, spark-catalyst,
+                  spark-network-shuffle, etc. — all under the same
+                  groupId). The previous `org.apache.spark.sql:*`
+                  exclude was a no-op (no such groupId exists) and
+                  was removed in the Step 3 audit.
+                -->
                 <exclude>org.apache.spark:*</exclude>
-                <exclude>org.apache.spark.sql:*</exclude>
               </excludes>
               <message>
                 sm8-core must remain Spark-free. Spark classes live in
