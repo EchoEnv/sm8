@@ -32,6 +32,9 @@ project/
 # Codegraph MCP index (per-project, auto-created; not a project artifact)
 .codegraph/
 
+# Scala Build Server (Bloop) — generated per-IDE; not a project artifact
+.bloop/
+
 # Coursier / sbt
 .cache/
 coursier/
