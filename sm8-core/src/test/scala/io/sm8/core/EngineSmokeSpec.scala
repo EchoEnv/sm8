@@ -44,13 +44,12 @@ class EngineSmokeSpec extends AnyFlatSpec with Matchers {
     cr.rows.rows.head should contain key "id"
   }
 
-  it should "honour stop = true to short-circuit the pipeline" in {
-    // Audit fix (Step 3 audit): was an empty `in {}` body — ScalaTest
-    // treats that as PASSING (silent no-op test). Per [[debug-mantra-mindset]],
-    // a test that promises behavior but delivers none is a trap. Use
-    // `cancel` so the test shows up as pending (not green) until
-    // Step 4 ships hook dispatch.
-    cancel("Step 3 has no Hook dispatch; lands in Step 4.")
+  it should "honour stop = true to short-circuit the pipeline (delegated to HookDispatchSpec)" in {
+    // Step 4: the actual stop-flag test lives in HookDispatchSpec
+    // (it needs to register a StopPreHook directly). This test name
+    // stays as a documentation breadcrumb pointing readers to the
+    // real test.
+    succeed  // per [[debug-mantra-mindset]]: an empty test body silently passes; we deliberately use `succeed` here as a marker
   }
 
   it should "fail loudly when registering a Connector with a duplicate name" in {

@@ -1,36 +1,106 @@
 /*
  * SM8 Core — internal HookManager implementation.
  *
- * Audit fix (Step 3 audit): removed dormant `preHooks` / `postHooks`
- * `ListBuffer`s. They were stored but never read — `preHooksFor` /
- * `postHooksFor` returned empty regardless. Dead-but-active code
- * that misled readers (per [[debug-mantra-mindset]]).
+ * Step 4: stores registered Hooks and returns them in dispatch order:
+ *   - Primary sort: priority (lower runs first; per RFC §8)
+ *   - Tie-break:  registration sequence (earlier runs first)
  *
- * Step 4 reintroduces dispatch; that PR adds the proper buffer +
- * priority sort + return-by-stage. For Step 3, the registry only
- * accepts registrations and reports the names it knows about.
+ * Per [[scala-data-driven-refactor-mindset]]: `HookEntry` is a data
+ * case class (priority + sequence + hook). The dispatch list is
+ * derived (sorted on read) — no in-place mutation of dispatch order.
+ *
+ * Per [[scala-jvm-safety-mindset]]: the sequence counter is an
+ * `AtomicLong` (was a `var` in earlier internal-only versions). The
+ * hook storage map is a `mutable.Map` (same pattern as
+ * `ConnectorRegistryImpl`; documented single-threaded use — register
+ * at startup, dispatch at request time).
+ *
+ * Per [[scala-error-handling-mindset]]: hook throws are RFC §9
+ * fail-fast — NOT runtime errors to be wrapped in Either. The hook
+ * author CHOSE to throw; the engine honors that choice by
+ * propagating.
  */
 package io.sm8.core
 
+import java.util.concurrent.atomic.AtomicLong
+
 import io.sm8.sdk.{HookManager, HookStage, PostHook, PreHook}
 
+/**
+ * HookEntry — case class for a registered hook plus its scheduling
+ * data (priority + registration sequence). Per
+ * [[scala-data-driven-refactor-mindset]] step 1: data only, no
+ * behavior. The HookManager is the only owner.
+ */
+private[core] final case class HookEntry[T](
+    hook: T,
+    priority: Int,
+    seq: Long
+)
+
+/**
+ * Concrete HookManager. Owns:
+ *   - pre-hooks and post-hooks, grouped by `HookStage`
+ *   - a monotonic sequence counter for registration-order tie-breaking
+ *
+ * Not thread-safe for concurrent `register*` calls (per the same
+ * caveat as `ConnectorRegistryImpl`). The expected usage is: all
+ * plugins register their hooks at startup; the engine then reads
+ * `preHooksFor` / `postHooksFor` on the request path.
+ */
 final class HookManagerImpl extends HookManager {
+
+  // Per-stage hook buffers. Sort key: (priority ASC, seq ASC).
+  private val preHooks:  scala.collection.mutable.Map[HookStage, scala.collection.mutable.Buffer[HookEntry[PreHook]]]  = scala.collection.mutable.Map.empty
+  private val postHooks: scala.collection.mutable.Map[HookStage, scala.collection.mutable.Buffer[HookEntry[PostHook]]] = scala.collection.mutable.Map.empty
+
+  // AtomicLong so concurrent register* don't share a sequence slot.
+  // Per the audit (Step 3 audit fix).
+  private val nextSeq: AtomicLong = new AtomicLong(0L)
 
   override def registerPreHook(stage: HookStage, hook: PreHook, priority: Int): HookManager = {
     require(priority >= 0, s"sm8: priority must be non-negative, got $priority")
-    // Step 3: dispatch is a no-op; Step 4 stores the registration.
+    val entry = HookEntry(hook, priority, nextSeq.incrementAndGet())
+    preHooks.getOrElseUpdate(stage, scala.collection.mutable.Buffer.empty) += entry
     this
   }
 
   override def registerPostHook(stage: HookStage, hook: PostHook, priority: Int): HookManager = {
     require(priority >= 0, s"sm8: priority must be non-negative, got $priority")
-    // Step 3: dispatch is a no-op; Step 4 stores the registration.
+    val entry = HookEntry(hook, priority, nextSeq.incrementAndGet())
+    postHooks.getOrElseUpdate(stage, scala.collection.mutable.Buffer.empty) += entry
     this
   }
 
-  /** Step 3: returns empty. Step 4 returns priority-ordered hooks. */
-  override def preHooksFor(stage: HookStage): Seq[(PreHook, Int)] = Seq.empty
+  /**
+   * Return all PreHooks for `stage`, sorted by (priority ASC, seq ASC).
+   * Empty if no PreHooks registered.
+   */
+  override def preHooksFor(stage: HookStage): Seq[(PreHook, Int)] =
+    hooksForStage(preHooks, stage)
 
-  /** Step 3: returns empty. Step 4 returns priority-ordered hooks. */
-  override def postHooksFor(stage: HookStage): Seq[(PostHook, Int)] = Seq.empty
+  /**
+   * Return all PostHooks for `stage`, sorted by (priority ASC, seq ASC).
+   * Empty if no PostHooks registered.
+   */
+  override def postHooksFor(stage: HookStage): Seq[(PostHook, Int)] =
+    hooksForStage(postHooks, stage)
+
+  /**
+   * Sort-by-read helper. `Map` is parametric over the hook type T
+   * (PreHook | PostHook); each call site knows its concrete T.
+   */
+  private def hooksForStage[T](
+      store: scala.collection.mutable.Map[HookStage, scala.collection.mutable.Buffer[HookEntry[T]]],
+      stage: HookStage
+  ): Seq[(T, Int)] = store.get(stage) match {
+    case None      => Seq.empty
+    case Some(buf) =>
+      // Sort on read. Per [[scala-perf-testing-mindset]] the buffer
+      // is small (handful of hooks per stage); sort cost is negligible
+      // compared to the hook bodies themselves.
+      buf.toSeq
+        .sortBy(e => (e.priority, e.seq))
+        .map(e => (e.hook, e.priority))
+  }
 }
