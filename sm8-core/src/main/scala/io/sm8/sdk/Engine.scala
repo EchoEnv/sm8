@@ -43,12 +43,29 @@ trait Engine {
   def use(plugin: Plugin): Engine
 
   /**
-   * Run a request through the 4-stage pipeline. For Step 1 the method
-   * is declared here but its implementation is in `core.EngineImpl`
-   * (Step 3). The signature is the SDK contract.
-   *
-   * For Step 1 we accept an abstract `Request` and return an abstract
-   * `Result`. The full typed shape lands in Step 3.
+   * Run a request through the 4-stage pipeline. Implementation lives
+   * in `core.EngineImpl` (Step 3).
    */
   def run(request: Request): Result
+
+  /**
+   * Connector registry. Plugins access this from `setup(engine)` to
+   * register their Connectors: `engine.connectors.register(c)`.
+   * Required by the RFC's `engine.adapters.register(...)` pattern.
+   */
+  def connectors: ConnectorRegistry
+
+  /**
+   * Hook manager. Plugins access this from `setup(engine)` to
+   * register their Pre/PostHooks: `engine.hooks.registerPreHook(...)`.
+   * Step 3 surface: register-only. Priority dispatch lands in Step 4.
+   */
+  def hooks: HookManager
+
+  /**
+   * Transformer registry. Plugins access this from `setup(engine)` to
+   * register Transformers: `engine.transformers.register(t)`.
+   * Exactly one Transformer is active at a time (Q3 = swap).
+   */
+  def transformers: TransformerRegistry
 }

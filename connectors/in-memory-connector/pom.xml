@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!--
+    SM8 in-memory Connector — the built-in reference.
+
+    Used for tests, examples, and any deployment that needs a
+    data source "in process" (e.g. a small lookup table held in
+    memory). Follows the same shape real Connectors
+    (`spark-connector`, `trino-connector`, etc.) will follow —
+    i.e. it lives in its own Maven module, depends on `sm8-core`,
+    and ships as a separate JAR via the Portal.
+
+    For Step 3 this module's only job is to prove that a real
+    Connector extending `ConnectorContractSpec` passes all 4
+    RFC §12 assertions. Step 8 adds more Connectors; this is
+    the template they copy.
+  -->
+
+  <parent>
+    <groupId>io.sm8</groupId>
+    <artifactId>sm8-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <relativePath>../../pom.xml</relativePath>
+  </parent>
+
+  <artifactId>in-memory-connector_2.13</artifactId>
+  <packaging>jar</packaging>
+
+  <name>SM8 in-memory Connector</name>
+  <description>Built-in reference Connector for SM8 — in-process data source. Passes ConnectorContractSpec.</description>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.sm8</groupId>
+      <artifactId>sm8-core_2.13</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <!--
+      Test-jar classifier — pulls in the contract bases
+      (ConnectorContractSpec) from sm8-core's src/test/. The bases
+      ARE test infrastructure that ships to Plugin authors so their
+      connector specs can extend them.
+    -->
+    <dependency>
+      <groupId>io.sm8</groupId>
+      <artifactId>sm8-core_2.13</artifactId>
+      <version>${project.version}</version>
+      <type>test-jar</type>
+      <scope>test</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>org.scalatest</groupId>
+      <artifactId>scalatest_${scala.binary.version}</artifactId>
+      <version>${scalatest.version}</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>net.alchim31.maven</groupId>
+        <artifactId>scala-maven-plugin</artifactId>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+      </plugin>
+      <plugin>
+        <groupId>org.scalatest</groupId>
+        <artifactId>scalatest-maven-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>test</id>
+            <goals><goal>test</goal></goals>
+            <phase>test</phase>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-source-plugin</artifactId>
+      </plugin>
+    </plugins>
+  </build>
+</project>

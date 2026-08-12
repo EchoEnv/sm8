@@ -70,7 +70,7 @@
       <version>1.5.2</version>
     </dependency>
 
-    <!-- Test scope only -->
+    <!-- Test scope only — contract bases live in src/test/ -->
     <dependency>
       <groupId>org.scalatest</groupId>
       <artifactId>scalatest_${scala.binary.version}</artifactId>
@@ -109,6 +109,26 @@
             <arg>-unchecked</arg>
           </args>
         </configuration>
+      </plugin>
+
+      <!--
+        Publish a test-jar with the contract bases (ConnectorContractSpec,
+        HookContractSpec, PluginContractSpec) so third-party Connector
+        modules can depend on them via <classifier>tests</classifier>.
+        This is the standard Maven pattern for shared test
+        infrastructure (e.g. Spring's spring-test jar).
+      -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <version>3.4.1</version>
+        <executions>
+          <execution>
+            <id>test-jar</id>
+            <phase>package</phase>
+            <goals><goal>test-jar</goal></goals>
+          </execution>
+        </executions>
       </plugin>
 
       <!--

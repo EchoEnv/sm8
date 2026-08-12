@@ -113,15 +113,3 @@ abstract class HookContractSpec extends AnyFlatSpec with Matchers {
     first shouldBe second
   }
 }
-
-/**
- * Minimal `Request` shape for the abstract base's `baselineContext`.
- * Real shape lands in Step 0.
- */
-final case class RequestStub(value: String) extends io.sm8.sdk.Request
-
-/**
- * Minimal `Result` shape for the abstract base's `baselineContext`.
- * Real shape lands in Step 0.
- */
-final case class ResultStub(payload: Map[String, Any] = Map.empty) extends io.sm8.sdk.Result

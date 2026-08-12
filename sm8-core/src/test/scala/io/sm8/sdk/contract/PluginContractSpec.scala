@@ -28,6 +28,7 @@ package io.sm8.sdk.contract
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
+import io.sm8.core.{ConnectorRegistryImpl, HookManagerImpl, TransformerRegistryImpl}
 import io.sm8.sdk.{Engine, Plugin, Request, Result}
 
 abstract class PluginContractSpec extends AnyFlatSpec with Matchers {
@@ -62,15 +63,22 @@ abstract class PluginContractSpec extends AnyFlatSpec with Matchers {
  * No-op Engine stub for Step 2 contract tests. Real Engine lands in
  * Step 3. The stub exists so Plugin authors can write their
  * `PluginContractSpec` extension without depending on the full Engine.
+ *
+ * Step 3 update: implements the new `connectors` / `hooks` /
+ * `transformers` accessors added to the Engine trait in Step 3.
+ * Uses the real internal implementations so Plugin.setup can
+ * actually register Connectors / Hooks against the stub.
  */
 object PluginContractSpecStubs {
 
   /** Minimal no-op Engine for testing Plugin.setup idempotency. */
   val NoopEngine: Engine = new Engine {
-    private var plugins: List[Plugin] = Nil
+    private val _connectors:   ConnectorRegistryImpl   = new ConnectorRegistryImpl
+    private val _hooks:        HookManagerImpl         = new HookManagerImpl
+    private val _transformers: TransformerRegistryImpl = new TransformerRegistryImpl
 
     override def use(p: Plugin): Engine = {
-      plugins = plugins :+ p
+      p.setup(this)
       this
     }
 
@@ -78,5 +86,9 @@ object PluginContractSpecStubs {
       throw new UnsupportedOperationException(
         "NoopEngine is a Step 2 contract-test stub; real Engine.run lands in Step 3"
       )
+
+    override def connectors: io.sm8.sdk.ConnectorRegistry    = _connectors
+    override def hooks: io.sm8.sdk.HookManager               = _hooks
+    override def transformers: io.sm8.sdk.TransformerRegistry = _transformers
   }
 }
