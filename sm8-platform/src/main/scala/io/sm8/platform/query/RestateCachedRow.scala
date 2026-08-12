@@ -103,7 +103,22 @@ final case class RestateCachedRow(
 
 object RestateCachedRow {
 
-  /** Allowed cell-type tags (wire-stable string constants). */
+  /**
+   * Allowed cell-type tags.
+   *
+   * Deliberately `final val String` (NOT a sealed trait + case
+   * objects): these tags appear verbatim in the JSON wire format
+   * and must be 1:1 compatible with the legacy Java record's
+   * `public static final String` constants. A sealed-trait + case-
+   * objects approach would force Jackson `@JsonValue` plumbing
+   * and break the wire contract — at zero runtime benefit since
+   * the strings are inherently wire-stable, not domain types.
+   *
+   * Wire vocabulary: 9 tags (T_NULL through T_BINARY). The
+   * `EngineTypeTags.of(SealedDataType)` companion helper maps
+   * the closed `SealedDataType` ADT to these wire tags with
+   * compiler-enforced exhaustiveness on the in-memory side.
+   */
   final val T_NULL      = "null"
   final val T_STRING    = "string"
   final val T_LONG      = "long"
