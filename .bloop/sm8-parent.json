@@ -1,0 +1,151 @@
+{
+    "version": "1.4.0",
+    "project": {
+        "name": "sm8-parent",
+        "directory": "/home/emilio/app/projects/sm8",
+        "workspaceDir": "/home/emilio/app/projects/sm8",
+        "sources": [
+            
+        ],
+        "dependencies": [
+            
+        ],
+        "classpath": [
+            "/home/emilio/app/projects/sm8/target/classes",
+            "/home/emilio/.m2/repository/org/scala-lang/scala-library/2.13.18/scala-library-2.13.18.jar"
+        ],
+        "out": "/home/emilio/app/projects/sm8/target",
+        "classesDir": "/home/emilio/app/projects/sm8/target/classes",
+        "resources": [
+            "/home/emilio/app/projects/sm8/src/main/resources"
+        ],
+        "scala": {
+            "organization": "org.scala-lang",
+            "name": "scala-compiler",
+            "version": "2.13.18",
+            "options": [
+                "-release",
+                "17"
+            ],
+            "jars": [
+                "/home/emilio/.m2/repository/io/github/java-diff-utils/java-diff-utils/4.16/java-diff-utils-4.16.jar",
+                "/home/emilio/.m2/repository/org/scala-lang/scala-compiler/2.13.18/scala-compiler-2.13.18.jar",
+                "/home/emilio/.m2/repository/org/jline/jline/3.29.0/jline-3.29.0-jdk8.jar",
+                "/home/emilio/.m2/repository/org/scala-lang/scala-library/2.13.18/scala-library-2.13.18.jar",
+                "/home/emilio/.m2/repository/org/scala-lang/scala-reflect/2.13.18/scala-reflect-2.13.18.jar"
+            ],
+            "setup": {
+                "order": "java->scala",
+                "addLibraryToBootClasspath": true,
+                "addCompilerToClasspath": false,
+                "addExtraJarsToClasspath": false,
+                "manageBootClasspath": true,
+                "filterLibraryFromClasspath": true
+            }
+        },
+        "java": {
+            "options": [
+                "-g",
+                "--release",
+                "17",
+                "-encoding",
+                "UTF-8"
+            ]
+        },
+        "test": {
+            "frameworks": [
+                {
+                    "names": [
+                        "com.novocode.junit.JUnitFramework"
+                    ]
+                },
+                {
+                    "names": [
+                        "org.scalatest.tools.Framework",
+                        "org.scalatest.tools.ScalaTestFramework"
+                    ]
+                },
+                {
+                    "names": [
+                        "org.scalacheck.ScalaCheckFramework"
+                    ]
+                },
+                {
+                    "names": [
+                        "org.specs.runner.SpecsFramework",
+                        "org.specs2.runner.Specs2Framework",
+                        "org.specs2.runner.SpecsFramework"
+                    ]
+                },
+                {
+                    "names": [
+                        "utest.runner.Framework"
+                    ]
+                },
+                {
+                    "names": [
+                        "munit.Framework"
+                    ]
+                },
+                {
+                    "names": [
+                        "mill.testng.TestNGFramework"
+                    ]
+                }
+            ],
+            "options": {
+                "excludes": [
+                    
+                ],
+                "arguments": [
+                    {
+                        "args": [
+                            "-v",
+                            "-a"
+                        ],
+                        "framework": {
+                            "names": [
+                                "com.novocode.junit.JUnitFramework"
+                            ]
+                        }
+                    }
+                ]
+            }
+        },
+        "platform": {
+            "name": "jvm",
+            "config": {
+                "home": "/home/emilio/.sdkman/candidates/java/17.0.14-tem",
+                "options": [
+                    
+                ]
+            },
+            "mainClass": [
+                
+            ]
+        },
+        "resolution": {
+            "modules": [
+                {
+                    "organization": "org.scala-lang",
+                    "name": "scala-library",
+                    "version": "2.13.18",
+                    "artifacts": [
+                        {
+                            "name": "scala-library",
+                            "path": "/home/emilio/.m2/repository/org/scala-lang/scala-library/2.13.18/scala-library-2.13.18.jar"
+                        },
+                        {
+                            "name": "scala-library",
+                            "classifier": "sources",
+                            "path": "/home/emilio/.m2/repository/org/scala-lang/scala-library/2.13.18/scala-library-2.13.18-sources.jar"
+                        }
+                    ]
+                }
+            ]
+        },
+        "tags": [
+            "library"
+        ]
+    }
+}

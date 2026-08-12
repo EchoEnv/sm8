@@ -1,0 +1,580 @@
+{
+    "version": "1.4.0",
+    "project": {
+        "name": "sm8-core_2.13",
+        "directory": "/home/emilio/app/projects/sm8/sm8-core",
+        "workspaceDir": "/home/emilio/app/projects/sm8",
+        "sources": [
+            "/home/emilio/app/projects/sm8/sm8-core/src/main/scala"
+        ],
+        "dependencies": [
+            "sm8-parent"
+        ],
+        "classpath": [
+            "/home/emilio/app/projects/sm8/target/classes",
+            "/home/emilio/app/projects/sm8/sm8-core/target/classes",
+            "/home/emilio/.m2/repository/org/scala-lang/scala-library/2.13.18/scala-library-2.13.18.jar",
+            "/home/emilio/.m2/repository/com/fasterxml/jackson/core/jackson-databind/2.15.2/jackson-databind-2.15.2.jar",
+            "/home/emilio/.m2/repository/com/fasterxml/jackson/core/jackson-annotations/2.15.2/jackson-annotations-2.15.2.jar",
+            "/home/emilio/.m2/repository/com/fasterxml/jackson/core/jackson-core/2.15.2/jackson-core-2.15.2.jar",
+            "/home/emilio/.m2/repository/com/networknt/json-schema-validator/1.5.2/json-schema-validator-1.5.2.jar",
+            "/home/emilio/.m2/repository/com/ethlo/time/itu/1.10.2/itu-1.10.2.jar",
+            "/home/emilio/.m2/repository/com/fasterxml/jackson/dataformat/jackson-dataformat-yaml/2.17.2/jackson-dataformat-yaml-2.17.2.jar",
+            "/home/emilio/.m2/repository/org/yaml/snakeyaml/2.2/snakeyaml-2.2.jar",
+            "/home/emilio/.m2/repository/org/slf4j/slf4j-api/2.0.13/slf4j-api-2.0.13.jar",
+            "/home/emilio/.m2/repository/org/scala-lang/scala-library/2.13.18/scala-library-2.13.18.jar"
+        ],
+        "out": "/home/emilio/app/projects/sm8/sm8-core/target",
+        "classesDir": "/home/emilio/app/projects/sm8/sm8-core/target/classes",
+        "resources": [
+            "/home/emilio/app/projects/sm8/sm8-core/src/main/resources"
+        ],
+        "scala": {
+            "organization": "org.scala-lang",
+            "name": "scala-compiler",
+            "version": "2.13.18",
+            "options": [
+                "-deprecation",
+                "-feature",
+                "-unchecked",
+                "-release",
+                "17"
+            ],
+            "jars": [
+                "/home/emilio/.m2/repository/io/github/java-diff-utils/java-diff-utils/4.16/java-diff-utils-4.16.jar",
+                "/home/emilio/.m2/repository/org/scala-lang/scala-compiler/2.13.18/scala-compiler-2.13.18.jar",
+                "/home/emilio/.m2/repository/org/jline/jline/3.29.0/jline-3.29.0-jdk8.jar",
+                "/home/emilio/.m2/repository/org/scala-lang/scala-library/2.13.18/scala-library-2.13.18.jar",
+                "/home/emilio/.m2/repository/org/scala-lang/scala-reflect/2.13.18/scala-reflect-2.13.18.jar"
+            ],
+            "setup": {
+                "order": "mixed",
+                "addLibraryToBootClasspath": true,
+                "addCompilerToClasspath": false,
+                "addExtraJarsToClasspath": false,
+                "manageBootClasspath": true,
+                "filterLibraryFromClasspath": true
+            }
+        },
+        "java": {
+            "options": [
+                "-g",
+                "--release",
+                "17",
+                "-encoding",
+                "UTF-8"
+            ]
+        },
+        "test": {
+            "frameworks": [
+                {
+                    "names": [
+                        "com.novocode.junit.JUnitFramework"
+                    ]
+                },
+                {
+                    "names": [
+                        "org.scalatest.tools.Framework",
+                        "org.scalatest.tools.ScalaTestFramework"
+                    ]
+                },
+                {
+                    "names": [
+                        "org.scalacheck.ScalaCheckFramework"
+                    ]
+                },
+                {
+                    "names": [
+                        "org.specs.runner.SpecsFramework",
+                        "org.specs2.runner.Specs2Framework",
+                        "org.specs2.runner.SpecsFramework"
+                    ]
+                },
+                {
+                    "names": [
+                        "utest.runner.Framework"
+                    ]
+                },
+                {
+                    "names": [
+                        "munit.Framework"
+                    ]
+                },
+                {
+                    "names": [
+                        "mill.testng.TestNGFramework"
+                    ]
+                }
+            ],
+            "options": {
+                "excludes": [
+                    
+                ],
+                "arguments": [
+                    {
+                        "args": [
+                            "-v",
+                            "-a"
+                        ],
+                        "framework": {
+                            "names": [
+                                "com.novocode.junit.JUnitFramework"
+                            ]
+                        }
+                    }
+                ]
+            }
+        },
+        "platform": {
+            "name": "jvm",
+            "config": {
+                "home": "/home/emilio/.sdkman/candidates/java/17.0.14-tem",
+                "options": [
+                    
+                ]
+            },
+            "mainClass": [
+                
+            ]
+        },
+        "resolution": {
+            "modules": [
+                {
+                    "organization": "org.scalatest",
+                    "name": "scalatest-funspec_2.13",
+                    "version": "3.2.19",
+                    "artifacts": [
+                        {
+                            "name": "scalatest-funspec_2.13",
+                            "path": "/home/emilio/.m2/repository/org/scalatest/scalatest-funspec_2.13/3.2.19/scalatest-funspec_2.13-3.2.19.jar"
+                        },
+                        {
+                            "name": "scalatest-funspec_2.13",
+                            "classifier": "sources",
+                            "path": "/home/emilio/.m2/repository/org/scalatest/scalatest-funspec_2.13/3.2.19/scalatest-funspec_2.13-3.2.19-sources.jar"
+                        }
+                    ]
+                },
+                {
+                    "organization": "com.fasterxml.jackson.core",
+                    "name": "jackson-core",
+                    "version": "2.15.2",
+                    "artifacts": [
+                        {
+                            "name": "jackson-core",
+                            "path": "/home/emilio/.m2/repository/com/fasterxml/jackson/core/jackson-core/2.15.2/jackson-core-2.15.2.jar"
+                        },
+                        {
+                            "name": "jackson-core",
+                            "classifier": "sources",
+                            "path": "/home/emilio/.m2/repository/com/fasterxml/jackson/core/jackson-core/2.15.2/jackson-core-2.15.2-sources.jar"
+                        }
+                    ]
+                },
+                {
+                    "organization": "org.scalatest",
+                    "name": "scalatest-flatspec_2.13",
+                    "version": "3.2.19",
+                    "artifacts": [
+                        {
+                            "name": "scalatest-flatspec_2.13",
+                            "path": "/home/emilio/.m2/repository/org/scalatest/scalatest-flatspec_2.13/3.2.19/scalatest-flatspec_2.13-3.2.19.jar"
+                        },
+                        {
+                            "name": "scalatest-flatspec_2.13",
+                            "classifier": "sources",
+                            "path": "/home/emilio/.m2/repository/org/scalatest/scalatest-flatspec_2.13/3.2.19/scalatest-flatspec_2.13-3.2.19-sources.jar"
+                        }
+                    ]
+                },
+                {
+                    "organization": "org.scala-lang",
+                    "name": "scala-reflect",
+                    "version": "2.13.10",
+                    "artifacts": [
+                        {
+                            "name": "scala-reflect",
+                            "path": "/home/emilio/.m2/repository/org/scala-lang/scala-reflect/2.13.10/scala-reflect-2.13.10.jar"
+                        },
+                        {
+                            "name": "scala-reflect",
+                            "classifier": "sources",
+                            "path": "/home/emilio/.m2/repository/org/scala-lang/scala-reflect/2.13.10/scala-reflect-2.13.10-sources.jar"
+                        }
+                    ]
+                },
+                {
+                    "organization": "com.fasterxml.jackson.core",
+                    "name": "jackson-annotations",
+                    "version": "2.15.2",
+                    "artifacts": [
+                        {
+                            "name": "jackson-annotations",
+                            "path": "/home/emilio/.m2/repository/com/fasterxml/jackson/core/jackson-annotations/2.15.2/jackson-annotations-2.15.2.jar"
+                        },
+                        {
+                            "name": "jackson-annotations",
+                            "classifier": "sources",
+                            "path": "/home/emilio/.m2/repository/com/fasterxml/jackson/core/jackson-annotations/2.15.2/jackson-annotations-2.15.2-sources.jar"
+                        }
+                    ]
+                },
+                {
+                    "organization": "org.scala-lang.modules",
+                    "name": "scala-xml_2.13",
+                    "version": "2.1.0",
+                    "artifacts": [
+                        {
+                            "name": "scala-xml_2.13",
+                            "path": "/home/emilio/.m2/repository/org/scala-lang/modules/scala-xml_2.13/2.1.0/scala-xml_2.13-2.1.0.jar"
+                        },
+                        {
+                            "name": "scala-xml_2.13",
+                            "classifier": "sources",
+                            "path": "/home/emilio/.m2/repository/org/scala-lang/modules/scala-xml_2.13/2.1.0/scala-xml_2.13-2.1.0-sources.jar"
+                        }
+                    ]
+                },
+                {
+                    "organization": "org.scalatest",
+                    "name": "scalatest-core_2.13",
+                    "version": "3.2.19",
+                    "artifacts": [
+                        {
+                            "name": "scalatest-core_2.13",
+                            "path": "/home/emilio/.m2/repository/org/scalatest/scalatest-core_2.13/3.2.19/scalatest-core_2.13-3.2.19.jar"
+                        },
+                        {
+                            "name": "scalatest-core_2.13",
+                            "classifier": "sources",
+                            "path": "/home/emilio/.m2/repository/org/scalatest/scalatest-core_2.13/3.2.19/scalatest-core_2.13-3.2.19-sources.jar"
+                        }
+                    ]
+                },
+                {
+                    "organization": "org.scalatest",
+                    "name": "scalatest-compatible",
+                    "version": "3.2.19",
+                    "artifacts": [
+                        {
+                            "name": "scalatest-compatible",
+                            "path": "/home/emilio/.m2/repository/org/scalatest/scalatest-compatible/3.2.19/scalatest-compatible-3.2.19.jar"
+                        },
+                        {
+                            "name": "scalatest-compatible",
+                            "classifier": "sources",
+                            "path": "/home/emilio/.m2/repository/org/scalatest/scalatest-compatible/3.2.19/scalatest-compatible-3.2.19-sources.jar"
+                        }
+                    ]
+                },
+                {
+                    "organization": "org.scala-lang",
+                    "name": "scala-library",
+                    "version": "2.13.18",
+                    "artifacts": [
+                        {
+                            "name": "scala-library",
+                            "path": "/home/emilio/.m2/repository/org/scala-lang/scala-library/2.13.18/scala-library-2.13.18.jar"
+                        },
+                        {
+                            "name": "scala-library",
+                            "classifier": "sources",
+                            "path": "/home/emilio/.m2/repository/org/scala-lang/scala-library/2.13.18/scala-library-2.13.18-sources.jar"
+                        }
+                    ]
+                },
+                {
+                    "organization": "org.scalatest",
+                    "name": "scalatest-mustmatchers_2.13",
+                    "version": "3.2.19",
+                    "artifacts": [
+                        {
+                            "name": "scalatest-mustmatchers_2.13",
+                            "path": "/home/emilio/.m2/repository/org/scalatest/scalatest-mustmatchers_2.13/3.2.19/scalatest-mustmatchers_2.13-3.2.19.jar"
+                        },
+                        {
+                            "name": "scalatest-mustmatchers_2.13",
+                            "classifier": "sources",
+                            "path": "/home/emilio/.m2/repository/org/scalatest/scalatest-mustmatchers_2.13/3.2.19/scalatest-mustmatchers_2.13-3.2.19-sources.jar"
+                        }
+                    ]
+                },
+                {
+                    "organization": "org.scalatest",
+                    "name": "scalatest-shouldmatchers_2.13",
+                    "version": "3.2.19",
+                    "artifacts": [
+                        {
+                            "name": "scalatest-shouldmatchers_2.13",
+                            "path": "/home/emilio/.m2/repository/org/scalatest/scalatest-shouldmatchers_2.13/3.2.19/scalatest-shouldmatchers_2.13-3.2.19.jar"
+                        },
+                        {
+                            "name": "scalatest-shouldmatchers_2.13",
+                            "classifier": "sources",
+                            "path": "/home/emilio/.m2/repository/org/scalatest/scalatest-shouldmatchers_2.13/3.2.19/scalatest-shouldmatchers_2.13-3.2.19-sources.jar"
+                        }
+                    ]
+                },
+                {
+                    "organization": "com.networknt",
+                    "name": "json-schema-validator",
+                    "version": "1.5.2",
+                    "artifacts": [
+                        {
+                            "name": "json-schema-validator",
+                            "path": "/home/emilio/.m2/repository/com/networknt/json-schema-validator/1.5.2/json-schema-validator-1.5.2.jar"
+                        },
+                        {
+                            "name": "json-schema-validator",
+                            "classifier": "sources",
+                            "path": "/home/emilio/.m2/repository/com/networknt/json-schema-validator/1.5.2/json-schema-validator-1.5.2-sources.jar"
+                        }
+                    ]
+                },
+                {
+                    "organization": "org.slf4j",
+                    "name": "slf4j-api",
+                    "version": "2.0.13",
+                    "artifacts": [
+                        {
+                            "name": "slf4j-api",
+                            "path": "/home/emilio/.m2/repository/org/slf4j/slf4j-api/2.0.13/slf4j-api-2.0.13.jar"
+                        },
+                        {
+                            "name": "slf4j-api",
+                            "classifier": "sources",
+                            "path": "/home/emilio/.m2/repository/org/slf4j/slf4j-api/2.0.13/slf4j-api-2.0.13-sources.jar"
+                        }
+                    ]
+                },
+                {
+                    "organization": "org.yaml",
+                    "name": "snakeyaml",
+                    "version": "2.2",
+                    "artifacts": [
+                        {
+                            "name": "snakeyaml",
+                            "path": "/home/emilio/.m2/repository/org/yaml/snakeyaml/2.2/snakeyaml-2.2.jar"
+                        },
+                        {
+                            "name": "snakeyaml",
+                            "classifier": "sources",
+                            "path": "/home/emilio/.m2/repository/org/yaml/snakeyaml/2.2/snakeyaml-2.2-sources.jar"
+                        }
+                    ]
+                },
+                {
+                    "organization": "com.fasterxml.jackson.core",
+                    "name": "jackson-databind",
+                    "version": "2.15.2",
+                    "artifacts": [
+                        {
+                            "name": "jackson-databind",
+                            "path": "/home/emilio/.m2/repository/com/fasterxml/jackson/core/jackson-databind/2.15.2/jackson-databind-2.15.2.jar"
+                        },
+                        {
+                            "name": "jackson-databind",
+                            "classifier": "sources",
+                            "path": "/home/emilio/.m2/repository/com/fasterxml/jackson/core/jackson-databind/2.15.2/jackson-databind-2.15.2-sources.jar"
+                        }
+                    ]
+                },
+                {
+                    "organization": "org.scalatest",
+                    "name": "scalatest-matchers-core_2.13",
+                    "version": "3.2.19",
+                    "artifacts": [
+                        {
+                            "name": "scalatest-matchers-core_2.13",
+                            "path": "/home/emilio/.m2/repository/org/scalatest/scalatest-matchers-core_2.13/3.2.19/scalatest-matchers-core_2.13-3.2.19.jar"
+                        },
+                        {
+                            "name": "scalatest-matchers-core_2.13",
+                            "classifier": "sources",
+                            "path": "/home/emilio/.m2/repository/org/scalatest/scalatest-matchers-core_2.13/3.2.19/scalatest-matchers-core_2.13-3.2.19-sources.jar"
+                        }
+                    ]
+                },
+                {
+                    "organization": "org.scalatest",
+                    "name": "scalatest-featurespec_2.13",
+                    "version": "3.2.19",
+                    "artifacts": [
+                        {
+                            "name": "scalatest-featurespec_2.13",
+                            "path": "/home/emilio/.m2/repository/org/scalatest/scalatest-featurespec_2.13/3.2.19/scalatest-featurespec_2.13-3.2.19.jar"
+                        },
+                        {
+                            "name": "scalatest-featurespec_2.13",
+                            "classifier": "sources",
+                            "path": "/home/emilio/.m2/repository/org/scalatest/scalatest-featurespec_2.13/3.2.19/scalatest-featurespec_2.13-3.2.19-sources.jar"
+                        }
+                    ]
+                },
+                {
+                    "organization": "org.scalatest",
+                    "name": "scalatest-funsuite_2.13",
+                    "version": "3.2.19",
+                    "artifacts": [
+                        {
+                            "name": "scalatest-funsuite_2.13",
+                            "path": "/home/emilio/.m2/repository/org/scalatest/scalatest-funsuite_2.13/3.2.19/scalatest-funsuite_2.13-3.2.19.jar"
+                        },
+                        {
+                            "name": "scalatest-funsuite_2.13",
+                            "classifier": "sources",
+                            "path": "/home/emilio/.m2/repository/org/scalatest/scalatest-funsuite_2.13/3.2.19/scalatest-funsuite_2.13-3.2.19-sources.jar"
+                        }
+                    ]
+                },
+                {
+                    "organization": "org.scalatest",
+                    "name": "scalatest-propspec_2.13",
+                    "version": "3.2.19",
+                    "artifacts": [
+                        {
+                            "name": "scalatest-propspec_2.13",
+                            "path": "/home/emilio/.m2/repository/org/scalatest/scalatest-propspec_2.13/3.2.19/scalatest-propspec_2.13-3.2.19.jar"
+                        },
+                        {
+                            "name": "scalatest-propspec_2.13",
+                            "classifier": "sources",
+                            "path": "/home/emilio/.m2/repository/org/scalatest/scalatest-propspec_2.13/3.2.19/scalatest-propspec_2.13-3.2.19-sources.jar"
+                        }
+                    ]
+                },
+                {
+                    "organization": "org.scalatest",
+                    "name": "scalatest-refspec_2.13",
+                    "version": "3.2.19",
+                    "artifacts": [
+                        {
+                            "name": "scalatest-refspec_2.13",
+                            "path": "/home/emilio/.m2/repository/org/scalatest/scalatest-refspec_2.13/3.2.19/scalatest-refspec_2.13-3.2.19.jar"
+                        },
+                        {
+                            "name": "scalatest-refspec_2.13",
+                            "classifier": "sources",
+                            "path": "/home/emilio/.m2/repository/org/scalatest/scalatest-refspec_2.13/3.2.19/scalatest-refspec_2.13-3.2.19-sources.jar"
+                        }
+                    ]
+                },
+                {
+                    "organization": "org.scalatest",
+                    "name": "scalatest-freespec_2.13",
+                    "version": "3.2.19",
+                    "artifacts": [
+                        {
+                            "name": "scalatest-freespec_2.13",
+                            "path": "/home/emilio/.m2/repository/org/scalatest/scalatest-freespec_2.13/3.2.19/scalatest-freespec_2.13-3.2.19.jar"
+                        },
+                        {
+                            "name": "scalatest-freespec_2.13",
+                            "classifier": "sources",
+                            "path": "/home/emilio/.m2/repository/org/scalatest/scalatest-freespec_2.13/3.2.19/scalatest-freespec_2.13-3.2.19-sources.jar"
+                        }
+                    ]
+                },
+                {
+                    "organization": "org.scalactic",
+                    "name": "scalactic_2.13",
+                    "version": "3.2.19",
+                    "artifacts": [
+                        {
+                            "name": "scalactic_2.13",
+                            "path": "/home/emilio/.m2/repository/org/scalactic/scalactic_2.13/3.2.19/scalactic_2.13-3.2.19.jar"
+                        },
+                        {
+                            "name": "scalactic_2.13",
+                            "classifier": "sources",
+                            "path": "/home/emilio/.m2/repository/org/scalactic/scalactic_2.13/3.2.19/scalactic_2.13-3.2.19-sources.jar"
+                        }
+                    ]
+                },
+                {
+                    "organization": "org.scalatest",
+                    "name": "scalatest-wordspec_2.13",
+                    "version": "3.2.19",
+                    "artifacts": [
+                        {
+                            "name": "scalatest-wordspec_2.13",
+                            "path": "/home/emilio/.m2/repository/org/scalatest/scalatest-wordspec_2.13/3.2.19/scalatest-wordspec_2.13-3.2.19.jar"
+                        },
+                        {
+                            "name": "scalatest-wordspec_2.13",
+                            "classifier": "sources",
+                            "path": "/home/emilio/.m2/repository/org/scalatest/scalatest-wordspec_2.13/3.2.19/scalatest-wordspec_2.13-3.2.19-sources.jar"
+                        }
+                    ]
+                },
+                {
+                    "organization": "com.fasterxml.jackson.dataformat",
+                    "name": "jackson-dataformat-yaml",
+                    "version": "2.17.2",
+                    "artifacts": [
+                        {
+                            "name": "jackson-dataformat-yaml",
+                            "path": "/home/emilio/.m2/repository/com/fasterxml/jackson/dataformat/jackson-dataformat-yaml/2.17.2/jackson-dataformat-yaml-2.17.2.jar"
+                        },
+                        {
+                            "name": "jackson-dataformat-yaml",
+                            "classifier": "sources",
+                            "path": "/home/emilio/.m2/repository/com/fasterxml/jackson/dataformat/jackson-dataformat-yaml/2.17.2/jackson-dataformat-yaml-2.17.2-sources.jar"
+                        }
+                    ]
+                },
+                {
+                    "organization": "org.scalatest",
+                    "name": "scalatest_2.13",
+                    "version": "3.2.19",
+                    "artifacts": [
+                        {
+                            "name": "scalatest_2.13",
+                            "path": "/home/emilio/.m2/repository/org/scalatest/scalatest_2.13/3.2.19/scalatest_2.13-3.2.19.jar"
+                        },
+                        {
+                            "name": "scalatest_2.13",
+                            "classifier": "sources",
+                            "path": "/home/emilio/.m2/repository/org/scalatest/scalatest_2.13/3.2.19/scalatest_2.13-3.2.19-sources.jar"
+                        }
+                    ]
+                },
+                {
+                    "organization": "org.scalatest",
+                    "name": "scalatest-diagrams_2.13",
+                    "version": "3.2.19",
+                    "artifacts": [
+                        {
+                            "name": "scalatest-diagrams_2.13",
+                            "path": "/home/emilio/.m2/repository/org/scalatest/scalatest-diagrams_2.13/3.2.19/scalatest-diagrams_2.13-3.2.19.jar"
+                        },
+                        {
+                            "name": "scalatest-diagrams_2.13",
+                            "classifier": "sources",
+                            "path": "/home/emilio/.m2/repository/org/scalatest/scalatest-diagrams_2.13/3.2.19/scalatest-diagrams_2.13-3.2.19-sources.jar"
+                        }
+                    ]
+                },
+                {
+                    "organization": "com.ethlo.time",
+                    "name": "itu",
+                    "version": "1.10.2",
+                    "artifacts": [
+                        {
+                            "name": "itu",
+                            "path": "/home/emilio/.m2/repository/com/ethlo/time/itu/1.10.2/itu-1.10.2.jar"
+                        },
+                        {
+                            "name": "itu",
+                            "classifier": "sources",
+                            "path": "/home/emilio/.m2/repository/com/ethlo/time/itu/1.10.2/itu-1.10.2-sources.jar"
+                        }
+                    ]
+                }
+            ]
+        },
+        "tags": [
+            "library"
+        ]
+    }
+}
