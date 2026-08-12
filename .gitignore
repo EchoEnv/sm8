@@ -29,6 +29,9 @@ out/
 .metals/
 project/
 
+# Codegraph MCP index (per-project, auto-created; not a project artifact)
+.codegraph/
+
 # Coursier / sbt
 .cache/
 coursier/
