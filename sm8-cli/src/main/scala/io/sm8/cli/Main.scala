@@ -861,7 +861,7 @@ object Main {
 
   private def printUsage(): Unit = {
     println(
-      "sm8 — a command-line client for SM8 REST + Restate APIs.
+      """sm8 — a command-line client for SM8 REST + Restate APIs.
         |
         |usage: sm8 <command> [options]
         |
