@@ -1,9 +1,14 @@
 /*
  * SM8 Core — internal HookManager implementation.
  *
- * Step 3 surface: register-only, no dispatch. Pipeline runner
- * directly calls `preHooksFor` / `postHooksFor`; both return empty
- * for Step 3 (real priority dispatch lands in Step 4).
+ * Audit fix (Step 3 audit): removed dormant `preHooks` / `postHooks`
+ * `ListBuffer`s. They were stored but never read — `preHooksFor` /
+ * `postHooksFor` returned empty regardless. Dead-but-active code
+ * that misled readers (per [[debug-mantra-mindset]]).
+ *
+ * Step 4 reintroduces dispatch; that PR adds the proper buffer +
+ * priority sort + return-by-stage. For Step 3, the registry only
+ * accepts registrations and reports the names it knows about.
  */
 package io.sm8.core
 
@@ -11,28 +16,21 @@ import io.sm8.sdk.{HookManager, HookStage, PostHook, PreHook}
 
 final class HookManagerImpl extends HookManager {
 
-  private val preHooks:  scala.collection.mutable.ListBuffer[(HookStage, PreHook, Int)]  = scala.collection.mutable.ListBuffer.empty
-  private val postHooks: scala.collection.mutable.ListBuffer[(HookStage, PostHook, Int)] = scala.collection.mutable.ListBuffer.empty
-
   override def registerPreHook(stage: HookStage, hook: PreHook, priority: Int): HookManager = {
     require(priority >= 0, s"sm8: priority must be non-negative, got $priority")
-    preHooks += ((stage, hook, priority))
+    // Step 3: dispatch is a no-op; Step 4 stores the registration.
     this
   }
 
   override def registerPostHook(stage: HookStage, hook: PostHook, priority: Int): HookManager = {
     require(priority >= 0, s"sm8: priority must be non-negative, got $priority")
-    postHooks += ((stage, hook, priority))
+    // Step 3: dispatch is a no-op; Step 4 stores the registration.
     this
   }
 
-  /**
-   * Step 3: returns empty (dispatch lands in Step 4). Hooks are
-   * stored but not invoked. The Pipeline runner checks for empty
-   * preHooks/postHooks and skips dispatch — that's fine for Step 3.
-   */
+  /** Step 3: returns empty. Step 4 returns priority-ordered hooks. */
   override def preHooksFor(stage: HookStage): Seq[(PreHook, Int)] = Seq.empty
 
-  /** Step 3: returns empty (dispatch lands in Step 4). */
+  /** Step 3: returns empty. Step 4 returns priority-ordered hooks. */
   override def postHooksFor(stage: HookStage): Seq[(PostHook, Int)] = Seq.empty
 }

@@ -117,11 +117,16 @@ final case class InMemoryConnector(tables: Map[String, Table] = Map.empty)
   }
 
   /**
-   * Data-driven dispatch via pattern-match on Table cases (per
-   * [[scala-data-driven-refactor-mindset]] step 3). Adding a new
-   * Table case forces the compiler to flag this match as
-   * non-exhaustive — a useful "did you update the Connector?"
-   * reminder.
+   * Data-driven dispatch on `InMemoryQuery` (the request type).
+   * Adding a new `InMemoryQuery` case here forces the compiler
+   * to flag this match as non-exhaustive (per
+   * [[scala-data-driven-refactor-mindset]] step 3) — the
+   * "did you update the Connector?" reminder.
+   *
+   * Audit fix (Step 3 audit): previous comment claimed this
+   * dispatched on `Table` cases — that was inaccurate.
+   * `Table` is a sealed trait with typed `toResultRows`; the
+   * dispatch on `Table` is via polymorphism, not pattern-match.
    */
   override def query(request: SemanticQuery): ResultRows = request match {
     case ListTables =>
@@ -145,7 +150,11 @@ final case class InMemoryConnector(tables: Map[String, Table] = Map.empty)
 
   override def schema(): ConnectorSchema = {
     // Union of all column names across all tables. Per-table
-    // schema lands in Step 0 with the IR.
+    // schema lands in Step 0 with the IR. (Note: `ListTables` rows
+    // emit a `table_name` virtual column that is NOT in this list —
+    // this is a Step-3 stop-gap; the conformance contract uses
+    // `SelectTable(name)` as the validRequest, so the gap is
+    // latent. Step 0's typed IR will resolve it.)
     val cols = tables.values.toList.flatMap(_.columns).distinct.sorted
     ConnectorSchema(cols)
   }
