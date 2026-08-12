@@ -40,6 +40,7 @@
     <module>plugins/broadcast-plugin</module>
     <module>plugins/materialize-plugin</module>
     <module>plugins/skew-plugin</module>
+    <module>sm8-cli</module>
     <!--
       Step 0: sm8-sdk (thin re-export of sm8.sdk)
       Step 8 (more Connectors): spark-connector, duckdb-connector,
