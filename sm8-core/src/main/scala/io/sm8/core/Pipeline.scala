@@ -2,9 +2,9 @@
  * SM8 Core — Pipeline.
  *
  * Runs the 4-stage pipeline (parse → resolve → execute → format) on
- * a Context. Step 3 is the minimal skeleton: each stage has its
- * default body; real hook dispatch lands in Step 4; real parse /
- * resolve bodies land in Step 0 when the IR moves in.
+ * a Context. Step 4: pre-hooks fire before each stage body, post-hooks
+ * fire after; `Context.stop = true` short-circuits the rest of the
+ * pipeline; hook throws abort the pipeline (RFC §9 fail-fast).
  *
  * Per [[scala-data-driven-refactor-mindset]] step 3 ("default to
  * sealed-trait/match over Map-based rule tables"): the 4 pipeline
@@ -16,6 +16,10 @@
  * Per [[scala-jvm-safety-mindset]]: the Context is immutable
  * (`val`, case class, no `var`). The pipeline is `foldLeft`-pure —
  * no shared mutable state, safe under concurrency.
+ *
+ * Per [[scala-error-handling-mindset]]: hook throws are RFC §9
+ * fail-fast. The pipeline does NOT wrap them — they propagate to
+ * `engine.run(...)`. The hook author chose to throw; we honor that.
  *
  * The Pipeline is internal (lives in `io.sm8.core`). Plugin authors
  * never construct a Pipeline directly — they go through
@@ -32,6 +36,7 @@ import io.sm8.sdk._
  */
 final case class StageEnv(
     connectors: ConnectorRegistry,
+    hooks: HookManager,
     transformers: TransformerRegistry
 )
 
@@ -48,9 +53,9 @@ sealed trait Stage {
   def name: PipelineStage
 
   /**
-   * The stage body. Pure function `Context => Context`. By-name
-   * hooks fire here when Step 4 lands (pre-hooks may set `stop =
-   * true` to short-circuit).
+   * The stage body. Pure function `Context => Context`. Hooks
+   * (pre + post) fire around this body; if a pre-hook sets
+   * `Context.stop = true`, the body is skipped.
    */
   def run(env: StageEnv)(ctx: Context): Context
 }
@@ -131,13 +136,16 @@ final class Pipeline(
 ) {
 
   /** Bundled environment for Stage.run. */
-  private val env: StageEnv = StageEnv(connectors, transformers)
+  private val env: StageEnv = StageEnv(connectors, hooks, transformers)
 
   /**
    * Run `request` through all stages. Returns the final Result.
    *
-   * Pure: `foldLeft` over an immutable List of Stages produces a
-   * new Context at each step. No `var`, no shared mutable state.
+   * Per RFC §9: hook throws abort the pipeline. We don't wrap them
+   * — they propagate to `engine.run(...)`.
+   *
+   * Per RFC §8 + Context semantics: `Context.stop = true`
+   * short-circuits all remaining stages and hooks.
    *
    * @param request the Request to run
    * @return the final Result (the last Context's `result`, or a
@@ -153,11 +161,19 @@ final class Pipeline(
     )
 
     val finalCtx = Stage.All.foldLeft(initial) { (ctx, stage) =>
-      // Hook dispatch lands in Step 4 (pre-hooks, stop short-circuit,
-      // post-hooks). Step 3: just run the stage body and tag the
-      // Context with the stage name.
-      val afterBody = stage.run(env)(ctx)
-      afterBody.copy(stage = stage.name)
+      if (ctx.stop) {
+        // Per RFC: short-circuit. Tag the Context with the stage
+        // name so downstream observers know where the pipeline halted.
+        ctx.copy(stage = stage.name)
+      } else {
+        // 1. Pre-hooks (priority-ordered; fail-fast on throw).
+        val afterPre = runPreHooks(stage, ctx)
+        // 2. Stage body (skip if a pre-hook set stop).
+        val afterBody = if (afterPre.stop) afterPre.copy(stage = stage.name)
+                        else stage.run(env)(afterPre).copy(stage = stage.name)
+        // 3. Post-hooks (priority-ordered; fail-fast on throw).
+        runPostHooks(stage, afterBody)
+      }
     }
 
     finalCtx.result.getOrElse(
@@ -169,5 +185,53 @@ final class Pipeline(
         rows          = ResultRows(Vector.empty)
       )
     )
+  }
+
+  /**
+   * Fire pre-hooks for `stage` in priority order. Each hook may
+   * mutate the Context (read context.meta/write context.result/set
+   * context.stop per RFC hooks.md). A hook that throws aborts the
+   * pipeline (RFC §9 fail-fast — propagate, don't wrap).
+   */
+  private def runPreHooks(stage: Stage, ctx: Context): Context = {
+    val hookStage = preStageFor(stage)
+    val pre = env.hooks.preHooksFor(hookStage)
+    pre.foldLeft(ctx) { (c, hookWithPriority) =>
+      if (c.stop) c
+      else hookWithPriority._1.run(c)
+    }
+  }
+
+  /**
+   * Fire post-hooks for `stage` in priority order. Same semantics
+   * as `runPreHooks`.
+   */
+  private def runPostHooks(stage: Stage, ctx: Context): Context = {
+    val hookStage = postStageFor(stage)
+    val post = env.hooks.postHooksFor(hookStage)
+    post.foldLeft(ctx) { (c, hookWithPriority) =>
+      if (c.stop) c
+      else hookWithPriority._1.run(c)
+    }
+  }
+
+  /**
+   * Map a `Stage` to its `HookStage.Pre*` companion. The 8 hook
+   * points are named `pre:<stage>` / `post:<stage>` — there are
+   * exactly 4 `PipelineStage` values, each maps to a `HookStage.Pre`
+   * and a `HookStage.Post` value.
+   */
+  private def preStageFor(stage: Stage): HookStage = stage.name match {
+    case PipelineStage.Parse   => HookStage.PreParse
+    case PipelineStage.Resolve => HookStage.PreResolve
+    case PipelineStage.Execute => HookStage.PreExecute
+    case PipelineStage.Format  => HookStage.PreFormat
+  }
+
+  private def postStageFor(stage: Stage): HookStage = stage.name match {
+    case PipelineStage.Parse   => HookStage.PostParse
+    case PipelineStage.Resolve => HookStage.PostResolve
+    case PipelineStage.Execute => HookStage.PostExecute
+    case PipelineStage.Format  => HookStage.PostFormat
   }
 }
