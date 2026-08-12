@@ -14,9 +14,15 @@
  *     interrupt flag (per [[scala-error-handling-mindset]]).
  *   - `Pipeline` is hoisted to a `val` field — was allocated per
  *     `run(request)` (hot path; per [[scala-perf-testing-mindset]]).
+ *
+ * Step 7: added `discover(allowed)` + `discoverAll()` — ServiceLoader
+ * portal with Maven-coords allowlist (Q6 = C). Plugin authors ship
+ * `META-INF/services/io.sm8.sdk.Plugin` (class name) +
+ * `META-INF/sm8/plugin.properties` (groupId + artifactId).
  */
 package io.sm8.core
 
+import java.util.ServiceLoader
 import java.util.concurrent.ConcurrentHashMap
 
 import scala.util.control.NonFatal
@@ -68,12 +74,113 @@ final class EngineImpl extends Engine {
   override def connectors: ConnectorRegistry    = _connectors
   override def hooks: HookManager               = _hooks
   override def transformers: TransformerRegistry = _transformers
+
+  // ---- Portal (Step 7) ----
+
+  /**
+   * ServiceLoader-based Plugin discovery with Maven-coords allowlist.
+   *
+   * Per RFC Q6: only Plugins whose `groupId:artifactId` is in
+   * `allowed` are loaded. Bad coords / missing metadata → warning +
+   * skip, never crash.
+   *
+   * Per [[scala-error-handling-mindset]]: `ServiceLoader.next()`
+   * is an IO boundary — wrap in `NonFatal`, surface as a warning.
+   *
+   * Per [[scala-jvm-safety-mindset]]: discovery happens once at
+   * startup; no shared mutable state created.
+   *
+   * @param allowed set of `groupId:artifactId` strings
+   * @return the Plugins that were successfully loaded
+   */
+  def discover(allowed: Set[String]): List[Plugin] =
+    discoverInternal(allowAll = false, allowed)
+
+  /**
+   * Discover every Plugin on the classpath, ignoring the allowlist.
+   * Dev convenience only — production code must use
+   * `discover(allowed)` per Q6.
+   *
+   * @return all Plugins found, in ServiceLoader iteration order
+   */
+  def discoverAll(): List[Plugin] =
+    discoverInternal(allowAll = true, allowed = Set.empty)
+
+  /**
+   * Shared implementation. `allowAll = true` skips the allowlist
+   * filter (for `discoverAll`).
+   */
+  private def discoverInternal(allowAll: Boolean, allowed: Set[String]): List[Plugin] = {
+    import scala.jdk.CollectionConverters._
+    // Per Scala 2.13 + JDK interop: `ServiceLoader.load(Plugin.class)`
+    // returns a `ServiceLoader[Plugin]` whose iterator yields `Plugin`
+    // instances directly (not `ServiceLoader.Provider[Plugin]` — that's
+    // the JDK 9 API which is hidden by Scala's import). `next()` can
+    // throw `ServiceConfigurationError` for malformed entries; we
+    // catch it as `NonFatal`.
+    val plugins = ServiceLoader.load(classOf[Plugin]).iterator().asScala
+    val loaded = List.newBuilder[Plugin]
+    plugins.foreach { plugin =>
+      try loadMetadata(plugin.getClass) match {
+        case Some(meta) if allowAll || allowed.contains(meta.coords) =>
+          use(plugin)
+          loaded += plugin
+        case Some(meta) =>
+          System.err.println(
+            s"[sm8] Plugin ${plugin.getClass.getName} skipped — coords ${meta.coords} not in allowlist")
+        case None =>
+          System.err.println(
+            s"[sm8] Plugin ${plugin.getClass.getName} skipped — no META-INF/sm8/plugin.properties")
+      } catch {
+        case NonFatal(e) =>
+          // ServiceLoader can throw ServiceConfigurationError for
+          // malformed META-INF/services entries or class-loading
+          // failures. Surface as a warning; do NOT crash.
+          System.err.println(
+            s"[sm8] Plugin ${plugin.getClass.getName} could not be loaded: ${e.getMessage}")
+      }
+    }
+    loaded.result()
+  }
+
+  /**
+   * Load `META-INF/sm8/plugin.properties` from the Plugin's
+   * classloader. Returns None if missing or malformed (caller logs).
+   *
+   * Per [[scala-jvm-safety-mindset]]: use the classloader (NOT
+   * `Class.getResourceAsStream`) — the classloader lookup is
+   * classpath-root-relative; `Class.getResourceAsStream` without a
+   * leading `/` is package-relative, which silently misses global
+   * resources like `META-INF/sm8/...`.
+   */
+  private def loadMetadata(cls: Class[_]): Option[PluginMetadata] = {
+    val resource = "META-INF/sm8/plugin.properties"
+    val stream = Option(cls.getClassLoader).map(_.getResourceAsStream(resource)).orNull
+    if (stream == null) None
+    else {
+      try {
+        val props = new java.util.Properties()
+        props.load(stream)
+        Some(PluginMetadata(
+          props.getProperty(PluginMetadata.GroupIdKey, ""),
+          props.getProperty(PluginMetadata.ArtifactIdKey, "")
+        ))
+      } catch {
+        case NonFatal(_) => None
+      } finally stream.close()
+    }
+  }
 }
 
 /**
  * Factory for the default Engine implementation. Used by tests and
  * by callers who don't need a custom registry backing.
+ *
+ * Returns the concrete type (not the trait) so the Portal methods
+ * (`discover`, `discoverAll`) are visible at the call site.
+ * The trait `Engine` is the SDK boundary; the concrete type
+ * is internal and may add more methods without breaking the SDK.
  */
 object EngineImpl {
-  def apply(): Engine = new EngineImpl
+  def apply(): EngineImpl = new EngineImpl
 }
