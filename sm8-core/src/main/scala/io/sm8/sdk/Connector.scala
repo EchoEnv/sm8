@@ -82,26 +82,18 @@ trait Connector {
 /**
  * Opaque Connector configuration. The full config shape (host, port,
  * credentials, transport options) lands in Step 3 when the Engine
- * skeleton is built. For Step 1 we keep it abstract so the SDK
- * compiles.
+ * skeleton is built. Concrete Connector test specs define their own
+ * `case class` config subtypes (e.g. `InMemoryConfig`, `TrinoConfig`).
+ *
+ * NOT `sealed` — anyone (test stubs, Connectors, third-party Plugins)
+ * may define a concrete subtype. Marker types are open by design.
  */
-sealed trait ConnectorConfig
+trait ConnectorConfig
 
 /**
  * Opaque semantic query. The full shape (model name, measures,
- * dimensions, filters, etc.) lands in Step 3. For Step 1 we keep it
- * abstract.
+ * dimensions, filters, etc.) lands in Step 3. Concrete Connector
+ * test specs define their own `case class` query subtypes (e.g.
+ * `ListTables`, `AggregateByCarrier`). Not sealed.
  */
-sealed trait SemanticQuery
-
-/**
- * Opaque query result rows. Step 3 introduces the portable row shape
- * (Vector[(name, value)] with `Either[EngineError, ...]` semantics).
- */
-sealed trait ResultRows
-
-/**
- * Opaque Connector schema. Step 3 introduces the portable schema
- * (table → list of column descriptors).
- */
-sealed trait ConnectorSchema
+trait SemanticQuery
