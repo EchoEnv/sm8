@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.sm8</groupId>
+        <artifactId>sm8-parent</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>sm8-platform_2.13</artifactId>
+    <packaging>jar</packaging>
+
+    <name>sm8-platform</name>
+    <description>Restructured Scala 2.13 home for what was the Java
+        `semanticdf-platform` module. Migrates the engine-portable path
+        (QueryService, ModelService, StreamingService, PlatformApplication)
+        one method at a time, replacing Java idioms with sealed-trait
+        dispatch + ScalaRestate helpers + typed EngineError returns.
+        PR-C1 lands the module skeleton + `sealedTypeTag` leaf helper.
+        Spark is deliberately not on the classpath — it's a transport-
+        free engine-portable platform layer.</description>
+
+    <!-- Inherits scala.version (2.13.18), scala.binary.version (2.13),
+         and all dependencyManagement from the parent. -->
+
+    <dependencies>
+        <!-- sm8-core provides SealedDataType (PR-C0) + ScalaRestate (PR-0)
+             + EngineError + Model + Connector + the rest of the frozen SDK
+             + core pipeline. This is the engine-portable foundation. -->
+        <dependency>
+            <groupId>io.sm8</groupId>
+            <artifactId>sm8-core_2.13</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.scala-lang</groupId>
+            <artifactId>scala-library</artifactId>
+        </dependency>
+
+        <!-- ScalaTest for the engine-portable-path specs. JDK's built-in
+             classes (java.util.Optional, java.util.List) cover the Java
+             interop surface; no extra test deps needed for PR-C1. -->
+        <dependency>
+            <groupId>org.scalatest</groupId>
+            <artifactId>scalatest_${scala.binary.version}</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+            </plugin>
+
+            <plugin>
+                <groupId>net.alchim31.maven</groupId>
+                <artifactId>scala-maven-plugin</artifactId>
+            </plugin>
+
+            <plugin>
+                <groupId>org.scalatest</groupId>
+                <artifactId>scalatest-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>

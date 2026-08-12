@@ -41,12 +41,16 @@
     <module>plugins/materialize-plugin</module>
     <module>plugins/skew-plugin</module>
     <module>sm8-cli</module>
+    <module>sm8-platform</module>
     <!--
       Step 0: sm8-sdk (thin re-export of sm8.sdk)
       Step 8 (more Connectors): spark-connector, duckdb-connector,
         unity-catalog-connector, hive-metastore-connector,
         postgresql-connector
       Steps 10-11: semanticdf-platform, semanticdf-mcp, semanticdf-cli
+      (sm8-platform: restructure of semanticdf-platform. PR-C1 lands
+      `sm8-platform` module + `sealedTypeTag` Scala helper. Later
+      PRs incrementally migrate the legacy Java services.)
     -->
   </modules>
 
