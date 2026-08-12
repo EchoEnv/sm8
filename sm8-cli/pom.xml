@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.sm8</groupId>
+        <artifactId>sm8-parent</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>sm8-cli_2.13</artifactId>
+    <packaging>jar</packaging>
+
+    <name>sm8-cli</name>
+    <description>A command-line client (`sm8`) for the SM8 REST + Restate APIs.
+        Deliberately STANDALONE: no sm8-* dep (other than sm8-core for SDK
+        types), no Spark — proves any external HTTP+JSON client can drive the
+        platform.</description>
+
+    <!-- Inherits scala.version (2.13.18), scala.binary.version (2.13),
+         and all dependencyManagement from the parent. -->
+
+    <dependencies>
+        <!-- Jackson for JSON tree parsing. We walk responses via the
+             JsonNode tree model (no Scala case-class deserialization needed).
+             Managed by the parent (pom.xml dependencyManagement). -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.scala-lang</groupId>
+            <artifactId>scala-library</artifactId>
+        </dependency>
+
+        <!-- ScalaTest for the 25+ integration tests. JDK's built-in
+             com.sun.net.httpserver.HttpServer is used as the in-process
+             fixture (no extra dep). -->
+        <dependency>
+            <groupId>org.scalatest</groupId>
+            <artifactId>scalatest_${scala.binary.version}</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <!-- No <sourceDirectory>src/main/scala</sourceDirectory> — the parent's
+             scala-maven-plugin runs `add-source` automatically (same pattern as
+             semanticdf-core). -->
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+            </plugin>
+
+            <plugin>
+                <groupId>net.alchim31.maven</groupId>
+                <artifactId>scala-maven-plugin</artifactId>
+            </plugin>
+
+            <plugin>
+                <groupId>org.scalatest</groupId>
+                <artifactId>scalatest-maven-plugin</artifactId>
+            </plugin>
+
+            <!-- `mvn exec:java` is the documented dev entrypoint; bin/sm8
+                 wraps it. No fat-jar assembly to keep dep surface minimal. -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <configuration>
+                    <mainClass>io.sm8.cli.Main</mainClass>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>

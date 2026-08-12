@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# sm8 — a command-line client for the sm8 REST API.
+#
+# Usage: sm8 <command> [options]
+# Run `sm8 --help` for the full command reference.
+#
+# Installation: either run directly (`./bin/sm8`) or symlink into your PATH:
+#   ln -s "$(pwd)/bin/sm8" /usr/local/bin/sm8
+#   ln -s "$(pwd)/bin/sm8" /usr/local/bin/sm8
+#
+# Requirements: mvn, java 17+ on PATH. Run `mvn compile` once before first use.
+
+set -euo pipefail
+
+# Resolve the project root from this script's location (bin/ is one level deep).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+cd "$PROJECT_ROOT"
+
+# Cache the dependency classpath; rebuild only when the pom changes.
+CP_FILE="target/cp.txt"
+POM_HASH_FILE="target/.cp.pom-hash"
+CURRENT_HASH=$(sha256sum pom.xml | cut -d' ' -f1)
+
+if [[ ! -f "$CP_FILE" ]] || [[ ! -f "$POM_HASH_FILE" ]] || [[ "$(cat "$POM_HASH_FILE")" != "$CURRENT_HASH" ]]; then
+    # Build the classpath (includes provided/test scopes — jackson-databind etc.)
+    mvn -q dependency:build-classpath -Dmdep.outputFile="$CP_FILE" >/dev/null
+    # Also compile (quiet, no-op if up to date).
+    mvn -q compile >/dev/null
+    echo "$CURRENT_HASH" > "$POM_HASH_FILE"
+fi
+
+CP="target/classes:$(cat "$CP_FILE")"
+
+exec java \
+    --add-opens=java.base/java.lang=ALL-UNNAMED \
+    --add-opens=java.base/java.util=ALL-UNNAMED \
+    -cp "$CP" \
+    io.sm8.cli.Main \
+    "$@"
