@@ -37,12 +37,14 @@
     <module>plugins/cache-plugin</module>
     <module>plugins/audit-plugin</module>
     <module>plugins/row-cap-plugin</module>
+    <module>plugins/broadcast-plugin</module>
+    <module>plugins/materialize-plugin</module>
+    <module>plugins/skew-plugin</module>
     <!--
       Step 0: sm8-sdk (thin re-export of sm8.sdk)
       Step 8 (more Connectors): spark-connector, duckdb-connector,
         unity-catalog-connector, hive-metastore-connector,
         postgresql-connector
-      Step 9b: plugins/{broadcast,materialize,skew}-plugin
       Steps 10-11: semanticdf-platform, semanticdf-mcp, semanticdf-cli
     -->
   </modules>
