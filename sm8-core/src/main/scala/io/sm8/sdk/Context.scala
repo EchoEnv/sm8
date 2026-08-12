@@ -55,11 +55,14 @@ object PipelineStage {
  * Plugin authors should treat any subtype of Request as opaque input from
  * the consumer; they should NOT pattern-match on the concrete case unless
  * they themselves produced it.
+ *
+ * NOT `sealed` — anyone (test stubs, third-party Plugins) may define a
+ * concrete subtype. Marker types are open by design.
  */
-sealed trait Request
+trait Request
 
 /**
  * Marker trait for the result type. Same status as Request — full shape
- * in Step 3.
+ * in Step 3. Not sealed.
  */
-sealed trait Result
+trait Result
