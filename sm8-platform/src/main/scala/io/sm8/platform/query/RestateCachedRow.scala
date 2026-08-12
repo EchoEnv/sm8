@@ -78,6 +78,42 @@ package io.sm8.platform.query
  *                   `fieldNames.size` cells (rows may be null
  *                   for missing data; rows themselves must not be
  *                   null).
+ *
+ * ==Serialization==
+ *
+ * The type extends `Product with Serializable`, so Spark's default
+ * Java serializer (`spark.serializer =
+ * org.apache.spark.serializer.JavaSerializer`) handles it without
+ * any registration — closures that capture a `RestateCachedRow`
+ * distribute cleanly to executors.
+ *
+ * If a downstream consumer enables Kryo serialization
+ * (`spark.serializer = org.apache.spark.serializer.KryoSerializer`),
+ * the sm8-platform + sm8-core schema types below must be added
+ * to `spark.kryo.classesToRegister` (or registered via
+ * `Kryo.register`):
+ *
+ * {{{
+ *   io.sm8.core.schema.SealedDataType
+ *   io.sm8.core.schema.SealedDataType$BigInt$
+ *   io.sm8.core.schema.SealedDataType$Int$
+ *   io.sm8.core.schema.SealedDataType$Double$
+ *   io.sm8.core.schema.SealedDataType$Varchar$
+ *   io.sm8.core.schema.SealedDataType$Boolean$
+ *   io.sm8.core.schema.SealedDataType$Timestamp$
+ *   io.sm8.core.schema.SealedDataType$Date$
+ *   io.sm8.core.schema.SealedDataType$Decimal
+ *   io.sm8.core.schema.SealedDataType$Array
+ *   io.sm8.core.schema.SealedDataType$Map
+ *   io.sm8.core.schema.SealedDataType$Row
+ *   io.sm8.core.schema.SealedDataType$Json$
+ *   io.sm8.core.schema.Field
+ *   io.sm8.platform.query.RestateCachedRow
+ * }}}
+ *
+ * The Jackson wire format used by Restate SDK journals is identical
+ * to the legacy Java record — verified by
+ * `RestateCachedRowSerializationSpec.jacksonWireShapeMatchesLegacyRecord`.
  */
 final case class RestateCachedRow(
     fieldNames: List[String],
