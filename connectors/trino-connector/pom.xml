@@ -1,0 +1,140 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!--
+    SM8 Trino Connector — the first repackaged real-transport
+    Connector (Step 8 reference). Sets the Maven-module + Plugin
+    metadata pattern for the remaining 5 Connectors (Spark, DuckDB,
+    Unity Catalog, Hive Metastore, PostgreSQL).
+
+    Plugin authors depend on this via:
+      <dependency>
+        <groupId>io.sm8</groupId>
+        <artifactId>trino-connector_2.13</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+      </dependency>
+
+    ...and ship it in their allowlist:
+      engine.discover(Set("io.sm8.connectors:trino-connector_2.13"))
+  -->
+
+  <parent>
+    <groupId>io.sm8</groupId>
+    <artifactId>sm8-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <relativePath>../../pom.xml</relativePath>
+  </parent>
+
+  <artifactId>trino-connector_2.13</artifactId>
+  <packaging>jar</packaging>
+
+  <name>SM8 Trino Connector</name>
+  <description>SM8 Connector for Trino (formerly PrestoSQL). Shape-correct reference Connector; passes ConnectorContractSpec.</description>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.sm8</groupId>
+      <artifactId>sm8-core_2.13</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <!--
+      Test-jar classifier: pulls in the contract bases
+      (ConnectorContractSpec). The bases are part of sm8-core's
+      test sources, published as the test-jar artifact (per PR #2).
+    -->
+    <dependency>
+      <groupId>io.sm8</groupId>
+      <artifactId>sm8-core_2.13</artifactId>
+      <version>${project.version}</version>
+      <type>test-jar</type>
+      <scope>test</scope>
+    </dependency>
+
+    <!--
+      Trino JDBC driver. Real client-server DB via the standard
+      java.sql API. Step 8 ships shape-correct integration; real
+      Trino SQL execution lands in a follow-up.
+    -->
+    <dependency>
+      <groupId>io.trino</groupId>
+      <artifactId>trino-jdbc</artifactId>
+      <version>435</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.scalatest</groupId>
+      <artifactId>scalatest_${scala.binary.version}</artifactId>
+      <version>${scalatest.version}</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>net.alchim31.maven</groupId>
+        <artifactId>scala-maven-plugin</artifactId>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+      </plugin>
+
+      <!--
+        Banned-dependencies rule — same Spark guard as sm8-core +
+        in-memory-connector. This Connector is Trino (not Spark) so
+        it should not pull Spark in transitively.
+      -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-enforcer-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>enforce-no-spark</id>
+            <goals><goal>enforce</goal></goals>
+          </execution>
+        </executions>
+        <configuration>
+          <rules>
+            <bannedDependencies>
+              <excludes>
+                <exclude>org.apache.spark:*</exclude>
+              </excludes>
+              <message>
+                ${project.artifactId} must remain Spark-free.
+                Spark classes live in spark-connector.
+              </message>
+            </bannedDependencies>
+          </rules>
+        </configuration>
+      </plugin>
+
+      <plugin>
+        <groupId>org.scalatest</groupId>
+        <artifactId>scalatest-maven-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>test</id>
+            <goals><goal>test</goal></goals>
+            <phase>test</phase>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-source-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>attach-sources</id>
+            <goals><goal>jar-no-fork</goal></goals>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>

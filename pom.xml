@@ -33,9 +33,12 @@
   <modules>
     <module>sm8-core</module>
     <module>connectors/in-memory-connector</module>
+    <module>connectors/trino-connector</module>
     <!--
       Step 0: sm8-sdk (thin re-export of sm8.sdk)
-      Step 8: connectors/{spark,trino,duckdb,...}-connector
+      Step 8 (more Connectors): spark-connector, duckdb-connector,
+        unity-catalog-connector, hive-metastore-connector,
+        postgresql-connector
       Step 9: plugins/{cache,audit,row-cap,broadcast,materialize,skew}-plugin
       Steps 10-11: semanticdf-platform, semanticdf-mcp, semanticdf-cli
     -->
