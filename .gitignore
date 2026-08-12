@@ -1,0 +1,51 @@
+# ============================================================
+# SM8 — .gitignore
+# ============================================================
+# Build output
+target/
+*/target/
+build/
+out/
+
+# IntelliJ IDEA
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# VS Code
+.vscode/
+.project
+.classpath
+.settings/
+
+# Eclipse / Scala IDE
+*.class
+*.scala_work_dir
+.scala-ide/
+
+# Metals (Scala LSP)
+.bsp/
+.metals/
+project/
+
+# Coursier / sbt
+.cache/
+coursier/
+ivy2/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Env / secrets
+.env
+.env.local
+*.local
+
+# Maven wrapper jars (if added later)
+!/.mvn/wrapper/maven-wrapper.jar

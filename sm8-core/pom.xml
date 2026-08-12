@@ -1,0 +1,237 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!--
+    SM8 Core — the FROZEN Core of the SM8 engine.
+
+    Step 1 of the 11-step migration plan. This module ships the SDK surface
+    (7 protocol types) as Scala traits only. No Pipeline runner, no
+    ServiceLoader discovery, no allowlist filter — those land in Steps 3-7.
+
+    Zero-Spark invariant: enforced by Maven Enforcer (bannedDependencies)
+    AND verified at test time by CoreClasspathSpec. The Core must compile
+    and resolve without org.apache.spark on the classpath.
+
+    Public Maven coordinate. Binary compatibility matters from v1.0.0
+    (MiMa is the release gate).
+  -->
+
+  <parent>
+    <groupId>io.sm8</groupId>
+    <artifactId>sm8-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <relativePath>../pom.xml</relativePath>
+  </parent>
+
+  <artifactId>sm8-core_2.13</artifactId>
+  <packaging>jar</packaging>
+
+  <name>SM8 Core</name>
+  <description>Frozen Core of the SM8 engine — 4-stage pipeline + 5 protocols + Context. Spark-free.</description>
+
+  <properties>
+    <scala.version>2.13.18</scala.version>
+    <scala.binary.version>2.13</scala.binary.version>
+    <scalatest.version>3.2.19</scalatest.version>
+    <maven.compiler.release>17</maven.compiler.release>
+
+    <!--
+      Binary compat baseline. MiMa wiring lands when we cut the first
+      v1.0.0 release candidate (Step 9 in the migration sequencing).
+      Step 1 ships 0.1.0-SNAPSHOT — too early to enforce.
+    -->
+    <!-- <mima.previous.version>0.1.0</mima.previous.version> -->
+  </properties>
+
+  <dependencies>
+    <!-- Scala 2.13 stdlib only. NO Spark. -->
+    <dependency>
+      <groupId>org.scala-lang</groupId>
+      <artifactId>scala-library</artifactId>
+      <version>${scala.version}</version>
+    </dependency>
+
+    <!--
+      Jackson + JSON Schema validator. Pinned versions match the parent
+      (semanticdf already uses these for ManifestDocument round-trip).
+    -->
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <version>2.15.2</version>
+    </dependency>
+    <dependency>
+      <groupId>com.networknt</groupId>
+      <artifactId>json-schema-validator</artifactId>
+      <version>1.5.2</version>
+    </dependency>
+
+    <!-- Test scope only -->
+    <dependency>
+      <groupId>org.scalatest</groupId>
+      <artifactId>scalatest_${scala.binary.version}</artifactId>
+      <version>${scalatest.version}</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <!-- Scala 2.13 compiler -->
+      <plugin>
+        <groupId>net.alchim31.maven</groupId>
+        <artifactId>scala-maven-plugin</artifactId>
+        <version>4.9.2</version>
+        <executions>
+          <execution>
+            <id>scala-compile</id>
+            <goals><goal>compile</goal></goals>
+          </execution>
+          <execution>
+            <id>scala-test-compile</id>
+            <goals><goal>testCompile</goal></goals>
+          </execution>
+          <execution>
+            <id>scala-doc-jar</id>
+            <phase>package</phase>
+            <goals><goal>doc-jar</goal></goals>
+          </execution>
+        </executions>
+        <configuration>
+          <scalaVersion>${scala.version}</scalaVersion>
+          <args>
+            <arg>-deprecation</arg>
+            <arg>-feature</arg>
+            <arg>-unchecked</arg>
+          </args>
+        </configuration>
+      </plugin>
+
+      <!--
+        ZERO-SPARK INVARIANT.
+        Every build of sm8-core fails if a transitive Spark dependency sneaks
+        in. The compile-time classpath must NOT contain org.apache.spark:*.
+        Pairs with CoreClasspathSpec (test-time verification).
+      -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-enforcer-plugin</artifactId>
+        <version>3.4.1</version>
+        <executions>
+          <execution>
+            <id>enforce-no-spark</id>
+            <goals><goal>enforce</goal></goals>
+          </execution>
+        </executions>
+        <configuration>
+          <rules>
+            <bannedDependencies>
+              <excludes>
+                <exclude>org.apache.spark:*</exclude>
+                <exclude>org.apache.spark.sql:*</exclude>
+              </excludes>
+              <message>
+                sm8-core must remain Spark-free. Spark classes live in
+                spark-connector, not in the Core. Move the offending dep
+                to connectors/spark-connector/pom.xml.
+              </message>
+            </bannedDependencies>
+          </rules>
+        </configuration>
+      </plugin>
+
+      <!--
+        Binary compatibility gate. Required for Q2=A (external Portal)
+        and Q5=A (public Maven Central). Lands when we cut the first
+        v1.0.0 release candidate (Step 9 in the migration sequencing).
+        Step 1 ships 0.1.0-SNAPSHOT — too early to enforce; the SDK
+        surface is still settling.
+      -->
+      <!--
+      <plugin>
+        <groupId>com.typesafe</groupId>
+        <artifactId>mima-maven-plugin</artifactId>
+        <version>1.1.3</version>
+        <executions>
+          <execution>
+            <id>check-binary-compat</id>
+            <phase>verify</phase>
+            <goals><goal>report</goal></goals>
+          </execution>
+        </executions>
+        <configuration>
+          <previousVersion>${mima.previous.version}</previousVersion>
+        </configuration>
+      </plugin>
+      -->
+
+      <!-- Source jar attached to every release -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-source-plugin</artifactId>
+        <version>3.3.1</version>
+        <executions>
+          <execution>
+            <id>attach-sources</id>
+            <goals><goal>jar-no-fork</goal></goals>
+          </execution>
+        </executions>
+      </plugin>
+
+      <!-- ScalaTest runner — bound to the test phase so `mvn test` runs it -->
+      <plugin>
+        <groupId>org.scalatest</groupId>
+        <artifactId>scalatest-maven-plugin</artifactId>
+        <version>2.2.0</version>
+        <executions>
+          <execution>
+            <id>test</id>
+            <goals><goal>test</goal></goals>
+            <phase>test</phase>
+          </execution>
+        </executions>
+        <configuration>
+          <suffixes>Spec</suffixes>
+          <reportsDirectory>${project.build.directory}/surefire-reports</reportsDirectory>
+          <junitxml>.</junitxml>
+          <filereports>sm8-core-test-suite.txt</filereports>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+
+  <profiles>
+    <!--
+      Publishing profile — activated for `mvn deploy` to
+      central.sonatype.com via the modern Central portal. No JIRA. The
+      central-publishing-maven-plugin handles GPG signing, staging, and
+      release to Maven Central in one step.
+
+      GPG key configured via ~/.m2/settings.xml (server id="central"
+      with username/password tokens from central.sonatype.com).
+    -->
+    <profile>
+      <id>publish-to-central</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.sonatype.central</groupId>
+            <artifactId>central-publishing-maven-plugin</artifactId>
+            <version>0.4.0</version>
+            <extensions>true</extensions>
+            <configuration>
+              <publishingServerId>central</publishingServerId>
+              <tokenAuth>true</tokenAuth>
+              <autoPublish>true</autoPublish>
+              <waitUntil>published</waitUntil>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
+</project>
