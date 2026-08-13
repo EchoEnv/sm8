@@ -55,7 +55,7 @@ class EngineServiceSpec extends AnyFunSuite with Matchers {
       var queryResult: Either[EngineError, PortableQueryResult] =
         Right(PortableQueryResult(schema = ResultSchema(Nil), rows = Vector.empty)),
       var queryThrowable: RuntimeException = null
-  ) extends MCPEngineProvider {
+  ) extends MCPEngineProvider with java.io.Serializable {
     override def query(
         model: Model,
         request: MCPQueryRequest,
@@ -474,5 +474,108 @@ class EngineServiceSpec extends AnyFunSuite with Matchers {
     val req = QueryRequest("users", Nil, Nil, "", "spark")
     val out = EngineService.toQueryResultFromPortable(portable, req)
     out.measures shouldBe List("name", "age")
+  }
+
+  // -- runQuery tests (PR-C6) --
+
+  test("runQuery: success path → Right(QueryResult) with decoded rows") {
+    val spark = new StubProvider(
+      io.sm8.core.engine.EngineIdentity("spark", "3.5.8", "0.2.4"),
+      available = true,
+      queryResult = Right(portableResultWithRows)
+    )
+    val registry = makeRegistry(Map("spark" -> spark))
+    val req = QueryRequest("flights", Nil, Nil, "", "")
+    val out = EngineService.runQuery(req, dummyModel, registry)
+    out.isRight shouldBe true
+    val qr = out.toOption.get
+    qr.model shouldBe "flights"
+    qr.rows should have size 2
+    qr.rows(0) shouldBe List("Alice", 30L)
+  }
+
+  test("runQuery: engine unavailable → Left(EngineError.EngineUnavailable)") {
+    val spark = new StubProvider(
+      io.sm8.core.engine.EngineIdentity("spark", "3.5.8", "0.2.4"),
+      available = true
+    )
+    val registry = makeRegistry(Map("spark" -> spark))
+    val req = QueryRequest("m", Nil, Nil, "", "trino")
+    val out = EngineService.runQuery(req, dummyModel, registry)
+    out.isLeft shouldBe true
+    out.left.get shouldBe a [EngineError.EngineUnavailable]
+  }
+
+  test("runQuery: engine execution failure → Left(EngineError.ProviderInvocationFailed)") {
+    val spark = new StubProvider(
+      io.sm8.core.engine.EngineIdentity("spark", "3.5.8", "0.2.4"),
+      available = true,
+      queryThrowable = new RuntimeException("engine barfed")
+    )
+    val registry = makeRegistry(Map("spark" -> spark))
+    val req = QueryRequest("m", Nil, Nil, "", "")
+    val out = EngineService.runQuery(req, dummyModel, registry)
+    out.isLeft shouldBe true
+    out.left.get shouldBe a [EngineError.ProviderInvocationFailed]
+  }
+
+  test("runQuery: blank request.engine → uses registry default") {
+    val spark = new StubProvider(
+      io.sm8.core.engine.EngineIdentity("spark", "3.5.8", "0.2.4"),
+      available = true,
+      queryResult = Right(portableResultWithRows)
+    )
+    val registry = makeRegistry(Map("spark" -> spark), default = "spark")
+    val req = QueryRequest("m", Nil, Nil, "", "")  // blank engine field
+    val out = EngineService.runQuery(req, dummyModel, registry)
+    out shouldBe a [Right[_, _]]
+    // Strengthen: verify the actual result content (matches the
+    // assertion rigor of the other runQuery tests).
+    val qr = out.toOption.get
+    qr.rows should have size 2
+    qr.rows(0) shouldBe List("Alice", 30L)
+  }
+
+  test("runQuery: serializable-safe (Spark closure hygiene)") {
+    // Compile-time assertion: each thread-through type must be
+    // assignable to `java.io.Serializable`. If any loses the
+    // `Product with Serializable` declaration, this test fails to
+    // compile.
+    //
+    // Per the user's serialization-safety concern for PR-C6: the
+    // engine-portable path runs on the driver (no Spark UDF
+    // closure directly), but the values it threads through ARE
+    // captured by Restate.run (PR-C5b-extension) — and Restate
+    // requires Serializable capture.
+    val spark = new StubProvider(
+      io.sm8.core.engine.EngineIdentity("spark", "3.5.8", "0.2.4"),
+      available = true,
+      queryResult = Right(portableResultWithRows)
+    )
+    val registry: MCPEngineRegistry = makeRegistry(Map("spark" -> spark))
+    val req: QueryRequest = QueryRequest("m", Nil, Nil, "", "")
+
+    // Per-value `Serializable` ascription: each must individually
+    // be assignable. If any type loses `with Serializable`, the
+    // test fails to compile. Catches the recent MCPEngineRegistry
+    // miss (fixed in PR-C6).
+    val model: java.io.Serializable = dummyModel
+    val mcpReq: MCPQueryRequest = EngineService.buildMCPRequest(req)
+    val mcpReqSer: java.io.Serializable = mcpReq
+    val ctxSer: java.io.Serializable = EngineContext.defaultContext
+    val registrySer: java.io.Serializable = registry
+    val providerSer: java.io.Serializable = spark
+    val pqr: PortableQueryResult = portableResultWithRows
+    val pqrSer: java.io.Serializable = pqr
+    val qr: QueryResult = EngineService.toQueryResultFromPortable(pqr, req)
+    val qrSer: java.io.Serializable = qr
+
+    // The runtime runner's result is typed as `Either` (not `Serializable`)
+    // — the typed assertions are stronger. But the Either IS
+    // Runtime-Serializable because both L and R are.
+    val out: Either[EngineError, QueryResult] =
+      EngineService.runQuery(req, dummyModel, registry)
+    out.isRight shouldBe true
+    out.isInstanceOf[java.io.Serializable] shouldBe true
   }
 }

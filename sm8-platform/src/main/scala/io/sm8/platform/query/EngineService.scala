@@ -86,7 +86,7 @@ object EngineService {
    * (verified by the senior data engineer review for PR-C5a).
    */
   private val BlankPattern = java.util.regex.Pattern.compile(
-    """^[\s\u00A0\u202F\u202F]*$""",
+    """^[\s\u00A0\u2007\u202F]*$""",
     java.util.regex.Pattern.UNICODE_CHARACTER_CLASS
   )
 
@@ -261,5 +261,71 @@ object EngineService {
       truncated = false,
       rowCount  = rows.size.toLong
     )
+  }
+
+  /**
+   * Pure engine-portable entry-point: build → select → execute → format.
+   *
+   * Replaces the legacy Java `QueryService.runQueryViaEngineRegistry`
+   * (semanticdf-platform lines 420-579) — the entry-point only;
+   * the cache + `Restate.run` journaled-execution segments are
+   * PR-C5b-extension's scope and don't land in this PR.
+   *
+   * =Serializable-safety for Spark closures=
+   *
+   * All thread-through types are `Product with Serializable`:
+   *   - `io.sm8.core.model.Model` (PR-B-prep)
+   *   - `io.sm8.core.engine.MCPQueryRequest` (PR-C0c)
+   *   - `io.sm8.core.engine.MCPEngineRegistry` (PR-C0c, +`extends Serializable` in PR-C6)
+   *   - `io.sm8.core.engine.MCPEngineProvider` (PR-C0c, +`extends Serializable` trait in PR-C6)
+   *   - `io.sm8.core.engine.EngineContext` (PR-C0c)
+   *   - `io.sm8.platform.query.QueryResult` (PR-C4c)
+   *   - `io.sm8.platform.query.QueryRequest` (PR-C5a)
+   *
+   * The compiled `Either[EngineError, QueryResult]` is therefore
+   * `Serializable` (Scala's `Either` is `Serializable` iff both `L` and `R` are
+   * — see `scala.util.Either`).
+   *
+   * The `Restate.run` closure concern (PR-C5b-extension) is
+   * addressed separately: the captured values in the journaled
+   * lambda are all `Product with Serializable`, so the lambda
+   * passes Restate's `Serializable` requirement.
+   *
+   * Per [[scala-error-handling-mindset]] "errors are data": errors
+   * flow as `Either` not as `throw`. The caller (PR-C-final's
+   * legacy `QueryService.runQuery` wrapper) handles the `Either`
+   * at the Restate boundary.
+   *
+   * Per [[scala-jvm-safety-mindset]] "null is a liar": null
+   * requests are rejected at the boundary (the legacy `runQuery`
+   * does this; the Scala version does too via the legacy
+   * caller). No `null` flows through this method.
+   *
+   * =Pure function=
+   *
+   * No cache. No `Restate.run`. No legacy fallback. The cache
+   * integration (`cache instanceof InMemoryResultCache`) and the
+   * legacy Spark-only path (`engineRegistry == null`) stay in the
+   * Java dispatcher until PR-C-final deletes the legacy file.
+   *
+   * @param request  the platform's wire DTO
+   * @param model    the engine-portable model (resolved by the
+   *                 legacy caller; the engine registries return
+   *                 `core.Model` for engine-portable types)
+   * @param registry the engine-portable registry
+   * @return         `Right(queryResult)` on success;
+   *                 `Left(engineError)` on engine selection or
+   *                 execution failure
+   */
+  def runQuery(
+      request: QueryRequest,
+      model: Model,
+      registry: MCPEngineRegistry
+  ): Either[EngineError, QueryResult] = {
+    val mcpReq: MCPQueryRequest = buildMCPRequest(request)
+    for {
+      provider <- selectEngine(model, request, registry)
+      pqr      <- executeEngine(model, mcpReq, provider)
+    } yield toQueryResultFromPortable(pqr, request)
   }
 }

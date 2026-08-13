@@ -34,7 +34,7 @@ package io.sm8.core.engine
 final class MCPEngineRegistry (
     private val engines: Map[String, MCPEngineProvider],
     val default:       String,
-) {
+) extends Serializable {
 
   require(
     engines.contains(default),
