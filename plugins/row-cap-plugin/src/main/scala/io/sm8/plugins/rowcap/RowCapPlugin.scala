@@ -42,6 +42,11 @@ final case class RowCapConfig(maxRows: Int) {
  */
 final class RowCapPlugin(config: RowCapConfig) extends Plugin with java.io.Serializable {
 
+  /** Per [[scala-spark-batch-bugs-mindset]] mantra #1: doc the
+    * captured `config` (RowCapConfig, Serializable case class) and
+    * `fires` (AtomicInteger, Serializable). */
+  override def closedOverVars: Seq[String] = Seq("config", "fires")
+
   /** Test-visible counter of hook fires. */
   val fires: AtomicInteger = new AtomicInteger(0)
 
