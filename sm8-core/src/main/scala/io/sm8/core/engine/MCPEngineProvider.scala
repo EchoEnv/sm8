@@ -33,8 +33,14 @@ import io.sm8.core.model.Model
   * The MCP is engine-portable. The `Model` is the engine-portable
   * shape (from core). The `SemanticTable` is the Spark-specific
   * shape (from the spark adapter). The provider receives a `Model`
-  * and translates it to its engine's native shape internally. */
-trait MCPEngineProvider {
+  * and translates it to its engine's native shape internally.
+  *
+  * Extends `Serializable` so that `MCPEngineRegistry` (which stores
+  * `Map[String, MCPEngineProvider]`) can be safely serialized for
+  * `Restate.run` journal capture (PR-C5b-extension). Concrete
+  * providers must therefore be Serializable themselves — enforced
+  * at compile time by this trait. */
+trait MCPEngineProvider extends Serializable {
 
   /** Wire-stable engine label. */
   def identity: EngineIdentity
