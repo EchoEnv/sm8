@@ -6,8 +6,18 @@
  *   - Tie-break:  registration sequence (earlier runs first)
  *
  * Per [[scala-data-driven-refactor-mindset]]: `HookEntry` is a data
- * case class (priority + sequence + hook). The dispatch list is
- * derived (sorted on read) — no in-place mutation of dispatch order.
+ * case class (priority + sequence + hook + origin). The dispatch
+ * list is derived (sorted on read) — no in-place mutation of dispatch
+ * order.
+ *
+ * Per RFC §13 conformance PR (this PR): the `require(priority >= 0)`
+ * check is replaced with a typed-origin range check via
+ * `io.sm8.sdk.HookOrigin.validate(origin, priority)`. Plugin authors
+ * declare the origin of their plugin at registration time (default =
+ * FirstParty, matching `io.sm8.plugins.*` reference plugins).
+ * Out-of-range priorities throw `IllegalArgumentException` at the SDK
+ * boundary (the SDK doc already declared this throw — the contract
+ * is preserved).
  *
  * Per [[scala-jvm-safety-mindset]]: the sequence counter is an
  * `AtomicLong` (was a `var` in earlier internal-only versions). The
@@ -19,23 +29,33 @@
  * fail-fast — NOT runtime errors to be wrapped in Either. The hook
  * author CHOSE to throw; the engine honors that choice by
  * propagating.
+ *
+ * Per [[scala-impact-analysis-mindset]] (RFC §13 conformance PR):
+ * the SDK trait `HookManager` signature gained one new overload per
+ * direction (`registerPreHook` / `registerPostHook` with `HookOrigin`
+ * arg, default-implemented to delegate to the int-only overload).
+ * The int-only overload is preserved with identical semantics — so
+ * downstream Plugins and third-party HookManagerImpl are unaffected
+ * at the source level. Plugins that want strict origin enforcement
+ * migrate to the 4-arg overload at their leisure.
  */
 package io.sm8.core
 
 import java.util.concurrent.atomic.AtomicLong
 
-import io.sm8.sdk.{HookManager, HookStage, PostHook, PreHook}
+import io.sm8.sdk.{HookManager, HookOrigin, HookStage, Plugin, PostHook, PreHook}
 
 /**
  * HookEntry — case class for a registered hook plus its scheduling
- * data (priority + registration sequence). Per
+ * data (priority + sequence + origin). Per
  * [[scala-data-driven-refactor-mindset]] step 1: data only, no
  * behavior. The HookManager is the only owner.
  */
 private[core] final case class HookEntry[T](
     hook: T,
     priority: Int,
-    seq: Long
+    seq: Long,
+    origin: HookOrigin
 )
 
 /**
@@ -58,16 +78,54 @@ final class HookManagerImpl extends HookManager {
   // Per the audit (Step 3 audit fix).
   private val nextSeq: AtomicLong = new AtomicLong(0L)
 
+  /**
+   * SDK signature: priority-only. Delegates to the origin-aware
+   * overload with `HookOrigin.FirstParty` (the default for
+   * reference plugins in `io.sm8.plugins.*`).
+   *
+   * Same SDK throw contract as before: throws
+   * `IllegalArgumentException` on negative priority. Out-of-FirstParty
+   * priorities are NOT enforced at this overload — use the 4-arg
+   * overload for strict RFC §8 conformance.
+   */
   override def registerPreHook(stage: HookStage, hook: PreHook, priority: Int): HookManager = {
     require(priority >= 0, s"sm8: priority must be non-negative, got $priority")
-    val entry = HookEntry(hook, priority, nextSeq.incrementAndGet())
+    val entry = HookEntry(hook, priority, nextSeq.incrementAndGet(), HookOrigin.FirstParty)
+    preHooks.getOrElseUpdate(stage, scala.collection.mutable.Buffer.empty) += entry
+    this
+  }
+
+  /**
+   * Origin-aware SDK-surface overload (RFC §8 conformance).
+   * The SDK trait defines this with a default implementation that
+   * delegates to the int-only overload; here in the impl we
+   * override to enforce the typed-origin range check.
+   */
+  override def registerPreHook(stage: HookStage, hook: PreHook, priority: Int, origin: HookOrigin): HookManager = {
+    HookOrigin.validate(origin, priority) match {
+      case Right(_)  => // ok
+      case Left(msg) =>
+        throw new IllegalArgumentException(s"sm8: $msg [stage=$stage hook=${hook.name}]")
+    }
+    val entry = HookEntry(hook, priority, nextSeq.incrementAndGet(), origin)
     preHooks.getOrElseUpdate(stage, scala.collection.mutable.Buffer.empty) += entry
     this
   }
 
   override def registerPostHook(stage: HookStage, hook: PostHook, priority: Int): HookManager = {
     require(priority >= 0, s"sm8: priority must be non-negative, got $priority")
-    val entry = HookEntry(hook, priority, nextSeq.incrementAndGet())
+    val entry = HookEntry(hook, priority, nextSeq.incrementAndGet(), HookOrigin.FirstParty)
+    postHooks.getOrElseUpdate(stage, scala.collection.mutable.Buffer.empty) += entry
+    this
+  }
+
+  override def registerPostHook(stage: HookStage, hook: PostHook, priority: Int, origin: HookOrigin): HookManager = {
+    HookOrigin.validate(origin, priority) match {
+      case Right(_)  => // ok
+      case Left(msg) =>
+        throw new IllegalArgumentException(s"sm8: $msg [stage=$stage hook=${hook.name}]")
+    }
+    val entry = HookEntry(hook, priority, nextSeq.incrementAndGet(), origin)
     postHooks.getOrElseUpdate(stage, scala.collection.mutable.Buffer.empty) += entry
     this
   }
