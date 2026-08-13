@@ -90,8 +90,14 @@ final case class Dimension(name: String, expr: String)
 /** A measure field on a Model. */
 final case class Measure(name: String, expr: String)
 
-/** A pre-defined filter clause on a Model. */
-final case class FilterSpec(name: String, expr: String)
+/**
+ * A pre-defined filter clause on a Model is the typed
+ * `FilterSpec(name, predicate: Expr)` defined in
+ * `io.sm8.core.model.FilterSpec` (per the legacy semanticdf-core
+ * design doc §4.4.1). The raw-SQL version (`expr: String`) that was
+ * here in PR-B-prep is removed in PR-C0c — the typed version is
+ * the canonical one.
+ */
 
 /**
  * Serializable source identity. Separate from the engine-specific
