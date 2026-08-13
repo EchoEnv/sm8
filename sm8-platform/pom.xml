@@ -50,6 +50,16 @@
             <artifactId>scalatest_${scala.binary.version}</artifactId>
             <scope>test</scope>
         </dependency>
+
+        <!-- Restate SDK v2.1.1 (PR-C5b-ext-γ follow-up — the handler-class
+             wiring PR — will add these). NOT added in THIS PR because
+             the helper ships with the direct-supplier path only (no
+             Restate type references); per [[scala-jar-packaging-mindset]]
+             "don't add deps you don't use." The follow-up PR adds
+             `sdk-common` (API types), `sdk-core` (state-machine
+             runtime), `sdk-java-http` (HTTP transport), `sdk-serde-jackson`
+             (Jackson binding for `RestateCachedRow`), `sdk-testing`
+             (Testcontainers harness for end-to-end tests). -->
     </dependencies>
 
     <build>
