@@ -57,10 +57,11 @@ import io.sm8.core.engine.{
   EngineError,
   MCPEngineProvider,
   MCPEngineRegistry,
-  MCPQueryRequest
+  MCPQueryRequest,
+  PortableQueryResult
 }
 import io.sm8.core.model.{FilterSpec, Model}
-import io.sm8.core.engine.{EngineContext, PortableQueryResult}
+import io.sm8.core.engine.{EngineContext}
 
 /**
  * Engine-portable path entry point. PR-C5a ships the engine
@@ -163,10 +164,9 @@ object EngineService {
       request: QueryRequest,
       registry: MCPEngineRegistry
   ): Either[EngineError, MCPEngineProvider] = {
-    // TODO(C5b-extension): use `model` for the cache-key derivation
-    // in PR-C5b-extension's cache lookup. Selection is purely
-    // registry-driven. The parameter is reserved for the cache +
-    // execute path that lands in PR-C5b-extension.
+    // `model` is reserved for future engine-selection logic
+    // (e.g. model-specific default engine, model-based capability
+    // negotiation). Selection is currently purely registry-driven.
     val engineName: String =
       Option(request.engine)
         .filter(s => !isBlankLikeJava(s))
@@ -264,12 +264,24 @@ object EngineService {
   }
 
   /**
-   * Pure engine-portable entry-point: build → select → execute → format.
+   * Pure engine-portable entry-point: build → select → cache-lookup →
+   * execute (on miss) → cache-store → format.
    *
    * Replaces the legacy Java `QueryService.runQueryViaEngineRegistry`
-   * (semanticdf-platform lines 420-579) — the entry-point only;
-   * the cache + `Restate.run` journaled-execution segments are
-   * PR-C5b-extension's scope and don't land in this PR.
+   * (semanticdf-platform lines 420-579). PR-C5b-ext-β adds the
+   * cache lookup + miss-store path. PR-C5b-ext-γ will wrap the
+   * miss path in `Restate.run` for journaled-execution semantics.
+   *
+   * =Cache integration=
+   *
+   * The cache is consulted on every call. On HIT, the engine
+   * is bypassed entirely and the cached `RestateCachedRow` is
+   * decoded into a `QueryResult` (no engine execution).
+   *
+   * On MISS, the engine is executed, the result is encoded to
+   * a `RestateCachedRow` via `CachedRowDecoder.toRestateCachedRowFromPortable`
+   * (PR-C5b-ext-β), and the cache is populated via
+   * `cache.putJournaledWithModelAndVersion(key, row, modelName, version)`.
    *
    * =Serializable-safety for Spark closures=
    *
@@ -281,12 +293,14 @@ object EngineService {
    *   - `io.sm8.core.engine.EngineContext` (PR-C0c)
    *   - `io.sm8.platform.query.QueryResult` (PR-C4c)
    *   - `io.sm8.platform.query.QueryRequest` (PR-C5a)
+   *   - `io.sm8.platform.query.ResultCache` (PR-C5b-ext-α, `extends Serializable`)
+   *   - `io.sm8.platform.query.RestateCachedRow` (PR-C1, `extends Product with Serializable`)
    *
    * The compiled `Either[EngineError, QueryResult]` is therefore
-   * `Serializable` (Scala's `Either` is `Serializable` iff both `L` and `R` are
-   * — see `scala.util.Either`).
+   * `Serializable` (Scala's `Either` is `Serializable` iff both `L` and
+   * `R` are — see `scala.util.Either`).
    *
-   * The `Restate.run` closure concern (PR-C5b-extension) is
+   * The `Restate.run` closure concern (PR-C5b-ext-γ) is
    * addressed separately: the captured values in the journaled
    * lambda are all `Product with Serializable`, so the lambda
    * passes Restate's `Serializable` requirement.
@@ -301,18 +315,23 @@ object EngineService {
    * does this; the Scala version does too via the legacy
    * caller). No `null` flows through this method.
    *
-   * =Pure function=
+   * =Cache key=
    *
-   * No cache. No `Restate.run`. No legacy fallback. The cache
-   * integration (`cache instanceof InMemoryResultCache`) and the
-   * legacy Spark-only path (`engineRegistry == null`) stay in the
-   * Java dispatcher until PR-C-final deletes the legacy file.
+   * The cache key is a SHA-256 hash over
+   * `(modelName, model.hashCode(), measures, dimensions, where)`
+   * via `CacheBridge.platformCacheKey`. Cross-JVM deterministic
+   * (SHA-256, not `hashCode`).
    *
    * @param request  the platform's wire DTO
    * @param model    the engine-portable model (resolved by the
    *                 legacy caller; the engine registries return
-   *                 `core.Model` for engine-portable types)
+   *                 `core.Model` for engine-portable types).
+   *                 Used for cache-key derivation + as the engine
+   *                 adapter's compile target.
    * @param registry the engine-portable registry
+   * @param cache    the cache (default `ResultCache.NoOp` for
+   *                 driver-side execution; `InMemoryResultCache`
+   *                 for production)
    * @return         `Right(queryResult)` on success;
    *                 `Left(engineError)` on engine selection or
    *                 execution failure
@@ -320,12 +339,45 @@ object EngineService {
   def runQuery(
       request: QueryRequest,
       model: Model,
-      registry: MCPEngineRegistry
+      registry: MCPEngineRegistry,
+      cache: ResultCache = ResultCache.NoOp
   ): Either[EngineError, QueryResult] = {
     val mcpReq: MCPQueryRequest = buildMCPRequest(request)
+    val version: Int = model.hashCode()  // modelVersionOrZero surrogate
+    // Per [[scala-impact-analysis-mindset]]: `selectEngine` is only
+    // needed on the cache MISS path. Moving it inside the miss
+    // branch (rather than before the for-comprehension) means
+    // cache HITs survive engine outages — a cache's primary value
+    // is degraded-operation continuity.
+    val cacheKey: String = CacheBridge.platformCacheKey(
+      engine     = Option(request.engine).filter(s => !isBlankLikeJava(s))
+        .getOrElse(registry.defaultEngine),
+      modelName  = Option(request.modelName).getOrElse("unknown"),
+      version    = version,
+      measures   = mcpReq.measures.toList,
+      dimensions = mcpReq.dimensions.toList,
+      where      = mcpReq.where
+    )
     for {
-      provider <- selectEngine(model, request, registry)
-      pqr      <- executeEngine(model, mcpReq, provider)
+      // -- Cache lookup (HIT path) — no engine call needed --
+      pqr <- cache.getJournaled(cacheKey) match {
+        case Some(row) =>
+          Right(CachedRowDecoder.fromRestateCachedRowAsPortable(row))
+        case None    =>
+          // -- Cache MISS path: select + execute + encode + store --
+          for {
+            provider <- selectEngine(model, request, registry)
+            pqr2      <- executeEngine(model, mcpReq, provider)
+            _         <- Right(
+              cache.putJournaledWithModelAndVersion(
+                cacheKey,
+                CachedRowDecoder.toRestateCachedRowFromPortable(pqr2),
+                Option(request.modelName).getOrElse("unknown"),
+                version
+              )
+            )
+          } yield pqr2
+      }
     } yield toQueryResultFromPortable(pqr, request)
   }
 }

@@ -108,6 +108,16 @@ object ResultValue {
   /** Date (no time-of-day). */
   final case class DateV(v: java.time.LocalDate) extends ResultValue
 
+  /**
+   * Binary blob (the wire-equivalent of the legacy `T_BINARY`
+   * tag in `RestateCachedRow`). Engine-portable engines that
+   * surface binary columns (e.g. raw bytes from a Kafka topic)
+   * round-trip through this case. PR-C5b-ext-β's cache journal
+   * preserves the bytes end-to-end via `PortableCellCodec.encodeCell`
+   * → `T_BINARY` → `Base64.encodeToString` and back.
+   */
+  final case class BinaryV(v: Array[Byte]) extends ResultValue
+
   /** Null check. Returns `true` if the value is `NullV`, `false`
     * otherwise. Convenience for consumers. */
   def isNull(rv: ResultValue): Boolean = rv match {
