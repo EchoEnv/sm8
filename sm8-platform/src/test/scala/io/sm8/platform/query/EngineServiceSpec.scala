@@ -1,7 +1,8 @@
 package io.sm8.platform.query
 
-import io.sm8.core.engine.{EngineError, MCPEngineProvider, MCPEngineRegistry, MCPQueryRequest}
+import io.sm8.core.engine.{EngineContext, EngineError, MCPEngineProvider, MCPEngineRegistry, MCPQueryRequest, PortableQueryResult, ResultRow, ResultSchema, ResultValue}
 import io.sm8.core.model.{AuditPolicy, CachePolicy, FilterSpec, MaterializePolicy, Model, ModelPolicyDefaults, ModelStatus, SourceRef}
+import io.sm8.core.schema.{Field, SealedDataType}
 
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
@@ -46,16 +47,22 @@ class EngineServiceSpec extends AnyFunSuite with Matchers {
     filters = Nil
   )
 
-  /** A minimal MCPEngineProvider stub. */
+  /** A minimal MCPEngineProvider stub. The `queryResult` and
+    * `queryThrowable` are set per-test to control behavior. */
   private final class StubProvider(
       override val identity: io.sm8.core.engine.EngineIdentity,
-      override val available: Boolean
+      override val available: Boolean,
+      var queryResult: Either[EngineError, PortableQueryResult] = null,
+      var queryThrowable: RuntimeException = null
   ) extends MCPEngineProvider {
     override def query(
         model: Model,
         request: MCPQueryRequest,
         ctx: io.sm8.core.engine.EngineContext
-    ): Either[EngineError, io.sm8.core.engine.PortableQueryResult] = ???
+    ): Either[EngineError, io.sm8.core.engine.PortableQueryResult] = {
+      if (queryThrowable != null) throw queryThrowable
+      queryResult
+    }
     override def explain(
         model: Model,
         request: MCPQueryRequest,
@@ -304,5 +311,147 @@ class EngineServiceSpec extends AnyFunSuite with Matchers {
     mcp.measures shouldBe Seq("rows")
     mcp.where shouldBe Some("carrier = 'AA'")
     provider shouldBe spark
+  }
+
+  // -- executeEngine tests (PR-C5b) --
+
+  private def emptyPortableResult: PortableQueryResult = PortableQueryResult(
+    rows = Vector.empty,
+    schema = ResultSchema(Nil)
+  )
+
+  private def portableResultWithRows: PortableQueryResult = PortableQueryResult(
+    rows = Vector(
+      ResultRow(
+        values = List(
+          ResultValue.StringV("Alice"),
+          ResultValue.IntV(30L)),
+        schema = ResultSchema(Nil)),
+      ResultRow(
+        values = List(
+          ResultValue.StringV("Bob"),
+          ResultValue.IntV(25L)),
+        schema = ResultSchema(Nil))
+    ),
+    schema = ResultSchema(Nil)
+  )
+
+  test("executeEngine: returns Right(PortableQueryResult) on success") {
+    val spark = new StubProvider(
+      io.sm8.core.engine.EngineIdentity("spark", "3.5.8", "0.2.4"),
+      available = true,
+      queryResult = Right(emptyPortableResult)
+    )
+    val mcpReq = MCPQueryRequest(model = "flights")
+    val out = EngineService.executeEngine(dummyModel, mcpReq, spark)
+    out shouldBe Right(emptyPortableResult)
+  }
+
+  test("executeEngine: returns Left(ProviderInvocationFailed) on RuntimeException") {
+    val spark = new StubProvider(
+      io.sm8.core.engine.EngineIdentity("spark", "3.5.8", "0.2.4"),
+      available = true,
+      queryThrowable = new RuntimeException("engine blew up")
+    )
+    val mcpReq = MCPQueryRequest(model = "flights")
+    val out = EngineService.executeEngine(dummyModel, mcpReq, spark)
+    out.isLeft shouldBe true
+    out.left.get shouldBe a [EngineError.ProviderInvocationFailed]
+    val err = out.left.get.asInstanceOf[EngineError.ProviderInvocationFailed]
+    err.name shouldBe "spark"
+    err.message shouldBe "engine blew up"
+  }
+
+  test("executeEngine: returns Left(EngineError) on engine-typed failure") {
+    val typedError = EngineError.QueryTimedOut(
+      engine = "spark", cancelStatus = "cancelled", message = "timed out"
+    )
+    val spark = new StubProvider(
+      io.sm8.core.engine.EngineIdentity("spark", "3.5.8", "0.2.4"),
+      available = true,
+      queryResult = Left(typedError)
+    )
+    val mcpReq = MCPQueryRequest(model = "flights")
+    EngineService.executeEngine(dummyModel, mcpReq, spark) shouldBe Left(typedError)
+  }
+
+  test("executeEngine: uses default EngineContext.defaultContext") {
+    // No explicit ctx parameter → uses EngineContext.defaultContext.
+    // Per executeEngine, the test just confirms the success path works.
+    val spark = new StubProvider(
+      io.sm8.core.engine.EngineIdentity("spark", "3.5.8", "0.2.4"),
+      available = true,
+      queryResult = Right(emptyPortableResult)
+    )
+    val mcpReq = MCPQueryRequest(model = "flights")
+    EngineService.executeEngine(dummyModel, mcpReq, spark) shouldBe Right(emptyPortableResult)
+  }
+
+  // -- toQueryResultFromPortable tests (PR-C5b) --
+
+  test("toQueryResultFromPortable: empty portable → QueryResult with empty rows") {
+    val portable = PortableQueryResult(
+      rows = Vector.empty,
+      schema = ResultSchema(Nil)
+    )
+    val req = QueryRequest("m", Nil, Nil, "", "")
+    val out = EngineService.toQueryResultFromPortable(portable, req)
+    out.model shouldBe "m"
+    out.measures shouldBe Nil
+    out.rows shouldBe Nil
+    out.rowCount shouldBe 0L
+    out.truncated shouldBe false
+  }
+
+  test("toQueryResultFromPortable: 2-row portable with mixed types → decoded rows") {
+    val portable = portableResultWithRows
+    val req = QueryRequest("users", Nil, Nil, "", "spark")
+    val out = EngineService.toQueryResultFromPortable(portable, req)
+    out.model shouldBe "users"
+    out.rows should have size 2
+    out.rows(0) shouldBe List("Alice", 30L)
+    out.rows(1) shouldBe List("Bob", 25L)
+    out.rowCount shouldBe 2L
+    out.truncated shouldBe false
+  }
+
+  test("toQueryResultFromPortable: rowCount = rows.size.toLong") {
+    val portable = PortableQueryResult(
+      rows = Vector.tabulate(5)(i =>
+        ResultRow(
+          values = List(ResultValue.IntV(i.toLong)),
+          schema = ResultSchema(Nil))),
+      schema = ResultSchema(Nil)
+    )
+    val req = QueryRequest("m", Nil, Nil, "", "")
+    val out = EngineService.toQueryResultFromPortable(portable, req)
+    out.rowCount shouldBe 5L
+  }
+
+  test("toQueryResultFromPortable: model name comes from request, not portable") {
+    val portable = PortableQueryResult(
+      rows = Vector.empty,
+      schema = ResultSchema(Nil)
+    )
+    val req = QueryRequest("requested_model", Nil, Nil, "", "")
+    val out = EngineService.toQueryResultFromPortable(portable, req)
+    out.model shouldBe "requested_model"
+  }
+
+  test("toQueryResultFromPortable: integration — executeEngine + toQueryResultFromPortable") {
+    // The realistic pipeline: executeEngine returns Right(pqr);
+    // toQueryResultFromPortable converts to the wire response.
+    val spark = new StubProvider(
+      io.sm8.core.engine.EngineIdentity("spark", "3.5.8", "0.2.4"),
+      available = true,
+      queryResult = Right(portableResultWithRows)
+    )
+    val mcpReq = MCPQueryRequest(model = "flights")
+    val req = QueryRequest("flights", Nil, Nil, "", "")
+    val either = EngineService.executeEngine(dummyModel, mcpReq, spark)
+    val result = EngineService.toQueryResultFromPortable(either.toOption.get, req)
+    result.model shouldBe "flights"
+    result.rows should have size 2
+    result.rows(0) shouldBe List("Alice", 30L)
   }
 }
