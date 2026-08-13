@@ -183,7 +183,7 @@ class PortableCellCodecSpec extends AnyFunSuite with Matchers {
 
   // -- Wire contract: total mapping --
 
-  test("Total mapping: all 8 ResultValue cases + None produce a wire-stable value") {
+  test("Total mapping: all 9 ResultValue cases + None produce a wire-stable value") {
     val all: Seq[Option[ResultValue]] = Seq(
       Option(ResultValue.NullV),
       Option(ResultValue.BoolV(true)),
@@ -193,6 +193,7 @@ class PortableCellCodecSpec extends AnyFunSuite with Matchers {
       Option(ResultValue.StringV("hello")),
       Option(ResultValue.TimestampV(java.time.Instant.parse("2024-01-15T10:30:00Z"))),
       Option(ResultValue.DateV(java.time.LocalDate.parse("2024-01-15"))),
+      Option(ResultValue.BinaryV("hello".getBytes("UTF-8"))),
       None
     )
     all.foreach { rv =>

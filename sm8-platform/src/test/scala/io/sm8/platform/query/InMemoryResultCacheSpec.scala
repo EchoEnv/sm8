@@ -155,15 +155,103 @@ class InMemoryResultCacheSpec extends AnyFunSuite with Matchers {
       )
     }
     val results: Seq[Throwable] = futures.flatMap(_.get())
-    // All N waiters should see the exception
+    // Per review pass #2 (JVM-reviewer MINOR #7): strengthen
+    // assertion — verify all waiters receive the SAME exception
+    // message, not just `a [Throwable]` (which is tautological).
+    results should have size 4.toLong
     results.foreach { e =>
-      e shouldBe a [Throwable]
+      e.getMessage shouldBe "compute failed"
     }
-    // Cache was NOT populated on failure
+    // Cache was NOT populated on failure (errors are data).
     cache.getJournaled("k") shouldBe None
   }
 
-  // -- ResultCache contract --
+  // -- Review pass #2: caching-recovery after a failure --
+
+  test("getOrComputeJournaled: cache is usable after a compute failure (no poisoning)") {
+    // Per review pass #2 (JVM-reviewer MINOR #8): after a
+    // `compute.get()` throws, a subsequent caller for the same
+    // key must trigger a fresh compute and succeed.
+    val cache = InMemoryResultCache()
+    var failFirst = true
+    val good = row("fresh")
+    val compute = new Supplier[RestateCachedRow] {
+      override def get(): RestateCachedRow = {
+        if (failFirst) {
+          failFirst = false
+          throw new RuntimeException("first attempt failed")
+        }
+        good
+      }
+    }
+    // First call: throws.
+    intercept[RuntimeException] {
+      cache.getOrComputeJournaled("k", compute)
+    }
+    // Cache is empty.
+    cache.getJournaled("k") shouldBe None
+    // Second call: succeeds.
+    val second = cache.getOrComputeJournaled("k", compute)
+    second shouldBe good
+    cache.getJournaled("k") shouldBe Some(good)
+  }
+
+  // -- Review pass #2: retag clean-up under invalidateModel --
+
+  test("invalidateModel: retag under different model drops key from old model index (DE MINOR #11)") {
+    // Per review pass #2 (DE-reviewer MINOR #11 + JVM-reviewer
+    // MAJOR #4): put a key under model "A", retag under model "B"
+    // (same key, different model), then `invalidateModel("A")`
+    // must NOT find the key (it was removed from "A"'s index
+    // during the retag). `invalidateModel("B")` must find it.
+    val cache = InMemoryResultCache()
+    cache.putJournaledWithModelAndVersion("k", row("a"), "A", 1)
+    cache.putJournaledWithModelAndVersion("k", row("b"), "B", 1)
+    cache.invalidateModel("A") shouldBe 0  // key was retagged away
+    cache.invalidateModel("B") shouldBe 1
+    cache.getJournaled("k") shouldBe None
+  }
+
+  // -- Review pass #2: real ObjectOutputStream round-trip --
+
+  test("InMemoryResultCache: survives ObjectOutputStream round-trip (review pass #2 JVM CRITICAL #1)") {
+    // Per review pass #2 (JVM-reviewer CRITICAL #1): the prior
+    // test only verified a static-type ascription to
+    // `java.io.Serializable`. The actual `Entry` class was not
+    // Serializable — `ObjectOutputStream.writeObject` threw
+    // `NotSerializableException`. This test does a real round-trip
+    // and verifies the cache still serves `getJournaled`.
+    //
+    // Note: we can't use case-class `equals` on the round-tripped
+    // row because `RestateCachedRow.rows` is `List[Array[String]]`
+    // and Scala `Array.equals` is reference-equal (arrays don't
+    // have structural `equals`). Compare field-by-field instead.
+    val cache = InMemoryResultCache()
+    val original = row("payload")
+    cache.putJournaledWithModelAndVersion("k", original, "m", 1)
+    val bout = new java.io.ByteArrayOutputStream()
+    val out = new java.io.ObjectOutputStream(bout)
+    out.writeObject(cache)
+    out.close()
+    val bytes = bout.toByteArray
+    bytes.length should be > 0
+    val in = new java.io.ObjectInputStream(
+      new java.io.ByteArrayInputStream(bytes))
+    val recovered = in.readObject().asInstanceOf[InMemoryResultCache]
+    in.close()
+    // Survived round-trip; entries still served.
+    val recoveredRow = recovered.getJournaled("k")
+    recoveredRow shouldBe defined
+    val rr = recoveredRow.get
+    rr.fieldNames shouldBe original.fieldNames
+    rr.fieldTypes shouldBe original.fieldTypes
+    rr.rows.size shouldBe original.rows.size
+    rr.rows.zip(original.rows).foreach { case (a, b) =>
+      a.toList shouldBe b.toList
+    }
+  }
+
+  // -- Existing ResultCache contract --
 
   test("InMemoryResultCache: extends Serializable (Spark closure hygiene)") {
     val cache: java.io.Serializable = InMemoryResultCache()

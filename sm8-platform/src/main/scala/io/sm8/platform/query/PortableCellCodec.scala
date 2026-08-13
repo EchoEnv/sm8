@@ -67,6 +67,8 @@ object PortableCellCodec {
    *   - `StringV(s)` → raw `s` (no quotes)
    *   - `TimestampV(i)` → `Instant.toString` (ISO-8601, e.g. "2024-01-15T10:30:00Z")
    *   - `DateV(d)` → `LocalDate.toString` (ISO-8601, e.g. "2024-01-15")
+   *   - `BinaryV(b)` → `Base64.encodeToString(b)` (matches
+   *     `decodeCell`'s inverse at line 174-175)
    */
   def encodeCell(v: Option[ResultValue]): String = v match {
     case None                            => null
@@ -78,6 +80,7 @@ object PortableCellCodec {
     case Some(ResultValue.StringV(s))    => s
     case Some(ResultValue.TimestampV(i)) => i.toString
     case Some(ResultValue.DateV(d))      => d.toString
+    case Some(ResultValue.BinaryV(b))    => java.util.Base64.getEncoder.encodeToString(b)
   }
 
   /** Java-friendly overload: accept `null` directly. */
@@ -96,6 +99,10 @@ object PortableCellCodec {
    *   - `StringV(s)` → `String`
    *   - `TimestampV(i)` → `String` (ISO-8601, via `Instant.toString`)
    *   - `DateV(d)` → `String` (ISO-8601, via `LocalDate.toString`)
+   *   - `BinaryV(b)` → raw `Array[Byte]` (the JVM-erased form;
+   *     matches what `decodeCell(T_BINARY, ...)` returns — no
+   *     Base64 round-trip needed since this is the in-process MCP
+   *     wire response, not the journal wire format)
    *
    * Timestamp/Date are wire-encoded as ISO-8601 Strings (matching
    * the legacy Java behavior at `QueryService.java:365`+
@@ -111,6 +118,7 @@ object PortableCellCodec {
     case Some(ResultValue.StringV(s))    => s
     case Some(ResultValue.TimestampV(i)) => i.toString
     case Some(ResultValue.DateV(d))      => d.toString
+    case Some(ResultValue.BinaryV(b))    => b
   }
 
   /** Java-friendly overload: accept `null` directly. */

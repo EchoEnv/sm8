@@ -7,11 +7,13 @@
  * Scala 3 `enum`).
  *
  * Per [[karpathy-guidelinesmindset]] (smallest correct core +
- * match existing style): 12 cases covering SQL primitives +
- * temporal + decimal + nested + JSON. Mirrors the legacy
+ * match existing style): 13 cases covering SQL primitives +
+ * temporal + decimal + nested + JSON + binary. Mirrors the legacy
  * `semanticdf-core` design doc §4.5.2 "Portable types" (Phase 2
  * contract preserved verbatim — package rename only, no behavior
- * change).
+ * change). The `Binary` case was added in PR-C5b-ext-β (review
+ * pass #2, finding #2) to support end-to-end `ResultValue.BinaryV`
+ * round-trip through the cache journal.
  *
  * Per [[scala-impact-analysis-mindset]]: ADDITIVE to sm8-core.
  * No SDK type changes (Plugin, Connector, PreHook, PostHook,
@@ -162,4 +164,12 @@ object SealedDataType {
     * (with a JSON convention) or a dedicated JSON type if the engine
     * supports it. */
   case object Json extends SealedDataType
+
+  /** Variable-length binary blob. Maps to Spark's `BinaryType`, Trino's
+    * `VARBINARY`, Databricks' `BINARY`. The engine-portable wire
+    * format (`RestateCachedRow.T_BINARY`) encodes the bytes as
+    * Base64; `ResultValue.BinaryV` carries the raw `Array[Byte]`.
+    * Added in PR-C5b-ext-β (review pass #2 finding #2) to support
+    * end-to-end binary columns through the cache journal. */
+  case object Binary extends SealedDataType
 }

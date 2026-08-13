@@ -218,8 +218,16 @@ object EngineService {
         // losing the typed error. The Scala version preserves it
         // via `EngineError.ProviderInvocationFailed` — the closest
         // variant for "engine execution failed unexpectedly".
+        //
+        // Per review pass #2 (DE-reviewer MAJOR #7): the `engine`
+        // field in `EngineError` is the engine identity (e.g.
+        // "spark", "trino"), not the model name. `EngineError`'s
+        // `toErrorDetail` formats `"<engine>"` as the error
+        // context, and downstream consumers filter errors by
+        // engine identity. Setting it to `model.name` broke
+        // error reporting — corrected to `provider.identity.name`.
         Left(EngineError.ProviderInvocationFailed(
-          engine = model.name,
+          engine = provider.identity.name,
           name = provider.identity.name,
           reason = e.getClass.getSimpleName,
           message = e.getMessage
@@ -318,9 +326,26 @@ object EngineService {
    * =Cache key=
    *
    * The cache key is a SHA-256 hash over
-   * `(modelName, model.hashCode(), measures, dimensions, where)`
-   * via `CacheBridge.platformCacheKey`. Cross-JVM deterministic
-   * (SHA-256, not `hashCode`).
+   * `(engine, modelName, model.version, measures, dimensions, where)`
+   * via `CacheBridge.platformCacheKey`. Both the SHA-256 (stable
+   * across JVMs) AND the input `model.version` field (a deterministic
+   * Int carried on the `Model`) are required for cross-replica +
+   * cross-restart cache hits. Per review pass #2 (Architect
+   * MINOR #6): the earlier `model.hashCode()` surrogate was JVM-
+   * instance-specific and silently broke cross-JVM cache hits.
+   *
+   * =PROVISIONAL cache integration=
+   *
+   * Per review pass #2 (Architect MINOR #3): the cache lookup/store
+   * below is **inline** in this function. This is intentional for
+   * the legacy-migration stage of the project. When Step 10-11 lands
+   * (sm8-platform calls `engine.run(request)` from the SDK
+   * pipeline), this cache integration will be hoisted into a
+   * `cache-plugin` Pre+Post hook (per the plan). The shape is
+   * designed for that extraction: the cache lookup is just
+   * `cache.getJournaled(...)`, the cache populate is just
+   * `cache.putJournaledWithModelAndVersion(...)`. Hoisting is
+   * mechanical.
    *
    * @param request  the platform's wire DTO
    * @param model    the engine-portable model (resolved by the
@@ -343,7 +368,11 @@ object EngineService {
       cache: ResultCache = ResultCache.NoOp
   ): Either[EngineError, QueryResult] = {
     val mcpReq: MCPQueryRequest = buildMCPRequest(request)
-    val version: Int = model.hashCode()  // modelVersionOrZero surrogate
+    // Per review pass #2 (Architect MINOR #6): use `model.version`
+    // — a deterministic Int carried on the model — instead of
+    // `model.hashCode()` (JVM-instance-specific). This preserves
+    // cross-JVM cache hits across restarts + replicas.
+    val version: Int = model.version
     // Per [[scala-impact-analysis-mindset]]: `selectEngine` is only
     // needed on the cache MISS path. Moving it inside the miss
     // branch (rather than before the for-comprehension) means
@@ -365,18 +394,22 @@ object EngineService {
           Right(CachedRowDecoder.fromRestateCachedRowAsPortable(row))
         case None    =>
           // -- Cache MISS path: select + execute + encode + store --
+          // Per review pass #2 (Architect MINOR #8): hoist the
+          // cache populate OUT of the for-comprehension (it returns
+          // `Unit`); the `yield pqr2` cleanly threads the
+          // `PortableQueryResult` through.
           for {
             provider <- selectEngine(model, request, registry)
             pqr2      <- executeEngine(model, mcpReq, provider)
-            _         <- Right(
-              cache.putJournaledWithModelAndVersion(
-                cacheKey,
-                CachedRowDecoder.toRestateCachedRowFromPortable(pqr2),
-                Option(request.modelName).getOrElse("unknown"),
-                version
-              )
+          } yield {
+            cache.putJournaledWithModelAndVersion(
+              cacheKey,
+              CachedRowDecoder.toRestateCachedRowFromPortable(pqr2),
+              Option(request.modelName).getOrElse("unknown"),
+              version
             )
-          } yield pqr2
+            pqr2
+          }
       }
     } yield toQueryResultFromPortable(pqr, request)
   }

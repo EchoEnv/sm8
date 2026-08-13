@@ -105,9 +105,13 @@ class EngineTypeTagsSpec extends AnyFunSuite with Matchers {
     EngineTypeTags.of(Option(SealedDataType.Json)) shouldBe RestateCachedRow.T_STRING
   }
 
+  test("Binary → T_BINARY (review pass #2 addition; was missing — silently mapped to T_STRING)") {
+    EngineTypeTags.of(Option(SealedDataType.Binary)) shouldBe RestateCachedRow.T_BINARY
+  }
+
   // -- Wire contract --
 
-  test("Total mapping: all 12 SealedDataType cases + None produce a non-empty tag") {
+  test("Total mapping: all 13 SealedDataType cases + None produce a non-empty tag") {
     val all: Seq[Option[SealedDataType]] = Seq(
       Option(SealedDataType.BigInt),
       Option(SealedDataType.Int),
@@ -121,10 +125,11 @@ class EngineTypeTagsSpec extends AnyFunSuite with Matchers {
       Option(SealedDataType.Map(SealedDataType.Varchar, SealedDataType.Int)),
       Option(SealedDataType.Row(Seq(Field.nonNull("x", SealedDataType.Varchar)))),
       Option(SealedDataType.Json),
+      Option(SealedDataType.Binary),
       None
     )
     val tags = all.map(EngineTypeTags.of)
-    tags should have size 13.toLong // 13 distinct inputs, each producing one of 9 tags
+    tags should have size 14.toLong // 14 distinct inputs, each producing one of 9 tags
     tags.foreach(_ should not be empty)
   }
 

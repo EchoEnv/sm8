@@ -89,6 +89,32 @@ object CachedRowDecoder {
   }
 
   /**
+   * Map a wire-format tag (`RestateCachedRow.T_*` constant) back
+   * to the engine-portable `SealedDataType`. Used by
+   * `fromRestateCachedRowAsPortable` to preserve the original
+   * schema in the cache-HIT path. Matches the dispatch in
+   * `EngineTypeTags` (PR-C1, sm8-platform).
+   *
+   * Per review pass #2 (DE-reviewer MAJOR #2): `T_BINARY` was
+   * incorrectly mapped to `Varchar` in the prior version — broke
+   * end-to-end binary round-trip (a BinaryV column re-encoded as
+   * a String would corrupt the bytes on re-cache). Now maps to
+   * `SealedDataType.Binary` (added in sm8-core as part of this
+   * review pass).
+   */
+  private def tagToSealedDataType(tag: String): io.sm8.core.schema.SealedDataType = tag match {
+    case RestateCachedRow.T_STRING    => io.sm8.core.schema.SealedDataType.Varchar
+    case RestateCachedRow.T_LONG      => io.sm8.core.schema.SealedDataType.BigInt
+    case RestateCachedRow.T_DOUBLE    => io.sm8.core.schema.SealedDataType.Double
+    case RestateCachedRow.T_BOOLEAN   => io.sm8.core.schema.SealedDataType.Boolean
+    case RestateCachedRow.T_DECIMAL   => io.sm8.core.schema.SealedDataType.Decimal(0, 0)
+    case RestateCachedRow.T_TIMESTAMP => io.sm8.core.schema.SealedDataType.Timestamp
+    case RestateCachedRow.T_DATE      => io.sm8.core.schema.SealedDataType.Date
+    case RestateCachedRow.T_BINARY    => io.sm8.core.schema.SealedDataType.Binary
+    case _                            => io.sm8.core.schema.SealedDataType.Varchar
+  }
+
+  /**
    * Convert a cached `RestateCachedRow` to a `PortableQueryResult`
    * (the engine-portable result shape). Used by the cache-hit
    * branch of `EngineService.runQuery` so both the HIT and MISS
@@ -96,25 +122,52 @@ object CachedRowDecoder {
    * for-comprehension dispatch.
    *
    * Builds the schema from the cached row's `fieldNames` +
-   * `fieldTypes`. The field's `dataType` is set to a
-   * `SealedDataType.Varchar` (a safe default — the cache journal
-   * doesn't preserve the full type info; `toQueryResultFromPortable`
-   * uses the same approximation when adapting for `QueryResult`).
+   * `fieldTypes`. Each field's `dataType` is set via
+   * `tagToSealedDataType` — the type is preserved end-to-end
+   * through the cache journal.
    *
    * @param row the cached row to convert
    * @return    the equivalent `PortableQueryResult`
    */
+  def fromRestateCachedRowAsPortable(row: RestateCachedRow): PortableQueryResult = {
+    val fields: List[io.sm8.core.schema.Field] =
+      row.fieldNames.zip(row.fieldTypes).map { case (name, tag) =>
+        io.sm8.core.schema.Field.nonNull(name, tagToSealedDataType(tag))
+      }
+    PortableQueryResult(
+      rows   = row.rows.toVector.map { cells =>
+        ResultRow(
+          values = if (cells == null) Nil
+                   else cells.toList.zip(row.fieldTypes).map { case (encoded, tag) =>
+                     // Null cells encode to a null `encoded`
+                     // (per `encodeCell` for `ResultValue.NullV`).
+                     if (encoded == null) ResultValue.NullV
+                     else toResultValue(tag, PortableCellCodec.decodeCell(tag, encoded))
+                   },
+          schema = ResultSchema(Nil)
+        )
+      },
+      schema = ResultSchema(fields)
+    )
+  }
+
   /**
-   * Inverse of `encodeCell`: wrap the JVM-erased decoded value
-   * (a `java.lang.Object`) into the corresponding `ResultValue`
-   * case. Sealed-trait dispatch on the tag determines the case
-   * (per [[scala-data-driven-refactor-mindset]] "sealed-trait
-   * dispatch over Map" — no Map-based rule tables).
+   * Inverse of `encodeCell` in [[PortableCellCodec]]: wrap the
+   * JVM-erased decoded value (a `java.lang.Object`) into the
+   * corresponding `ResultValue` case. Sealed-trait dispatch on
+   * the tag determines the case (per
+   * [[scala-data-driven-refactor-mindset]] "sealed-trait dispatch
+   * over Map" — no Map-based rule tables). The wire format is
+   * JVM-typed (the cache journal preserves the JVM form for
+   * `Restate.run` compatibility); this helper rebuilds the typed
+   * `ResultValue` on the read side.
    *
-   * Inverse of `encodeCell` in [[PortableCellCodec]]. The wire
-   * format is JVM-typed (the cache journal preserves the JVM
-   * form for `Restate.run` compatibility); this helper rebuilds
-   * the typed `ResultValue` on the read side.
+   * Per review pass #1: `Timestamp` cells map to
+   * `ResultValue.TimestampV(Instant)` via
+   * `java.sql.Timestamp.toInstant` (NOT direct `Instant`
+   * assumption — `decodeCell` returns `java.sql.Timestamp`).
+   * `Date` cells map via millis-since-epoch in UTC. Binary
+   * cells map directly to `BinaryV(b)`.
    */
   private def toResultValue(tag: String, v: Object): ResultValue = tag match {
     case RestateCachedRow.T_STRING    => Option(v) match {
@@ -171,47 +224,6 @@ object CachedRowDecoder {
   }
 
   /**
-   * Map a wire-format tag (`RestateCachedRow.T_*` constant) back
-   * to the engine-portable `SealedDataType`. Used by
-   * `fromRestateCachedRowAsPortable` to preserve the original
-   * schema in the cache-HIT path. Matches the dispatch in
-   * `EngineTypeTags` (PR-C1, sm8-platform).
-   */
-  private def tagToSealedDataType(tag: String): io.sm8.core.schema.SealedDataType = tag match {
-    case RestateCachedRow.T_STRING    => io.sm8.core.schema.SealedDataType.Varchar
-    case RestateCachedRow.T_LONG      => io.sm8.core.schema.SealedDataType.BigInt
-    case RestateCachedRow.T_DOUBLE    => io.sm8.core.schema.SealedDataType.Double
-    case RestateCachedRow.T_BOOLEAN   => io.sm8.core.schema.SealedDataType.Boolean
-    case RestateCachedRow.T_DECIMAL   => io.sm8.core.schema.SealedDataType.Decimal(0, 0)
-    case RestateCachedRow.T_TIMESTAMP => io.sm8.core.schema.SealedDataType.Timestamp
-    case RestateCachedRow.T_DATE      => io.sm8.core.schema.SealedDataType.Date
-    case RestateCachedRow.T_BINARY    => io.sm8.core.schema.SealedDataType.Varchar
-    case _                            => io.sm8.core.schema.SealedDataType.Varchar
-  }
-
-  def fromRestateCachedRowAsPortable(row: RestateCachedRow): PortableQueryResult = {
-    val fields: List[io.sm8.core.schema.Field] =
-      row.fieldNames.zip(row.fieldTypes).map { case (name, tag) =>
-        io.sm8.core.schema.Field.nonNull(name, tagToSealedDataType(tag))
-      }
-    PortableQueryResult(
-      rows   = row.rows.toVector.map { cells =>
-        ResultRow(
-          values = if (cells == null) Nil
-                   else cells.toList.zip(row.fieldTypes).map { case (encoded, tag) =>
-                     // Null cells encode to a null `encoded`
-                     // (per `encodeCell` for `ResultValue.NullV`).
-                     if (encoded == null) ResultValue.NullV
-                     else toResultValue(tag, PortableCellCodec.decodeCell(tag, encoded))
-                   },
-          schema = ResultSchema(Nil)
-        )
-      },
-      schema = ResultSchema(fields)
-    )
-  }
-
-  /**
    * Encode a `PortableQueryResult` to a `RestateCachedRow` (the wire
    * format used by the cache journal and `Restate.run`).
    *
@@ -229,23 +241,6 @@ object CachedRowDecoder {
    * @param portable the engine-portable result
    * @return         the cache-journal wire format
    */
-  /**
-   * Map an engine-portable `SealedDataType` to the wire-format
-   * tag constant. Inverse of `tagToSealedDataType`. Matches the
-   * dispatch in `EngineTypeTags`.
-   */
-  private def resultValueToTag(dt: io.sm8.core.schema.SealedDataType): String = dt match {
-    case io.sm8.core.schema.SealedDataType.Varchar   => RestateCachedRow.T_STRING
-    case io.sm8.core.schema.SealedDataType.Int      => RestateCachedRow.T_LONG
-    case io.sm8.core.schema.SealedDataType.BigInt   => RestateCachedRow.T_LONG
-    case io.sm8.core.schema.SealedDataType.Double   => RestateCachedRow.T_DOUBLE
-    case io.sm8.core.schema.SealedDataType.Boolean  => RestateCachedRow.T_BOOLEAN
-    case io.sm8.core.schema.SealedDataType.Timestamp => RestateCachedRow.T_TIMESTAMP
-    case io.sm8.core.schema.SealedDataType.Date     => RestateCachedRow.T_DATE
-    case _: io.sm8.core.schema.SealedDataType.Decimal => RestateCachedRow.T_DECIMAL
-    case _                                           => RestateCachedRow.T_STRING
-  }
-
   def toRestateCachedRowFromPortable(
       portable: PortableQueryResult
   ): RestateCachedRow = {
@@ -261,6 +256,26 @@ object CachedRowDecoder {
       fieldTypes = fieldTypes,
       rows       = rows
     )
+  }
+
+  /**
+   * Map an engine-portable `SealedDataType` to the wire-format
+   * tag constant. Inverse of `tagToSealedDataType`. Matches the
+   * dispatch in `EngineTypeTags`. Per review pass #2: added
+   * `SealedDataType.Binary` mapping (was missing — silently
+   * mapped to `T_STRING`, corrupting binary columns on re-cache).
+   */
+  private def resultValueToTag(dt: io.sm8.core.schema.SealedDataType): String = dt match {
+    case io.sm8.core.schema.SealedDataType.Varchar   => RestateCachedRow.T_STRING
+    case io.sm8.core.schema.SealedDataType.Int      => RestateCachedRow.T_LONG
+    case io.sm8.core.schema.SealedDataType.BigInt   => RestateCachedRow.T_LONG
+    case io.sm8.core.schema.SealedDataType.Double   => RestateCachedRow.T_DOUBLE
+    case io.sm8.core.schema.SealedDataType.Boolean  => RestateCachedRow.T_BOOLEAN
+    case io.sm8.core.schema.SealedDataType.Timestamp => RestateCachedRow.T_TIMESTAMP
+    case io.sm8.core.schema.SealedDataType.Date     => RestateCachedRow.T_DATE
+    case _: io.sm8.core.schema.SealedDataType.Decimal => RestateCachedRow.T_DECIMAL
+    case io.sm8.core.schema.SealedDataType.Binary   => RestateCachedRow.T_BINARY
+    case _                                           => RestateCachedRow.T_STRING
   }
 
   /**
