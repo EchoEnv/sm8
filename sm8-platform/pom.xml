@@ -92,17 +92,21 @@
         <!-- vertx-core: same artifact as `sdk-http-vertx`'s
              `runtime` transitive; promoted to compile here so
              `RestateBootstrap.bind(...)` can return the
-             `io.vertx.core.http.HttpServer` type. -->
+             `io.vertx.core.http.HttpServer` type. The Spark
+             transitive (`org.apache.spark:spark-sql_2.13:3.5.8`)
+             is unrelated to vertx and conflicts with our
+             `bannedDependencies=org.apache.spark:*` enforcer
+             rule, so we exclude it here. Per [[scala-jar-packaging-mindset]]:
+             every Maven coordinate audited before addition. -->
         <dependency>
             <groupId>io.vertx</groupId>
             <artifactId>vertx-core</artifactId>
-        </dependency>
-    
-        <!-- TEMP test dep to verify enforcer -->
-        <dependency>
-            <groupId>org.apache.spark</groupId>
-            <artifactId>spark-sql_2.13</artifactId>
-            <version>3.5.8</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.apache.spark</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
     </dependencies>
 
