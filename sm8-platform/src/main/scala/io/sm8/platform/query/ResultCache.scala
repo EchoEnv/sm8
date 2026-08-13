@@ -17,9 +17,19 @@
  *
  * Per [[scala-impact-analysis-mindset]]: pure additive. PR-C5b-ext-β
  * (InMemoryResultCache impl + cache lookup in `EngineService.runQuery`)
- * will override `getJournaled` + `putJournaledWithModelAndVersion`
- * + `getOrComputeJournaled`; PR-C5b-ext-γ (Restate.run integration)
- * calls `getOrComputeJournaled` for single-flight semantics.
+ * overrides `getJournaled` + `putJournaledWithModelAndVersion`. The
+ * `getOrComputeJournaled(key, model, version, compute)` overload
+ * exists for future callers who want single-flight semantics
+ * **without** the journal — the typical use is the legacy
+ * `Restate.run(handler, ..., Supplier)` pattern from v1.x. PR-C5b-ext-γ
+ * shipped the v2.x SDK dep + a `RestatedEngineRunner` helper but did
+ * NOT wrap the call sites (v2.x requires a `@Service`-handler thread
+ * for journaled sub-calls; the follow-up PR does the handler wiring).
+ * The cache lookup in `EngineService.runQuery` is the linear `getJournaled`
+ * → `executeEngine` → `putJournaledWithModelAndVersion` pattern
+ * (NOT single-flight; journal-level "single execution per journal entry"
+ * guarantees at-most-once semantics without needing application-level
+ * single-flight).
  *
  * Per [[scala-jvm-safety-mindset]]: `extends Serializable` so
  * `Restate.run` (PR-C5b-ext-γ) can safely capture the cache in its
