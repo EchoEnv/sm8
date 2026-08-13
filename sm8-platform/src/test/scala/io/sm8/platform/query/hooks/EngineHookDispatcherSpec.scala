@@ -14,6 +14,8 @@ import org.scalatest.matchers.should.Matchers
 import io.sm8.core.engine.{
   EngineContext,
   EngineError,
+  EngineHookRequest,
+  EngineHookResult,
   EngineIdentity,
   MCPEngineProvider,
   MCPEngineRegistry,
@@ -24,17 +26,17 @@ import io.sm8.core.engine.{
   ResultValue
 }
 import io.sm8.core.model.{
+  Dimension,
+  Measure,
   Model,
   ModelStatus,
-  SourceRef,
-  Dimension,
-  Measure
+  SourceRef
 }
 import io.sm8.core.schema.{Field, SealedDataType}
 import io.sm8.sdk.{
   Context,
-  HookStage,
   Engine => SdkEngine,
+  HookStage,
   Plugin,
   PostHook,
   PreHook
@@ -45,8 +47,10 @@ import io.sm8.platform.query.{
   ResultCache
 }
 
-private final class FakeProvider(val name: String, val stubPqr: PortableQueryResult)
-    extends MCPEngineProvider {
+private final class FakeProvider(
+    val name: String,
+    val stubPqr: PortableQueryResult
+) extends MCPEngineProvider {
 
   override val identity: EngineIdentity =
     EngineIdentity(name = name, nativeVersion = "test", engineAdapterVersion = "1.0")
@@ -76,9 +80,9 @@ private final class CountedPlugin(val fires: AtomicInteger) extends Plugin {
     engine.hooks.registerPreHook(
       HookStage.PreExecute,
       new PreHook {
-        override val name: String     = "test-pre"
-        override val priority: Int    = 50
-        override def stage: HookStage = HookStage.PreExecute
+        override val name: String      = "test-pre"
+        override val priority: Int     = 50
+        override def stage: HookStage  = HookStage.PreExecute
         override def run(c: Context): Context = { fires.incrementAndGet(); c }
       },
       50
@@ -86,9 +90,9 @@ private final class CountedPlugin(val fires: AtomicInteger) extends Plugin {
     engine.hooks.registerPostHook(
       HookStage.PostExecute,
       new PostHook {
-        override val name: String     = "test-post"
-        override val priority: Int    = 100
-        override def stage: HookStage = HookStage.PostExecute
+        override val name: String      = "test-post"
+        override val priority: Int     = 100
+        override def stage: HookStage  = HookStage.PostExecute
         override def run(c: Context): Context = { fires.incrementAndGet(); c }
       },
       100
@@ -101,9 +105,9 @@ private final class ShortCircuitPlugin(stub: PortableQueryResult) extends Plugin
     engine.hooks.registerPreHook(
       HookStage.PreExecute,
       new PreHook {
-        override val name: String     = "sc"
-        override val priority: Int    = 1
-        override def stage: HookStage = HookStage.PreExecute
+        override val name: String      = "sc"
+        override val priority: Int     = 1
+        override def stage: HookStage  = HookStage.PreExecute
         override def run(c: Context): Context =
           c.copy(stop = true, result = Some(EngineHookResult(stub)))
       },
@@ -124,15 +128,16 @@ class EngineHookDispatcherSpec extends AnyFunSuite with Matchers {
 
   private def sampleModel: Model =
     Model.of(
-      name    = "m",
-      version = 1,
-      source  = SourceRef.ByName("n", "t"),
-      status  = ModelStatus.Draft,
+      name       = "m",
+      version    = 1,
+      source     = SourceRef.ByName("n", "t"),
+      status     = ModelStatus.Draft,
       dimensions = List(Dimension("d", "d")),
       measures   = List(Measure("v", "v"))
     ).toOption.get
 
-  private def sampleProvider: FakeProvider = new FakeProvider("test-engine", stubPqr)
+  private def sampleProvider: FakeProvider =
+    new FakeProvider("test-engine", stubPqr)
 
   private def registryWith(p: FakeProvider): MCPEngineRegistry = {
     val engines: Map[String, MCPEngineProvider] = Map(p.name -> p)
