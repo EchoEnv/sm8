@@ -12,6 +12,11 @@
  * Per [[karpathy-guidelines-mindset]] "smallest correct core":
  * three tests cover the three new behaviors (priority order,
  * fail-fast, stop-flag).
+ *
+ * Per RFC §13 conformance PR (this PR): every registerPreHook call
+ * passes an explicit `origin = HookOrigin.Core` because the test
+ * priorities are 1, 10, 50 (Core range, not FirstParty). The SDK's
+ * 3-int overload still defaults to FirstParty for backward compat.
  */
 package io.sm8.core
 
@@ -31,8 +36,8 @@ class HookDispatchSpec extends AnyFlatSpec with Matchers {
    */
   private final class RecordingPreHook(override val name: String, prio: Int, trace: scala.collection.mutable.ListBuffer[String])
       extends PreHook {
-    override val priority: Int = prio
-    override def stage: HookStage = HookStage.PreExecute
+    override val priority: Int        = prio
+    override def stage: HookStage     = HookStage.PreExecute
     override def run(context: Context): Context = {
       trace += s"pre:$name"
       context
@@ -41,9 +46,9 @@ class HookDispatchSpec extends AnyFlatSpec with Matchers {
 
   /** Throwing PreHook — fails per RFC §9 (fail-fast on throw). */
   private final class ThrowingPreHook extends PreHook {
-    override val name: String = "boom"
-    override val priority: Int = 50
-    override def stage: HookStage = HookStage.PreExecute
+    override val name: String          = "boom"
+    override val priority: Int        = 10
+    override def stage: HookStage     = HookStage.PreExecute
     override def run(context: Context): Context =
       throw new RuntimeException("hook intentionally throws")
   }
@@ -51,8 +56,8 @@ class HookDispatchSpec extends AnyFlatSpec with Matchers {
   /** Stop-setting PreHook — sets context.stop = true. */
   private final class StopPreHook(override val name: String, prio: Int, trace: scala.collection.mutable.ListBuffer[String])
       extends PreHook {
-    override val priority: Int = prio
-    override def stage: HookStage = HookStage.PreExecute
+    override val priority: Int        = prio
+    override def stage: HookStage     = HookStage.PreParse
     override def run(context: Context): Context = {
       trace += s"pre:$name"
       context.copy(stop = true)
@@ -66,9 +71,9 @@ class HookDispatchSpec extends AnyFlatSpec with Matchers {
     val trace  = scala.collection.mutable.ListBuffer.empty[String]
 
     // Register out of priority order to prove sort-by-priority works.
-    hooks.registerPreHook(HookStage.PreExecute, new RecordingPreHook("b-prio-50", 50, trace), priority = 50)
-    hooks.registerPreHook(HookStage.PreExecute, new RecordingPreHook("a-prio-10", 10, trace), priority = 10)
-    hooks.registerPreHook(HookStage.PreExecute, new RecordingPreHook("c-prio-30", 30, trace), priority = 30)
+    hooks.registerPreHook(HookStage.PreExecute, new RecordingPreHook("b-prio-50", 50, trace), priority = 50, origin = HookOrigin.Core)
+    hooks.registerPreHook(HookStage.PreExecute, new RecordingPreHook("a-prio-10", 10, trace), priority = 10, origin = HookOrigin.Core)
+    hooks.registerPreHook(HookStage.PreExecute, new RecordingPreHook("c-prio-30", 30, trace), priority = 30, origin = HookOrigin.Core)
 
     val dispatched = hooks.preHooksFor(HookStage.PreExecute).map(_._1.name)
     dispatched shouldBe List("a-prio-10", "c-prio-30", "b-prio-50")
@@ -79,9 +84,9 @@ class HookDispatchSpec extends AnyFlatSpec with Matchers {
     val trace = scala.collection.mutable.ListBuffer.empty[String]
 
     // Same priority (50); expect registration order.
-    hooks.registerPreHook(HookStage.PreExecute, new RecordingPreHook("first-registered", 50, trace), priority = 50)
-    hooks.registerPreHook(HookStage.PreExecute, new RecordingPreHook("second-registered", 50, trace), priority = 50)
-    hooks.registerPreHook(HookStage.PreExecute, new RecordingPreHook("third-registered", 50, trace), priority = 50)
+    hooks.registerPreHook(HookStage.PreExecute, new RecordingPreHook("first-registered", 50, trace), priority = 50, origin = HookOrigin.Core)
+    hooks.registerPreHook(HookStage.PreExecute, new RecordingPreHook("second-registered", 50, trace), priority = 50, origin = HookOrigin.Core)
+    hooks.registerPreHook(HookStage.PreExecute, new RecordingPreHook("third-registered", 50, trace), priority = 50, origin = HookOrigin.Core)
 
     val dispatched = hooks.preHooksFor(HookStage.PreExecute).map(_._1.name)
     dispatched shouldBe List("first-registered", "second-registered", "third-registered")
@@ -90,14 +95,14 @@ class HookDispatchSpec extends AnyFlatSpec with Matchers {
   it should "isolate hooks by stage — PreExecute hooks do not fire on PreResolve" in {
     val hooks = new HookManagerImpl
     val trace = scala.collection.mutable.ListBuffer.empty[String]
-    hooks.registerPreHook(HookStage.PreExecute, new RecordingPreHook("only-on-execute", 10, trace), priority = 10)
+    hooks.registerPreHook(HookStage.PreExecute, new RecordingPreHook("only-on-execute", 10, trace), priority = 10, origin = HookOrigin.Core)
     hooks.preHooksFor(HookStage.PreResolve) shouldBe empty
     hooks.preHooksFor(HookStage.PreExecute).map(_._1.name) shouldBe List("only-on-execute")
   }
 
   "Pipeline" should "abort on a throwing hook (RFC §9 fail-fast)" in {
     val engine = EngineImpl()
-    engine.hooks.registerPreHook(HookStage.PreExecute, new ThrowingPreHook, priority = 10)
+    engine.hooks.registerPreHook(HookStage.PreExecute, new ThrowingPreHook, priority = 10, origin = HookOrigin.Core)
 
     val request  = ConnectorRequest(connectorName = "anything", query = new SemanticQuery {})
     val thrown = the [RuntimeException] thrownBy engine.run(request)
@@ -108,7 +113,7 @@ class HookDispatchSpec extends AnyFlatSpec with Matchers {
     val engine = EngineImpl()
     val trace  = scala.collection.mutable.ListBuffer.empty[String]
     // Register a StopPreHook at PreParse (before the parse stage).
-    engine.hooks.registerPreHook(HookStage.PreParse, new StopPreHook("stopper", 1, trace), priority = 1)
+    engine.hooks.registerPreHook(HookStage.PreParse, new StopPreHook("stopper", 1, trace), priority = 1, origin = HookOrigin.Core)
 
     // Stage bodies add to trace themselves in this spec; here we
     // verify the hook ran (so stop was set) and that the Pipeline
