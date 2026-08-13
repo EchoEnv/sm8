@@ -62,6 +62,8 @@ import io.sm8.core.engine.{
 }
 import io.sm8.core.model.{FilterSpec, Model}
 import io.sm8.core.engine.{EngineContext}
+import io.sm8.platform.query.hooks.{EngineHookDispatcher, EngineHookRequest, EngineHookResult}
+import io.sm8.sdk.{Context, PipelineStage}
 
 /**
  * Engine-portable path entry point. PR-C5a ships the engine
@@ -413,4 +415,175 @@ object EngineService {
       }
     } yield toQueryResultFromPortable(pqr, request)
   }
+
+  /**
+   * Hook-aware engine-portable entry-point.
+   *
+   * Same flow as [[runQuery]] but with a Plugin-Context dispatch step
+   * around the engine call. This makes RFC §13's
+   * own plugin" DoD testable for the first time: any PreExecute hook
+   * registered via `engine.hooks.registerPreHook(HookStage.PreExecute,
+   * ...)` fires on every cache-MISS; any PostExecute hook fires after
+   * engine execution; `context.stop = true` short-circuits the engine
+   * call while still firing observers on the post side.
+   *
+   * ==Efficient by construction (sm8-implementation-rules rule 2)==
+   *
+   * - Allocates exactly ONE Context case-class snapshot on entry
+   *   (the initial Context carrying the typed `EngineHookRequest`).
+   *   Every subsequent state is a `case class .copy(...)` returning a
+   *   fresh immutable value — no `var`, no `mutable.*`.
+   * - The engine-call thunk is a `Function1[Context, Either[EngineError, Context]]`
+   *   captured once per cache-MISS, invoked once.
+   * - Priority sort happens once per call (cached inside HookManagerImpl).
+   *
+   * ==Type-class + data-driven (sm8-implementation-rules rule 1)==
+   *
+   * - All dispatch via sealed-trait match on `HookStage` — no Map
+   *   tables, no `Any` casts.
+   * - The typed `EngineHookRequest` carries the `Model` + `MCPQueryRequest`
+   *   inside `context.request`; plugins with `engine.hooks.registerPreHook`
+   *   can cast `context.request.asInstanceOf[EngineHookRequest]` to read
+   *   typed values (cast at the registered hook boundary — the
+   *   dispatcher's public API is typed; the implementation file's
+   *   inline `executor` is the only place the cast happens inside
+   *   the platform layer).
+   *
+   * ==RFC alignment==
+   *
+   * - RFC §6 pipeline: this is the EXECUTE stage with Pre+Post
+   *   hooks firing. Parse/Resolve/Format stages stay as no-ops in
+   *   the platform layer; the platform delegates the Execute
+   *   dispatch to this dispatcher, threading the typed
+   *   `EngineHookRequest` through.
+   * - RFC §8 priority ranges: pre-hooks at priority 50 (core range)
+   *   run first; first-party at 100+ next; community at 900+
+   *   last. The dispatcher makes NO opinion on the choice — it
+   *   surfaces the SDK's priority order unchanged.
+   * - RFC §9 fail-fast: hook throws propagate. The dispatcher's
+   *   `run` does NOT catch them — the boundary catch is in
+   *   `executeEngine`, which the executor thunk already uses.
+   *
+   * @param request    the platform's wire DTO
+   * @param model      the engine-portable model
+   * @param registry   the engine-portable registry
+   * @param cache      the result cache
+   * @param dispatcher the hook dispatcher (typically built once
+   *                   from `engine.hooks` after all plugins have
+   *                   registered). `EngineHookDispatcher.NoOp` for
+   *                   backward-compat (no hooks fire).
+   * @return           `Right(QueryResult)` on success;
+   *                   `Left(EngineError)` on engine selection,
+   *                   execution, or hook-dispatch failure.
+   */
+  def runQueryWithHooks(
+      request:    QueryRequest,
+      model:      Model,
+      registry:   MCPEngineRegistry,
+      cache:      ResultCache,
+      dispatcher: EngineHookDispatcher
+  ): Either[EngineError, QueryResult] = {
+    val mcpReq: MCPQueryRequest = buildMCPRequest(request)
+    val version: Int           = model.version
+    val cacheKey: String       = CacheBridge.platformCacheKey(
+      engine     = Option(request.engine).filter(s => !isBlankLikeJava(s))
+        .getOrElse(registry.defaultEngine),
+      modelName  = Option(request.modelName).getOrElse("unknown"),
+      version    = version,
+      measures   = mcpReq.measures.toList,
+      dimensions = mcpReq.dimensions.toList,
+      where      = mcpReq.where
+    )
+    // Build the initial Context once. All subsequent state is
+    // `ctx.copy(...)` — immutable, no `var`, no shared mutable state.
+    val hookRequest = EngineHookRequest(model, mcpReq, cacheKey)
+    val initialCtx: Context = Context(
+      stage   = PipelineStage.Execute,
+      request = hookRequest,
+      result  = None,
+      meta    = Map.empty,
+      stop    = false
+    )
+  
+    // -- Cache lookup, modeled as a PreExecute short-circuit --
+    // The cache lookup is wrapped as an inline pre-hook executor:
+    // if the cache HITS, the executor sets `stop = true` and skips
+    // the engine. If the cache MISSES, `stop = false` and the
+    // executor picks the engine provider + executes.
+    val cacheResolvingExecutor: Context => Either[EngineError, Context] = { ctx =>
+      val hookReq: EngineHookRequest = ctx.request match {
+        case hookReq: EngineHookRequest => hookReq
+        case other =>
+          // Per scala-error-handling-mindset: this should never
+          // happen — the dispatcher is constructed once per
+          // `definition()` and the only Context passed in is the
+          // initial one built here. Surface as a typed error
+          // with the same `ProviderInvocationFailed` shape used
+          // for dispatcher anomalies.
+          return Left(EngineError.ProviderInvocationFailed(
+            engine = "<dispatcher>",
+            name   = "EngineHookDispatcher",
+            reason = "UnexpectedRequestType",
+            message =
+              s"sm8: Context.request must be EngineHookRequest, got ${other.getClass.getName}"
+          ))
+      }
+      cache.getJournaled(hookReq.cacheKey) match {
+        case Some(row) =>
+          // Cache HIT: short-circuit. Decode the cached row into a
+          val pqr: PortableQueryResult =
+            CachedRowDecoder.fromRestateCachedRowAsPortable(row)
+          Right(ctx.copy(
+            result = Some(EngineHookResult(pqr)),
+            stop   = true
+          ))
+        case None =>
+          // Cache MISS: select + execute + populate cache.
+          for {
+            provider <- selectEngine(model, request, registry)
+            pqr      <- executeEngine(model, hookReq.mcpRequest, provider)
+          } yield {
+            // Per [[scala-jvm-safety-mindset]] "idempotent populate":
+            // cache write happens AFTER the engine returns. No
+            // failure path leaves a partial cache entry.
+            cache.putJournaledWithModelAndVersion(
+              hookReq.cacheKey,
+              CachedRowDecoder.toRestateCachedRowFromPortable(pqr),
+              Option(request.modelName).getOrElse("unknown"),
+              version
+            )
+            ctx.copy(result = Some(EngineHookResult(pqr)))
+          }
+      }
+    }
+  
+    dispatcher
+      .run(initialCtx, cacheResolvingExecutor)
+      .flatMap { finalCtx =>
+        finalCtx.result match {
+          case Some(EngineHookResult(pqr)) =>
+            Right(toQueryResultFromPortable(pqr, request))
+          case Some(other) =>
+            // Per scala-error-handling-mindset: programmer error
+            // (the dispatcher's contract is "executor populates
+            // result on success"). Surface as a typed EngineError.
+            Left(EngineError.ProviderInvocationFailed(
+              engine = "<dispatcher>",
+              name   = "EngineHookDispatcher",
+              reason = "UnexpectedResultType",
+              message = s"sm8: dispatcher returned unexpected result type ${other.getClass.getName}"
+            ))
+          case None =>
+            // No result set — also a programmer error (dispatcher
+            // contract: pre+post hooks passed but executor didn't
+            // populate). Surface as typed EngineError.
+            Left(EngineError.ProviderInvocationFailed(
+              engine = "<dispatcher>",
+              name   = "EngineHookDispatcher",
+              reason = "NoResult",
+              message = "sm8: dispatcher pipeline completed without executor populating Context.result"
+            ))
+        }
+      }
+}
 }
