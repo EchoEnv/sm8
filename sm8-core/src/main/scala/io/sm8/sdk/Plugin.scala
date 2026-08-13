@@ -28,7 +28,7 @@ package io.sm8.sdk
  *   - NOT import other Plugins directly — read what they need from
  *     `context.meta` at hook-time (RFC plugins.md Rule 3).
  */
-trait Plugin {
+trait Plugin extends java.io.Serializable {
 
   /**
    * Register this Plugin's Connectors and Hooks with the engine.
@@ -40,4 +40,36 @@ trait Plugin {
    * @param engine the engine being configured
    */
   def setup(engine: Engine): Unit
+
+  /**
+   * Self-documented closure-safety contract (RFC §7 + plugins.md Rule 1
+   * + RFC §13 thread-safety).
+   *
+   * The Plugin author declares the names of any constructor-captured
+   * state (in the usual case: an `AtomicInteger` for fire-counts, a
+   * `ResultCache` reference, a `StorageLevel` for the materialize
+   * plugin, etc.) so a future serialization-safety spec can introspect
+   * this list and assert that the only state captured is `Serializable`.
+   *
+   * Per [[scala-spark-batch-bugs-mindset]] mantra #1: "closures captured
+   * by Spark UDFs / lambdas in `Dataset.map` must avoid non-serializable
+   * refs (`SparkSession`, `Iterator`, `Connection`)." This accessor
+   * makes that contract mechanically introspectable: a Plugin's
+   * `closedOverVars` must list every captured reference, and the
+   * serialization spec asserts each one is `Serializable`.
+   *
+   * Default `Nil` (no constructor-captured state — pure setup-only
+   * Plugin). Plugins that DO capture state override and list every
+   * captured `val`/`var` name.
+   *
+   * ADDITIVE per [[scala-impact-analysis-mindset]] mantra 3: this is
+   * a default-implemented new method on the trait. Source-compatible
+   * (existing Plugins compile unchanged; they inherit the `Nil`
+   * default). Binary-compatible: the v-table slot is at the end of
+   * the trait's method table, so any existing class that implements
+   * `Plugin` continues to load and link (the JVM does not verify
+   * completeness of an implementation against a trait's v-table
+   * unless the method is called).
+   */
+  def closedOverVars: Seq[String] = Seq.empty
 }
