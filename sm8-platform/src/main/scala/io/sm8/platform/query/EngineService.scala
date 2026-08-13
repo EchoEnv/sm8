@@ -163,10 +163,10 @@ object EngineService {
       request: QueryRequest,
       registry: MCPEngineRegistry
   ): Either[EngineError, MCPEngineProvider] = {
-    // TODO(C5b): use `model` for `provider.query(model, mcpReq, ctx)`.
-    // PR-C5a doesn't consume the model — selection is purely
+    // TODO(C5b-extension): use `model` for the cache-key derivation
+    // in PR-C5b-extension's cache lookup. Selection is purely
     // registry-driven. The parameter is reserved for the cache +
-    // execute path that lands in PR-C5b.
+    // execute path that lands in PR-C5b-extension.
     val engineName: String =
       Option(request.engine)
         .filter(s => !isBlankLikeJava(s))
@@ -255,7 +255,7 @@ object EngineService {
       row.values.toList.map(PortableCellCodec.toJavaValue)
     }
     QueryResult(
-      model     = request.modelName,
+      model     = Option(request.modelName).getOrElse("unknown"),
       measures  = fieldNames,
       rows      = rows,
       truncated = false,

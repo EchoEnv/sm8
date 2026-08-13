@@ -52,7 +52,8 @@ class EngineServiceSpec extends AnyFunSuite with Matchers {
   private final class StubProvider(
       override val identity: io.sm8.core.engine.EngineIdentity,
       override val available: Boolean,
-      var queryResult: Either[EngineError, PortableQueryResult] = null,
+      var queryResult: Either[EngineError, PortableQueryResult] =
+        Right(PortableQueryResult(schema = ResultSchema(Nil), rows = Vector.empty)),
       var queryThrowable: RuntimeException = null
   ) extends MCPEngineProvider {
     override def query(
@@ -453,5 +454,25 @@ class EngineServiceSpec extends AnyFunSuite with Matchers {
     result.model shouldBe "flights"
     result.rows should have size 2
     result.rows(0) shouldBe List("Alice", 30L)
+  }
+
+  test("toQueryResultFromPortable: schema.fields → measures (non-empty)") {
+    // Regression for the architect's review: the `schema.fields →
+    // measures` path was untested when all tests used
+    // `ResultSchema(Nil)`. PR-C5b-extension's cache-hit path
+    // relies on this for the rowCount wire field.
+    val schema = ResultSchema(List(
+      Field.nonNull("name", SealedDataType.Varchar),
+      Field.nonNull("age", SealedDataType.BigInt)
+    ))
+    val portable = PortableQueryResult(
+      rows = Vector(ResultRow(
+        values = List(ResultValue.StringV("Alice"), ResultValue.IntV(30L)),
+        schema = schema)),
+      schema = schema
+    )
+    val req = QueryRequest("users", Nil, Nil, "", "spark")
+    val out = EngineService.toQueryResultFromPortable(portable, req)
+    out.measures shouldBe List("name", "age")
   }
 }
