@@ -76,6 +76,53 @@
         <artifactId>json-schema-validator</artifactId>
         <version>1.5.2</version>
       </dependency>
+      <!-- Restate SDK v2.1.1 (PR-C-final handler-class wiring). -->
+      <dependency>
+        <groupId>dev.restate</groupId>
+        <artifactId>sdk-api</artifactId>
+        <version>2.1.1</version>
+      </dependency>
+      <dependency>
+        <groupId>dev.restate</groupId>
+        <artifactId>sdk-common</artifactId>
+        <version>2.1.1</version>
+      </dependency>
+      <dependency>
+        <groupId>dev.restate</groupId>
+        <artifactId>sdk-core</artifactId>
+        <version>2.1.1</version>
+      </dependency>
+      <dependency>
+        <groupId>dev.restate</groupId>
+        <artifactId>sdk-http-vertx</artifactId>
+        <version>2.1.1</version>
+      </dependency>
+      <!-- sdk-serde-jackson: SPI-auto-loaded via
+           META-INF/services/dev.restate.serde.provider.DefaultSerdeFactoryProvider.
+           Provides JacksonSerdeFactory for `Serde[QueryRequest]` / `Serde[QueryResult]`. -->
+      <dependency>
+        <groupId>dev.restate</groupId>
+        <artifactId>sdk-serde-jackson</artifactId>
+        <version>2.1.1</version>
+      </dependency>
+      <!-- jackson-module-scala for Scala case-class serde
+           (NOT bundled with sdk-serde-jackson; required for
+           `RestateCachedRow` round-trip via Jackson Serde). -->
+      <dependency>
+        <groupId>com.fasterxml.jackson.module</groupId>
+        <artifactId>jackson-module-scala_2.13</artifactId>
+        <version>2.15.2</version>
+      </dependency>
+      <!-- vertx-core (PR-C-final): transitive `runtime` scope
+           from `sdk-http-vertx` is not on the compile classpath;
+           promote to compile for the `RestateBootstrap.bind(...)`
+           return type. Per [[scala-jar-packaging-mindset]]: we
+           only need vertx-core, NOT the full Vert.x stack. -->
+      <dependency>
+        <groupId>io.vertx</groupId>
+        <artifactId>vertx-core</artifactId>
+        <version>4.5.11</version>
+      </dependency>
     </dependencies>
   </dependencyManagement>
 

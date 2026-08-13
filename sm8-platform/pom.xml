@@ -51,15 +51,59 @@
             <scope>test</scope>
         </dependency>
 
-        <!-- Restate SDK v2.1.1 (PR-C5b-ext-γ follow-up — the handler-class
-             wiring PR — will add these). NOT added in THIS PR because
-             the helper ships with the direct-supplier path only (no
-             Restate type references); per [[scala-jar-packaging-mindset]]
-             "don't add deps you don't use." The follow-up PR adds
-             `sdk-common` (API types), `sdk-core` (state-machine
-             runtime), `sdk-java-http` (HTTP transport), `sdk-serde-jackson`
-             (Jackson binding for `RestateCachedRow`), `sdk-testing`
-             (Testcontainers harness for end-to-end tests). -->
+        <!-- PR-C-final: Restate SDK v2.1.1 (handler-class wiring).
+             `sdk-common` carries the API types (ServiceDefinition,
+             HandlerDefinition, HandlerContext, HandlerRunner,
+             annotations); `sdk-core` carries the HandlerRunner concrete
+             implementation; `sdk-http-vertx` carries the HTTP
+             transport (RestateHttpServer.listen(endpoint, port)).
+             `jackson-module-scala_2.13` is needed because Scala case
+             classes (RestateCachedRow, QueryRequest, QueryResult) are
+             NOT handled by Jackson out of the box — sdk-serde-jackson
+             does NOT bundle the Scala module. The SPI auto-loads the
+             SDK's JacksonSerdeFactory via META-INF/services once it's
+             on the classpath.
+             Per [[scala-jar-packaging-mindset]]: no new fat-jar bloat;
+             verified zero Spark transitive deps (recon). -->
+        <dependency>
+            <groupId>dev.restate</groupId>
+            <artifactId>sdk-api</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>dev.restate</groupId>
+            <artifactId>sdk-common</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>dev.restate</groupId>
+            <artifactId>sdk-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>dev.restate</groupId>
+            <artifactId>sdk-http-vertx</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>dev.restate</groupId>
+            <artifactId>sdk-serde-jackson</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.module</groupId>
+            <artifactId>jackson-module-scala_2.13</artifactId>
+        </dependency>
+        <!-- vertx-core: same artifact as `sdk-http-vertx`'s
+             `runtime` transitive; promoted to compile here so
+             `RestateBootstrap.bind(...)` can return the
+             `io.vertx.core.http.HttpServer` type. -->
+        <dependency>
+            <groupId>io.vertx</groupId>
+            <artifactId>vertx-core</artifactId>
+        </dependency>
+    
+        <!-- TEMP test dep to verify enforcer -->
+        <dependency>
+            <groupId>org.apache.spark</groupId>
+            <artifactId>spark-sql_2.13</artifactId>
+            <version>3.5.8</version>
+        </dependency>
     </dependencies>
 
     <build>
@@ -77,6 +121,55 @@
             <plugin>
                 <groupId>org.scalatest</groupId>
                 <artifactId>scalatest-maven-plugin</artifactId>
+                <configuration>
+                    <suffixes>Spec</suffixes>
+                    <reportsDirectory>${project.build.directory}/surefire-reports</reportsDirectory>
+                    <junitxml>.</junitxml>
+                    <filereports>sm8-platform-test-suite.txt</filereports>
+                </configuration>
+            </plugin>
+
+            <!-- PR-C-final: ban Spark at build-time. Templates
+                 match sm8-core lines 122-148. Cross-module audit
+                 confirmed zero existing `org.apache.spark:*` deps
+                 in the reactor, so this rule cannot break the
+                 current build; it only enforces going forward.
+                 Per [[scala-jar-packaging-mindset]]: every JAR
+                 added to the platform must be audited for the
+                 forbidden groupId. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <version>3.4.1</version>
+                <executions>
+                    <execution>
+                        <id>enforce-no-spark</id>
+                        <goals><goal>enforce</goal></goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <rules>
+                        <bannedDependencies>
+                            <excludes>
+                                <!-- `org.apache.spark:*` covers every
+                                     published Spark artifact (spark-core,
+                                     spark-sql, spark-catalyst, etc. —
+                                     all under the same groupId). The
+                                     previous `org.apache.spark.sql:*`
+                                     exclude was a no-op (no such
+                                     groupId exists). -->
+                                <exclude>org.apache.spark:*</exclude>
+                            </excludes>
+                            <message>
+                                sm8-platform must remain Spark-free. Spark
+                                classes live in connectors/spark-connector
+                                (Step 8 in the migration plan), not in
+                                sm8-platform. Move the offending dep
+                                there when the connector lands.
+                            </message>
+                        </bannedDependencies>
+                    </rules>
+                </configuration>
             </plugin>
         </plugins>
     </build>
