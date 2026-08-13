@@ -27,12 +27,13 @@
  *
  * The Java implementation handled 8 cases (Varchar, Int, BigInt,
  * Double, Boolean, Timestamp, Date, Decimal) and `null → T_NULL`,
- * throwing `IllegalArgumentException` on Array/Map/Row/Json. The Scala
- * implementation is exhaustive over all 12 SealedDataType cases — the
- * compiler enforces this. Array/Map/Row/Json return `T_STRING`
- * (encoded-as-string convention). No caller in our reactor today, so
- * the change is dormant until the engine-portable path migration
- * (PR-C5+) wires the consumer to match.
+ * throwing `IllegalArgumentException` on Array/Map/Row/Json/Binary.
+ * The Scala implementation is exhaustive over all 13 SealedDataType
+ * cases — the compiler enforces this. Array/Map/Row/Json return
+ * `T_STRING` (encoded-as-string convention); Binary returns
+ * `T_BINARY` (Base64-encoded bytes convention). No caller in our
+ * reactor today, so the change is dormant until the engine-portable
+ * path migration (PR-C5+) wires the consumer to match.
  */
 package io.sm8.platform.query
 
@@ -62,6 +63,7 @@ object EngineTypeTags {
     case Some(_: SealedDataType.Map)     => RestateCachedRow.T_STRING
     case Some(_: SealedDataType.Row)     => RestateCachedRow.T_STRING
     case Some(SealedDataType.Json)       => RestateCachedRow.T_STRING
+    case Some(SealedDataType.Binary)     => RestateCachedRow.T_BINARY
     case None                            => RestateCachedRow.T_NULL
   }
 

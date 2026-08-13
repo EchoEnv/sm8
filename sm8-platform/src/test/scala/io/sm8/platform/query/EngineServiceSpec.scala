@@ -334,7 +334,10 @@ class EngineServiceSpec extends AnyFunSuite with Matchers {
           ResultValue.IntV(25L)),
         schema = ResultSchema(Nil))
     ),
-    schema = ResultSchema(Nil)
+    schema = ResultSchema(List(
+      io.sm8.core.schema.Field.nonNull("name", io.sm8.core.schema.SealedDataType.Varchar),
+      io.sm8.core.schema.Field.nonNull("age", io.sm8.core.schema.SealedDataType.BigInt)
+    ))
   )
 
   test("executeEngine: returns Right(PortableQueryResult) on success") {
@@ -360,6 +363,11 @@ class EngineServiceSpec extends AnyFunSuite with Matchers {
     out.left.get shouldBe a [EngineError.ProviderInvocationFailed]
     val err = out.left.get.asInstanceOf[EngineError.ProviderInvocationFailed]
     err.name shouldBe "spark"
+    // Per review pass #2: ProviderInvocationFailed.engine is the
+    // engine identity (e.g. "spark"), NOT the model name. The
+    // earlier code used `model.name`, which broke `toErrorDetail`
+    // formatting.
+    err.engine shouldBe "spark"
     err.message shouldBe "engine blew up"
   }
 
@@ -577,5 +585,157 @@ class EngineServiceSpec extends AnyFunSuite with Matchers {
       EngineService.runQuery(req, dummyModel, registry)
     out.isRight shouldBe true
     out.isInstanceOf[java.io.Serializable] shouldBe true
+  }
+
+  // -- PR-C5b-ext-β: cache integration --
+
+  test("runQuery: cache HIT bypasses engine (no executeEngine call)") {
+    // Per review pass #2 (DE-reviewer MINOR #10): the previous
+    // version of this test pre-populated the cache with the literal
+    // string "test-key", but `EngineService.runQuery` derives a
+    // SHA-256 key — those keys never match. Rewrite: pre-populate
+    // the cache with the EXACT key the run computes (via
+    // `CacheBridge.platformCacheKey`), then call `runQuery` and
+    // verify the engine is bypassed via a stub provider whose
+    // `queryResult` is null (would NPE if invoked).
+    val spark = new StubProvider(
+      io.sm8.core.engine.EngineIdentity("spark", "3.5.8", "0.2.4"),
+      available = true,
+      queryResult = null  // NPE if executeEngine runs
+    )
+    val registry = makeRegistry(Map("spark" -> spark))
+    val cache = InMemoryResultCache()
+    val req = QueryRequest("flights", Nil, Nil, "", "spark")
+    val cacheKey = CacheBridge.platformCacheKey(
+      engine     = "spark",
+      modelName  = "flights",
+      version    = dummyModel.version,
+      measures   = Nil,
+      dimensions = Nil,
+      where      = None
+    )
+    cache.putJournaledWithModelAndVersion(
+      cacheKey,
+      CachedRowDecoder.toRestateCachedRowFromPortable(portableResultWithRows),
+      "flights",
+      dummyModel.version
+    )
+    val out = EngineService.runQuery(req, dummyModel, registry, cache)
+    out.isRight shouldBe true
+    out.toOption.get.rows should have size 2
+    out.toOption.get.rows(0) shouldBe List("Alice", 30L)
+  }
+
+  test("runQuery: cache MISS populates cache after executeEngine") {
+    val spark = new StubProvider(
+      io.sm8.core.engine.EngineIdentity("spark", "3.5.8", "0.2.4"),
+      available = true,
+      queryResult = Right(portableResultWithRows)
+    )
+    val registry = makeRegistry(Map("spark" -> spark))
+    val cache = InMemoryResultCache()
+    val out = EngineService.runQuery(
+      QueryRequest("flights", Nil, Nil, "", "spark"),
+      dummyModel, registry, cache
+    )
+    out.isRight shouldBe true
+    // Cache was populated: subsequent calls would hit the cache.
+    // We can't directly verify the cache key (it's internal), but
+    // the runQuery call should have stored the result.
+    // Verify by calling again and checking the engine is NOT
+    // called (the StubProvider's queryResult = null would NPE).
+    val spark2 = new StubProvider(
+      io.sm8.core.engine.EngineIdentity("spark", "3.5.8", "0.2.4"),
+      available = true,
+      queryResult = null
+    )
+    val registry2 = makeRegistry(Map("spark" -> spark2))
+    val out2 = EngineService.runQuery(
+      QueryRequest("flights", Nil, Nil, "", "spark"),
+      dummyModel, registry2, cache
+    )
+    // If the cache HIT path works, the engine is not called →
+    // no NPE despite queryResult = null.
+    out2.isRight shouldBe true
+    out2.toOption.get.rows should have size 2
+  }
+
+  test("runQuery: ResultCache.NoOp default = no caching (back-compat)") {
+    val spark = new StubProvider(
+      io.sm8.core.engine.EngineIdentity("spark", "3.5.8", "0.2.4"),
+      available = true,
+      queryResult = Right(portableResultWithRows)
+    )
+    val registry = makeRegistry(Map("spark" -> spark))
+    val out = EngineService.runQuery(
+      QueryRequest("flights", Nil, Nil, "", "spark"),
+      dummyModel, registry
+      // No cache arg → defaults to ResultCache.NoOp
+    )
+    out.isRight shouldBe true
+  }
+
+  // -- Review pass #2: BinaryV end-to-end cache round-trip --
+
+  test("runQuery: BinaryV round-trip through cache HIT path (no MatchError)") {
+    // Per review pass #2 (DE-reviewer MINOR #12 + CRITICAL #1):
+    // before the fix, a BinaryV column would throw MatchError in
+    // PortableCellCodec.toJavaValue when the cache HIT path
+    // decoded the cached `RestateCachedRow` through `toJavaValue`
+    // for the MCP wire response.
+    val binaryPortable = PortableQueryResult(
+      rows = Vector(
+        ResultRow(
+          values = List(
+            ResultValue.StringV("doc-1"),
+            ResultValue.BinaryV(Array[Byte](1, 2, 3, 4, 5))
+          ),
+          schema = ResultSchema(Nil)
+        ),
+        ResultRow(
+          values = List(
+            ResultValue.StringV("doc-2"),
+            ResultValue.BinaryV(Array[Byte](10, 20, 30))
+          ),
+          schema = ResultSchema(Nil)
+        )
+      ),
+      schema = ResultSchema(List(
+        io.sm8.core.schema.Field.nonNull("name", io.sm8.core.schema.SealedDataType.Varchar),
+        io.sm8.core.schema.Field.nonNull("payload", io.sm8.core.schema.SealedDataType.Binary)
+      ))
+    )
+    val spark = new StubProvider(
+      io.sm8.core.engine.EngineIdentity("spark", "3.5.8", "0.2.4"),
+      available = true,
+      queryResult = Right(binaryPortable)
+    )
+    val registry = makeRegistry(Map("spark" -> spark))
+    val cache = InMemoryResultCache()
+    val out = EngineService.runQuery(
+      QueryRequest("docs", Nil, Nil, "", "spark"),
+      dummyModel, registry, cache
+    )
+    out.isRight shouldBe true
+    val qr = out.toOption.get
+    qr.rows should have size 2
+    // BinaryV cells surface as `Array[Byte]` in the MCP wire
+    // response (raw, no Base64 round-trip — the in-process MCP
+    // response, not the journal wire format).
+    qr.rows(0)(1) shouldBe Array[Byte](1, 2, 3, 4, 5)
+    qr.rows(1)(1) shouldBe Array[Byte](10, 20, 30)
+    // Second call → cache HIT → same decode path, no MatchError
+    val spark2 = new StubProvider(
+      io.sm8.core.engine.EngineIdentity("spark", "3.5.8", "0.2.4"),
+      available = true,
+      queryResult = null
+    )
+    val registry2 = makeRegistry(Map("spark" -> spark2))
+    val out2 = EngineService.runQuery(
+      QueryRequest("docs", Nil, Nil, "", "spark"),
+      dummyModel, registry2, cache
+    )
+    out2.isRight shouldBe true
+    out2.toOption.get.rows(0)(1) shouldBe Array[Byte](1, 2, 3, 4, 5)
   }
 }
