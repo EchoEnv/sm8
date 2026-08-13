@@ -61,10 +61,10 @@ import io.sm8.core.engine.{
   PortableQueryResult
 }
 import io.sm8.core.model.{FilterSpec, Model}
-import io.sm8.core.engine.{EngineContext}
-import io.sm8.platform.query.hooks.{EngineHookDispatcher, EngineHookRequest, EngineHookResult}
-import io.sm8.sdk.{Context, PipelineStage}
-
+import io.sm8.core.engine.EngineContext
+import io.sm8.core.engine.{ EngineHookRequest, EngineHookResult }
+import io.sm8.platform.query.hooks.EngineHookDispatcher
+ import io.sm8.sdk.{Context, PipelineStage}
 /**
  * Engine-portable path entry point. PR-C5a ships the engine
  * selection + MCPQueryRequest build. The cache + execute segments
@@ -273,153 +273,11 @@ object EngineService {
     )
   }
 
-  /**
-   * Pure engine-portable entry-point: build → select → cache-lookup →
-   * execute (on miss) → cache-store → format.
-   *
-   * Replaces the legacy Java `QueryService.runQueryViaEngineRegistry`
-   * (semanticdf-platform lines 420-579). PR-C5b-ext-β adds the
-   * cache lookup + miss-store path. PR-C5b-ext-γ will wrap the
-   * miss path in `Restate.run` for journaled-execution semantics.
-   *
-   * =Cache integration=
-   *
-   * The cache is consulted on every call. On HIT, the engine
-   * is bypassed entirely and the cached `RestateCachedRow` is
-   * decoded into a `QueryResult` (no engine execution).
-   *
-   * On MISS, the engine is executed, the result is encoded to
-   * a `RestateCachedRow` via `CachedRowDecoder.toRestateCachedRowFromPortable`
-   * (PR-C5b-ext-β), and the cache is populated via
-   * `cache.putJournaledWithModelAndVersion(key, row, modelName, version)`.
-   *
-   * =Serializable-safety for Spark closures=
-   *
-   * All thread-through types are `Product with Serializable`:
-   *   - `io.sm8.core.model.Model` (PR-B-prep)
-   *   - `io.sm8.core.engine.MCPQueryRequest` (PR-C0c)
-   *   - `io.sm8.core.engine.MCPEngineRegistry` (PR-C0c, +`extends Serializable` in PR-C6)
-   *   - `io.sm8.core.engine.MCPEngineProvider` (PR-C0c, +`extends Serializable` trait in PR-C6)
-   *   - `io.sm8.core.engine.EngineContext` (PR-C0c)
-   *   - `io.sm8.platform.query.QueryResult` (PR-C4c)
-   *   - `io.sm8.platform.query.QueryRequest` (PR-C5a)
-   *   - `io.sm8.platform.query.ResultCache` (PR-C5b-ext-α, `extends Serializable`)
-   *   - `io.sm8.platform.query.RestateCachedRow` (PR-C1, `extends Product with Serializable`)
-   *
-   * The compiled `Either[EngineError, QueryResult]` is therefore
-   * `Serializable` (Scala's `Either` is `Serializable` iff both `L` and
-   * `R` are — see `scala.util.Either`).
-   *
-   * The `Restate.run` closure concern (PR-C5b-ext-γ) is
-   * addressed separately: the captured values in the journaled
-   * lambda are all `Product with Serializable`, so the lambda
-   * passes Restate's `Serializable` requirement.
-   *
-   * Per [[scala-error-handling-mindset]] "errors are data": errors
-   * flow as `Either` not as `throw`. The caller (PR-C-final's
-   * legacy `QueryService.runQuery` wrapper) handles the `Either`
-   * at the Restate boundary.
-   *
-   * Per [[scala-jvm-safety-mindset]] "null is a liar": null
-   * requests are rejected at the boundary (the legacy `runQuery`
-   * does this; the Scala version does too via the legacy
-   * caller). No `null` flows through this method.
-   *
-   * =Cache key=
-   *
-   * The cache key is a SHA-256 hash over
-   * `(engine, modelName, model.version, measures, dimensions, where)`
-   * via `CacheBridge.platformCacheKey`. Both the SHA-256 (stable
-   * across JVMs) AND the input `model.version` field (a deterministic
-   * Int carried on the `Model`) are required for cross-replica +
-   * cross-restart cache hits. Per review pass #2 (Architect
-   * MINOR #6): the earlier `model.hashCode()` surrogate was JVM-
-   * instance-specific and silently broke cross-JVM cache hits.
-   *
-   * =PROVISIONAL cache integration=
-   *
-   * Per review pass #2 (Architect MINOR #3): the cache lookup/store
-   * below is **inline** in this function. This is intentional for
-   * the legacy-migration stage of the project. When Step 10-11 lands
-   * (sm8-platform calls `engine.run(request)` from the SDK
-   * pipeline), this cache integration will be hoisted into a
-   * `cache-plugin` Pre+Post hook (per the plan). The shape is
-   * designed for that extraction: the cache lookup is just
-   * `cache.getJournaled(...)`, the cache populate is just
-   * `cache.putJournaledWithModelAndVersion(...)`. Hoisting is
-   * mechanical.
-   *
-   * @param request  the platform's wire DTO
-   * @param model    the engine-portable model (resolved by the
-   *                 legacy caller; the engine registries return
-   *                 `core.Model` for engine-portable types).
-   *                 Used for cache-key derivation + as the engine
-   *                 adapter's compile target.
-   * @param registry the engine-portable registry
-   * @param cache    the cache (default `ResultCache.NoOp` for
-   *                 driver-side execution; `InMemoryResultCache`
-   *                 for production)
-   * @return         `Right(queryResult)` on success;
-   *                 `Left(engineError)` on engine selection or
-   *                 execution failure
-   */
-  def runQuery(
-      request: QueryRequest,
-      model: Model,
-      registry: MCPEngineRegistry,
-      cache: ResultCache = ResultCache.NoOp
-  ): Either[EngineError, QueryResult] = {
-    val mcpReq: MCPQueryRequest = buildMCPRequest(request)
-    // Per review pass #2 (Architect MINOR #6): use `model.version`
-    // — a deterministic Int carried on the model — instead of
-    // `model.hashCode()` (JVM-instance-specific). This preserves
-    // cross-JVM cache hits across restarts + replicas.
-    val version: Int = model.version
-    // Per [[scala-impact-analysis-mindset]]: `selectEngine` is only
-    // needed on the cache MISS path. Moving it inside the miss
-    // branch (rather than before the for-comprehension) means
-    // cache HITs survive engine outages — a cache's primary value
-    // is degraded-operation continuity.
-    val cacheKey: String = CacheBridge.platformCacheKey(
-      engine     = Option(request.engine).filter(s => !isBlankLikeJava(s))
-        .getOrElse(registry.defaultEngine),
-      modelName  = Option(request.modelName).getOrElse("unknown"),
-      version    = version,
-      measures   = mcpReq.measures.toList,
-      dimensions = mcpReq.dimensions.toList,
-      where      = mcpReq.where
-    )
-    for {
-      // -- Cache lookup (HIT path) — no engine call needed --
-      pqr <- cache.getJournaled(cacheKey) match {
-        case Some(row) =>
-          Right(CachedRowDecoder.fromRestateCachedRowAsPortable(row))
-        case None    =>
-          // -- Cache MISS path: select + execute + encode + store --
-          // Per review pass #2 (Architect MINOR #8): hoist the
-          // cache populate OUT of the for-comprehension (it returns
-          // `Unit`); the `yield pqr2` cleanly threads the
-          // `PortableQueryResult` through.
-          for {
-            provider <- selectEngine(model, request, registry)
-            pqr2      <- executeEngine(model, mcpReq, provider)
-          } yield {
-            cache.putJournaledWithModelAndVersion(
-              cacheKey,
-              CachedRowDecoder.toRestateCachedRowFromPortable(pqr2),
-              Option(request.modelName).getOrElse("unknown"),
-              version
-            )
-            pqr2
-          }
-      }
-    } yield toQueryResultFromPortable(pqr, request)
-  }
 
   /**
    * Hook-aware engine-portable entry-point.
    *
-   * Same flow as [[runQuery]] but with a Plugin-Context dispatch step
+   * Same flow as `runQueryWithHooks` but with a Plugin-Context dispatch step
    * around the engine call. This makes RFC §13's
    * own plugin" DoD testable for the first time: any PreExecute hook
    * registered via `engine.hooks.registerPreHook(HookStage.PreExecute,
@@ -504,22 +362,18 @@ object EngineService {
       meta    = Map.empty,
       stop    = false
     )
-  
-    // -- Cache lookup, modeled as a PreExecute short-circuit --
-    // The cache lookup is wrapped as an inline pre-hook executor:
-    // if the cache HITS, the executor sets `stop = true` and skips
-    // the engine. If the cache MISSES, `stop = false` and the
-    // executor picks the engine provider + executes.
-    val cacheResolvingExecutor: Context => Either[EngineError, Context] = { ctx =>
-      val hookReq: EngineHookRequest = ctx.request match {
+    // -- Executor: pure engine call; cache handled by CachePlugin hook --
+    // The cache lookup + populate is no longer inline in the
+    // executor; the new io.sm8.platform.query.cache.CachePlugin
+    // (registered via QueryService.definition's plugins: Seq[Plugin])
+    // owns the read-through (PreExecute) and write-through
+    // (PostExecute) hooks. On HIT, the PreExecute hook sets
+    // context.stop = true and the dispatcher skips this executor;
+    // on MISS, the executor runs and writes back via PostExecute.
+    val engineExecutor: Context => Either[EngineError, Context] = { ctx =>
+      val hookReq = ctx.request match {
         case hookReq: EngineHookRequest => hookReq
         case other =>
-          // Per scala-error-handling-mindset: this should never
-          // happen — the dispatcher is constructed once per
-          // `definition()` and the only Context passed in is the
-          // initial one built here. Surface as a typed error
-          // with the same `ProviderInvocationFailed` shape used
-          // for dispatcher anomalies.
           return Left(EngineError.ProviderInvocationFailed(
             engine = "<dispatcher>",
             name   = "EngineHookDispatcher",
@@ -528,37 +382,14 @@ object EngineService {
               s"sm8: Context.request must be EngineHookRequest, got ${other.getClass.getName}"
           ))
       }
-      cache.getJournaled(hookReq.cacheKey) match {
-        case Some(row) =>
-          // Cache HIT: short-circuit. Decode the cached row into a
-          val pqr: PortableQueryResult =
-            CachedRowDecoder.fromRestateCachedRowAsPortable(row)
-          Right(ctx.copy(
-            result = Some(EngineHookResult(pqr)),
-            stop   = true
-          ))
-        case None =>
-          // Cache MISS: select + execute + populate cache.
-          for {
-            provider <- selectEngine(model, request, registry)
-            pqr      <- executeEngine(model, hookReq.mcpRequest, provider)
-          } yield {
-            // Per [[scala-jvm-safety-mindset]] "idempotent populate":
-            // cache write happens AFTER the engine returns. No
-            // failure path leaves a partial cache entry.
-            cache.putJournaledWithModelAndVersion(
-              hookReq.cacheKey,
-              CachedRowDecoder.toRestateCachedRowFromPortable(pqr),
-              Option(request.modelName).getOrElse("unknown"),
-              version
-            )
-            ctx.copy(result = Some(EngineHookResult(pqr)))
-          }
-      }
+      for {
+        provider <- selectEngine(model, request, registry)
+        pqr      <- executeEngine(model, hookReq.mcpRequest, provider)
+      } yield ctx.copy(result = Some(EngineHookResult(pqr)))
     }
   
     dispatcher
-      .run(initialCtx, cacheResolvingExecutor)
+      .run(initialCtx, engineExecutor)
       .flatMap { finalCtx =>
         finalCtx.result match {
           case Some(EngineHookResult(pqr)) =>
@@ -585,5 +416,5 @@ object EngineService {
             ))
         }
       }
-}
+  }
 }

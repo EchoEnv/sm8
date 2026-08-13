@@ -34,6 +34,8 @@ import io.sm8.core.schema.{Field, SealedDataType}
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
+import io.sm8.platform.query.cache.CachePlugin
+
 /**
  * Unit tests for `QueryService.definition(...)` — exercises the
  * hand-built `ServiceDefinition` + `HandlerRunner` without booting
@@ -223,16 +225,17 @@ class QueryServiceSpec extends AnyFunSuite with Matchers {
       cache: ResultCache,
       request: QueryRequest
   ): QueryResult = {
-    val svc = QueryService.definition(model, registry, cache)
+    // Per [[scala-data-driven-refactor-mindset]] "Plugin unit of
+    // extension": mirror the production wiring (`RestateBootstrap`
+    // always registers the `CachePlugin`). Without the plugin,
+    // the cache HIT path can't short-circuit and the engine runs
+    // on every request (regression introduced when cache lookup
+    // moved from the inline `EngineService.runQuery` body to the
+    // `CachePlugin` hook).
+    val svc = QueryService.definition(model, registry, cache, plugins = Seq(new CachePlugin(cache)))
     val handler = svc.getHandlers.iterator.next()
     val runner = handler.getRunner
       .asInstanceOf[dev.restate.sdk.HandlerRunner[QueryRequest, QueryResult]]
-    // Per review pass #2 (debug-mantra): the SDK's
-    // `HandlerRunner.run` reads the request body from
-    // `ctx.request().body()`. We serialize the request via the
-    // per-handler serde and feed the resulting Slice into the
-    // stub HandlerContext. No `request-as-argument` overload
-    // exists in v2.x.
     val requestSlice = requestSerde.serialize(request)
     val responseSlice = runner.run(
       stubContext(requestSlice),

@@ -25,9 +25,8 @@
  *
  * Per [[scala-data-driven-refactor-mindset]] "sealed-trait dispatch":
  * the only branching in this file is the match on `Left`/`Right`
- * for the `Either` carry. No Map tables, no `Any` casts.
- *
- * Per [[scala-error-handling-mindset]]: hook throws are RFC §9
+import io.sm8.core.engine.{ EngineHookRequest, EngineHookResult }
+ import io.sm8.sdk.{Context, HookManager, HookStage, PipelineStage, PostHook, PreHook}
  * fail-fast. The dispatcher does NOT wrap them — they propagate
  * to the caller's `Either` via the engine-call boundary. Plugin
  * authors who want non-fatal hooks must `try/catch` inside the
