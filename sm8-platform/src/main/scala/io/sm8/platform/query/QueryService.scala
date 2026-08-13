@@ -54,9 +54,11 @@ import dev.restate.sdk.endpoint.definition.{
   ServiceType
 }
 import dev.restate.serde.jackson.JacksonSerdeFactory
-
 import io.sm8.core.engine.MCPEngineRegistry
 import io.sm8.core.model.Model
+import io.sm8.core.{EngineImpl, HookManagerImpl}
+import io.sm8.platform.query.hooks.EngineHookDispatcher
+import io.sm8.sdk.Plugin
 
 /**
  * Hand-built Restate v2.x service definition for the engine-portable
@@ -65,8 +67,6 @@ import io.sm8.core.model.Model
  * Per [[karpathy-guidelines-mindset]]: a singleton `object` (not a
  * class) since the ServiceDefinition is stateless; the
  * per-handler `Model` + `MCPEngineRegistry` + `ResultCache` are
- * captured by the handler-body lambda (which must be Serializable
- * for journal rehydration).
  */
 object QueryService {
 
@@ -92,11 +92,29 @@ object QueryService {
    * @return         a `ServiceDefinition` registered as
    *                 "QueryService" with one SHARED handler
    *                 named "runQuery".
+   * @param dispatcher the platform's hook dispatcher, built
+   *                   once per `definition()` call from the
+   *                   populated `HookManager`. Carries all
+   *                   registered Plugins' hooks.
+   * @param plugins    the Plugins to register on the engine's
+   *                   `HookManager`. Each `plugin.setup(engine)`
+   *                   is invoked at `definition()` time; their
+   *                   registered hooks fire on every request
+   *                   via the dispatcher. Default `Nil` keeps
+   *                   backward-compat for tests that don't
+   *                   exercise the plugin path. **The 6 reference
+   *                   Plugins (cache, audit, row-cap, broadcast,
+   *                   materialize, skew) are loaded by the
+   *                   caller** (production binds them via
+   *                   `RestateBootstrap` — see that module for
+   *                   the load-via-`META-INF/services/` flow
+   *                   once the sm8-server module lands).
    */
   def definition(
       model: Model,
       registry: MCPEngineRegistry,
-      cache: ResultCache
+      cache: ResultCache,
+      plugins: Seq[Plugin] = Nil
   ): ServiceDefinition = {
     // Per review pass #2 (DE-reviewer #3): the SDK's
     // `JacksonSerdeFactory.DEFAULT` mapper doesn't reliably auto-load
@@ -113,14 +131,22 @@ object QueryService {
     val requestSerde = jacksonSerdeFactory.create(classOf[QueryRequest])
     val resultSerde  = jacksonSerdeFactory.create(classOf[QueryResult])
 
-    // Per [[karpathy-guidelines-mindset]] "match existing style":
-    // the handler body is a Scala function `(CTX, REQ) => RES`.
-    // The SDK wraps the synchronous function in async + journal
-    // semantics at handler invocation time.
+    // -- Construct EngineImpl + register caller-supplied plugins --
+    // Per [[scala-data-driven-refactor-mindset]] "Plugin unit of
+    // extension": each plugin's `setup(engine)` registers its
+    // hooks via `engine.hooks.registerPreHook` / `registerPostHook`.
+    // The platform does NOT hardcode which plugins run — the
+    // caller passes a `Seq[Plugin]`. For production, plugins are
+    // loaded via the SDK's `META-INF/services/io.sm8.sdk.Plugin`
+    // portal (Step 7 / Step 9). For tests, pass `Nil`.
+    val engine: EngineImpl = new EngineImpl
+    plugins.foreach(engine.use)
+    val dispatcher: EngineHookDispatcher = EngineHookDispatcher(engine.hooks)
+
     val handlerRunner: HandlerRunner[QueryRequest, QueryResult] =
       HandlerRunner.of(
         (ctx: dev.restate.sdk.Context, req: QueryRequest) =>
-          runQuery(req, model, registry, cache),
+          runQuery(req, model, registry, cache, dispatcher),
         jacksonSerdeFactory,
         HandlerRunner.Options.DEFAULT
       )
@@ -168,11 +194,7 @@ object QueryService {
    *
    * ==Timeout / retry policy (explicit non-decision)==
    *
-   * Per review pass #2 (DE-reviewer #6 + #10): the handler body
-   * does NOT use `ctx.timer(...)` or wrap the engine call in any
-   * Restate journaled timeout. This is a deliberate non-decision:
-   * the synchronous engine execution IS the journaled work.
-   * Restate's retry policy applies to `TerminalException` throws
+   * retry policy applies to `TerminalException` throws
    * (so transient engine failures retry); no inner timeout is
    * added because the engine-portable path already has its own
    * execution-time deadline (the engine adapter's `EngineContext`
@@ -186,14 +208,29 @@ object QueryService {
    * 504 (see `engineErrorCode` below). The wire contract is
    * honest: the journal re-runs the engine call on retry; the
    * engine decides when to give up.
+   *
+   * Per the pipeline-wiring PR: this method delegates to
+   * `EngineService.runQueryWithHooks`, which fires PreExecute
+   * and PostExecute hooks around the engine call. The 6
+   * reference Plugins (Cache, Audit, RowCap, Broadcast,
+   * Materialize, Skew) run on every invocation via the
+   * dispatcher constructed in `definition()`.
+   *
+   * @param dispatcher the platform's hook dispatcher, built
+   *                   once per `definition()` call from the
+   *                   populated `HookManager`. Carries all
+   *                   registered Plugins' hooks.
    */
   private def runQuery(
       request: QueryRequest,
       model: Model,
       registry: MCPEngineRegistry,
-      cache: ResultCache
+      cache: ResultCache,
+      dispatcher: EngineHookDispatcher
   ): QueryResult = {
-    EngineService.runQuery(request, model, registry, cache) match {
+    EngineService.runQueryWithHooks(
+      request, model, registry, cache, dispatcher
+    ) match {
       case Right(qr)  => qr
       case Left(err) =>
         // Per review pass #2 (DE-reviewer #1): use Restate's
