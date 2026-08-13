@@ -115,4 +115,68 @@ object PortableCellCodec {
 
   /** Java-friendly overload: accept `null` directly. */
   def toJavaValue(v: ResultValue): Object = toJavaValue(Option(v))
+
+  /**
+   * Inverse of [[encodeCell]]. Decodes a string-encoded cell back
+   * to its typed Java Object.
+   *
+   * Throws [[IllegalArgumentException]] on unknown tags
+   * (forward-compatibility break — the cache row will be rejected
+   * if a new tag has been added since the row was written).
+   *
+   * ==T_DATE timezone handling==
+   *
+   * `Date.getTime()` must be JVM-timezone-independent on decode.
+   * `Date.valueOf(LocalDate.parse(s))` would reconstruct a Date
+   * whose `getTime()` is computed at JVM-default midnight — which
+   * silently shifts across JVM restarts in different timezones. The
+   * Java legacy code (and this Scala version) builds the Date from
+   * an Instant anchored at UTC midnight of the date, so `getTime()`
+   * returns the underlying millis (UTC midnight of the date) and
+   * is JVM-timezone-independent.
+   *
+   * The Date is constructed via `java.sql.Date(long)` (not
+   * `Date.from(Instant)`, which would return `java.util.Date` via
+   * the parent-class static method — the parent class). The
+   * `java.sql.Date(long)` constructor pins the runtime class to
+   * `java.sql.Date`.
+   *
+   * ==T_TIMESTAMP timezone handling==
+   *
+   * `Timestamp.from(Instant)` gives a `java.sql.Timestamp` with the
+   * same Instant regardless of JVM timezone — the underlying millis
+   * are preserved.
+   *
+   * @param tag      one of the 9 `RestateCachedRow.T_*` constants
+   * @param encoded  the string-encoded cell value
+   * @return         the typed Java Object (or `null` for `T_NULL` / null
+   *                 encoded)
+   * @throws IllegalArgumentException if `tag` is not one of the 9 known tags
+   */
+  def decodeCell(tag: String, encoded: String): Object = {
+    if (encoded == null || tag == RestateCachedRow.T_NULL) {
+      null
+    } else tag match {
+      case RestateCachedRow.T_STRING    => encoded
+      case RestateCachedRow.T_LONG      => java.lang.Long.valueOf(encoded)
+      case RestateCachedRow.T_DOUBLE    => java.lang.Double.valueOf(encoded)
+      case RestateCachedRow.T_DECIMAL   => new java.math.BigDecimal(encoded)
+      case RestateCachedRow.T_BOOLEAN   => java.lang.Boolean.valueOf(encoded)
+      case RestateCachedRow.T_TIMESTAMP =>
+        java.sql.Timestamp.from(java.time.Instant.parse(encoded))
+      case RestateCachedRow.T_DATE =>
+        new java.sql.Date(
+          java.time.LocalDate.parse(encoded)
+            .atStartOfDay(java.time.ZoneOffset.UTC)
+            .toInstant()
+            .toEpochMilli()
+        )
+      case RestateCachedRow.T_BINARY =>
+        java.util.Base64.getDecoder.decode(encoded)
+      case _ =>
+        throw new IllegalArgumentException(
+          "unknown RestateCachedRow type tag: " + tag
+        )
+    }
+  }
 }
