@@ -60,6 +60,7 @@ import io.sm8.core.engine.{
   MCPQueryRequest
 }
 import io.sm8.core.model.{FilterSpec, Model}
+import io.sm8.core.engine.{EngineContext, PortableQueryResult}
 
 /**
  * Engine-portable path entry point. PR-C5a ships the engine
@@ -162,14 +163,103 @@ object EngineService {
       request: QueryRequest,
       registry: MCPEngineRegistry
   ): Either[EngineError, MCPEngineProvider] = {
-    // TODO(C5b): use `model` for `provider.query(model, mcpReq, ctx)`.
-    // PR-C5a doesn't consume the model — selection is purely
+    // TODO(C5b-extension): use `model` for the cache-key derivation
+    // in PR-C5b-extension's cache lookup. Selection is purely
     // registry-driven. The parameter is reserved for the cache +
-    // execute path that lands in PR-C5b.
+    // execute path that lands in PR-C5b-extension.
     val engineName: String =
       Option(request.engine)
         .filter(s => !isBlankLikeJava(s))
         .getOrElse(registry.defaultEngine)
     registry.select(engineName)
+  }
+
+  /**
+   * Execute an engine query and return the typed result.
+   *
+   * Replaces the legacy `provider.query(...)` call in
+   * `QueryService.runQueryViaEngineRegistry` (lines 537-567,
+   * 559-567). The legacy code wrapped the call in `try/catch`
+   * and threw `IllegalArgumentException` on `RuntimeException` —
+   * losing the typed `EngineError` info.
+   *
+   * Per [[scala-error-handling-mindset]]: catch at the IO boundary
+   * (this IS the IO boundary for the engine adapter), convert
+   * to the typed `EngineError`. The caller (PR-C6) handles the
+   * `Either` at the Restate boundary.
+   *
+   * Defaults `ctx` to `EngineContext.defaultContext` — callers
+   * that need a custom context (e.g. for tracing) pass it
+   * explicitly.
+   *
+   * @param model    the engine-portable model (used by the engine
+   *                 for compile)
+   * @param mcpReq   the engine-portable request from
+   *                 `buildMCPRequest`
+   * @param provider the selected engine provider from
+   *                 `selectEngine`
+   * @param ctx      the engine context (defaults to
+   *                 `EngineContext.defaultContext`)
+   * @return         `Right(pqr)` on success; `Left(error)` on
+   *                 engine error or runtime exception
+   */
+  def executeEngine(
+      model: Model,
+      mcpReq: MCPQueryRequest,
+      provider: MCPEngineProvider,
+      ctx: EngineContext = EngineContext.defaultContext
+  ): Either[EngineError, PortableQueryResult] = {
+    try {
+      provider.query(model, mcpReq, ctx)
+    } catch {
+      case e: RuntimeException =>
+        // Per scala-error-handling: convert at the IO boundary.
+        // Legacy code threw `IllegalArgumentException` here,
+        // losing the typed error. The Scala version preserves it
+        // via `EngineError.ProviderInvocationFailed` — the closest
+        // variant for "engine execution failed unexpectedly".
+        Left(EngineError.ProviderInvocationFailed(
+          engine = model.name,
+          name = provider.identity.name,
+          reason = e.getClass.getSimpleName,
+          message = e.getMessage
+        ))
+    }
+  }
+
+  /**
+   * Convert a `PortableQueryResult` to the platform's MCP-wire
+   * `QueryResult` response shape.
+   *
+   * Replaces the Java `QueryService.toQueryResultFromPortable`
+   * (semanticdf-platform lines 297-330). Iterates the
+   * portable's rows + schema, converting each `ResultValue` to
+   * its JVM type via `PortableCellCodec.toJavaValue` (from PR-C2).
+   *
+   * Per the legacy: `truncated = false` is conservative — the
+   * engine returns ALL rows it computed (the cap is applied
+   * upstream by the engine provider). PR-C5b-extension can add
+   * `truncated` = `rows.size >= maxRows` when the engine reports
+   * a cap.
+   *
+   * @param portable the engine-portable result
+   * @param request  the original wire DTO (used for `model.name`)
+   * @return         the platform's wire response shape
+   */
+  def toQueryResultFromPortable(
+      portable: PortableQueryResult,
+      request: QueryRequest
+  ): QueryResult = {
+    val fieldNames: List[String] = portable.schema.fields.map(_.name).toList
+    val rows: List[List[Object]] = portable.rows.toList.map { row =>
+      row.values.toList.map(PortableCellCodec.toJavaValue)
+    }
+    QueryResult(
+      model     = Option(request.modelName).getOrElse("unknown"),
+      measures  = fieldNames,
+      rows      = rows,
+      truncated = false,
+      rowCount  = rows.size.toLong
+    )
   }
 }
