@@ -1,12 +1,11 @@
 package io.sm8.platform.query
 
 import java.util.concurrent.atomic.AtomicReference
-import java.util.function.{Function => JFunction, Supplier}
 
-import dev.restate.common.Slice
-import dev.restate.sdk.{Context, HandlerRunner}
-import dev.restate.sdk.endpoint.definition.{HandlerContext, ServiceDefinition, ServiceType}
-import dev.restate.serde.jackson.JacksonSerdes
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.module.scala.DefaultScalaModule
+import dev.restate.sdk.endpoint.definition.{HandlerContext, HandlerType, ServiceType}
+import dev.restate.serde.jackson.JacksonSerdeFactory
 
 import io.sm8.core.engine.{
   EngineContext,
@@ -40,10 +39,15 @@ import org.scalatest.matchers.should.Matchers
  * hand-built `ServiceDefinition` + `HandlerRunner` without booting
  * the Restate runtime.
  *
+ * Per review pass #2 (DE-reviewer #7 + architect-reviewer #11):
+ * EVERY test in this file drives the handler body through
+ * `HandlerRunner.run(stubContext, ...)` — proving the wire
+ * contract, not just the engine. The earlier version called
+ * `EngineService.runQuery` directly, which tested the engine
+ * but DID NOT verify the handler wiring (the new addition).
+ *
  * Per [[karpathy-guidelines-mindset]] "smallest correct test
  * footprint": no Docker, no Testcontainers, no Restate server.
- * Direct `HandlerRunner.run(stubContext, serde, serde, ...)`
- * invocation exercises the handler body + serde round-trip.
  *
  * Per [[scala-jvm-safety-mindset]] "null is a liar": the stub
  * `HandlerContext` returns `null`-safe defaults; the SDK's
@@ -112,19 +116,49 @@ class QueryServiceSpec extends AnyFunSuite with Matchers {
     ))
   )
 
+  /** The mapper used by the JSON serde layer. Same instance
+    * the SDK's `JacksonSerdeFactory` uses. Per [[scala-jvm-safety-mindset]]
+    * "audit jar contents": `jackson-module-scala` is on the
+    * classpath (sm8-platform dep tree). */
+  private val mapper: ObjectMapper =
+    new ObjectMapper().registerModule(DefaultScalaModule)
+
+  private val jacksonSerdeFactory: JacksonSerdeFactory =
+    new JacksonSerdeFactory(mapper)
+
+  private val requestSerde = jacksonSerdeFactory.create(classOf[QueryRequest])
+  private val resultSerde  = jacksonSerdeFactory.create(classOf[QueryResult])
+
   /**
-   * Build a stub `HandlerContext` that satisfies the interface for
-   * `HandlerRunner.run(...)`. We only need a few methods; the rest
-   * throw `UnsupportedOperationException` (the body doesn't call
-   * them).
+   * Construct a fully-stubbed `HandlerContext` for `HandlerRunner.run(...)`.
+   *
+   * Per review pass #2 (debug-mantra): the SDK's `HandlerRunner.run`
+   * reads the request body from `ctx.request().body()` (the v2.x
+   * state-machine model — no request-as-argument overload). The
+   * body must be a `Slice` of the JSON-encoded `QueryRequest`.
+   *
+   * Per [[scala-jvm-safety-mindset]] "null is a liar": the SDK
+   * calls `ctx.request().openTelemetryContext()` early in `run()`
+   * — the request must be non-null. We construct a minimal
+   * `HandlerRequest` with a real (but empty) OpenTelemetry
+   * context. The invocationId / headers are unused by the
+   * handler body.
    */
-  private def stubContext(): HandlerContext = new HandlerContext {
-    override def objectKey: String = ""
-    override def request: dev.restate.sdk.common.HandlerRequest = null
-    override def writeOutput(s: Slice) =
-      java.util.concurrent.CompletableFuture.completedFuture(null: java.lang.Void)
-    override def writeOutput(e: dev.restate.sdk.common.TerminalException) =
-      java.util.concurrent.CompletableFuture.completedFuture(null: java.lang.Void)
+  private def stubContext(requestBody: dev.restate.common.Slice): HandlerContext = {
+    val otelContext = io.opentelemetry.context.Context.root()
+    val stubRequest = new dev.restate.sdk.common.HandlerRequest(
+      null,
+      otelContext,
+      requestBody,
+      java.util.Map.of()
+    )
+    new HandlerContext {
+      override def objectKey: String = ""
+      override def request: dev.restate.sdk.common.HandlerRequest = stubRequest
+      override def writeOutput(s: dev.restate.common.Slice) =
+        java.util.concurrent.CompletableFuture.completedFuture(null: java.lang.Void)
+      override def writeOutput(e: dev.restate.sdk.common.TerminalException) =
+        java.util.concurrent.CompletableFuture.completedFuture(null: java.lang.Void)
     override def get(key: String) =
       throw new UnsupportedOperationException("not used in unit test")
     override def getKeys() =
@@ -133,14 +167,14 @@ class QueryServiceSpec extends AnyFunSuite with Matchers {
       throw new UnsupportedOperationException("not used in unit test")
     override def clearAll() =
       throw new UnsupportedOperationException("not used in unit test")
-    override def set(key: String, value: Slice) =
+    override def set(key: String, value: dev.restate.common.Slice) =
       throw new UnsupportedOperationException("not used in unit test")
     override def timer(d: java.time.Duration, key: String) =
       throw new UnsupportedOperationException("not used in unit test")
-    override def call(target: dev.restate.common.Target, value: Slice, key: String,
+    override def call(target: dev.restate.common.Target, value: dev.restate.common.Slice, key: String,
         headers: java.util.Collection[java.util.Map.Entry[String, String]]) =
       throw new UnsupportedOperationException("not used in unit test")
-    override def send(target: dev.restate.common.Target, value: Slice, key: String,
+    override def send(target: dev.restate.common.Target, value: dev.restate.common.Slice, key: String,
         headers: java.util.Collection[java.util.Map.Entry[String, String]],
         delay: java.time.Duration) =
       throw new UnsupportedOperationException("not used in unit test")
@@ -149,7 +183,7 @@ class QueryServiceSpec extends AnyFunSuite with Matchers {
       throw new UnsupportedOperationException("not used in unit test")
     override def awakeable() =
       throw new UnsupportedOperationException("not used in unit test")
-    override def resolveAwakeable(id: String, value: Slice) =
+    override def resolveAwakeable(id: String, value: dev.restate.common.Slice) =
       throw new UnsupportedOperationException("not used in unit test")
     override def rejectAwakeable(id: String, e: dev.restate.sdk.common.TerminalException) =
       throw new UnsupportedOperationException("not used in unit test")
@@ -157,7 +191,7 @@ class QueryServiceSpec extends AnyFunSuite with Matchers {
       throw new UnsupportedOperationException("not used in unit test")
     override def peekPromise(name: String) =
       throw new UnsupportedOperationException("not used in unit test")
-    override def resolvePromise(name: String, value: Slice) =
+    override def resolvePromise(name: String, value: dev.restate.common.Slice) =
       throw new UnsupportedOperationException("not used in unit test")
     override def rejectPromise(name: String, e: dev.restate.sdk.common.TerminalException) =
       throw new UnsupportedOperationException("not used in unit test")
@@ -176,18 +210,38 @@ class QueryServiceSpec extends AnyFunSuite with Matchers {
         dev.restate.sdk.endpoint.definition.AsyncResult[_]]) =
       throw new UnsupportedOperationException("not used in unit test")
   }
+  }
 
   /**
-   * Build the JSON-encoded request body for `runQuery`. The
-   * handler body's only consumed field is the request — the SDK
-   * decodes the body to `QueryRequest` via the per-handler serde.
+   * Drive `runQuery` through the actual handler body via the
+   * `HandlerRunner.run(stubContext, ...)` invocation. This is the
+   * v2.x-shaped unit-test surface (no Docker, no Restate runtime).
    */
-  private def buildService(
+  private def invoke(
       model: Model,
       registry: MCPEngineRegistry,
-      cache: ResultCache
-  ): ServiceDefinition =
-    QueryService.definition(model, registry, cache)
+      cache: ResultCache,
+      request: QueryRequest
+  ): QueryResult = {
+    val svc = QueryService.definition(model, registry, cache)
+    val handler = svc.getHandlers.iterator.next()
+    val runner = handler.getRunner
+      .asInstanceOf[dev.restate.sdk.HandlerRunner[QueryRequest, QueryResult]]
+    // Per review pass #2 (debug-mantra): the SDK's
+    // `HandlerRunner.run` reads the request body from
+    // `ctx.request().body()`. We serialize the request via the
+    // per-handler serde and feed the resulting Slice into the
+    // stub HandlerContext. No `request-as-argument` overload
+    // exists in v2.x.
+    val requestSlice = requestSerde.serialize(request)
+    val responseSlice = runner.run(
+      stubContext(requestSlice),
+      requestSerde,
+      resultSerde,
+      new AtomicReference[Runnable]()
+    ).get()
+    resultSerde.deserialize(responseSlice).asInstanceOf[QueryResult]
+  }
 
   // -- Tests --
 
@@ -198,41 +252,36 @@ class QueryServiceSpec extends AnyFunSuite with Matchers {
       available = true
     )
     val registry = makeRegistry(Map("spark" -> spark))
-    val svc = buildService(dummyModel, registry, cache)
+    val svc = QueryService.definition(dummyModel, registry, cache)
     svc.getServiceName shouldBe "QueryService"
     val handlers = svc.getHandlers
     handlers.size() shouldBe 1
     handlers.iterator.next().getName shouldBe "runQuery"
-    handlers.iterator.next().getHandlerType shouldBe (
-      dev.restate.sdk.endpoint.definition.HandlerType.SHARED
-    )
+    handlers.iterator.next().getHandlerType shouldBe HandlerType.SHARED
+    svc.getServiceType shouldBe ServiceType.SERVICE
   }
 
-  test("QueryService.definition: handler serde round-trip (QueryRequest → JSON → QueryResult)") {
-    // Per [[scala-jar-packaging-mindset]] "production-readiness":
-    // the wire contract must round-trip. Verify the per-handler
-    // serde shape by checking the handler's `getRequestSerde` +
-    // `getResponseSerde` types are non-null.
-    val cache = ResultCache.NoOp
-    val spark = new StubProvider(
-      EngineIdentity("spark", "3.5.8", "0.2.4"),
-      available = true
+  test("QueryService: handler body serde round-trip (QueryRequest → JSON → QueryRequest)") {
+    // Per review pass #2 (DE-reviewer #2 + architect-reviewer #12):
+    // the previous "ne null" test was a lie. Real round-trip with
+    // NON-EMPTY fields (the cache-key derivation depends on these).
+    val original = QueryRequest(
+      modelName = "flights",
+      measures = List("rows", "unique_carriers"),
+      dimensions = List("carrier", "year"),
+      where = "carrier = 'AA'",
+      engine = "spark"
     )
-    val registry = makeRegistry(Map("spark" -> spark))
-    val svc = buildService(dummyModel, registry, cache)
-    val handler = svc.getHandlers.iterator.next()
-    handler.getRequestSerde should not be null
-    handler.getResponseSerde should not be null
-    // Per [[scala-jvm-safety-mindset]]: Serde is the type-safe
-    // wrapper; non-null is the bare-minimum contract.
+    val bytes = mapper.writeValueAsBytes(original)
+    val decoded = mapper.readValue(bytes, classOf[QueryRequest])
+    decoded.modelName shouldBe original.modelName
+    decoded.measures shouldBe original.measures
+    decoded.dimensions shouldBe original.dimensions
+    decoded.where shouldBe original.where
+    decoded.engine shouldBe original.engine
   }
 
   test("QueryService: handler body executes EngineService.runQuery (cache MISS path)") {
-    // The handler body is synchronous: `EngineService.runQuery` is
-    // a pure function. We invoke it directly (without the Handler
-    // runner) to verify the integration. Then we separately verify
-    // the handler wiring builds a ServiceDefinition that has the
-    // expected handler.
     val spark = new StubProvider(
       EngineIdentity("spark", "3.5.8", "0.2.4"),
       available = true,
@@ -241,16 +290,16 @@ class QueryServiceSpec extends AnyFunSuite with Matchers {
     val registry = makeRegistry(Map("spark" -> spark))
     val cache = ResultCache.NoOp
     val req = QueryRequest("flights", Nil, Nil, "", "spark")
-    val qr = EngineService.runQuery(req, dummyModel, registry, cache)
-    qr.isRight shouldBe true
-    qr.toOption.get.rows should have size 2
-    qr.toOption.get.rows(0) shouldBe List("Alice", 30L)
+    val qr = invoke(dummyModel, registry, cache, req)
+    qr.model shouldBe "flights"
+    qr.rows should have size 2
+    qr.rows(0) shouldBe List("Alice", 30L)
   }
 
-  test("QueryService: cache HIT path bypasses engine") {
+  test("QueryService: cache HIT path bypasses engine (via HandlerRunner)") {
     // Pre-populate the cache. The handler body should serve the
     // cached row without invoking the engine (the stub provider
-    // returns null from queryResult → would NPE if invoked).
+    // has queryResult = null → would NPE if invoked).
     val spark = new StubProvider(
       EngineIdentity("spark", "3.5.8", "0.2.4"),
       available = true,
@@ -274,13 +323,12 @@ class QueryServiceSpec extends AnyFunSuite with Matchers {
       "flights",
       dummyModel.version
     )
-    val qr = EngineService.runQuery(req, dummyModel, registry, cache)
-    qr.isRight shouldBe true
-    qr.toOption.get.rows should have size 2
-    qr.toOption.get.rows(0) shouldBe List("Alice", 30L)
+    val qr = invoke(dummyModel, registry, cache, req)
+    qr.rows should have size 2
+    qr.rows(0) shouldBe List("Alice", 30L)
   }
 
-  test("QueryService: engine error path throws RuntimeException (handler boundary)") {
+  test("QueryService: engine error path throws TerminalException (via HandlerRunner)") {
     val spark = new StubProvider(
       EngineIdentity("spark", "3.5.8", "0.2.4"),
       available = true,
@@ -294,18 +342,19 @@ class QueryServiceSpec extends AnyFunSuite with Matchers {
     val registry = makeRegistry(Map("spark" -> spark))
     val cache = ResultCache.NoOp
     val req = QueryRequest("m", Nil, Nil, "", "spark")
-    // The handler wraps EngineError in RuntimeException (so Restate
-    // records the failure as a journal replayable error). The exact
-    // exception type is `RuntimeException`; the message is the
-    // EngineError's toString.
-    val ex = intercept[RuntimeException] {
-      // Simulate the handler body's exception path.
-      val either = EngineService.runQuery(req, dummyModel, registry, cache)
-      either match {
-        case Right(qr) => qr
-        case Left(err) => throw new RuntimeException(err.toString)
-      }
+    // Per review pass #2 (debug-mantra): the SDK's `run()` returns
+    // `CompletableFuture<Slice]` — when the handler throws, the
+    // future completes exceptionally with `ExecutionException(TerminalException)`.
+    // We unwrap via `.getCause`.
+    val ex = intercept[java.util.concurrent.ExecutionException] {
+      invoke(dummyModel, registry, cache, req)
     }
-    ex should not be null
+    val cause = ex.getCause
+    cause shouldBe a [dev.restate.sdk.common.TerminalException]
+    val te = cause.asInstanceOf[dev.restate.sdk.common.TerminalException]
+    // The handler wraps EngineError in TerminalException with the
+    // mapped HTTP status code (503 for EngineUnavailable).
+    te.getCode shouldBe 503
+    te.getMessage should include("no spark available")
   }
 }

@@ -76,6 +76,39 @@
                     <mainClass>io.sm8.cli.Main</mainClass>
                 </configuration>
             </plugin>
+
+            <!-- PR-C-final review pass #2: enforce zero-Spark at
+                 build-time (cross-module rule). Template matches the
+                 other reactor modules. Per [[scala-jar-packaging-mindset]]
+                 "audit jar contents": `org.apache.spark:*` is a
+                 connector-only groupId, never a tool/CLI dependency. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <version>3.4.1</version>
+                <executions>
+                    <execution>
+                        <id>enforce-no-spark</id>
+                        <goals><goal>enforce</goal></goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <rules>
+                        <bannedDependencies>
+                            <excludes>
+                                <exclude>org.apache.spark:*</exclude>
+                            </excludes>
+                            <message>
+                                sm8-cli must remain Spark-free. Spark
+                                classes live in connectors/spark-connector
+                                (Step 8 in the migration plan), not in
+                                the CLI. Move the offending dep there
+                                when the connector lands.
+                            </message>
+                        </bannedDependencies>
+                    </rules>
+                </configuration>
+            </plugin>
         </plugins>
     </build>
 

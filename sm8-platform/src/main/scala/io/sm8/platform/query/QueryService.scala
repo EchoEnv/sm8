@@ -98,13 +98,15 @@ object QueryService {
       registry: MCPEngineRegistry,
       cache: ResultCache
   ): ServiceDefinition = {
-    // Per [[scala-jar-packaging-mindset]]: the SDK ships its own
-    // JacksonSerdeFactory.DEFAULT; SPI auto-loads the Scala
-    // module via `jackson-module-scala` (added as a classpath
-    // dep). We DON'T pass a custom ObjectMapper — relying on the
-    // SDK default keeps the contract small + ensures future
-    // Jackson upgrades roll in without a code change.
-    val jacksonSerdeFactory = JacksonSerdeFactory.DEFAULT
+    // Per review pass #2 (DE-reviewer #3): the SDK's
+    // `JacksonSerdeFactory.DEFAULT` mapper doesn't reliably auto-load
+    // `jackson-module-scala` via SPI. Construct the ObjectMapper
+    // explicitly with `DefaultScalaModule` so Scala case classes
+    // (QueryRequest, QueryResult, RestateCachedRow) serialize correctly.
+    val scalaMapper: com.fasterxml.jackson.databind.ObjectMapper =
+      new com.fasterxml.jackson.databind.ObjectMapper()
+        .registerModule(com.fasterxml.jackson.module.scala.DefaultScalaModule)
+    val jacksonSerdeFactory = new JacksonSerdeFactory(scalaMapper)
     // Per-handler serde (NOT per-Endpoint — the legacy v1.x had
     // one global serde per service; v2.x is per-handler). Each
     // `Serde[T]` encodes/decodes one type via Jackson.
@@ -151,17 +153,39 @@ object QueryService {
    * options)`).
    *
    * Per [[scala-error-handling-mindset]]: the legacy Java code
-   * threw `RuntimeException` on engine errors; we do the same
-   * here so the SDK records the failure as a journal replayable
-   * error (Restate's retry policy applies). Future PR may convert
-   * to a typed-Error return once the @Handler signature supports
-   * it (currently the SDK requires `RES` to be JSON-serializable).
+   * threw `RuntimeException` on engine errors; we use the SDK's
+   * `TerminalException` (mapped from `EngineError` via
+   * `engineErrorCode`) so the journal + retry path preserves the
+   * typed ErrorCode. Future PR may convert to a typed-Error
+   * return once the @Handler signature supports it (currently the
+   * SDK requires `RES` to be JSON-serializable).
    *
    * Per [[scala-jvm-safety-mindset]] "null is a liar": we don't
    * capture the `HandlerContext` — the handler body is a pure
    * function of `(request, model, registry, cache)`. The cache
    * HIT path uses the global `InMemoryResultCache`; the engine
    * MISS path delegates to `EngineService.runQuery`.
+   *
+   * ==Timeout / retry policy (explicit non-decision)==
+   *
+   * Per review pass #2 (DE-reviewer #6 + #10): the handler body
+   * does NOT use `ctx.timer(...)` or wrap the engine call in any
+   * Restate journaled timeout. This is a deliberate non-decision:
+   * the synchronous engine execution IS the journaled work.
+   * Restate's retry policy applies to `TerminalException` throws
+   * (so transient engine failures retry); no inner timeout is
+   * added because the engine-portable path already has its own
+   * execution-time deadline (the engine adapter's `EngineContext`
+   * carries the deadline). Adding a second deadline layer would
+   * create a race between the engine's timeout and the journal's
+   * retry, which is exactly what the SDK's journaled-retry
+   * design is meant to AVOID.
+   *
+   * Per [[scala-error-handling-mindset]] "errors are data":
+   * the engine's `EngineError.QueryTimedOut` already maps to HTTP
+   * 504 (see `engineErrorCode` below). The wire contract is
+   * honest: the journal re-runs the engine call on retry; the
+   * engine decides when to give up.
    */
   private def runQuery(
       request: QueryRequest,
@@ -171,8 +195,45 @@ object QueryService {
   ): QueryResult = {
     EngineService.runQuery(request, model, registry, cache) match {
       case Right(qr)  => qr
-      case Left(err)  => throw new RuntimeException(err.toString)
+      case Left(err) =>
+        // Per review pass #2 (DE-reviewer #1): use Restate's
+        // `TerminalException` to preserve the typed ErrorCode in
+        // the journal + retry path. `RuntimeException(err.toString)`
+        // would lose the 11-subtype EngineError structure.
+        // Per [[scala-error-handling-mindset]] "errors are data":
+        // a typed-error wire contract is the goal; the SDK v2.x
+        // currently requires JSON-serializable `RES`, so we land
+        // here as a TerminalException throw (logged + retryable
+        // per Restate's default retry policy). Tech debt: add
+        // `ErrorEnvelope` as the `RES` type when SDK supports it.
+        val code = engineErrorCode(err)
+        throw new dev.restate.sdk.common.TerminalException(code, err.toString)
     }
+  }
+
+  /**
+   * Map the engine-portable `EngineError` to a Restate
+   * `TerminalException` HTTP status code. Per RFC §9 fail-fast,
+   * we use server-side errors (5xx) for non-recoverable engine
+   * failures and client-side errors (4xx) only for inputs that
+   * the engine itself rejected.
+   *
+   * Per [[scala-data-driven-refactor-mindset]] "sealed-trait dispatch":
+   * the match is exhaustive over the 11 EngineError variants —
+   * the compiler enforces this if a new variant is added.
+   */
+  private def engineErrorCode(err: io.sm8.core.engine.EngineError): Int = err match {
+    case _: io.sm8.core.engine.EngineError.EngineUnavailable         => 503
+    case _: io.sm8.core.engine.EngineError.QueryTimedOut            => 504
+    case _: io.sm8.core.engine.EngineError.ConnectionFailed         => 502
+    case _: io.sm8.core.engine.EngineError.ProviderInvocationFailed => 502
+    case _: io.sm8.core.engine.EngineError.CancellationFailed       => 504
+    case _: io.sm8.core.engine.EngineError.UnsupportedCapability    => 501
+    case _: io.sm8.core.engine.EngineError.IncompatibleExprShape    => 422
+    case _: io.sm8.core.engine.EngineError.DecimalOverflow           => 422
+    case _: io.sm8.core.engine.EngineError.SourceSchemaChanged     => 409
+    case _: io.sm8.core.engine.EngineError.AuditSinkUnavailable     => 503
+    case _: io.sm8.core.engine.EngineError.FeatureDeferred          => 501
   }
 }
 
