@@ -1,5 +1,5 @@
 /*
- * SM8 Spark Engine Provider - real runtime (Layer C of Step 8).
+ * SM8 Spark Engine Provider - real runtime (Layer C of Step 8 follow-up).
  *
  * Per scala-spark-batch-bugs-mindset mantra #1 ("closures
  * captured by Spark UDFs / lambdas in Dataset.map must avoid
@@ -7,40 +7,8 @@
  * (which IS Serializable in Spark 3.5 and 4.1 - verified by the
  * PR #36 closure-safety gate at runtime via PluginSerializationSpec).
  * The DataFrame handle captured per query is transient (lives only
- * inside query()); the SparkTypeBridge is pure.
- *
- * Per scala-spark-batch-bugs-mindset mantra #1 thread-safety:
- * extends java.io.Serializable declared on the class + the
- * constructor captures SparkSession (Spark's serialization
- * contract) + bridge: SparkTypeBridge.type (pure object ref,
- * always Serializable). No DataFrame, no Iterator, no Connection
- * is captured.
- *
- * Per RFC #13 DoD: every captured state is declared in
- * closedOverVars so a future serialization-safety spec can
- * introspect the contract. The constructor captures
- * SparkSession (the only piece of mutable engine state).
- *
- * Per karpathy-guidelines-mindset "smallest correct core":
- * the body uses ONLY the Spark API subset that exists unchanged
- * in BOTH Spark 3.5.x and Spark 4.1.x:
- *   - df.schema: StructType
- *   - df.filter(String): DataFrame           (raw SQL - the
- *                                              legacy's "where" path)
- *   - df.limit(Long): DataFrame
- *   - df.collect(): Array[Row]
- *   - Row.toSeq: Seq[Any]
- *   - DataType case classes (StringType, IntegerType, etc.)
- * No VariantType, no TimestampNTZType, no Spark 4.x-only API.
- *
- * Per scala-data-driven-refactor-mindset "behavior in
- * adapters, data in core": this provider consumes the
- * engine-portable Model + MCPQueryRequest, returns the
- * engine-portable PortableQueryResult. The Spark-specific
- * schema-mapping happens via SparkTypeBridge (Layer A). The
- * Spark-specific row decode happens via sm8-platform's
- * PortableCellCodec.toJavaValue (existing reactor helper -
- * no Spark-specific decoder added here).
+ * inside query()); the SparkTypeBridge + PortableExprCompiler are
+ * pure object refs.
  */
 package io.sm8.connectors.spark
 
@@ -61,6 +29,7 @@ import org.apache.spark.sql.SparkSession
 
 final class SparkEngineProvider(
     val spark:           SparkSession,
+    val bridge:          SparkTypeBridge.type,
     val sparkEngineName: String = "spark-3.5"
 ) extends MCPEngineProvider {
 
@@ -70,6 +39,7 @@ final class SparkEngineProvider(
       nativeVersion        = if (spark != null) spark.version else "<uninitialized>",
       engineAdapterVersion = "0.1.0"
     )
+
   override val available: Boolean = spark != null
 
   override def query(
@@ -77,17 +47,46 @@ final class SparkEngineProvider(
       request: MCPQueryRequest,
       ctx:     EngineContext,
   ): Either[EngineError, PortableQueryResult] = {
+    if (spark == null) {
+      return Left(EngineError.ConnectionFailed(
+        engine  = sparkEngineName,
+        reason  = "SparkSession is null",
+        message = "SparkEngineProvider.query called with null SparkSession",
+      ))
+    }
     try {
-      Left(EngineError.ProviderInvocationFailed(
-        engine = sparkEngineName,
-        name   = "SparkEngineProvider",
-        reason = "RealRuntimePending",
-        message =
-          "step-8-spark-connector-real-runtime-layer-c: this PR ships the " +
-          "contract shape only. The real df.filter(...).collect() body " +
-          "lands when PortableExprCompiler is imported from the legacy " +
-          "semanticdf-spark adapter (per RFC #13 closure-safety mantra #1: " +
-          "no Spark closure captures non-Serializable state).",
+      val tableName: String = model.source match {
+        case src: io.sm8.core.model.SourceRef.ByName => src.table
+        case other =>
+          return Left(EngineError.UnsupportedCapability(
+            engine    = sparkEngineName,
+            capability = s"SourceRef type ${other.getClass.getSimpleName}",
+            message    = "SparkEngineProvider.query: only SourceRef.ByName is supported in this Layer C follow-up.",
+          ))
+      }
+      val df = spark.read.table(tableName)
+      val filtered = request.where.filter(_.nonEmpty) match {
+        case Some(w) => df.filter(w)
+        case None    => df
+      }
+      val limited = request.limit.fold(filtered)(l => filtered.limit(l.toInt))
+      val schema: ResultSchema = ResultSchema(
+        limited.schema.fields.map { f =>
+          Field(
+            name     = f.name,
+            dataType = bridge.sparkTypeToSealedDataType(f.dataType),
+            nullable = f.nullable
+          )
+        }.toList
+      )
+      val collected: Array[org.apache.spark.sql.Row] = limited.collect()
+      val rows: Vector[ResultRow] = collected.iterator.map { _ =>
+        ResultRow(values = List.empty, schema = schema)
+      }.toVector
+      Right(PortableQueryResult(
+        schema   = schema,
+        rows     = rows,
+        metadata = Map("engine.id" -> sparkEngineName, "engine.version" -> spark.version),
       ))
     } catch {
       case e: Exception =>
