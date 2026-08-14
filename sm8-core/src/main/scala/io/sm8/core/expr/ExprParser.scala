@@ -311,23 +311,84 @@ object ExprParser {
         }
       }
     }
-
     private def parseIdentifierOrBoolean(): Either[ExprParseError, Expr] = {
       val start = position
       while (!atEnd && (peekChar().isLetterOrDigit || peekChar() == '_'))
         advance()
       val word = chars.slice(start, position).mkString
-      word.toLowerCase match {
-        case "true"  => Right(Expr.Literal(
-          value    = LiteralValue.BoolValue(true),
-          dataType = SealedDataType.Boolean,
-        ))
-        case "false" => Right(Expr.Literal(
-          value    = LiteralValue.BoolValue(false),
-          dataType = SealedDataType.Boolean,
-        ))
-        case _       => Right(Expr.FieldRef(word))
+      // Function-call detection: `name(` implies FunctionCall(name, args).
+      // We peek past whitespace before checking — SQL allows `f  (...)`.
+      // Per [[karphyaguids-mindset]] "smallest correct change": only the
+      // identifier-then-paren pattern triggers function-call parsing.
+      // Bare identifiers (no paren) remain FieldRef.
+      skipWhitespace()
+      if (!atEnd && peekChar() == '(' && !looksLikeBoolean(word)) {
+        // Detected function call: parse arg list.
+        advance() // opening paren
+        skipWhitespace()
+        // Empty arg list: `f()` is valid (returns the constant result).
+        if (!atEnd && peekChar() == ')') {
+          advance()
+          return Right(Expr.FunctionCall(name = word, args = Seq.empty))
+        }
+        parseFunctionCallArgs(word).flatMap { args =>
+          skipWhitespace()
+          if (peekChar() != ')')
+            Left(ExprParseError.UnclosedDelimiter('(', position))
+          else {
+            advance()
+            Right(Expr.FunctionCall(name = word, args = args))
+          }
+        }
+      } else {
+        // Bare identifier or boolean literal — no function call.
+        word.toLowerCase match {
+          case "true"  => Right(Expr.Literal(
+            value    = LiteralValue.BoolValue(true),
+            dataType = SealedDataType.Boolean,
+          ))
+          case "false" => Right(Expr.Literal(
+            value    = LiteralValue.BoolValue(false),
+            dataType = SealedDataType.Boolean,
+          ))
+          case _       => Right(Expr.FieldRef(word))
+        }
       }
+    }
+
+    /** Distinguish `true`/`false` from a function name.
+      * Per the AST contract: `true(1)` would be a function call on the
+      * boolean literal — but semantically nonsense.  Easier to reject
+      * function-call parsing for `true`/`false` explicitly.
+      * The cursor IS post-identifier when this is called. */
+    private def looksLikeBoolean(word: String): Boolean =
+      word.toLowerCase == "true" || word.toLowerCase == "false"
+
+    /** Parse a comma-separated argument list.  Per SQL convention,
+      * each arg is a full expression (recursive `parseOrExpr`).  Empty
+      * args (trailing comma) is rejected with UnexpectedToken.
+      *
+      * Per [[scala-data-driven-refactor-mindset]]: args are a
+      * Seq[Expr] (sealed-trait family at the boundary), not a raw
+      * String list.  Each arg parses to its own typed AST. */
+    private def parseFunctionCallArgs(
+        name: String
+    ): Either[ExprParseError, Seq[Expr]] = {
+      val buf = scala.collection.mutable.ArrayBuffer.empty[Expr]
+      def loop(): Either[ExprParseError, Seq[Expr]] = {
+        skipWhitespace()
+        parseOrExpr().flatMap { arg =>
+          buf += arg
+          skipWhitespace()
+          if (!atEnd && peekChar() == ',') {
+            advance()
+            loop()
+          } else {
+            Right(buf.toSeq)
+          }
+        }
+      }
+      loop()
     }
   }
 }
