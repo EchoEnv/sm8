@@ -23,6 +23,11 @@ import io.sm8.sdk._
  */
 final class AuditPlugin extends Plugin with java.io.Serializable {
 
+  /** Per [[scala-spark-batch-bugs-mindset]] mantra #1: doc the
+    * captured `fires` AtomicInteger. Round-trips through
+    * ObjectOutputStream (verified by PluginSerializationSpec). */
+  override def closedOverVars: Seq[String] = Seq("fires")
+
   /** Test-visible counter of hook fires. */
   val fires: AtomicInteger = new AtomicInteger(0)
 

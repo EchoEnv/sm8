@@ -18,6 +18,9 @@ import io.sm8.sdk._
 
 final class MaterializePlugin extends Plugin with java.io.Serializable {
 
+  /** Per [[scala-spark-batch-bugs-mindset]] mantra #1. */
+  override def closedOverVars: Seq[String] = Seq("fires")
+
   val fires: AtomicInteger = new AtomicInteger(0)
 
   override def setup(engine: Engine): Unit = {
