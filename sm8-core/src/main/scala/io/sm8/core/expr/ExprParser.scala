@@ -142,10 +142,27 @@ object ExprParser {
       } else false
     }
 
+    /** PR #51 (smoke-test fix): case-insensitive variant.
+      * Per [[karphyaguids-mindset]] "smallest correct change": SQL
+      * boolean operators + AS keyword are conventionally
+      * case-insensitive. The end-to-end smoke test encodes this
+      * user contract; the parser must accept `AND`/`OR`/`NOT`/`AS`
+      * in any case. Uses `startsWithWordCaseInsensitive` (PR #50
+      * helper) for detection, then advances `word.length` chars
+      * (case-preserved). */
+    def consumeWordCaseInsensitive(word: String): Boolean = {
+      if (startsWithWordCaseInsensitive(word)) {
+        var q = position + word.length
+        while (q < chars.length && chars(q).isWhitespace) q += 1
+        position = q
+        true
+      } else false
+    }
+
     def parseOrExpr(): Either[ExprParseError, Expr] =
       parseAndExpr().flatMap { left =>
         def loop(acc: Expr): Either[ExprParseError, Expr] =
-          if (consumeWord("or")) {
+          if (consumeWordCaseInsensitive("or")) {
             parseAndExpr().flatMap(right => loop(Expr.Or(acc, right)))
           } else Right(acc)
         loop(left)
@@ -154,14 +171,14 @@ object ExprParser {
     def parseAndExpr(): Either[ExprParseError, Expr] =
       parseNotExpr().flatMap { left =>
         def loop(acc: Expr): Either[ExprParseError, Expr] =
-          if (consumeWord("and")) {
+          if (consumeWordCaseInsensitive("and")) {
             parseNotExpr().flatMap(right => loop(Expr.And(acc, right)))
           } else Right(acc)
         loop(left)
       }
 
     def parseNotExpr(): Either[ExprParseError, Expr] =
-      if (consumeWord("not")) parseNotExpr().map(Expr.Not)
+      if (consumeWordCaseInsensitive("not")) parseNotExpr().map(Expr.Not)
       else parseCmpExpr()
 
     /** Comparison: `addExpr ((= | != | < | <= | > | >=) addExpr)?`
@@ -272,7 +289,7 @@ object ExprParser {
       else {
         skipWhitespace()
         // PR #50: case-insensitive AS detection. The legacy
-        // consumeWord("or") works because the parser's other
+        // consumeWordCaseInsensitive("or") works because the parser's other
         // keywords (true/false) are stored lowercase; "AS" can
         // appear as AS, As, aS, or as. Use a case-insensitive
         // peek on the next 2 chars + word-boundary.
