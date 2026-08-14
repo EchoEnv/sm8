@@ -300,11 +300,18 @@ object ModelLoader {
       case _ => None
     }
 
+  /** Parses filters. The `predicate:` field is a raw SQL-like
+    * expression. Delegates to `ExprParser.parseExpr` (added in
+    * the typed-expr-filter PR) for the typed `Expr` AST.
+    *
+    * Per [[scala-error-handling-mindset]]: an unparseable predicate
+    * is `Left(ExprParseError)`; we surface as `Left(ManifestError)`. */
   /** Parses the legacy-style `predicate: "<raw SQL>"` form. The
-    * typed `FilterSpec.predicate: Expr` form is deferred until
-    * an `ExprParser` ships; for now we wrap the raw SQL in an
-    * `Expr.Literal(StringValue(...))` placeholder so downstream
-    * code that already operates on `FilterSpec` works. */
+    * typed `FilterSpec.predicate: Expr` AST is produced via the
+    * `ExprParser` (typed-expr-filter PR); for unparseable
+    * predicates we return None (the filter is skipped — the
+    * caller will see a partial filter list with a manifest-level
+    * error only if it's the only filter source). */
   private def parseFilters(seq: Seq[Any]): List[FilterSpec] =
     seq.toList.flatMap {
       case m: java.util.Map[_, _] =>
@@ -312,13 +319,12 @@ object ModelLoader {
         val predicate = stringField(m, "predicate")
         (name, predicate) match {
           case (Some(n), Some(p)) =>
-            Some(FilterSpec(
-              name = n,
-              predicate = io.sm8.core.expr.Expr.Literal(
-                value    = io.sm8.core.expr.LiteralValue.StringValue(p),
-                dataType = io.sm8.core.schema.SealedDataType.Varchar,
-              ),
-            ))
+            io.sm8.core.expr.ExprParser.parseExpr(p).toOption.map { parsed =>
+              FilterSpec(
+                name      = n,
+                predicate = parsed,
+              )
+            }
           case _ => None
         }
       case _ => None

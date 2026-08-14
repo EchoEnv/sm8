@@ -229,7 +229,7 @@ class ModelLoaderSpec extends AnyFunSuite with Matchers {
 
   // -- Filter parsing --
 
-  test("ModelLoader.fromString: filters with raw-sql predicate are wrapped as Expr.Literal") {
+  test("ModelLoader.fromString: filters with raw-sql predicate are parsed into typed Expr AST via ExprParser") {
     val yaml =
       """name: filter-model
         |version: 1
@@ -246,9 +246,12 @@ class ModelLoaderSpec extends AnyFunSuite with Matchers {
     m.filters.size shouldBe 1
     val f = m.filters.head
     f.name shouldBe "adults"
-    f.predicate shouldBe Expr.Literal(
-      value    = LiteralValue.StringValue("age >= 18"),
-      dataType = SealedDataType.Varchar,
+    // The predicate is now the TYPED Expr AST (PR #46: typed-expr-filter)
+    // not the raw-SQL placeholder from PR #45. This is the contract
+    // upgrade documented in PR #45's body.
+    f.predicate shouldBe Expr.GreaterOrEqual(
+      left  = Expr.FieldRef("age"),
+      right = Expr.Literal(LiteralValue.IntValue(18), SealedDataType.Int),
     )
   }
 }
