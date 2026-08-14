@@ -34,7 +34,7 @@
     <module>sm8-core</module>
     <module>connectors/in-memory-connector</module>
     <module>connectors/trino-connector</module>
-    <module>plugins/cache-plugin</module>
+    <module>connectors/spark-connector</module>
     <module>plugins/audit-plugin</module>
     <module>plugins/row-cap-plugin</module>
     <module>plugins/broadcast-plugin</module>

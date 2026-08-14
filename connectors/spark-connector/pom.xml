@@ -1,0 +1,146 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.org/POM/4.0.0
+                             http://maven.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!--
+    SM8 Spark Connector — the engine-portable adapter for Apache Spark.
+
+    Per [[scala-spark-batch-bugs-mindset]] mantra #1: this module is
+    the ONLY place in the reactor allowed to depend on
+    org.apache.spark:*. The inverted `enforce-no-spark` rule
+    pattern (every other module uses `bannedDependencies=org.apache.spark:*`;
+    THIS module uses `requireUpperBoundDeps`) makes that
+    architectural boundary mechanical.
+
+    Per agile-kindling-beacon plan line 287: "Each becomes a Plugin
+    that .use()s itself." For Step 8 the SparkConnector is the
+    adapter (extends `Connector with java.io.Serializable`) — the
+    Plugin-loading machinery lands in the next PR cycle (Step 7 +
+    Step 9 integration). For now, this module proves the
+    closure-safety contract holds with REAL Spark types captured
+    in the constructor (the `StorageLevel` referenced by the
+    materialize-plugin's persist/unpersist lifecycle).
+
+    Per [[karpathy-guidelines-mindset]] "smallest correct core":
+    Step 8 ships the skeleton — real Spark Connect runtime lands in
+    a follow-up PR after the cluster is provisioned.
+  -->
+
+  <parent>
+    <groupId>io.sm8</groupId>
+    <artifactId>sm8-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <relativePath>../../pom.xml</relativePath>
+  </parent>
+
+  <artifactId>spark-connector_2.13</artifactId>
+  <packaging>jar</packaging>
+
+  <name>SM8 Spark Connector</name>
+  <description>Engine-portable adapter for Apache Spark. The only reactor module allowed to depend on org.apache.spark:* (closed-over types verified Serializable per the closure-safety lockdown PR #36).</description>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.sm8</groupId>
+      <artifactId>sm8-core_2.13</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <!-- Spark core + sql: the engine-portable adapter surface. Spark 3.5
+         matches the locked tech stack (agile-kindling-beacon.md table). -->
+    <dependency>
+      <groupId>org.apache.spark</groupId>
+      <artifactId>spark-core_2.13</artifactId>
+      <version>3.5.8</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.spark</groupId>
+      <artifactId>spark-sql_2.13</artifactId>
+      <version>3.5.8</version>
+    </dependency>
+
+    <!-- Contract-test base classes — pulled from sm8-core's test-jar
+         so the Connector conformance spec ships to Plugin authors. -->
+    <dependency>
+      <groupId>io.sm8</groupId>
+      <artifactId>sm8-core_2.13</artifactId>
+      <version>${project.version}</version>
+      <type>test-jar</type>
+      <scope>test</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>org.scalatest</groupId>
+      <artifactId>scalatest_${scala.binary.version}</artifactId>
+      <version>${scalatest.version}</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>net.alchim31.maven</groupId>
+        <artifactId>scala-maven-plugin</artifactId>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+      </plugin>
+
+      <!-- INVERTED enforcer: this module ALLOWS org.apache.spark:* —
+           the rest of the reactor EXCLUDES it via the same rule in
+           their own poms. Per [[scala-spark-batch-bugs-mindset]] mantra #1:
+           the Spark types (DataFrame, StorageLevel, SparkSession) are
+           closed-over here; the new contract from PR #36
+           (`Plugin extends java.io.Serializable` + the
+           `closedOverVars` introspection) catches a future
+           regression if a non-Serializable Spark class slips in.
+      -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-enforcer-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>enforce-spark-only-in-spark-connector</id>
+            <goals><goal>enforce</goal></goals>
+          </execution>
+        </executions>
+        <configuration>
+          <rules>
+            <bannedDependencies>
+              <excludes>
+                <!-- spark-connector is the ONLY module that should depend
+                     on org.apache.spark. The other modules' poms have
+                     `enforce-no-spark` rules. This module does NOT
+                     re-state the exclusion — its purpose is to host
+                     Spark. The narrower ban below catches test-scope
+                     violations: no other connector-engine classes
+                     should leak in. -->
+                <exclude>org.apache.kafka:kafka-clients</exclude>
+              </excludes>
+            </bannedDependencies>
+          </rules>
+        </configuration>
+      </plugin>
+
+      <plugin>
+        <groupId>org.scalatest</groupId>
+        <artifactId>scalatest-maven-plugin</artifactId>
+        <executions>
+          <execution><id>test</id><goals><goal>test</goal></goals><phase>test</phase></execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-source-plugin</artifactId>
+        <executions>
+          <execution><id>attach-sources</id><goals><goal>jar-no-fork</goal></goals></execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>
