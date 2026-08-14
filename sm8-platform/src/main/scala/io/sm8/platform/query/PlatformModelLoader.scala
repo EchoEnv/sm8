@@ -61,7 +61,7 @@ package io.sm8.platform.query
 
 import java.nio.file.Path
 
-import io.sm8.core.manifest.{ManifestError => CoreManifestError, ModelLoader}
+import io.sm8.core.manifest.{ManifestError => CoreManifestError, ManifestValidator, ModelLoader}
 import io.sm8.core.model.Model
 
 /**
@@ -99,6 +99,10 @@ object PlatformModelError {
     val message: String = s"YAML parse failure: ${coreError.reason}"
   }
 
+  final case class SchemaValidation(coreError: CoreManifestError.SchemaValidation) extends PlatformModelError {
+    val message: String = coreError.message
+  }
+
   /** Smart constructor: pattern-match a `CoreManifestError` into a
     * `PlatformModelError`. Exhaustive on the core-layer ADT. */
   def fromCore(err: CoreManifestError): PlatformModelError = err match {
@@ -107,6 +111,7 @@ object PlatformModelError {
     case e: CoreManifestError.UnknownSourceRef => UnknownSourceRef(e)
     case e: CoreManifestError.UnknownStatus    => UnknownStatus(e)
     case e: CoreManifestError.ParseFailure     => ParseFailure(e)
+    case e: CoreManifestError.SchemaValidation => SchemaValidation(e)
   }
 }
 
@@ -121,15 +126,53 @@ object PlatformModelError {
  */
 object PlatformModelLoader {
 
-  /** Load a `Model` from a YAML file path.
+  /** Load a `Model` from a YAML file path with schema validation.
+    *
+    * Pipeline:
+    *   1. read file → raw YAML string
+    *   2. validate against manifest.schema.v2.json (catches
+    *      structural failures: missing fields, wrong types,
+    *      unknown enums, extra fields)
+    *   3. parse via ModelLoader (catches semantic failures: bad
+    *      integer, unknown SourceRef variant, etc.)
+    *
+    * Per [[debug-mantra-mindset]]: each step produces a typed
+    * error so callers can pinpoint where validation failed.
     *
     * @param path the file path to read from
     * @return `Right(Model)` on success;
-    *         `Left(PlatformModelError)` on parse failure */
-  def fromPath(path: Path): Either[PlatformModelError, Model] =
-    ModelLoader.fromPath(path).left.map(PlatformModelError.fromCore)
+    *         `Left(PlatformModelError)` on validation or parse
+    *         failure (the case class identifies which stage) */
+  def fromPath(path: Path): Either[PlatformModelError, Model] = {
+    // Per [[karphyaguids-mindset]] "smallest correct change": check
+    // existence first so missing-file becomes a typed error, not a
+    // thrown NoSuchFileException.
+    if (!java.nio.file.Files.exists(path))
+      Left(PlatformModelError.InvalidYaml(CoreManifestError.InvalidYaml(s"file not found: $path")))
+    else {
+      // Read file manually to give the validator the raw text.
+      // Per [[scala-jvm-safety-mindset]]: InputStream.close() in finally.
+      val rawYaml: String = {
+        val stream = java.nio.file.Files.newInputStream(path)
+        try scala.io.Source.fromInputStream(stream, "UTF-8").mkString
+        finally stream.close()
+      }
+      validateAndLoad(rawYaml)
+    }
+  }
 
-  /** Load a `Model` from an in-memory YAML string. */
+  /** Load a `Model` from an in-memory YAML string with schema validation.
+    *
+    * @param yaml the raw manifest string
+    * @return `Right(Model)` on success;
+    *         `Left(PlatformModelError)` on validation or parse
+    *         failure */
   def fromString(yaml: String): Either[PlatformModelError, Model] =
-    ModelLoader.fromString(yaml).left.map(PlatformModelError.fromCore)
+    validateAndLoad(yaml)
+
+  /** Shared pipeline: schema validate then semantic load. */
+  private def validateAndLoad(yaml: String): Either[PlatformModelError, Model] =
+    ManifestValidator.validate(yaml).left.map(PlatformModelError.fromCore).flatMap { _ =>
+      ModelLoader.fromString(yaml).left.map(PlatformModelError.fromCore)
+    }
 }
