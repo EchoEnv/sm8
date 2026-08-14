@@ -91,22 +91,43 @@ class PlatformModelLoaderSpec extends AnyFunSuite with Matchers {
     out.left.get shouldBe a [PlatformModelError]
   }
 
+
+  // -- PR #49: schema-validation pipeline runs BEFORE ModelLoader parse --
+
+  test("PlatformModelLoader.fromString: extra unknown top-level field returns Left(SchemaValidation) — additionalProperties: false catches it") {
+    val yaml =
+      """name: extra
+        |version: 1
+        |source:
+        |  byName:
+        |    table: t
+        |unknown_field: forbidden
+        |""".stripMargin
+    val out = PlatformModelLoader.fromString(yaml)
+    out.isLeft shouldBe true
+    out.left.get shouldBe a [PlatformModelError.SchemaValidation]
+  }
+
   // -- Failure paths: typed PlatformModelError --
 
-  test("PlatformModelLoader.fromString: missing name returns Left(PlatformModelError.MissingField)") {
+  test("PlatformModelLoader.fromString: missing name returns Left(PlatformModelError.SchemaValidation) (schema-layer catches it first)") {
+    // Per PR #49: the schema-validation layer catches missing-field
+    // errors BEFORE ModelLoader's post-parse MissingField check
+    // runs. The typed PlatformModelError.SchemaValidation case
+    // carries the validation messages so callers can debug.
     val yaml = "version: 1\nsource:\n  byName:\n    table: t\n"
     val out = PlatformModelLoader.fromString(yaml)
     out.isLeft shouldBe true
     val err = out.left.get
-    err shouldBe a [PlatformModelError.MissingField]
+    err shouldBe a [PlatformModelError.SchemaValidation]
     err.message should include ("name")
   }
 
-  test("PlatformModelLoader.fromString: missing version returns Left(PlatformModelError.MissingField)") {
+  test("PlatformModelLoader.fromString: missing version returns Left(PlatformModelError.SchemaValidation)") {
     val yaml = "name: no-version\nsource:\n  byName:\n    table: t\n"
     val out = PlatformModelLoader.fromString(yaml)
     out.isLeft shouldBe true
-    out.left.get shouldBe a [PlatformModelError.MissingField]
+    out.left.get shouldBe a [PlatformModelError.SchemaValidation]
     out.left.get.message should include ("version")
   }
 
@@ -129,7 +150,7 @@ class PlatformModelLoaderSpec extends AnyFunSuite with Matchers {
         |""".stripMargin
     val out = PlatformModelLoader.fromString(yaml)
     out.isLeft shouldBe true
-    out.left.get shouldBe a [PlatformModelError.UnknownStatus]
+    out.left.get shouldBe a [PlatformModelError.SchemaValidation]  // PR #49: caught by schema enum
   }
 
   test("PlatformModelLoader.fromString: unknown SourceRef variant returns Left(PlatformModelError.UnknownSourceRef)") {
@@ -142,7 +163,7 @@ class PlatformModelLoaderSpec extends AnyFunSuite with Matchers {
         |""".stripMargin
     val out = PlatformModelLoader.fromString(yaml)
     out.isLeft shouldBe true
-    out.left.get shouldBe a [PlatformModelError.UnknownSourceRef]
+    out.left.get shouldBe a [PlatformModelError.SchemaValidation]  // PR #49: caught by schema oneOf
   }
 
   // -- PlatformModelError carries the underlying CoreManifestError --
@@ -152,10 +173,10 @@ class PlatformModelLoaderSpec extends AnyFunSuite with Matchers {
     // CoreManifestError to debug.
     val yaml = "version: 1\nsource:\n  byName:\n    table: t\n"
     val err = PlatformModelLoader.fromString(yaml).left.get
-    val missing = err match {
-      case m: PlatformModelError.MissingField => m
-      case _                                  => fail(s"expected MissingField, got $err")
+    val inner = err match {
+      case m: PlatformModelError.SchemaValidation => m.coreError
+      case _ => fail(s"expected SchemaValidation, got $err")
     }
-    missing.coreError.message should include ("name")
+    inner.message should include ("name")
   }
 }
