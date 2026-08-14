@@ -25,17 +25,18 @@ import java.io.{ByteArrayInputStream, ByteArrayOutputStream, ObjectInputStream, 
 
 import io.sm8.core.engine.{EngineContext, EngineError}
 import io.sm8.core.model.{Model, ModelPolicyDefaults, ModelStatus, SourceRef}
+import org.apache.spark.sql.SparkSession
 
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
 class SparkEngineProviderSpec extends AnyFunSuite with Matchers {
 
-  private def dummyModel: Model =
+  private def dummyModel(tableName: String = "t"): Model =
     Model.of(
       name    = "test-model",
       version = 1,
-      source  = SourceRef.ByName("n", "t"),
+      source  = SourceRef.ByName("n", tableName),
       status  = ModelStatus.Draft,
       defaultPolicies = ModelPolicyDefaults(
         io.sm8.core.model.MaterializePolicy.None,
@@ -64,7 +65,7 @@ class SparkEngineProviderSpec extends AnyFunSuite with Matchers {
     // `MCPEngineProvider extends Serializable` is the contract.
     // The provider class itself declares `extends java.io.Serializable`
     // via the trait. The round-trip proves the contract holds.
-    val provider = new SparkEngineProvider(null, "spark-3.5")
+    val provider = new SparkEngineProvider(null, SparkTypeBridge, "spark-3.5")
     val restored = roundTripViaJavaSerialization(provider)
     restored should not be null
     restored.identity.name shouldBe "spark-3.5"
@@ -72,28 +73,59 @@ class SparkEngineProviderSpec extends AnyFunSuite with Matchers {
   }
 
   test("SparkEngineProvider: identity carries the wire-stable engine name + adapter version") {
-    val provider = new SparkEngineProvider(null, "spark-4.1")
+    val provider = new SparkEngineProvider(null, SparkTypeBridge, "spark-4.1")
     provider.identity.name shouldBe "spark-4.1"
     provider.identity.engineAdapterVersion shouldBe "0.1.0"
   }
 
   test("SparkEngineProvider: available = false when spark is null (defensive)") {
-    val provider = new SparkEngineProvider(null, "spark-3.5")
+    val provider = new SparkEngineProvider(null, SparkTypeBridge, "spark-3.5")
     provider.available shouldBe false
   }
 
-  test("SparkEngineProvider: query() returns ProviderInvocationFailed with the Layer C contract-gap message") {
-    val provider = new SparkEngineProvider(null, "spark-3.5")
-    val out = provider.query(dummyModel, io.sm8.core.engine.MCPQueryRequest.empty, EngineContext.defaultContext)
+  test("SparkEngineProvider: query() with null spark returns Left(ConnectionFailed)") {
+    val provider = new SparkEngineProvider(null, SparkTypeBridge, "spark-3.5")
+    val out = provider.query(dummyModel(), io.sm8.core.engine.MCPQueryRequest.empty, EngineContext.defaultContext)
     out.isLeft shouldBe true
-    out.left.get shouldBe a [EngineError.ProviderInvocationFailed]
+    out.left.get shouldBe a [EngineError.ConnectionFailed]
   }
 
   test("SparkEngineProvider: explain() returns the planned shape as a String") {
-    val provider = new SparkEngineProvider(null, "spark-3.5")
-    val out = provider.explain(dummyModel, io.sm8.core.engine.MCPQueryRequest.empty, EngineContext.defaultContext)
+    val provider = new SparkEngineProvider(null, SparkTypeBridge, "spark-3.5")
+    val out = provider.explain(dummyModel(), io.sm8.core.engine.MCPQueryRequest.empty, EngineContext.defaultContext)
     out.isRight shouldBe true
     out.toOption.get should include ("spark.explain(test-model)")
     out.toOption.get should include ("spark-3.5")
+  }
+  test("SparkEngineProvider: query() happy path returns Right(PortableQueryResult) from a real SparkSession table") {
+    // Per scala-spark-batch-bugs-mindset mantra #3 (schema drift
+    // - verify at the boundary): the schema field types come
+    // from the actual compiled DataFrame.schema, not from
+    // caller-supplied dimensions/measures. The result schema
+    // uses our portable SealedDataType (via SparkTypeBridge).
+    val spark = SparkSession.builder().master("local[*]").appName("tHappy").getOrCreate()
+    try {
+      val schema = new org.apache.spark.sql.types.StructType(Array(
+        org.apache.spark.sql.types.StructField("name", org.apache.spark.sql.types.StringType, nullable = false),
+        org.apache.spark.sql.types.StructField("age",  org.apache.spark.sql.types.IntegerType, nullable = false)
+      ))
+      val rows: Array[org.apache.spark.sql.Row] = Array(
+        org.apache.spark.sql.RowFactory.create("alice", 30: java.lang.Integer),
+        org.apache.spark.sql.RowFactory.create("bob",   25: java.lang.Integer)
+      )
+      val data = spark.createDataFrame(spark.sparkContext.parallelize(rows), schema)
+      data.createOrReplaceTempView("people")
+      val provider = new SparkEngineProvider(spark, SparkTypeBridge, "spark-3.5")
+      val out = provider.query(dummyModel("people"), io.sm8.core.engine.MCPQueryRequest.empty, EngineContext.defaultContext)
+      out.isRight shouldBe true
+      val result = out.toOption.get
+      result.schema.fields.map(_.name).toSet shouldBe Set("name", "age")
+      result.schema.fields.find(_.name == "name").map(_.dataType) shouldBe Some(io.sm8.core.schema.SealedDataType.Varchar)
+      result.schema.fields.find(_.name == "age").map(_.dataType) shouldBe Some(io.sm8.core.schema.SealedDataType.Int)
+      result.rows.size shouldBe 2
+      result.metadata("engine.id") shouldBe "spark-3.5"
+    } finally {
+      spark.stop()
+    }
   }
 }
