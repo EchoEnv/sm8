@@ -1,0 +1,126 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  
+  "title": "SM8 manifest",
+  "description": "JSON Schema for an SM8 model manifest (v2). The shape is the wire-compatible subset of the legacy semanticdf manifest, scoped to what SM8-core's ModelLoader accepts.",
+  "type": "object",
+  "required": ["name", "version", "source"],
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Model name. Must be non-blank."
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Model version. Non-negative."
+    },
+    "description": {
+      "type": ["string", "null"],
+      "description": "Optional human-readable description."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["draft", "published", "deprecated"],
+      "default": "draft",
+      "description": "Model lifecycle status."
+    },
+    "source": {
+      "description": "Engine-portable source identity. Exactly one of `byName`, `byPath`, `byProvider`.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["byName"],
+          "additionalProperties": false,
+          "properties": {
+            "byName": {
+              "type": "object",
+              "required": ["table"],
+              "additionalProperties": false,
+              "properties": {
+                "name":  { "type": "string" },
+                "table": { "type": "string", "minLength": 1 }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["byPath"],
+          "additionalProperties": false,
+          "properties": {
+            "byPath": {
+              "type": "object",
+              "required": ["format", "path"],
+              "additionalProperties": false,
+              "properties": {
+                "format": { "type": "string" },
+                "path":   { "type": "string" },
+                "options": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["byProvider"],
+          "additionalProperties": false,
+          "properties": {
+            "byProvider": {
+              "type": "object",
+              "required": ["providerRefName"],
+              "additionalProperties": false,
+              "properties": {
+                "providerRefName": { "type": "string" }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "dimensions": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string" },
+          "expr": { "type": "string" }
+        }
+      }
+    },
+    "measures": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string" },
+          "expr": { "type": "string" }
+        }
+      }
+    },
+    "filters": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "object",
+        "required": ["name", "predicate"],
+        "additionalProperties": false,
+        "properties": {
+          "name":       { "type": "string" },
+          "predicate":  { "type": "string" }
+        }
+      }
+    }
+  }
+}
