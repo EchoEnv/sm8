@@ -101,28 +101,26 @@ final class PortableQueryCompiler(val spark: SparkSession)
       source: SourceRef,
   ): Either[EngineError, DataFrame] = source match {
     case src: SourceRef.ByName =>
+      // Resolution strategy: try spark.table(...) first (handles
+      // both catalog tables AND session-scoped temp views); fall
+      // back to spark.read.table(src.table) for catalog tables.
+      // Per scala-spark-batch-bugs-mindset mantra #3 (verify at
+      // the boundary): the actual table resolution happens in
+      // the driver; the result DataFrame is lazy.
       try {
-        // Try fully-qualified first; fall back to bare table name
-        // (covers `createOrReplaceTempView` views that don't have
-        // a catalog).
-        val tableName: String = src.table
-        try {
-          Right(spark.read.table(tableName))
-        } catch {
-          case _: Exception =>
-            Left(EngineError.UnsupportedCapability(
-              engine    = "spark-3.5",
-              capability = "SourceRef.ByName",
-              message    = s"Spark table '$tableName' not found.",
-            ))
-        }
+        Right(spark.table(src.table))
       } catch {
-        case e: Exception =>
-          Left(EngineError.UnsupportedCapability(
-            engine    = "spark-3.5",
-            capability = "SourceRef.ByName",
-            message    = s"Spark table resolution failed: ${e.getMessage}",
-          ))
+        case _: Exception =>
+          try {
+            Right(spark.read.table(src.table))
+          } catch {
+            case _: Exception =>
+              Left(EngineError.UnsupportedCapability(
+                engine    = "spark-3.5",
+                capability = "SourceRef.ByName",
+                message    = s"Spark table '${src.table}' not found.",
+              ))
+          }
       }
 
     case src: SourceRef.ByPath =>
