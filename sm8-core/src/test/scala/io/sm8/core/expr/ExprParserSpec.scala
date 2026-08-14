@@ -327,4 +327,78 @@ class ExprParserSpec extends AnyFunSuite with Matchers {
     ois.close()
     restored shouldBe built
   }
+
+  // -- Cast (PR cast-parser) --
+
+  test("ExprParser: postfix cast 'amount AS INT' parses to Expr.Cast(FieldRef, SealedDataType)") {
+    val out = ExprParser.parseExpr("amount AS INT")
+    out match {
+      case Right(e) => e shouldBe Expr.Cast(
+        expr = Expr.FieldRef("amount"),
+        targetType = io.sm8.core.schema.SealedDataType.Int,
+      )
+      case Left(err) => fail(s"expected Right, got Left($err)")
+    }
+  }
+
+  test("ExprParser: postfix cast on literal '42 AS BIGINT' parses to Expr.Cast(Literal, BigInt)") {
+    val out = ExprParser.parseExpr("42 AS BIGINT")
+    out.toOption.get shouldBe Expr.Cast(
+      expr = Expr.Literal(
+        value    = io.sm8.core.expr.LiteralValue.IntValue(42),
+        dataType = io.sm8.core.schema.SealedDataType.Int,
+      ),
+      targetType = io.sm8.core.schema.SealedDataType.BigInt,
+    )
+  }
+
+  test("ExprParser: postfix cast with DECIMAL(38, 18) parses precision + scale") {
+    val out = ExprParser.parseExpr("amount AS DECIMAL(38, 18)")
+    out.toOption.get shouldBe Expr.Cast(
+      expr = Expr.FieldRef("amount"),
+      targetType = io.sm8.core.schema.SealedDataType.Decimal(precision = 38, scale = 18),
+    )
+  }
+
+  test("ExprParser: function-call 'cast(amount AS VARCHAR)' parses via FunctionCall+Cast") {
+    val out = ExprParser.parseExpr("cast(amount AS VARCHAR)")
+    out.toOption.get shouldBe Expr.FunctionCall(
+      name = "cast",
+      args = Seq(
+        Expr.Cast(
+          expr = Expr.FieldRef("amount"),
+          targetType = io.sm8.core.schema.SealedDataType.Varchar,
+        ),
+      ),
+    )
+  }
+
+  test("ExprParser: unknown cast target type returns Left(InvalidLiteral)") {
+    val out = ExprParser.parseExpr("amount AS NOTAREALTYPE")
+    out.isLeft shouldBe true
+    out.left.get shouldBe a [ExprParseError.InvalidLiteral]
+  }
+
+  test("ExprParser: malformed DECIMAL without parens returns Left(InvalidLiteral)") {
+    val out = ExprParser.parseExpr("amount AS DECIMAL")
+    out.isLeft shouldBe true
+    out.left.get shouldBe a [ExprParseError.InvalidLiteral]
+  }
+
+  test("ExprParser: identifier without AS cast stays FieldRef (no spurious Cast)") {
+    val out = ExprParser.parseExpr("amount")
+    out.toOption.get shouldBe Expr.FieldRef("amount")
+  }
+
+  test("ExprParser: Cast result survives ObjectOutputStream round-trip") {
+    val built = ExprParser.parseExpr("amount AS DECIMAL(38, 18)").toOption.get
+    val bytes = new java.io.ByteArrayOutputStream()
+    val oos = new java.io.ObjectOutputStream(bytes)
+    oos.writeObject(built)
+    oos.close()
+    val ois = new java.io.ObjectInputStream(new java.io.ByteArrayInputStream(bytes.toByteArray))
+    val restored = ois.readObject().asInstanceOf[Expr]
+    ois.close()
+    restored shouldBe built
+  }
 }
