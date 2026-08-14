@@ -1,5 +1,5 @@
 /*
- * SM8 Spark Engine Provider - real runtime (Layer C of Step 8 follow-up).
+ * SM8 Spark Engine Provider - real runtime (Layer C of Step 8 follow-up + PR #41 Model.compile port).
  *
  * Per scala-spark-batch-bugs-mindset mantra #1 ("closures
  * captured by Spark UDFs / lambdas in Dataset.map must avoid
@@ -9,6 +9,20 @@
  * The DataFrame handle captured per query is transient (lives only
  * inside query()); the SparkTypeBridge + PortableExprCompiler are
  * pure object refs.
+ *
+ * Per scala-jvm-safety-mindset mantra #3 (long-lived state): the
+ * captured compiler is created per query (no static / ThreadLocal
+ * state). The SparkSession ref is constructor-frozen.
+ *
+ * Per scala-spark-batch-bugs-mindset mantra #5 (driver vs executor
+ * asymmetry): the `compile(model, ctx)` and `collect()` calls
+ * both run in the driver process. No driver-side resources leak
+ * to executors. ResultRow construction happens in the driver.
+ *
+ * Per scala-perf-testing-mindset mantra #2 (isolate the hot path):
+ * the compile path (PortableQueryCompiler) and the per-row decode
+ * path (decodeRow/decodeCell) are separated so future profiling
+ * can attribute cost cleanly.
  */
 package io.sm8.connectors.spark
 
@@ -54,23 +68,34 @@ final class SparkEngineProvider(
         message = "SparkEngineProvider.query called with null SparkSession",
       ))
     }
-    try {
-      val tableName: String = model.source match {
-        case src: io.sm8.core.model.SourceRef.ByName => src.table
-        case other =>
-          return Left(EngineError.UnsupportedCapability(
-            engine    = sparkEngineName,
-            capability = s"SourceRef type ${other.getClass.getSimpleName}",
-            message    = "SparkEngineProvider.query: only SourceRef.ByName is supported in this Layer C follow-up.",
-          ))
+    // Per scala-spark-batch-bugs-mindset mantra #5 (driver vs
+    // executor asymmetry): every step in this for-comprehension
+    // runs in the driver process. compile() builds the typed
+    // DataFrame (lazy); filter/limit are typed transforms; collect()
+    // materializes rows to the driver; decodeRow/decodeCell build
+    // portable ResultValue carriers. No driver-side resource leaks
+    // to executors; no executor-side closures.
+    val pipeline: Either[EngineError, PortableQueryResult] = for {
+      // 1. compile the model: source + filters + dimension projection.
+      //    Per scala-spark-batch-bugs-mindset mantra #3 (schema-drift
+      //    verify at the boundary): the schema comes from the actual
+      //    compiled DataFrame.schema, not caller-supplied dimensions.
+      compiled <- new PortableQueryCompiler(spark).compile(model, ctx)
+      // 2. apply the request-level where clause (raw SQL path
+      //    from MCPQueryRequest) on top of the compiled model.
+      //    Per scala-spark-batch-bugs-mindset mantra #5: the
+      //    .filter(w) here runs in the driver (it builds a Column
+      //    expression, not a UDF); collect() below materializes.
+      filtered = request.where.filter(_.nonEmpty) match {
+        case Some(w) => compiled.filter(w)
+        case None    => compiled
       }
-      val df = spark.read.table(tableName)
-      val filtered = request.where.filter(_.nonEmpty) match {
-        case Some(w) => df.filter(w)
-        case None    => df
-      }
-      val limited = request.limit.fold(filtered)(l => filtered.limit(l.toInt))
-      val schema: ResultSchema = ResultSchema(
+      // 3. apply the request-level limit
+      limited  = request.limit.fold(filtered)(l => filtered.limit(l.toInt))
+      // 4. materialize: schema + collect() + per-row decode.
+      //    Per scala-spark-batch-bugs-mindset mantra #5: collect()
+      //    runs in the driver. ResultRow construction happens here.
+      schema = ResultSchema(
         limited.schema.fields.map { f =>
           Field(
             name     = f.name,
@@ -79,15 +104,17 @@ final class SparkEngineProvider(
           )
         }.toList
       )
-      val collected: Array[org.apache.spark.sql.Row] = limited.collect()
-      val rows: Vector[ResultRow] = collected.iterator.map { _ =>
-        ResultRow(values = List.empty, schema = schema)
+      collected: Array[org.apache.spark.sql.Row] = limited.collect()
+      rows: Vector[ResultRow] = collected.iterator.map { row =>
+        ResultRow(values = decodeRow(row, schema), schema = schema)
       }.toVector
-      Right(PortableQueryResult(
-        schema   = schema,
-        rows     = rows,
-        metadata = Map("engine.id" -> sparkEngineName, "engine.version" -> spark.version),
-      ))
+    } yield PortableQueryResult(
+      schema   = schema,
+      rows     = rows,
+      metadata = Map("engine.id" -> sparkEngineName, "engine.version" -> spark.version),
+    )
+    try {
+      pipeline
     } catch {
       case e: Exception =>
         e match {
@@ -114,4 +141,81 @@ final class SparkEngineProvider(
       ctx:     EngineContext,
   ): Either[EngineError, String] =
     Right(s"spark.explain(${model.name}): engine=${sparkEngineName} version=${if (spark != null) spark.version else "<uninitialized>"}")
+
+  /** Decode a Spark `Row` to a `List[ResultValue]` aligned with `schema.fields`.
+    *
+    * Per scala-perf-testing-mindset mantra #3 (count allocations):
+    * the row is a flat seq; no nested walker. The `while` loop
+    * preallocates a single Array of size n and converts to List
+    * once at the end.
+    *
+    * Per scala-error-handling-mindset: a null Spark cell becomes
+    * `ResultValue.NullV` (never throws NPE on the boundary).
+    */
+  private def decodeRow(
+      row:    org.apache.spark.sql.Row,
+      schema: ResultSchema,
+  ): List[ResultValue] = {
+    val n: Int = schema.fields.size
+    val values = new Array[ResultValue](n)
+    var i = 0
+    while (i < n) {
+      val cell: AnyRef = row.get(i).asInstanceOf[AnyRef]
+      val fieldType = schema.fields(i).dataType
+      values(i) = decodeCell(cell, fieldType)
+      i += 1
+    }
+    values.toList
+  }
+
+  private def decodeCell(
+      cell:     AnyRef,
+      dataType: SealedDataType,
+  ): ResultValue = {
+    if (cell == null) return ResultValue.NullV
+    dataType match {
+      case SealedDataType.Boolean =>
+        cell match {
+          case b: java.lang.Boolean => ResultValue.BoolV(b)
+          case _                    => ResultValue.NullV
+        }
+      case SealedDataType.Int | SealedDataType.BigInt =>
+        cell match {
+          case n: Number => ResultValue.IntV(n.longValue)
+          case _         => ResultValue.NullV
+        }
+      case SealedDataType.Double =>
+        cell match {
+          case n: Number => ResultValue.DoubleV(n.doubleValue)
+          case _         => ResultValue.NullV
+        }
+      case SealedDataType.Decimal(_, _) =>
+        cell match {
+          case d: java.math.BigDecimal => ResultValue.DecimalV(d)
+          case s: String               => ResultValue.DecimalV(BigDecimal(s))
+          case _                       => ResultValue.NullV
+        }
+      case SealedDataType.Varchar =>
+        cell match {
+          case s: String => ResultValue.StringV(s)
+          case _         => ResultValue.StringV(cell.toString)
+        }
+      case SealedDataType.Timestamp =>
+        cell match {
+          case ts: java.sql.Timestamp =>
+            ResultValue.TimestampV(ts.toInstant)
+          case _ => ResultValue.NullV
+        }
+      case SealedDataType.Date =>
+        cell match {
+          case d: java.sql.Date =>
+            ResultValue.DateV(d.toLocalDate)
+          case ld: java.time.LocalDate =>
+            ResultValue.DateV(ld)
+          case _ => ResultValue.NullV
+        }
+      case _ =>
+        ResultValue.StringV(cell.toString)
+    }
+  }
 }
