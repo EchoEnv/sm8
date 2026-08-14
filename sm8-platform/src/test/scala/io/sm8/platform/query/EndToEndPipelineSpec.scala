@@ -260,7 +260,7 @@ class EndToEndPipelineSpec extends AnyFunSuite with Matchers {
 
   test("End-to-end: ExprParser.parseExpr on 'age IS NULL' returns IsNull(FieldRef('age'))") {
     val out = ExprParser.parseExpr("age IS NULL")
-    out match { case Left(err) => throw new RuntimeException(s"DBG IS NULL: $err"); case Right(_) => () }; out.toOption.get shouldBe Expr.IsNull(
+    out.toOption.get shouldBe Expr.IsNull(
       expr = Expr.FieldRef("age"),
     )
   }
