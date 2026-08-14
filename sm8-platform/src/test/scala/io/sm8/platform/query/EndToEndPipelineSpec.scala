@@ -254,6 +254,38 @@ class EndToEndPipelineSpec extends AnyFunSuite with Matchers {
     )
   }
 
+  // -- PR #53: IS [NOT] NULL postfix (closes the remaining typed-Expr
+  //    case for null-handling). Per [[debug-mantra-mindset]] reproduce:
+  //    a real user flow tests for null predicates.
+
+  test("End-to-end: ExprParser.parseExpr on 'age IS NULL' returns IsNull(FieldRef('age'))") {
+    val out = ExprParser.parseExpr("age IS NULL")
+    out match { case Left(err) => throw new RuntimeException(s"DBG IS NULL: $err"); case Right(_) => () }; out.toOption.get shouldBe Expr.IsNull(
+      expr = Expr.FieldRef("age"),
+    )
+  }
+
+  test("End-to-end: ExprParser.parseExpr on 'age IS NOT NULL' returns IsNotNull(FieldRef('age'))") {
+    val out = ExprParser.parseExpr("age IS NOT NULL")
+    out.toOption.get shouldBe Expr.IsNotNull(
+      expr = Expr.FieldRef("age"),
+    )
+  }
+
+  test("End-to-end: ExprParser.parseExpr on 'age IS NULL AND active = true' returns And(IsNull, Equal)") {
+    // Per [[karphyaguids-mindset]]: chained postfixes work too.
+    // `IS NULL` applies to `age`; the AND is parsed at the andExpr
+    // level (not the postfix level). The postfix is matched AFTER
+    // the primary, BEFORE the boolean operator.
+    val out = ExprParser.parseExpr("age IS NULL AND active = true")
+    out.toOption.get shouldBe Expr.And(
+      left = Expr.IsNull(Expr.FieldRef("age")),
+      right = Expr.Equal(
+        left  = Expr.FieldRef("active"),
+        right = Expr.Literal(LiteralValue.BoolValue(true), SealedDataType.Boolean),
+      ),
+    )
+  }
   // -- Round-trip serializability: the produced Model survives
   //    ObjectOutputStream → ObjectInputStream. Per
   //    [[scala-spark-batch-bugs-mindset]] mantra #5 (driver-side
