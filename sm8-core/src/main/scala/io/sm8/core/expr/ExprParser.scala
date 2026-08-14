@@ -240,7 +240,7 @@ object ExprParser {
 
     def parsePrimary(): Either[ExprParseError, Expr] = {
       skipWhitespace()
-      peekChar() match {
+      val head: Either[ExprParseError, Expr] = peekChar() match {
         case '(' =>
           advance()
           skipWhitespace()
@@ -262,7 +262,106 @@ object ExprParser {
             reason   = "expected literal, identifier, or '('",
           ))
       }
+      head.flatMap(parseAsSuffix)
     }
+
+    /** PR #50: handle optional `AS TYPE` postfix after a primary.
+      * Returns `Right(e)` unchanged if no `AS` keyword follows. */
+    def parseAsSuffix(e: Expr): Either[ExprParseError, Expr] =
+      if (atEnd) Right(e)
+      else {
+        skipWhitespace()
+        // PR #50: case-insensitive AS detection. The legacy
+        // consumeWord("or") works because the parser's other
+        // keywords (true/false) are stored lowercase; "AS" can
+        // appear as AS, As, aS, or as. Use a case-insensitive
+        // peek on the next 2 chars + word-boundary.
+        if (startsWithWordCaseInsensitive("as")) {
+          // Consume the entire 2-char "AS" token (advance() only
+          // moves 1 char). Then skip whitespace before the type.
+          advance()
+          advance()
+          skipWhitespace()
+          parseTypeName().map(targetType => Expr.Cast(expr = e, targetType = targetType))
+        } else Right(e)
+      }
+
+    /** Case-insensitive variant of `startsWithWord`. */
+    private def startsWithWordCaseInsensitive(word: String): Boolean = {
+      var p = position
+      while (p < chars.length && chars(p).isWhitespace) p += 1
+      var i = 0
+      while (i < word.length && (p + i) < chars.length &&
+             Character.toLowerCase(chars(p + i)) == Character.toLowerCase(word.charAt(i))) i += 1
+      i == word.length && {
+        val next = p + i
+        next >= chars.length || !chars(next).isLetterOrDigit
+      }
+    }
+
+    /** PR #50: parse a `SealedDataType` literal.
+      * Supports the common scalar types: INT, BIGINT, DOUBLE,
+      * VARCHAR, BOOLEAN, DATE, TIMESTAMP, and DECIMAL(p, s). */
+    def parseTypeName(): Either[ExprParseError, SealedDataType] = {
+      val name   = readIdentifier()
+      val tpe: Option[SealedDataType] = name.toUpperCase match {
+        case "INT"       => Some(SealedDataType.Int)
+        case "BIGINT"    => Some(SealedDataType.BigInt)
+        case "DOUBLE"    => Some(SealedDataType.Double)
+        case "VARCHAR"   => Some(SealedDataType.Varchar)
+        case "BOOLEAN"   => Some(SealedDataType.Boolean)
+        case "DATE"      => Some(SealedDataType.Date)
+        case "TIMESTAMP" => Some(SealedDataType.Timestamp)
+        case "DECIMAL"   =>
+          if (!consumeChar('(')) None
+          else {
+            val p = readIntOrMinusOne()
+            if (!consumeChar(',')) None
+            else {
+              val s = readIntOrMinusOne()
+              if (!consumeChar(')')) None
+              else if (p < 0 || s < 0) None
+              else Some(SealedDataType.Decimal(p, s))
+            }
+          }
+        case _ => None
+      }
+      tpe match {
+        case Some(t) => Right(t)
+        case None    =>
+          Left(ExprParseError.InvalidLiteral(
+            raw    = name,
+            reason = "unknown or malformed cast target type; supported: INT, BIGINT, DOUBLE, VARCHAR, BOOLEAN, DATE, TIMESTAMP, DECIMAL(p, s)",
+          ))
+      }
+    }
+
+    /** Read an identifier (sequence of letters/digits/underscore). */
+    private def readIdentifier(): String = {
+      val start = position
+      while (!atEnd && (peekChar().isLetterOrDigit || peekChar() == '_'))
+        advance()
+      chars.slice(start, position).mkString
+    }
+
+    /** Consume one specific char if present (with optional whitespace). */
+    private def consumeChar(c: Char): Boolean = {
+      skipWhitespace()
+      if (!atEnd && peekChar() == c) {
+        advance(); true
+      } else false
+    }
+
+    /** Read a (possibly signed) integer at the current cursor. */
+    private def readIntOrMinusOne(): Int = {
+      skipWhitespace()
+      val start = position
+      if (!atEnd && (peekChar().isDigit || peekChar() == '-')) advance()
+      while (!atEnd && peekChar().isDigit) advance()
+      val raw = chars.slice(start, position).mkString
+      scala.util.Try(raw.toInt).getOrElse(-1)
+    }
+
 
     private def parseStringLiteral(): Either[ExprParseError, Expr] = {
       val quote = advance()
