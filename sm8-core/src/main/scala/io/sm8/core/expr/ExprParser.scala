@@ -282,24 +282,54 @@ object ExprParser {
       head.flatMap(parseAsSuffix)
     }
 
-    /** PR #50: handle optional `AS TYPE` postfix after a primary.
-      * Returns `Right(e)` unchanged if no `AS` keyword follows. */
+    /** PR #50 + #53: handle optional postfix clauses after a primary.
+      * Returns `Right(e)` unchanged if no postfix follows.
+      *
+      * Per [[karphyaguids-mindset]] "smallest correct change":
+      * the postfix is matched at the primary level only. Real-
+      * world usages: `column AS T`, `column IS NULL`,
+      * `column IS NOT NULL`. For infix expressions, use
+      * `(expr) IS NULL`.
+      *
+      * Per [[scala-data-driven-refactor-mindset]] §1: the result
+      * is a typed AST (`Expr.Cast` / `Expr.IsNull` / `Expr.IsNotNull`),
+      * not string substitution. */
     def parseAsSuffix(e: Expr): Either[ExprParseError, Expr] =
       if (atEnd) Right(e)
       else {
         skipWhitespace()
-        // PR #50: case-insensitive AS detection. The legacy
-        // consumeWordCaseInsensitive("or") works because the parser's other
-        // keywords (true/false) are stored lowercase; "AS" can
-        // appear as AS, As, aS, or as. Use a case-insensitive
-        // peek on the next 2 chars + word-boundary.
         if (startsWithWordCaseInsensitive("as")) {
-          // Consume the entire 2-char "AS" token (advance() only
-          // moves 1 char). Then skip whitespace before the type.
+          // AS TYPE: consume "AS" (2 chars via 2 advance()), then the
+          // SealedDataType literal.
           advance()
           advance()
           skipWhitespace()
           parseTypeName().map(targetType => Expr.Cast(expr = e, targetType = targetType))
+        } else if (startsWithWordCaseInsensitive("is")) {
+          // IS [NOT] NULL: consume "IS" (2 chars), optional "NOT",
+          // then "NULL" (4 chars). The pattern is a single postfix
+          // operator that wraps `e`.
+          advance(); advance()  // consume "IS"
+          skipWhitespace()
+          val isNot = if (startsWithWordCaseInsensitive("not")) {
+            advance(); advance(); advance()  // consume "NOT" (3 chars)
+            skipWhitespace()
+            true
+          } else false
+          if (startsWithWordCaseInsensitive("null")) {
+            advance(); advance(); advance(); advance()  // consume "NULL" (4)
+            skipWhitespace()
+            Right(if (isNot) Expr.IsNotNull(e) else Expr.IsNull(e))
+          } else {
+            // "IS" without "NULL" or "NOT NULL" is invalid SQL.
+            // Per [[scala-error-handling-mindset]]: surface as typed
+            // error, not silent.
+            Left(ExprParseError.UnexpectedToken(
+              token    = peekChar().toString,
+              position = position,
+              reason   = "expected 'NULL' or 'NOT NULL' after 'IS'",
+            ))
+          }
         } else Right(e)
       }
 
