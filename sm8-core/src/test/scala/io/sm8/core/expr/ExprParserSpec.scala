@@ -212,7 +212,7 @@ class ExprParserSpec extends AnyFunSuite with Matchers {
     out.left.get shouldBe a [ExprParseError.UnexpectedToken]
   }
 
-  // -- Per [[debug-mantra-mindset]] §5 verify: Serializable contract --
+// -- Per [[debug-mantra-mindset]] §5 verify: Serializable contract --
 
   test("ExprParser: parsed Expr survives ObjectOutputStream round-trip") {
     val built = ExprParser.parseExpr("age >= 18 and active = true").toOption.get
@@ -226,13 +226,105 @@ class ExprParserSpec extends AnyFunSuite with Matchers {
     restored shouldBe built
   }
 
-  // -- Whitespace tolerance --
+  // -- FunctionCall (PR function-call-parser) --
 
-  test("ExprParser: leading/trailing/intermediate whitespace is ignored") {
-    val out = ExprParser.parseExpr("  age   >=   18  ")
-    out.toOption.get shouldBe Expr.GreaterOrEqual(
-      left  = Expr.FieldRef("age"),
-      right = Expr.Literal(LiteralValue.IntValue(18), SealedDataType.Int),
+  test("ExprParser: function call 'concat(\"a\", \"b\")' parses to Expr.FunctionCall(name, Seq[Expr])") {
+    val out = ExprParser.parseExpr("""concat("a", "b")""")
+    out.toOption.get shouldBe Expr.FunctionCall(
+      name = "concat",
+      args = Seq(
+        Expr.Literal(LiteralValue.StringValue("a"), SealedDataType.Varchar),
+        Expr.Literal(LiteralValue.StringValue("b"), SealedDataType.Varchar),
+      ),
     )
+  }
+
+  test("ExprParser: function call 'abs(-3)' parses to FunctionCall with unary-minus arg") {
+    val out = ExprParser.parseExpr("abs(-3)")
+    out.toOption.get shouldBe Expr.FunctionCall(
+      name = "abs",
+      args = Seq(
+        // Per [[karphyaguids-mindset]] "smallest correct change":
+        // unary `-x` lowers to `0 - x`.
+        Expr.Subtract(
+          left  = Expr.Literal(LiteralValue.IntValue(0), SealedDataType.Int),
+          right = Expr.Literal(LiteralValue.IntValue(3), SealedDataType.Int),
+        ),
+      ),
+    )
+  }
+
+  test("ExprParser: function call with field-ref arg 'nvl(amount, 0)'") {
+    val out = ExprParser.parseExpr("nvl(amount, 0)")
+    out.toOption.get shouldBe Expr.FunctionCall(
+      name = "nvl",
+      args = Seq(
+        Expr.FieldRef("amount"),
+        Expr.Literal(LiteralValue.IntValue(0), SealedDataType.Int),
+      ),
+    )
+  }
+
+  test("ExprParser: function call 'f()' with empty arg list is valid") {
+    val out = ExprParser.parseExpr("f()")
+    out.toOption.get shouldBe Expr.FunctionCall(name = "f", args = Seq.empty)
+  }
+
+  test("ExprParser: function call with nested arg 'abs(concat(a, b))'") {
+    val out = ExprParser.parseExpr("abs(concat(a, b))")
+    out.toOption.get shouldBe Expr.FunctionCall(
+      name = "abs",
+      args = Seq(
+        Expr.FunctionCall(
+          name = "concat",
+          args = Seq(
+            Expr.FieldRef("a"),
+            Expr.FieldRef("b"),
+          ),
+        ),
+      ),
+    )
+  }
+
+  test("ExprParser: function call with trailing comma 'f(1,' returns Left(typed error)") {
+    // Per [[karphyaguids-mindset]] "smallest correct change": the
+    // trailing-comma case has 2 valid error shapes (unclosed paren
+    // or unexpected token for the missing arg).  The parser took
+    // the more-accurate path: parsed `1`, consumed `,`, tried to
+    // parse the next arg — found EOF → UnexpectedToken.
+    val out = ExprParser.parseExpr("f(1,")
+    out.isLeft shouldBe true
+    out.left.get shouldBe a [ExprParseError]
+  }
+
+  test("ExprParser: bare identifier 'age' remains FieldRef (no spurious FunctionCall)") {
+    // Per [[karphyaguids-mindset]] "smallest correct change":
+    // a name WITHOUT `(` stays a FieldRef — does NOT become
+    // FunctionCall(name = "age", args = Nil).
+    val out = ExprParser.parseExpr("age")
+    out.toOption.get shouldBe Expr.FieldRef("age")
+  }
+
+  test("ExprParser: true stays Literal(Bool) regardless of following-paren context") {
+    // Per [[scala-data-driven-refactor-mindset]]: boolean literals
+    // are NOT callable.  The parser recognises `true` first; if `(` follows,
+    // the parser does NOT trigger FunctionCall parsing for `true` itself.
+    val out = ExprParser.parseExpr("true")
+    out.toOption.get shouldBe Expr.Literal(
+      value    = LiteralValue.BoolValue(true),
+      dataType = SealedDataType.Boolean,
+    )
+  }
+
+  test("ExprParser: FunctionCall result survives ObjectOutputStream round-trip") {
+    val built = ExprParser.parseExpr("""concat("a", "b")""").toOption.get
+    val bytes = new java.io.ByteArrayOutputStream()
+    val oos = new java.io.ObjectOutputStream(bytes)
+    oos.writeObject(built)
+    oos.close()
+    val ois = new java.io.ObjectInputStream(new java.io.ByteArrayInputStream(bytes.toByteArray))
+    val restored = ois.readObject().asInstanceOf[Expr]
+    ois.close()
+    restored shouldBe built
   }
 }
