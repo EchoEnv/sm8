@@ -107,6 +107,60 @@ final class EngineImpl extends Engine {
     discoverInternal(allowAll = true, allowed = Set.empty)
 
   /**
+   * ServiceLoader-based Plugin discovery with Maven-coords allowlist
+   * loaded from `sm8.plugins.allowed` on the classpath.
+   *
+   * The allowlist file is a newline-separated list of `groupId:artifactId`
+   * strings. Missing file = empty allowlist = load everything
+   * (matches `discoverAll()` behavior, for development convenience).
+   *
+   * Per the agile-kindling-beacon plan line 286 ("a third-party
+   * Plugin JAR gets loaded when its coords are in `sm8.plugins.allowed`"):
+   * this is the configuration mechanism for production deployments
+   * to gate which Plugins load.
+   *
+   * Per [[scala-error-handling-mindset]]: malformed allowlist entries
+   * are skipped (warned), never crash.
+   *
+   * Per [[scala-jvm-safety-mindset]]: use the classloader (NOT
+   * `Class.getResourceAsStream`) — the classloader lookup is
+   * classpath-root-relative; `Class.getResourceAsStream` without a
+   * leading `/` is package-relative, which silently misses global
+   * resources like `sm8.plugins.allowed`.
+   *
+   * Per [[karphy-guidags-mindset]] "smallest correct change": this
+   * is a thin convenience method over `discover(allowed)`. It does
+   * NOT introduce a new discovery mechanism.
+   *
+   * @return the Plugins that were successfully loaded
+   */
+  def discoverFromConfig(): List[Plugin] = {
+    val resource = "sm8.plugins.allowed"
+    val stream = Option(getClass.getClassLoader)
+      .map(_.getResourceAsStream(resource)).orNull
+    if (stream == null) {
+      // No allowlist configured - behave like discoverAll().
+      // Per [[scala-error-handling-mindset]]: missing config is not
+      // an error; the engine degrades to permissive discovery.
+      discoverAll()
+    } else {
+      try {
+        val allowed = scala.io.Source.fromInputStream(stream, "UTF-8")
+          .getLines()
+          .map(_.trim)
+          .filter(s => s.nonEmpty && !s.startsWith("#"))
+          .toSet
+        discover(allowed)
+      } catch {
+        case NonFatal(e) =>
+          System.err.println(
+            s"[sm8] Could not read sm8.plugins.allowed: ${e.getMessage}")
+          List.empty
+      } finally stream.close()
+    }
+  }
+
+  /**
    * Shared implementation. `allowAll = true` skips the allowlist
    * filter (for `discoverAll`).
    */
