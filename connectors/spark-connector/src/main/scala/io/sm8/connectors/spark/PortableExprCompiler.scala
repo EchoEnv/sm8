@@ -28,7 +28,7 @@
  * ported from the legacy `/tmp/semanticdf/adapters/semanticdf-spark`
  * PortableExprCompiler. Extends the legacy's 9 LiteralValue
  * cases to cover the reactor's 14 (ByteValue, ShortValue,
- * BinaryValue, ArrayValue added). The 22 Expr cases match
+ * BinaryValue, ArrayValue added). The 24 Expr cases match
  * sm8-core's Expr.scala (we share the portable type).
  *
  * Per RFC §13 + Layer A's `SparkTypeBridge`: this compiler
@@ -43,13 +43,13 @@ package io.sm8.connectors.spark
 import io.sm8.core.expr.{Expr, LiteralValue}
 
 import org.apache.spark.sql.Column
-import org.apache.spark.sql.functions.{col, lit, not => sparkNot}
+import org.apache.spark.sql.functions.{col, lit, not => sparkNot, when}
 
 /**
  * Engine-specific Spark compiler for portable [[Expr]] -> Spark
  * [[Column]]. Pure function (Expr) -> Column with no state, no
  * IO. Per [[scala-data-driven-refactor-mindset]] "sealed-trait
- * dispatch": the 22 Expr cases are enumerated at the case-class
+ * dispatch": the 24 Expr cases are enumerated at the case-class
  * granularity.
  *
  * The capture contract: this companion is a Scala `object`
@@ -122,6 +122,51 @@ object PortableExprCompiler extends java.io.Serializable {
     //    plan; the column is present. --
     case Expr.All(name) =>
       col(name)
+
+    // -- Conditional: CASE WHEN --
+    //
+    // Maps to SQL's `CASE WHEN cond THEN x ELSE y END`. Spark's
+    // `Column.when(condition, value)` is left-associative; we fold
+    // the branches left-to-right so the SQL semantics match
+    // ("first matching condition wins"):
+    //   branches = [(c1, x1), (c2, x2)] ->
+    //     when(c1, x1).when(c2, x2).otherwise(otherwise)
+    //
+    // Per [[scala-spark-batch-bugs-mindset]] mantra #1 (closure-safety):
+    // the foldLeft runs in the driver, no executor-side closure
+    // capture. Each `toColumn` is a pure function call.
+    case Expr.CaseWhen(branches, otherwise) =>
+      // Spark's `Column.when(c, v)` can ONLY be chained on a Column
+      // that came from a previous `.when()` (Spark 3.5 contract:
+      // "when() can only be applied on a Column previously generated
+      // by when() function"). The free function `functions.when(c, v)`
+      // creates a fresh CASE-WHEN Column — that's the entry point.
+      // Then chain with `.when(...)` for subsequent branches, and
+      // terminate with `.otherwise(...)`.
+      //
+      // Per [[scala-spark-batch-bugs-mindset]] mantra #1 (closure-safety):
+      // the fold runs in the driver; each `toColumn` is a pure
+      // function call. No executor-side closure capture.
+      branches match {
+        case Nil =>
+          // Empty branches → just `otherwise`. Mirrors SQL's
+          // `CASE WHEN FALSE THEN x ELSE y END` shape.
+          toColumn(otherwise)
+        case (firstCond, firstResult) :: tail =>
+          val head = when(toColumn(firstCond), toColumn(firstResult))
+          tail.foldLeft(head) { (acc, branch) =>
+            val (cond, result) = branch
+            acc.when(toColumn(cond), toColumn(result))
+          }.otherwise(toColumn(otherwise))
+      }
+
+    // -- Alias: expr AS name --
+    //
+    // Maps to Spark's `Column.as(name)`. The alias is the
+    // expression-level form; `RelOp.Project` carries the higher-
+    // level `List[(Expr, String)]` shape (PR-J adds that).
+    case Expr.Alias(name, expr) =>
+      toColumn(expr).as(name)
 
     // -- FunctionCall: UDF resolution deferred. --
     case Expr.FunctionCall(name, _) =>
