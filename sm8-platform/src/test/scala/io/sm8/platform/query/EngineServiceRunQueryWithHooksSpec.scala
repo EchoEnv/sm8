@@ -154,7 +154,7 @@ class EngineServiceRunQueryWithHooksSpec extends AnyFunSuite with Matchers {
       available = true
     )
     val registry = makeRegistry(Map("test-engine" -> spark))
-    val cache    = new InMemoryResultCache(maxEntries = 16)
+    val cache    = new io.sm8.platform.query.cache.InMemoryResultCache(maxEntries = 16)
     val dispatcher = hookDispatcherWith(cache)
 
     // First call: MISS path. Engine runs, cache writes.
