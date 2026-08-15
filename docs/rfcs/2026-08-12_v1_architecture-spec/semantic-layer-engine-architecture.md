@@ -229,6 +229,19 @@ Document this convention wherever `hooks.register` is exposed.
 /examples        # copy-paste starter plugin + starter adapter
 ```
 
+## 11a. Deployment Module (added 2026-08-15, per ADR-006 Post-#65 Refinement)
+
+The repo also ships a **runnable deployment module** (e.g. `sm8-server`) that owns:
+
+- CLI parsing (entry-point args)
+- ServiceLoader-based plugin discovery
+- Connector URL realization (calls `MCPEngineProvider.realize(url)` — the typed contract; see `adapters.md` Rule 3)
+- JVM lifecycle hooks (shutdown, port release)
+
+The deployment module lives **OUTSIDE** `/core` AND **OUTSIDE** the transport library (e.g. `sm8-platform`). The transport library contains zero deployment concerns — its `main()` lives ONLY in the deployment module. **The transport library must not import any adapter-specific types** (Spark, Trino, etc.); the deployment module likewise must not — it only invokes the typed `realize(url)` contract.
+
+Transport user-facing surfaces (HTTP server, MCP wire, REST) all converge on the same transport library; the deployment module is the single binary that hosts them. Wire shape (MCP / REST) is decided by the transport handler chosen at bind time, not by separate deployment modules.
+
 ## 12. Adapter Conformance Testing
 
 Every adapter — built-in or community — must pass a shared contract test suite covering:

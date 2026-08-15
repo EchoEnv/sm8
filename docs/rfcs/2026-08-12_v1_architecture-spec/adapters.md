@@ -69,7 +69,7 @@ adapter InMemoryAdapter implements Adapter:
 1. **Errors propagate, never get swallowed.** An adapter's `query()` failing should raise, not return `null`/an empty result silently.
 2. **`connect()` fails loud on bad config.** Silent no-ops on invalid config are explicitly disallowed by the conformance suite (architecture doc Section 12).
 3. **`schema()` must reflect what `query()` can actually return** — it's the contract consumers use to know what's queryable, and conformance tests check the two stay consistent.
-4. **An adapter is registered by a plugin, never directly by core** (see `plugins.md`).
+4. **An adapter that supports URL-based connection (Spark master URL, Trino JDBC URL, DuckDB path, HTTP endpoint, etc.) MUST expose a typed `realize(url: String): Option[MCPEngineProvider]` method on the concrete `MCPEngineProvider`** (added 2026-08-15, per ADR-006 Post-#65 Refinement). The deployment module calls this typed method — it does **not** reflect over the class to find a `(String)` ctor. The reflection pattern is a transitional workaround (PR #65); the durable shape is the typed `realize(url)` contract. Per-connector `realize()` validates its own URL grammar; the deployment module does NOT validate.
 
 ## Conformance
 

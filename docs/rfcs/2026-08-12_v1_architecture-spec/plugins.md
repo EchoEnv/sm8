@@ -52,7 +52,7 @@ plugin PostgresPlugin implements Plugin:
 
 ## Rules
 
-1. **A plugin's `setup()` must be idempotent-safe to call once at startup** — no runtime side effects beyond registration (don't open connections here; that's the adapter's `connect()` job).
+1. **A plugin's `setup()` must be idempotent-safe to call once at startup** — no runtime side effects beyond registration (don't open connections here; that's the adapter's `connect()` job). **Connection establishment belongs in the connector's `MCPEngineProvider` implementation** (its ctor or a dedicated `realize(url)` method), **never in the platform transport library and never in a deployment reflection layer** (added 2026-08-15, per ADR-006 Post-#65 Refinement).
 2. **A plugin should have one clear purpose.** If a plugin is registering unrelated adapters and hooks for different features, split it into separate plugins.
 3. **Plugins depend on core's contracts, never on each other directly.** If `PluginB` needs data `PluginA` produced, it reads it from `context.meta`, not by importing `PluginA`.
 4. **Naming convention:** `<Thing>Plugin` (e.g. `CachePlugin`, `PostgresPlugin`) to distinguish at a glance from `<Thing>Adapter` and `<thing>Hook`.
