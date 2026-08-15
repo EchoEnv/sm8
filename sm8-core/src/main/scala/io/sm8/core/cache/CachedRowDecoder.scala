@@ -43,9 +43,8 @@
  * cells from the returned list. This is engine-portable: no Spark
  * `DataType` in the wire contract.
  */
-package io.sm8.platform.query.cache
+package io.sm8.core.cache
 
-import io.sm8.platform.query.QueryResult
 import io.sm8.core.engine.{PortableQueryResult, ResultRow, ResultSchema, ResultValue}
 
 /**
@@ -280,45 +279,9 @@ object CachedRowDecoder {
   }
 
   /**
-   * Decode a `RestateCachedRow` to a [[QueryResult]] (the platform's
-   * MCP wire response shape).
-   *
-   * Replaces the Java `QueryService.toQueryResultFromJournaled`
-   * (semanticdf-platform lines 625-650).
-   *
-   * ==Behavior change vs Java (intentional)==
-   *
-   * The legacy Java code NPEs on null row entries (line 634:
-   * `int cols = cells.length;` — `cells.length` throws if `cells`
-   * is null). The Scala version handles null entries gracefully
-   * (matching `fromRestateCachedRow`'s PR-C4b behavior: null
-   * cells → `List.empty[Object]`). This creates internal
-   * consistency between the two decoders and avoids NPEs at the
-   * boundary. 0 callers in our reactor today, so the change is
-   * dormant until the engine-portable path migration (PR-C5+).
-   *
-   * @param modelName  the model name (or `null` for "unknown")
-   * @param journaled  the cached row to decode
-   * @param maxRows    the truncation cap. Defaults to `100_000`
-   *                   matching the legacy `CacheBridge.DefaultMaxRows`.
-   *                   The env-var-aware `CacheBridge.effectiveMaxRows()`
-   *                   value is the caller's responsibility (it
-   *                   reaches this decode path once we wire it up
-   *                   in PR-C5+).
-   * @return           the decoded [[QueryResult]]
+   * (Historical note: `toQueryResultFromJournaled` — the platform
+   * `QueryResult` conversion — moved to `object QueryResult` in
+   * sm8-platform during the cache-rehome Phase 1. Core stays
+   * engine-portable: this file knows only core types.)
    */
-  def toQueryResultFromJournaled(
-      modelName: String,
-      journaled: RestateCachedRow,
-      maxRows: Int = 100_000
-  ): QueryResult = {
-    val rows = fromRestateCachedRow(journaled)
-    QueryResult(
-      model     = if (modelName == null) "unknown" else modelName,
-      measures  = journaled.fieldNames,
-      rows      = rows,
-      truncated = rows.size >= maxRows,
-      rowCount  = rows.size.toLong
-    )
-  }
 }

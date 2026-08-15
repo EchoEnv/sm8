@@ -36,7 +36,7 @@
  * closure. Same `Product with Serializable` contract as
  * `MCPEngineProvider` (PR-C6) and `MCPEngineRegistry` (PR-C6).
  */
-package io.sm8.platform.query.cache
+package io.sm8.core.cache
 
 /**
  * Pluggable destination for cached engine-portable query results.

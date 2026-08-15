@@ -6,6 +6,7 @@
  */
 package io.sm8.platform.query.hooks
 
+import io.sm8.core.cache._
 import java.util.concurrent.atomic.AtomicInteger
 
 import org.scalatest.funsuite.AnyFunSuite
@@ -45,7 +46,8 @@ import io.sm8.platform.query.{
   EngineService,
   QueryRequest
 }
-import io.sm8.platform.query.cache.{InMemoryResultCache, ResultCache}
+import io.sm8.core.cache.ResultCache
+import io.sm8.platform.query.cache.InMemoryResultCache
 
 private final class FakeProvider(
     val name: String,

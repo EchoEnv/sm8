@@ -34,6 +34,7 @@
  */
 package io.sm8.platform.query.cache
 
+import io.sm8.core.cache._
 import java.util.concurrent.atomic.AtomicInteger
 
 import io.sm8.core.engine.{ EngineHookRequest, EngineHookResult }

@@ -19,6 +19,7 @@
  */
 package io.sm8.platform.query.cache
 
+import io.sm8.core.cache._
 import java.util.concurrent.atomic.AtomicInteger
 
 import org.scalatest.funsuite.AnyFunSuite
@@ -82,14 +83,14 @@ private final class CountingCacheDelegate(
     putCounter: AtomicInteger
 ) extends ResultCache {
 
-  override def getJournaled(key: String): Option[io.sm8.platform.query.cache.RestateCachedRow] = {
+  override def getJournaled(key: String): Option[io.sm8.core.cache.RestateCachedRow] = {
     getCounter.incrementAndGet()
     underlying.getJournaled(key)
   }
 
   override def putJournaledWithModelAndVersion(
       key: String,
-      value: io.sm8.platform.query.cache.RestateCachedRow,
+      value: io.sm8.core.cache.RestateCachedRow,
       model: String,
       version: Int
   ): Unit = {

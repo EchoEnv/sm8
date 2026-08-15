@@ -1,5 +1,6 @@
 package io.sm8.platform.query.cache
 
+import io.sm8.core.cache._
 import java.util.function.Supplier
 
 import org.scalatest.funsuite.AnyFunSuite
