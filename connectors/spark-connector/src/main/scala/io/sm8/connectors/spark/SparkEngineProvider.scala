@@ -82,6 +82,28 @@ final class SparkEngineProvider(
       "spark-3.5"
     )
 
+  /**
+    * Typed URL realization (PR-B per RFC `adapters.md` Rule 4).
+    *
+    * Builds a real `SparkEngineProvider` connected to the given
+    * URL via `SparkSession.builder().master(url).getOrCreate()`.
+    * The URL accepts any Spark master URL:
+    *   - classic cluster: `spark://host:7077`
+    *   - local mode:     `local[*]` (driver-side only)
+    *   - Spark Connect:  `spark-connect://host:port` (Spark 3.4+)
+    *
+    * Per RFC §3: the connector is the ONLY piece that knows about
+    * `SparkSession`. The platform and the deployment module hold
+    * only the string.
+    *
+    * @return `Some(realizedProvider)` on success; `None` if the
+    *         URL is blank (per-connector grammar: non-blank
+    *         Spark master URL required)
+    */
+  override def realize(url: String): Option[MCPEngineProvider] =
+    if (url == null || url.trim.isEmpty) None
+    else Some(new SparkEngineProvider(url))
+
 
   override lazy val identity: io.sm8.core.engine.EngineIdentity =
     io.sm8.core.engine.EngineIdentity(

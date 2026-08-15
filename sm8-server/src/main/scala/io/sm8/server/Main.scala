@@ -198,22 +198,14 @@ object Main {
   ): List[MCPEngineProvider] = connectorUrl match {
     case None => providers
     case Some(url) =>
+      // PR-B per RFC `adapters.md` Rule 4: the TYPED realize(url)
+      // contract replaces the (String)-ctor reflection. The
+      // connector owns its URL grammar; the deployment does NOT
+      // validate. Providers that don't support URL realization
+      // (default: None) are kept as-is.
       providers.map { p =>
         if (p.available) p
-        else {
-          val cls = p.getClass
-          try {
-            val ctor = cls.getConstructor(classOf[String])
-            val instance = ctor.newInstance(url).asInstanceOf[MCPEngineProvider]
-            instance
-          } catch {
-            case _: NoSuchMethodException =>
-              // Connector has no (String) ctor — keep the stub.
-              // The platform will fail loud at wire() if no available
-              // provider is left.
-              p
-          }
-        }
+        else p.realize(url).getOrElse(p)
       }
   }
 
