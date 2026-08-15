@@ -89,7 +89,12 @@ class ModelLoaderSpec extends AnyFunSuite with Matchers {
       Dimension("region", "region"),
       Dimension("product", "product_name"),
     )
-    m.measures shouldBe List(Measure("revenue", "sum(amount)"))
+    m.measures shouldBe List(Measure(
+      "revenue",
+      io.sm8.core.rel.AggregateCall(
+        io.sm8.core.rel.AggregateFn.Sum,
+        Some(io.sm8.core.expr.Expr.FieldRef("amount")),
+        "revenue")))
   }
 
   test("ModelLoader.fromString: byProvider source path constructs SourceRef.ByProvider") {

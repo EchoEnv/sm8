@@ -17,6 +17,7 @@
  */
 package io.sm8.core.model
 
+import io.sm8.core.rel.AggregateCall
 import io.sm8.sdk.SemanticQuery
 
 /**
@@ -36,7 +37,9 @@ final case class Model private (
     val defaultPolicies: ModelPolicyDefaults,
     val source: SourceRef,
     val status: ModelStatus,
-    val filters: List[FilterSpec]
+    val filters: List[FilterSpec],
+    val calculatedMeasures: List[CalculatedMeasure] = Nil,
+    val joins: List[JoinSpec] = Nil
 ) extends Product with Serializable
 
 // Per [[scala-data-driven-refactor-mindset]] step 2 ("shape and
@@ -90,8 +93,34 @@ object AuditPolicy {
 /** A dimension field on a Model. */
 final case class Dimension(name: String, expr: String)
 
-/** A measure field on a Model. */
-final case class Measure(name: String, expr: String)
+/** A measure field on a Model. PR-J (2026-08-16): `expr` is now a
+  * typed `AggregateCall` (was `String`). The typed form forces
+  * the model validator + engine adapter to handle every case
+  * explicitly; a `String` would allow silent typos at
+  * engine-compile time.
+  *
+  * Smart constructor `Measure.aggregate(name, fn, expr)` covers
+  * the common case (`SUM(amount) AS total`). The structural
+  * constructor `Measure(name, AggregateCall(...))` is for the
+  * less-common case (`COUNT(*)`, `APPROX_PERCENTILE(x, 0.95)`).
+  */
+final case class Measure(name: String, expr: AggregateCall) extends Product with Serializable
+
+object Measure {
+
+  /** Construct a single-aggregate measure (the common case).
+    *
+    * `Measure.aggregate("total", AggregateFn.Sum, Expr.FieldRef("amount"))`
+    * is equivalent to `Measure(name = "total", expr =
+    * AggregateCall(fn = Sum, input = Some(FieldRef("amount")),
+    * alias = "total"))`.
+    */
+  def aggregate(
+      name: String,
+      fn:    io.sm8.core.rel.AggregateFn,
+      expr:  io.sm8.core.expr.Expr,
+  ): Measure = Measure(name, AggregateCall(fn, Some(expr), name))
+}
 
 /**
  * A pre-defined filter clause on a Model is the typed
@@ -139,7 +168,9 @@ object Model {
         audit = AuditPolicy.NoAudit),
       source: SourceRef,
       status: ModelStatus = ModelStatus.Draft,
-      filters: List[FilterSpec] = Nil
+      filters: List[FilterSpec] = Nil,
+      calculatedMeasures: List[CalculatedMeasure] = Nil,
+      joins: List[JoinSpec] = Nil
   ): Either[ModelValidationError, Model] = {
     if (name == null || name.trim.isEmpty)
       Left(ModelValidationError.InvalidName("Model name must be non-blank"))
@@ -155,7 +186,9 @@ object Model {
         defaultPolicies = defaultPolicies,
         source = source,
         status = status,
-        filters = filters))
+        filters = filters,
+        calculatedMeasures = calculatedMeasures,
+        joins = joins))
   }
 }
 

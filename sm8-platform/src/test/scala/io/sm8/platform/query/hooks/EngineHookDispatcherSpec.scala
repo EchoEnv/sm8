@@ -135,7 +135,7 @@ class EngineHookDispatcherSpec extends AnyFunSuite with Matchers {
       source     = SourceRef.ByName("n", "t"),
       status     = ModelStatus.Draft,
       dimensions = List(Dimension("d", "d")),
-      measures   = List(Measure("v", "v"))
+      measures   = List(Measure.aggregate("v", io.sm8.core.rel.AggregateFn.Sum, io.sm8.core.expr.Expr.FieldRef("v")))
     ).toOption.get
 
   private def sampleProvider: FakeProvider =

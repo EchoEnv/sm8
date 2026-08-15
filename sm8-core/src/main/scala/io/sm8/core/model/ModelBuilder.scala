@@ -98,6 +98,8 @@ final case class ModelBuilder private (
     source:         Option[SourceRef]         = None,
     status:         ModelStatus               = ModelStatus.Draft,
     filters:        List[FilterSpec]          = Nil,
+    calculatedMeasures: List[CalculatedMeasure] = Nil,
+    joins:          List[JoinSpec]            = Nil,
 ) {
 
   def withName(value: String): ModelBuilder =
@@ -115,11 +117,39 @@ final case class ModelBuilder private (
   def withDimensions(values: List[Dimension]): ModelBuilder =
     copy(dimensions = values)
 
-  def withMeasure(name: String, expr: String): ModelBuilder =
+  /** PR-J (2026-08-16): `expr` is now a typed `AggregateCall`.
+    * Use `withMeasureAgg(name, fn, expr)` for the common
+    * single-aggregate case, or this method with the structural
+    * `AggregateCall(...)` for `COUNT(*)` /
+    * `APPROX_PERCENTILE(x, p)` forms. */
+  def withMeasure(name: String, expr: io.sm8.core.rel.AggregateCall): ModelBuilder =
     copy(measures = measures :+ Measure(name, expr))
+
+  /** Smart constructor for the common single-aggregate case:
+    * `withMeasureAgg("total", AggregateFn.Sum, Expr.FieldRef("amount"))`. */
+  def withMeasureAgg(
+      name: String,
+      fn:    io.sm8.core.rel.AggregateFn,
+      expr:  io.sm8.core.expr.Expr,
+  ): ModelBuilder =
+    copy(measures = measures :+ Measure.aggregate(name, fn, expr))
 
   def withMeasures(values: List[Measure]): ModelBuilder =
     copy(measures = values)
+
+  /** PR-J: add a calculated (derived) measure — any `Expr`. */
+  def withCalculatedMeasure(name: String, expr: io.sm8.core.expr.Expr): ModelBuilder =
+    copy(calculatedMeasures = calculatedMeasures :+ CalculatedMeasure(name, expr))
+
+  def withCalculatedMeasures(values: List[CalculatedMeasure]): ModelBuilder =
+    copy(calculatedMeasures = values)
+
+  /** PR-J: add a join to another model. */
+  def withJoin(spec: JoinSpec): ModelBuilder =
+    copy(joins = joins :+ spec)
+
+  def withJoins(values: List[JoinSpec]): ModelBuilder =
+    copy(joins = values)
 
   def withPolicies(value: ModelPolicyDefaults): ModelBuilder =
     copy(defaultPolicies = value)
@@ -163,6 +193,8 @@ final case class ModelBuilder private (
       source          = s,
       status          = status,
       filters         = filters,
+      calculatedMeasures = calculatedMeasures,
+      joins           = joins,
     )
   }
 }
