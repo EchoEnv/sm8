@@ -91,9 +91,10 @@ object Main {
 
   /** CLI shape. Parsed once; pure data (scala-data-drivenrefactor). */
   final case class CliArgs(
-      modelPath: Path,
-      port:      Int    = 8080,
-      engine:    Option[String] = None,
+      modelPath:     Path,
+      port:          Int    = 8080,
+      engine:        Option[String]        = None,
+      connectorUrl:  Option[String]        = None,
   )
 
   /** Typed CLI parse failure — `reason` goes to stderr. */
@@ -120,8 +121,14 @@ object Main {
       |
       |  --model <path>   model manifest (YAML, schema-validated)
       |  --port <n>       TCP port (default 8080; 0 = ephemeral)
-      |  --engine <name>  default engine (default: first discovered
-      |                   MCPEngineProvider on the classpath)
+      |  --engine <name>     default engine (default: first discovered
+      |                      MCPEngineProvider on the classpath)
+      |  --connector-url <u> optional connector URL (e.g.
+      |                      'spark://host:7077', 'spark-connect://host:15002',
+      |                      'local[*]'). When set, the platform asks
+      |                      the discovered connector descriptor to
+      |                      realize against the URL via its (String) ctor
+      |                      (no spark types in the platform).
       |
       |Engines are discovered via META-INF/services/
       |io.sm8.core.engine.MCPEngineProvider (Java ServiceLoader).""".stripMargin
@@ -144,6 +151,9 @@ object Main {
         case "--engine" :: value :: rest =>
           loop(rest, acc.copy(engine = Some(value)))
         case "--engine" :: Nil => Left(CliError.MissingValue("--engine"))
+        case "--connector-url" :: value :: rest =>
+          loop(rest, acc.copy(connectorUrl = Some(value)))
+        case "--connector-url" :: Nil => Left(CliError.MissingValue("--connector-url"))
         case other :: _ => Left(CliError.UnknownFlag(other))
       }
     loop(args, CliArgs(modelPath = Paths.get("")))
@@ -163,12 +173,55 @@ object Main {
 
   /** Wire model + registry + transport WITHOUT starting the server.
     * Pure construction — unit-testable without binding a socket. */
+  /**
+    * Realize a discovered provider against a URL by reflection.
+    *
+    * Per RFC §3 + the user's "no spark types in the platform"
+    * directive: the platform holds ONLY a string. For each
+    * discovered provider that is not available (i.e. the
+    * contract-gap stub from the connector's no-arg ctor), look
+    * for a `(String) ctor` on the class. If found, instantiate
+    * with the URL. The connector's (String) ctor builds the
+    * real SparkSession (or TrinoClient, etc.) — the platform
+    * never imports the connector class directly.
+    *
+    * Future connectors that support a URL realization (Trino URL,
+    * DuckDB path, etc.) just need a `(String) ctor` — no platform
+    * change.
+    */
+  def realize(
+      providers:    List[MCPEngineProvider],
+      connectorUrl: Option[String]
+  ): List[MCPEngineProvider] = connectorUrl match {
+    case None => providers
+    case Some(url) =>
+      providers.map { p =>
+        if (p.available) p
+        else {
+          val cls = p.getClass
+          try {
+            val ctor = cls.getConstructor(classOf[String])
+            val instance = ctor.newInstance(url).asInstanceOf[MCPEngineProvider]
+            instance
+          } catch {
+            case _: NoSuchMethodException =>
+              // Connector has no (String) ctor — keep the stub.
+              // The platform will fail loud at wire() if no available
+              // provider is left.
+              p
+          }
+        }
+      }
+  }
+
   def wire(
-      model:     Model,
-      providers: List[MCPEngineProvider],
-      engineName: Option[String],
+      model:        Model,
+      providers:    List[MCPEngineProvider],
+      engineName:   Option[String],
+      connectorUrl: Option[String] = None,
   ): Either[String, (MCPEngineRegistry, HttpTransport)] = {
-    val available = providers.filter(_.available)
+    val realized = realize(providers, connectorUrl)
+    val available = realized.filter(_.available)
     if (available.isEmpty)
       Left("sm8: no MCPEngineProvider discovered (add a connector JAR " +
         "with META-INF/services/io.sm8.core.engine.MCPEngineProvider)")
@@ -202,7 +255,7 @@ object Main {
           case Left(modelErr) =>
             System.err.println(s"sm8: model load failed: ${modelErr.toString}"); 1
           case Right(model) =>
-            wire(model, discoverProviders(Thread.currentThread().getContextClassLoader), cli.engine) match {
+            wire(model, discoverProviders(Thread.currentThread().getContextClassLoader), cli.engine, cli.connectorUrl) match {
               case Left(bootErr) =>
                 System.err.println(bootErr); 3
               case Right((_, transport)) =>
