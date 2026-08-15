@@ -19,6 +19,7 @@
  */
 package io.sm8.platform.query
 
+import io.sm8.platform.query.cache._
 import io.sm8.core.model.{Model, SourceRef}
 
 import org.scalatest.funsuite.AnyFunSuite

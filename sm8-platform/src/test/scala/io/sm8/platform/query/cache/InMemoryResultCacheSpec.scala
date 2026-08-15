@@ -1,4 +1,4 @@
-package io.sm8.platform.query
+package io.sm8.platform.query.cache
 
 import java.util.function.Supplier
 

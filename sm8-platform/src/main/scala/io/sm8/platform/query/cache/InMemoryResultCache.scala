@@ -71,7 +71,7 @@
  *   emptying entries between `size()` and `minBy` would throw
  *   `UnsupportedOperationException`).
  */
-package io.sm8.platform.query
+package io.sm8.platform.query.cache
 
 import scala.jdk.CollectionConverters._
 

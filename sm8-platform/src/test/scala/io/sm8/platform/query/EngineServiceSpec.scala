@@ -1,5 +1,6 @@
 package io.sm8.platform.query
 
+import io.sm8.platform.query.cache._
 import io.sm8.core.engine.{EngineContext, EngineError, MCPEngineProvider, MCPEngineRegistry, MCPQueryRequest, PortableQueryResult, ResultRow, ResultSchema, ResultValue}
 import io.sm8.core.model.{AuditPolicy, CachePolicy, FilterSpec, MaterializePolicy, Model, ModelPolicyDefaults, ModelStatus, SourceRef}
 import io.sm8.core.schema.{Field, SealedDataType}

@@ -1,7 +1,9 @@
-package io.sm8.platform.query
+package io.sm8.platform.query.cache
 
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
+
+import io.sm8.platform.query.QueryResult
 
 /**
  * Tests for `CachedRowDecoder.fromRestateCachedRow` — the row-level

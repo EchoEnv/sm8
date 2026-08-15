@@ -45,6 +45,7 @@
  */
 package io.sm8.platform.query
 
+import io.sm8.platform.query.cache._
 import dev.restate.sdk.HandlerRunner
 import dev.restate.sdk.endpoint.definition.{
   HandlerDefinition,

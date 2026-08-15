@@ -34,7 +34,7 @@
  * tagged with its byte length, so any delimiter ambiguity is
  * resolved.
  */
-package io.sm8.platform.query
+package io.sm8.platform.query.cache
 
 import java.security.MessageDigest
 
