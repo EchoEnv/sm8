@@ -87,20 +87,27 @@ class HttpTransportSpec extends AnyFunSuite with Matchers {
 
   // -- Lifecycle: start → stop → start (rebound) → stop --
 
-  test("HttpTransport.start + stop: clean lifecycle (freePort each time)") {
+  test("HttpTransport.start + stop: binds a real socket (actualPort + connect proof)") {
     val model = makeModel("lc1")
     val stub  = new StubProvider(EngineIdentity("stub", "1.0", "0"))
     val reg   = makeRegistry(stub)
     val http  = new HttpTransport(model, reg)
 
-    // Per [[scala-jvm-safemindset]] "resource lifecycle": start →
-    // stop → start → stop is clean. Pick a fresh port each time to
-    // avoid TIME_WAIT collisions from the previous bind.
-    val port1 = http.start(freePort())
+    // Per debug-mantra §5 (verify the fix): port 0 = ephemeral;
+    // start() returns the ACTUAL bound port (actualPort()).
+    val port1 = http.start(0)
     port1 should be > 0
+    // BIND PROOF: a real TCP connect must succeed against the
+    // actual port (catches the fromEndpoint-without-listen bug —
+    // the PR #58 regression this suite now guards against).
+    val probe = new java.net.Socket("localhost", port1)
+    probe.isConnected shouldBe true
+    probe.close()
     http.stop()
 
-    val port2 = http.start(freePort())
+    // Per [[scala-jvm-safemindset]] "resource lifecycle": we can
+    // restart after stop on a fresh ephemeral port.
+    val port2 = http.start(0)
     port2 should be > 0
     http.stop()
   }
