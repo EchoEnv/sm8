@@ -14,14 +14,7 @@ The SM8 reactor already has the typed engine-portable contract (`MCPEngineProvid
 
 ## Decision
 
-SM8 ships its **own MCP server** in `sm8-platform` that consumes the typed engine-portable contract. Per the plan line 290's intent ("MCP becomes engine-agnostic"), the server wraps the typed `EngineService.runQueryWithHooks` + `MCPEngineProvider` (the latter selected from `MCPEngineRegistry` based on the optional `engine` field on the wire request).
-
-The server lives in `sm8-platform` (NOT `sm8-core`) because:
-- Per RFC `semantic-layer-engine-architecture.md` §3 Core Boundary, the server is **NOT core** — it's a transport-level façade (HTTP / Restate / stdio), not an engine.
-- The server captures the typed `MCPEngineRegistry` (typed, Serializable per ADR-004's IR contract) but does NOT contain Spark or any data-source knowledge — those live in the connector layer (`connectors/spark-connector`).
-- The server may wrap a **Restate endpoint** (`RestateHttpServer.listen`) OR a **plain HTTP server** (e.g. `dev.restate.sdk.http.vertx`). The choice of transport is per-deployment.
-
-Per the standing memory rule ("don't add features without consumer demand"): the **existing typed pipeline** (per `EngineService.runQueryWithHooks` + `MCPEngineProvider.query`) has **NO production caller**. Step 11 ships the FIRST caller.
+| **`plugins.md` Rule 1** (line 55): the platform must not open connections. Today `Main.realize()` does so via reflection — the split into `sm8-platform` (library) + `sm8-server` (deployment) moves the reflection out of the transport library. The deployment module instead calls the typed `realize(url)` contract (see `adapters.md` Rule 4).
 
 ## Consequences
 
@@ -34,6 +27,7 @@ Per the standing memory rule ("don't add features without consumer demand"): the
 **Negative:**
 - The server must not contain Spark or any data-source-specific types (per §3 Core Boundary).
 - The server captures the typed `MCPEngineRegistry` + `ResultCache` + `EngineHookDispatcher`. Per `scala-jvm-safetymindset` mantra #3 (long-lived state): these must be `Serializable` for Restate's journal rehydration. **The existing `EngineServiceSpec.scala:547` ("runQuery: serializable-safe") verifies this contract.** Per ADR-004 (typed-Expr family), all captured types are case-class-derived and Serializable.
+- The server's TRANSPORT library (`sm8-platform`) must not contain Spark types. The server's DEPLOYMENT module (`sm8-server`) likewise must not contain Spark types — it only invokes the `(String)` ctor reflectively or, durably, calls a typed `realize(url)` method on the connector. The SparkSession construction itself stays inside the connector JAR (added 2026-08-15, per Post-#65 Refinement).
 
 **Reversibility:** N/A. The server is a thin façade; adding it does not modify any other artifact.
 
@@ -93,3 +87,58 @@ This ADR documents the decision. **The code implementation follows** (PR for the
 ## Provenance
 
 This ADR was authored on 2026-08-15 as part of the agile-kindling-beacon plan execution, after PRs #32-#55 (the engine-portable refactor + reviews). The decision: ship SM8's own MCP server in `sm8-platform` per plan line 290, **NOT integrate with the legacy `semanticdf-mcp`** (per ADR-001).
+
+## Post-#65 Refinement (2026-08-15)
+
+**Status:** Accepted. **Author:** SM8 agent (per user directive verbatim: *"platform should not establish session or connection it self it just passing or something?"*).
+
+### Captured user directive (verbatim)
+
+> *"platform should not establish session or connection it self it just passing or something?"*
+
+### Problem statement (post-#65 reality)
+
+After PR #65 landed, the layering has **one structural debt**: `sm8-platform` (the transport library) contains a `Main.scala` that:
+- Performs `ServiceLoader.load(MCPEngineProvider)` discovery (a deployment concern).
+- Performs reflection on discovered providers' `(String)` ctor to instantiate them with a URL — a reflection pattern that violates RFC §3's "the platform must not open connections" principle.
+
+Per RFC §3 Core Boundary + `plugins.md` Rule 1, the transport library must not open connections. Today it does so via reflection. The post-#65 shape is RFC-conformant *functionally* (zero spark imports in `sm8-platform`) but not *structurally* (the reflection path lives in the transport library).
+
+### Refinement decision
+
+1. **The `sm8-platform` library becomes pure transport** — zero `ServiceLoader`, zero reflection, zero `(String)` ctor. It holds the **typed contracts** (`MCPEngineProvider`, `HTTP transport`, `QueryService` handler, `EngineService` pipeline) but does no plugin discovery at runtime.
+
+2. **A new `sm8-server` deployment module** owns the runnable process — CLI parsing, ServiceLoader discovery, the typed `realize(url)` call (per `adapters.md` Rule 4), JVM shutdown hooks. The `Main` class moves there.
+
+3. **Reflection is replaced** by the typed `realize(url: String): Option[MCPEngineProvider]` method on `MCPEngineProvider` (per `adapters.md` Rule 4). The deployment module iterates the discovered providers and calls `realize(url)` directly — no `Class.getConstructor[String]`.
+
+4. **The transport library and the deployment module share zero spark / trino / adapter-specific types** — the only thing they see is the `MCPEngineProvider` contract. Layer boundary is now structural, not just functional.
+
+### PR sequence (the actual shape of v1.0.0)
+
+| PR | What | Behavior change |
+|---|---|---|
+| **PR-A** | Split `sm8-platform` → `sm8-platform` (library) + `sm8-server` (deployment). Move `Main.scala`, `MainSpec.scala`, ServiceLoader discovery, CLI parsing, shutdown hook to `sm8-server`. Library keeps `HttpTransport`, `QueryService`, `EngineService`, `PlatformModelLoader`, `RestatedEngineRunner`, hooks, cache. | None — pure refactor. 593-test baseline preserved. |
+| **PR-B** | Replace `(String)` ctor reflection with typed `realize(url: String): Option[MCPEngineProvider]` on `MCPEngineProvider`. `SparkEngineProvider.realize()` builds `SparkSession.builder().master(url).getOrCreate()`. Trino + InMemory `MCPEngineProvider` stubs added for parity. | Durable RFC §3 conformance. +20 tests. |
+| **PR-C** | Final docs alignment (RFC §11a, plugins.md Rule 1, adapters.md Rule 4 — all done in THIS doc-update PR). | Docs only. |
+
+### What this refinement does NOT change
+
+- The closure-safety contract (PR #36) — `SparkEngineProvider` remains `Serializable`; the `realize()` ctor still captures a `SparkSession` in the constructor.
+- The Portal discovery mechanism (PR #64) — `META-INF/services` still lists the connector class.
+- The 593-test baseline — every PR preserves the baseline.
+- Cross-version compatibility (Spark 3.5.x + 4.1.x) — `SparkSession.builder().master(url).getOrCreate()` is the same API in both versions.
+
+### Why this is RFC conformant (the architect's verdict)
+
+Per RFC §3 table: *"if it bundles adapters + hooks together for one purpose — it is a plugin. If it needs to know when in the pipeline something should happen — it is a hook. If it needs to know which database, API, cache, or auth system is being used — it is not core."*
+
+**Post-refinement layer ownership:**
+
+| Layer | Knows about data source? | Owns session? | Imports adapter types? |
+|---|---|---|---|
+| `sm8-core` | ❌ NEVER | ❌ NEVER | ❌ NEVER |
+| `sm8-platform` | ❌ NEVER | ❌ NEVER | ❌ NEVER (after PR-A) |
+| `sm8-server` | ❌ NEVER (only the URL string) | ❌ NEVER (calls `realize()`) | ❌ NEVER (after PR-A) |
+| `connectors/*` | ✅ THE ONLY YES | ✅ THE ONLY YES | ✅ THE ONLY YES |
+| `plugins/*` | ❌ (cross-cutting behavior only) | ❌ | ❌ (implements core plugins only) |
