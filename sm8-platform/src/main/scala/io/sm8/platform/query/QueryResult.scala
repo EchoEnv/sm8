@@ -61,3 +61,35 @@ final case class QueryResult(
     truncated:  Boolean,
     rowCount:   Long
 ) extends Product with Serializable
+
+object QueryResult {
+
+  /** Convert a journaled `RestateCachedRow` back to a wire
+    * `QueryResult`.
+    *
+    * Relocated from `CachedRowDecoder.toQueryResultFromJournaled`
+    * during cache-rehome Phase 1: the decoder is engine-portable
+    * (io.sm8.core.cache) and must not know the platform wire DTO;
+    * this conversion is platform-side by definition (it produces
+    * THIS type).
+    *
+    * @param modelName the model name (or `null` for "unknown")
+    * @param journaled the cached row to decode
+    * @param maxRows   the truncation cap (default 100_000, matching
+    *                 the legacy `CacheBridge.DefaultMaxRows`)
+    */
+  def fromJournaled(
+      modelName: String,
+      journaled: io.sm8.core.cache.RestateCachedRow,
+      maxRows:   Int = 100_000
+  ): QueryResult = {
+    val rows = io.sm8.core.cache.CachedRowDecoder.fromRestateCachedRow(journaled)
+    QueryResult(
+      model     = if (modelName == null) "unknown" else modelName,
+      measures  = journaled.fieldNames,
+      rows      = rows,
+      truncated = rows.size >= maxRows,
+      rowCount  = rows.size.toLong
+    )
+  }
+}

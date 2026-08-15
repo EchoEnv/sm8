@@ -35,7 +35,7 @@
  * reactor today, so the change is dormant until the engine-portable
  * path migration (PR-C5+) wires the consumer to match.
  */
-package io.sm8.platform.query.cache
+package io.sm8.core.cache
 
 import io.sm8.core.schema.SealedDataType
 

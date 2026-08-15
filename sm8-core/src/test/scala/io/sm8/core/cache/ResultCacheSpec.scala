@@ -1,4 +1,4 @@
-package io.sm8.platform.query.cache
+package io.sm8.core.cache
 
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers

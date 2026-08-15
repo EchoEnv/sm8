@@ -1,4 +1,4 @@
-package io.sm8.platform.query.cache
+package io.sm8.core.cache
 
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream, ObjectInputStream, ObjectOutputStream}
 

@@ -73,6 +73,7 @@
  */
 package io.sm8.platform.query.cache
 
+import io.sm8.core.cache._
 import scala.jdk.CollectionConverters._
 
 import java.util.concurrent.ConcurrentHashMap

@@ -41,7 +41,7 @@
  * not `Either`. Expected failures (cache miss, encoding error)
  * use EngineError in higher layers.
  */
-package io.sm8.platform.query.cache
+package io.sm8.core.cache
 
 /**
  * Purely-data record mirror of an engine-portable cached result
