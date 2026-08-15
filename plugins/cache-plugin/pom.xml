@@ -29,6 +29,7 @@
     <relativePath>../../pom.xml</relativePath>
   </parent>
 
+  <groupId>io.sm8.plugins</groupId>
   <artifactId>cache-plugin_2.13</artifactId>
   <packaging>jar</packaging>
 
@@ -44,7 +45,6 @@
     <dependency>
       <groupId>org.scalatest</groupId>
       <artifactId>scalatest_${scala.binary.version}</artifactId>
-      <version>${scalatest.version}</version>
       <scope>test</scope>
     </dependency>
   </dependencies>

@@ -22,7 +22,7 @@
 package io.sm8.platform.query
 
 import io.sm8.core.cache._
-import io.sm8.platform.query.cache._
+import io.sm8.core.cache._
 import java.util.concurrent.atomic.AtomicInteger
 
 import org.scalatest.funsuite.AnyFunSuite
@@ -50,7 +50,7 @@ import io.sm8.core.model.{
   SourceRef
 }
 import io.sm8.core.schema.{Field, SealedDataType}
-import io.sm8.platform.query.cache.CachePlugin
+import io.sm8.plugins.cache.CachePlugin
 import io.sm8.platform.query.hooks.EngineHookDispatcher
 
 class EngineServiceRunQueryWithHooksSpec extends AnyFunSuite with Matchers {
@@ -154,7 +154,7 @@ class EngineServiceRunQueryWithHooksSpec extends AnyFunSuite with Matchers {
       available = true
     )
     val registry = makeRegistry(Map("test-engine" -> spark))
-    val cache    = new io.sm8.platform.query.cache.InMemoryResultCache(maxEntries = 16)
+    val cache    = new io.sm8.plugins.cache.InMemoryResultCache(maxEntries = 16)
     val dispatcher = hookDispatcherWith(cache)
 
     // First call: MISS path. Engine runs, cache writes.
