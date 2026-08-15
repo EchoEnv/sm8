@@ -61,10 +61,13 @@
  * spark-connector JAR is on the classpath; its Serializable
  * contract is enforced by `SparkEngineProviderSpec` upstream.
  */
-package io.sm8.platform.query
+package io.sm8.server
 
 import io.sm8.core.engine.{EngineError, EngineIdentity, MCPEngineProvider, MCPEngineRegistry, MCPQueryRequest, PortableQueryResult}
 import io.sm8.core.model.Model
+
+import io.sm8.platform.query.{HttpTransport, PlatformModelLoader}
+import io.sm8.plugins.cache.InMemoryResultCache
 
 import java.nio.file.{Path, Paths}
 import java.util.ServiceLoader
@@ -74,7 +77,7 @@ import java.util.ServiceLoader
  *
  * Usage:
  * {{{
- * java -cp ... io.sm8.platform.query.Main \
+ * java -cp ... io.sm8.server.Main \
  *   --model /path/to/model.yaml \
  *   [--port 8080] \
  *   [--engine spark-3.5]
@@ -234,7 +237,7 @@ object Main {
       else
         try {
           val registry = MCPEngineRegistry(engines, default)
-          Right((registry, HttpTransport(model, registry)))
+          Right((registry, HttpTransport(model, registry, io.sm8.plugins.cache.InMemoryResultCache(maxEntries = 1))))
         } catch {
           case e: IllegalArgumentException => Left(e.getMessage)
         }

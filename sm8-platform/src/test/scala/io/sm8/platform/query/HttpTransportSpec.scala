@@ -61,7 +61,7 @@ class HttpTransportSpec extends AnyFunSuite with Matchers {
   test("HttpTransport.start: double-start throws IllegalStateException (per resource lifecycle contract)") {
     // Per [[scala-jvm-safemindset]]: starting twice must fail loud,
     // not silently leak a second bound socket.
-    val transport = HttpTransport(makeModel, makeRegistry)
+    val transport = HttpTransport(makeModel, makeRegistry, io.sm8.core.cache.ResultCache.NoOp)
     transport.start(0)  // port 0 = OS-assigned
     try {
       val thrown = intercept[IllegalStateException] {
@@ -87,7 +87,7 @@ class HttpTransportSpec extends AnyFunSuite with Matchers {
     // verify the contract by checking the captured types' interfaces.
     val model = makeModel
     val registry = makeRegistry
-    val transport = HttpTransport(model, registry)
+    val transport = HttpTransport(model, registry, io.sm8.core.cache.ResultCache.NoOp)
     transport.start(0)
     try {
       // The transport's only fields are the captured typed args.
@@ -112,7 +112,7 @@ class HttpTransportSpec extends AnyFunSuite with Matchers {
     // Per [[karphyaguidsmindset]]: this is verified by the lifecycle
     // contract — start/stop are both synchronous on the caller thread.
     // No callback, no future, no async leak.
-    val transport = HttpTransport(makeModel, makeRegistry)
+    val transport = HttpTransport(makeModel, makeRegistry, io.sm8.core.cache.ResultCache.NoOp)
     val port = transport.start(0)
     port should be >= 0  // OS-assigned ports are non-negative
     transport.stop()

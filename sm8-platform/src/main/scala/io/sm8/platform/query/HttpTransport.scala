@@ -57,11 +57,11 @@
  */
 package io.sm8.platform.query
 
-import io.sm8.plugins.cache.InMemoryResultCache
 
 import dev.restate.sdk.endpoint.Endpoint
 import dev.restate.sdk.http.vertx.RestateHttpServer
 
+import io.sm8.core.cache.ResultCache
 import io.sm8.core.engine.MCPEngineRegistry
 import io.sm8.core.model.Model
 
@@ -82,7 +82,8 @@ import io.vertx.core.http.HttpServer
  */
 final class HttpTransport(
     val model:    Model,
-    val registry: MCPEngineRegistry
+    val registry: MCPEngineRegistry,
+    val cache:    ResultCache
 ) {
 
   // The bound Vert.x HttpServer handle. Per [[scala-jvm-safemindset]]:
@@ -111,7 +112,7 @@ final class HttpTransport(
       .bind(QueryService.definition(
         model    = model,
         registry = registry,
-        cache    = InMemoryResultCache(maxEntries = 1),
+        cache    = cache,
         plugins  = Nil,
       ))
       .build()
@@ -149,8 +150,8 @@ final class HttpTransport(
 object HttpTransport {
 
   /** Factory for the canonical wiring. Per [[karphyaguidsmindset]]
-    * "smallest correct core": defaults point to the production
-    * wiring. */
-  def apply(model: Model, registry: MCPEngineRegistry): HttpTransport =
-    new HttpTransport(model, registry)
+    * "smallest correct core": 3-arg ctor is the minimal contract —
+    * the caller (deployment module) wires the cache. */
+  def apply(model: Model, registry: MCPEngineRegistry, cache: ResultCache): HttpTransport =
+    new HttpTransport(model, registry, cache)
 }
