@@ -288,17 +288,69 @@ object ModelLoader {
       case _ => None
     }
 
+  /** Parses measures. PR-J (2026-08-16): the `expr:` field is now
+    * parsed into a typed `AggregateCall`. The well-known legacy
+    * string forms are recognized; unknown forms surface as
+    * `None` (fail loud — the caller's validation reports the
+    * missing measure, never a silent no-op).
+    *
+    * Recognized forms (case-insensitive fn name):
+    *   - "sum(x)"       -> AggregateCall(Sum, Some(FieldRef("x")), alias)
+    *   - "count(*)"     -> AggregateCall(Count, None, alias)
+    *   - "avg(x)", "min(x)", "max(x)",
+    *     "count_distinct(x)", "countdistinct(x)" -> the matching fn
+    *   - bare "x" (no parens) -> AggregateCall(Sum, Some(FieldRef("x")), alias)
+    *     (the legacy's implicit-sum default)
+    */
   private def parseMeasures(seq: Seq[Any]): List[io.sm8.core.model.Measure] =
     seq.toList.flatMap {
       case m: java.util.Map[_, _] =>
         val name = stringField(m, "name")
         val expr = stringField(m, "expr").orElse(name)
         (name, expr) match {
-          case (Some(n), Some(e)) => Some(io.sm8.core.model.Measure(n, e))
+          case (Some(n), Some(e)) => parseAggregateCall(n, e)
           case _ => None
         }
       case _ => None
     }
+
+  /** Parse a legacy measure-expression string into a typed
+    * `AggregateCall`. Per [[scala-error-handling-mindset]]:
+    * unknown function names return `None` (the caller's
+    * validation reports the missing measure; never a silent
+    * default to a wrong aggregate). */
+  private def parseAggregateCall(
+      alias: String,
+      expr:  String,
+  ): Option[io.sm8.core.model.Measure] = {
+    import io.sm8.core.expr.Expr
+    import io.sm8.core.rel.{AggregateCall, AggregateFn}
+    val trimmed = expr.trim
+    // fn(arg) form?
+    val fnCall = """(?i)^(sum|count|avg|min|max|count_distinct|countdistinct)\s*\(\s*(.+?)\s*\)$""".r
+    trimmed match {
+      case fnCall(fn, arg) =>
+        val aFn = fn.toLowerCase match {
+          case "sum"             => Some(AggregateFn.Sum)
+          case "count"           => if (arg == "*") Some(AggregateFn.Count) else None
+          case "avg"             => Some(AggregateFn.Avg)
+          case "min"             => Some(AggregateFn.Min)
+          case "max"             => Some(AggregateFn.Max)
+          case "count_distinct" | "countdistinct" => Some(AggregateFn.CountDistinct)
+          case _                 => None
+        }
+        aFn.map { f =>
+          val input = if (arg == "*") None else Some(Expr.FieldRef(arg))
+          io.sm8.core.model.Measure(alias, AggregateCall(f, input, alias))
+        }
+      case _ =>
+        // Bare column name -> implicit Sum (the legacy default).
+        if (trimmed.nonEmpty && trimmed.matches("""[A-Za-z_][A-Za-z0-9_.]*""")) {
+          Some(io.sm8.core.model.Measure(
+            alias, AggregateCall(AggregateFn.Sum, Some(Expr.FieldRef(trimmed)), alias)))
+        } else None
+    }
+  }
 
   /** Parses filters. The `predicate:` field is a raw SQL-like
     * expression. Delegates to `ExprParser.parseExpr` (added in

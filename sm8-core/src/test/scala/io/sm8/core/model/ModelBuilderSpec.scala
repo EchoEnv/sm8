@@ -71,14 +71,14 @@ class ModelBuilderSpec extends AnyFunSuite with Matchers {
       .withSource(SourceRef.ByName("default", "sales"))
       .withDimension("region", "region")
       .withDimension("product", "product")
-      .withMeasure("revenue", "sum(amount)")
+      .withMeasureAgg("revenue", io.sm8.core.rel.AggregateFn.Sum, io.sm8.core.expr.Expr.FieldRef("amount"))
       .build
     val expected = Model.of(
       name       = "dm-test",
       version    = 2,
       source     = SourceRef.ByName("default", "sales"),
       dimensions = List(Dimension("region", "region"), Dimension("product", "product")),
-      measures   = List(Measure("revenue", "sum(amount)")),
+      measures   = List(Measure.aggregate("revenue", io.sm8.core.rel.AggregateFn.Sum, io.sm8.core.expr.Expr.FieldRef("amount"))),
     )
     built shouldBe expected
   }
@@ -122,7 +122,7 @@ class ModelBuilderSpec extends AnyFunSuite with Matchers {
       .withVersion(3)
       .withSource(SourceRef.ByName("default", "t"))
       .withDimension("a", "a")
-      .withMeasure("b", "b")
+      .withMeasureAgg("b", io.sm8.core.rel.AggregateFn.Sum, io.sm8.core.expr.Expr.FieldRef("b"))
       .build
       .toOption
       .get

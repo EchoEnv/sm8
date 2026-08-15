@@ -171,7 +171,7 @@ class EndToEndPipelineSpec extends AnyFunSuite with Matchers {
 
     // Measures
     m.measures shouldBe List(
-      Measure("revenue", "sum(amount)"),
+      Measure.aggregate("revenue", io.sm8.core.rel.AggregateFn.Sum, io.sm8.core.expr.Expr.FieldRef("amount")),
     )
 
     // Filters
@@ -320,7 +320,7 @@ class EndToEndPipelineSpec extends AnyFunSuite with Matchers {
       .withSource(SourceRef.ByName(name = "default", table = "people"))
       .withDimension("region", "region")
       .withDimension("product", "product")
-      .withMeasure("revenue", "sum(amount)")
+      .withMeasureAgg("revenue", io.sm8.core.rel.AggregateFn.Sum, io.sm8.core.expr.Expr.FieldRef("amount"))
       .build
       .toOption
       .get
