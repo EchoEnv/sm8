@@ -45,6 +45,7 @@
     <module>plugins/audit-plugin</module>
     <module>plugins/row-cap-plugin</module>
     <module>plugins/broadcast-plugin</module>
+    <module>plugins/cache-plugin</module>
     <module>plugins/materialize-plugin</module>
     <module>plugins/skew-plugin</module>
     <module>sm8-cli</module>

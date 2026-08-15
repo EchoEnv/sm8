@@ -311,7 +311,7 @@ class QueryServiceSpec extends AnyFunSuite with Matchers {
       queryResult = null.asInstanceOf[Either[EngineError, PortableQueryResult]]
     )
     val registry = makeRegistry(Map("spark" -> spark))
-    val cache = InMemoryResultCache()
+    val cache = new io.sm8.platform.query.cache.InMemoryResultCache(1)
     val req = QueryRequest("flights", Nil, Nil, "", "spark")
     val mcpReq = EngineService.buildMCPRequest(req)
     val cacheKey = CacheBridge.platformCacheKey(
