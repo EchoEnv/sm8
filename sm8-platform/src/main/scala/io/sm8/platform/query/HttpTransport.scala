@@ -57,6 +57,7 @@
  */
 package io.sm8.platform.query
 
+import io.sm8.platform.query.cache._
 import dev.restate.sdk.endpoint.Endpoint
 import dev.restate.sdk.http.vertx.RestateHttpServer
 
@@ -109,7 +110,7 @@ final class HttpTransport(
       .bind(QueryService.definition(
         model    = model,
         registry = registry,
-        cache    = io.sm8.platform.query.InMemoryResultCache(maxEntries = 1),
+        cache    = InMemoryResultCache(maxEntries = 1),
         plugins  = Nil,
       ))
       .build()

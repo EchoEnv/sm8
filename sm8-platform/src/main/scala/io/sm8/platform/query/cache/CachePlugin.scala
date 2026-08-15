@@ -37,7 +37,6 @@ package io.sm8.platform.query.cache
 import java.util.concurrent.atomic.AtomicInteger
 
 import io.sm8.core.engine.{ EngineHookRequest, EngineHookResult }
-import io.sm8.platform.query.{ CachedRowDecoder, ResultCache }
 import io.sm8.sdk.{ Context, HookManager, HookOrigin, HookStage, Plugin, PostHook, PreHook, Engine => SdkEngine }
 
 final class CachePlugin(val cache: ResultCache) extends Plugin with java.io.Serializable {

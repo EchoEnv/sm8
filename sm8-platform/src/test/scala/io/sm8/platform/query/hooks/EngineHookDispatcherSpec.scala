@@ -43,9 +43,9 @@ import io.sm8.sdk.{
 }
 import io.sm8.platform.query.{
   EngineService,
-  QueryRequest,
-  ResultCache
+  QueryRequest
 }
+import io.sm8.platform.query.cache.{InMemoryResultCache, ResultCache}
 
 private final class FakeProvider(
     val name: String,

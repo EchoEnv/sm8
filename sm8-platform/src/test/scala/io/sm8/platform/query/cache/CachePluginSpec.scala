@@ -46,12 +46,7 @@ import io.sm8.core.model.{
 import io.sm8.core.schema.{Field, SealedDataType}
 import io.sm8.platform.query.hooks.EngineHookDispatcher
 import io.sm8.sdk.Plugin
-import io.sm8.platform.query.{
-  EngineService,
-  InMemoryResultCache,
-  QueryRequest,
-  ResultCache
-}
+import io.sm8.platform.query.{EngineService, QueryRequest}
 
 private final class FakeProvider(
     val name: String,
@@ -87,14 +82,14 @@ private final class CountingCacheDelegate(
     putCounter: AtomicInteger
 ) extends ResultCache {
 
-  override def getJournaled(key: String): Option[io.sm8.platform.query.RestateCachedRow] = {
+  override def getJournaled(key: String): Option[io.sm8.platform.query.cache.RestateCachedRow] = {
     getCounter.incrementAndGet()
     underlying.getJournaled(key)
   }
 
   override def putJournaledWithModelAndVersion(
       key: String,
-      value: io.sm8.platform.query.RestateCachedRow,
+      value: io.sm8.platform.query.cache.RestateCachedRow,
       model: String,
       version: Int
   ): Unit = {

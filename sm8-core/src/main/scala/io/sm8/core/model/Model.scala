@@ -37,14 +37,17 @@ final case class Model private (
     val source: SourceRef,
     val status: ModelStatus,
     val filters: List[FilterSpec]
-) extends Product with Serializable {
+) extends Product with Serializable
 
-  require(name.nonEmpty, "sm8: Model name must be non-empty")
-  require(version >= 0, "sm8: Model version must be non-negative")
-
-  /** Placeholder — engine handles query execution. */
-  def query(req: SemanticQuery): Unit = ()
-}
+// Per [[scala-data-driven-refactor-mindset]] step 2 ("shape and
+// validity are separate"): NO `require` in the case-class body.
+// Validity is enforced exactly once, at the boundary, by the
+// `Model.of` smart constructor. The constructor is `private`, so
+// `Model.of` is the only instantiation path — the former body
+// requires were unreachable duplication. The placeholder
+// `def query(...): Unit = ()` no-op (a behavior stub on a pure
+// data type) is likewise removed: query execution lives in the
+// engine adapters (MCPEngineProvider), never on the data.
 
 /** Model lifecycle status. Sealed per [[scala-data-driven-refactor-mindset]]. */
 sealed trait ModelStatus

@@ -41,7 +41,7 @@
  * is dormant until the engine-portable path migration (PR-C5+)
  * wires the consumer to match.
  */
-package io.sm8.platform.query
+package io.sm8.platform.query.cache
 
 import io.sm8.core.engine.ResultValue
 

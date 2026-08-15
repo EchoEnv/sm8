@@ -94,6 +94,7 @@
  */
 package io.sm8.platform.query
 
+import io.sm8.platform.query.cache._
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream, ObjectInputStream, ObjectOutputStream}
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path}

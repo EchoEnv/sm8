@@ -43,8 +43,9 @@
  * cells from the returned list. This is engine-portable: no Spark
  * `DataType` in the wire contract.
  */
-package io.sm8.platform.query
+package io.sm8.platform.query.cache
 
+import io.sm8.platform.query.QueryResult
 import io.sm8.core.engine.{PortableQueryResult, ResultRow, ResultSchema, ResultValue}
 
 /**
@@ -59,7 +60,7 @@ object CachedRowDecoder {
   /**
    * Decode an entire `RestateCachedRow` to its typed rows.
    *
-   * Per the [[io.sm8.platform.query.RestateCachedRow]] wire contract:
+   * Per the [[io.sm8.platform.query.cache.RestateCachedRow]] wire contract:
    *   - `fieldNames.size` must equal `fieldTypes.size` (enforced by
    *     `RestateCachedRow`'s smart constructor)
    *   - Each row's cells must have exactly `fieldNames.size` cells,

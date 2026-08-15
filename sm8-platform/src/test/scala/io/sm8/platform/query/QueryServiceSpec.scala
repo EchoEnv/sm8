@@ -1,5 +1,6 @@
 package io.sm8.platform.query
 
+import io.sm8.platform.query.cache._
 import java.util.concurrent.atomic.AtomicReference
 
 import com.fasterxml.jackson.databind.ObjectMapper

@@ -41,7 +41,7 @@
  * not `Either`. Expected failures (cache miss, encoding error)
  * use EngineError in higher layers.
  */
-package io.sm8.platform.query
+package io.sm8.platform.query.cache
 
 /**
  * Purely-data record mirror of an engine-portable cached result
@@ -108,7 +108,7 @@ package io.sm8.platform.query
  *   io.sm8.core.schema.SealedDataType$Row
  *   io.sm8.core.schema.SealedDataType$Json$
  *   io.sm8.core.schema.Field
- *   io.sm8.platform.query.RestateCachedRow
+ *   io.sm8.platform.query.cache.RestateCachedRow
  * }}}
  *
  * The Jackson wire format used by Restate SDK journals is identical
