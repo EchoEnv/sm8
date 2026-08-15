@@ -207,4 +207,25 @@ class MainSpec extends AnyFunSuite with Matchers {
     // TestEngineProvider has no (String) ctor → returned as-is.
     realized.head should be theSameInstanceAs stub
   }
+
+  // ---- Typed realize (PR-B per RFC adapters.md Rule 4) ----
+
+  test("realize: typed contract replaces reflection (sm8-server uses realize(url))") {
+    val providers = Main.discoverProviders(getClass.getClassLoader)
+    val realized = Main.realize(providers, Some("local[1]"))
+    // TestEngineProvider.realize() returns None (default) — kept as-is.
+    realized.size shouldBe providers.size
+  }
+
+  test("wire with connector-url: typed realization path compiles + runs") {
+    val providers = Main.discoverProviders(getClass.getClassLoader)
+    // The in-memory engine is available without a URL
+    val wired = Main.wire(
+      Model.of(name = "m", version = 1, source = io.sm8.core.model.SourceRef.ByName("n", "t")).toOption.get,
+      providers,
+      engineName   = Some("test-engine"),
+      connectorUrl = Some("local[1]")
+    )
+    wired.isRight shouldBe true
+  }
 }

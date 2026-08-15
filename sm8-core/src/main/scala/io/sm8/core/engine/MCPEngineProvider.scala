@@ -75,6 +75,35 @@ trait MCPEngineProvider extends Serializable {
       request: io.sm8.core.engine.MCPQueryRequest,
       ctx:     EngineContext,
   ): Either[EngineError, String]
+
+  /** Typed URL realization (added 2026-08-15, PR-B per ADR-006
+    * Post-#65 Refinement + RFC `adapters.md` Rule 4).
+    *
+    * A connector that supports URL-based connection (Spark master
+    * URL, Trino JDBC URL, DuckDB path, HTTP endpoint, etc.)
+    * implements this method to build its concrete client/session
+    * from a plain string. The deployment module calls this typed
+    * method — it does NOT reflect over the class to find a
+    * `(String)` ctor. Per-connector `realize()` validates its own
+    * URL grammar; the deployment module does NOT validate.
+    *
+    * Default: `None` — this provider does not support URL-based
+    * realization (e.g. an embedded/test provider). The deployment
+    * keeps the stub as-is; `wire()` fails loud if no available
+    * provider remains.
+    *
+    * Per RFC §3: the connector is the ONLY piece that knows about
+    * connection strings, drivers, or sessions. The platform and
+    * the deployment module hold only the string.
+    *
+    * @param url the connection URL (e.g. `spark://host:7077`,
+    *            `spark-connect://host:15002`, `local[*]`,
+    *            `jdbc:trino://host:8080`)
+    * @return    `Some(realizedProvider)` on success;
+    *            `None` if this provider does not support URL
+    *            realization or the URL is not valid for it
+    */
+  def realize(url: String): Option[MCPEngineProvider] = None
 }
 
 /** MCPEngine-portable MCP query-request shape. The shape is
