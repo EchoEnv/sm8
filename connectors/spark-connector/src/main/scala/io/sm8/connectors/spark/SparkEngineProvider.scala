@@ -58,6 +58,30 @@ final class SparkEngineProvider(
     */
   def this() = this(null, SparkTypeBridge, "spark-3.5")
 
+  /**
+    * Real-runtime constructor (Phase 4 — Driver-side Spark Connect).
+    *
+    * Builds a SparkSession via
+    * `SparkSession.builder().master(masterUrl).getOrCreate()`. The url
+    * is a plain string — it can be:
+    *   - a classic Spark cluster URL: `spark://host:7077`
+    *   - a local-mode URL: `local[*]` (driver-side only)
+    *   - a Spark Connect URL: `spark-connect://host:port` (Spark 3.4+)
+    *
+    * Per RFC §3: the connector is the ONLY piece that imports
+    * `org.apache.spark.*`. The platform holds only a string.
+    *
+    * Used by Main's reflection: platform finds the discovered stub
+    * (created via the no-arg ctor) and replaces it with the real one
+    * via this ctor.
+    */
+  def this(masterUrl: String) =
+    this(
+      SparkSession.builder().master(masterUrl).getOrCreate(),
+      SparkTypeBridge,
+      "spark-3.5"
+    )
+
 
   override lazy val identity: io.sm8.core.engine.EngineIdentity =
     io.sm8.core.engine.EngineIdentity(
