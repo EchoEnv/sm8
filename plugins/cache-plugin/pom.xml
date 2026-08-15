@@ -47,6 +47,21 @@
       <artifactId>scalatest_${scala.binary.version}</artifactId>
       <scope>test</scope>
     </dependency>
+  
+    <!--
+      PR-D: Hook + Plugin conformance unification. Extends the
+      unified contract bases (HookContractSpec, PluginContractSpec)
+      shipped in sm8-core's test-jar artifact (classifier=tests).
+      Per ADR-007: structural inheritance from the unified contract
+      is what closes the RFC §13 DoD letter-vs-spirit gap.
+    -->
+    <dependency>
+      <groupId>io.sm8</groupId>
+      <artifactId>sm8-core_2.13</artifactId>
+      <version>${project.version}</version>
+      <type>test-jar</type>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
   <build>
     <plugins>
