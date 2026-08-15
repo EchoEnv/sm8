@@ -17,9 +17,9 @@
  * round-trip. This is the driver-side proof of the standing
  * "must be serializable every part" rule.
  */
-package io.sm8.platform.query
+package io.sm8.server
 
-import io.sm8.platform.query.cache._
+import io.sm8.core.cache._
 import io.sm8.core.model.{Model, SourceRef}
 
 import org.scalatest.funsuite.AnyFunSuite
@@ -202,7 +202,7 @@ class MainSpec extends AnyFunSuite with Matchers {
     val providers = Main.discoverProviders(getClass.getClassLoader)
     // Mark the first as available (it isn't in the test classpath —
     // TestEngineProvider is available=false=true per its impl).
-    val stub = providers.find(p => p.getClass.getName == "io.sm8.platform.query.TestEngineProvider").get
+    val stub = providers.find(p => p.getClass.getName == "io.sm8.server.TestEngineProvider").get
     val realized = Main.realize(List(stub), Some("local[1]"))
     // TestEngineProvider has no (String) ctor → returned as-is.
     realized.head should be theSameInstanceAs stub

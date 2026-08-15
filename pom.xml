@@ -49,6 +49,7 @@
     <module>plugins/materialize-plugin</module>
     <module>plugins/skew-plugin</module>
     <module>sm8-cli</module>
+    <module>sm8-server</module>
     <module>sm8-platform</module>
     <!--
       Step 0: sm8-sdk (thin re-export of sm8.sdk)

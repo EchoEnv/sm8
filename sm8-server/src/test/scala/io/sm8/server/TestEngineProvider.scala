@@ -10,7 +10,7 @@
  * Serializable per the closure-safety contract (PR #36): pure
  * fields only, round-trip proven in MainSpec.
  */
-package io.sm8.platform.query
+package io.sm8.server
 
 import io.sm8.core.engine.{
   EngineContext, EngineError, EngineIdentity,
