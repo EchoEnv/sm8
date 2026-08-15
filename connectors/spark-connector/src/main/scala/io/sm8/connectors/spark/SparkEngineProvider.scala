@@ -47,6 +47,18 @@ final class SparkEngineProvider(
     val sparkEngineName: String = "spark-3.5"
 ) extends MCPEngineProvider {
 
+  /** No-arg constructor for Java ServiceLoader discovery.
+    *
+    * Produces the contract-gap stub (`spark = null`, `available = false`)
+    * so the class is loaded by ServiceLoader without a SparkSession. The
+    * production wiring (Main) constructs the real provider with a live
+    * SparkSession and replaces the stub. Per RFC §3 the engine is the
+    * only piece that knows about SparkSession; the descriptor here is
+    * a pure-data presence marker.
+    */
+  def this() = this(null, SparkTypeBridge, "spark-3.5")
+
+
   override lazy val identity: io.sm8.core.engine.EngineIdentity =
     io.sm8.core.engine.EngineIdentity(
       name                 = sparkEngineName,
