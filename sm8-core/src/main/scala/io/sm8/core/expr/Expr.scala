@@ -191,4 +191,68 @@ object Expr {
     * Maps to Spark's `Call(functionName, args)`, Trino's function
     * call. */
   final case class FunctionCall(name: String, args: Seq[Expr]) extends Expr
+
+  // -- Case When (1) --
+
+  /** CASE WHEN conditional expression. Maps to SQL's
+    * `CASE WHEN cond THEN x ELSE y END`, Spark's `Column.when(...)`
+    * foldLeft chain, Trino's `CASE WHEN ... THEN ... ELSE ... END`.
+    *
+    * The `branches` are evaluated in order; the first matching
+    * `condition` produces the corresponding `result`. If no branch
+    * matches, the `otherwise` expression is returned.
+    *
+    * Empty `branches` list is allowed — it degenerates to
+    * `otherwise`. This mirrors SQL's `CASE WHEN FALSE THEN x ELSE y END`
+    * shape and is useful for derived measures whose condition
+    * structure is computed dynamically.
+    *
+    * Per [[scala-data-driven-refactor-mindset]]: a `List[(Expr,
+    * Expr)]` is the portable shape; the engine adapter folds it
+    * via `Column.when(...).when(...).otherwise(...)`. A free-form
+    * `when: Map[Expr, Expr]` would be a downgrade (silent
+    * defaulting on lookup miss) — and the order of branches
+    * matters in SQL `CASE WHEN`, so `List` (ordered) is correct.
+    *
+    * Per [[scala-error-handling-mindset]]: the engine adapter
+    * that doesn't support CASE WHEN surfaces a typed
+    * `EngineError.UnsupportedCapability` — never a silent no-op.
+    *
+    * Per [[karpathy-guidelines-mindset]]: PR-I adds this case to
+    * close the "transform: CASE WHEN" gap identified in the
+    * user's 2026-08-16 directive ("column like case when").
+    */
+  final case class CaseWhen(
+      branches:  List[(Expr, Expr)],
+      otherwise: Expr,
+  ) extends Expr
+
+  // -- Alias (1) --
+
+  /** Column alias — `expr AS name`. Maps to Spark's
+    * `Column.as(name)`, Trino's `SELECT expr AS name`, DuckDB's
+    * `SELECT expr AS name`.
+    *
+    * The `name` is the alias used in the result schema (the
+    * `Field.name` of the resulting column). `Alias` is the
+    * expression-level form; the higher-level `RelOp.Project`
+    * carries `List[(Expr, String)]` (an expression + an alias),
+    * but when a model validator wants to express "this dimension
+    * is `a + b` named `total`" inline in `Expr`, `Alias` is the
+    * portable shape.
+    *
+    * Per [[scala-data-driven-refactor-mindset]]: a separate case
+    * class from `FieldRef(name)` — `FieldRef` is a reference to
+    * an existing column; `Alias(name, expr)` is a NEW column
+    * derived from an expression with a given name. The two are
+    * semantically different shapes.
+    *
+    * Per [[karpathy-guidelines-mindset]]: PR-I adds this case
+    * to close the "transform: alias" gap identified in the
+    * user's 2026-08-16 directive ("or alias, etc.").
+    */
+  final case class Alias(
+      name: String,
+      expr: Expr,
+  ) extends Expr
 }

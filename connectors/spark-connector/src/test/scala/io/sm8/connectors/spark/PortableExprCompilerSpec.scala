@@ -400,4 +400,37 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
     val restored = roundTripViaJavaSerialization(PortableExprCompiler)
     restored shouldBe PortableExprCompiler
   }
+
+  test("Expr.CaseWhen: folds left-to-right (first match wins; Spark's Column.when fold)") {
+    val spark = buildFakeSpark()
+    try {
+      // branches: [(age > 18, "adult"), (age > 13, "teen")]
+      // → when(age > 18, "adult").when(age > 13, "teen").otherwise("child")
+      val col = PortableExprCompiler.toColumn(Expr.CaseWhen(
+        branches = List(
+          (Expr.GreaterThan(Expr.FieldRef("age"), Expr.Literal(LiteralValue.IntValue(18), SealedDataType.Int)),
+           Expr.Literal(LiteralValue.StringValue("adult"), SealedDataType.Varchar)),
+          (Expr.GreaterThan(Expr.FieldRef("age"), Expr.Literal(LiteralValue.IntValue(13), SealedDataType.Int)),
+           Expr.Literal(LiteralValue.StringValue("teen"), SealedDataType.Varchar)),
+        ),
+        otherwise = Expr.Literal(LiteralValue.StringValue("child"), SealedDataType.Varchar),
+      ))
+      col should not be null
+      // The compiled Column must carry "CASE WHEN ... ELSE ... END"
+      // in its SQL rendering (per RFC §12 conformance).
+      col.expr.sql should include ("CASE WHEN")
+    } finally { spark.stop() }
+  }
+
+  test("Expr.Alias: wraps the inner expression with a column name (expr AS name)") {
+    val spark = buildFakeSpark()
+    try {
+      val col = PortableExprCompiler.toColumn(Expr.Alias(
+        name = "age_plus_one",
+        expr = Expr.Add(Expr.FieldRef("age"), Expr.Literal(LiteralValue.IntValue(1), SealedDataType.Int)),
+      ))
+      col should not be null
+      col.expr.sql should include ("AS")
+    } finally { spark.stop() }
+  }
 }

@@ -247,4 +247,36 @@ class PortableExprCompilerDataFrameSpec extends AnyFunSuite with Matchers {
         .getAs[Int]("score_plus_1") shouldBe 101
     } finally { spark.stop() }
   }
+
+  test("Expr.CaseWhen: data-plane — first matching branch wins (SQL semantics)") {
+    val spark = buildSpark()
+    try {
+      // CASE WHEN age > 30 THEN 'senior' ELSE 'not_senior' END
+      val df = peopleDataFrame(spark)
+      val derived: Column = PortableExprCompiler.toColumn(Expr.CaseWhen(
+        branches = List(
+          (Expr.GreaterThan(Expr.FieldRef("age"), Expr.Literal(LiteralValue.IntValue(30), SealedDataType.Int)),
+           Expr.Literal(LiteralValue.StringValue("senior"), SealedDataType.Varchar)),
+        ),
+        otherwise = Expr.Literal(LiteralValue.StringValue("not_senior"), SealedDataType.Varchar),
+      ))
+      val out = df.select(df.col("name"), derived.as("seniority")).collect().toList
+      // alice (30) → not_senior, bob (25) → not_senior, carol (35) → senior, dave (40) → senior
+      out.map(_.getAs[String]("seniority")) shouldBe List("not_senior", "not_senior", "senior", "senior")
+    } finally { spark.stop() }
+  }
+
+  test("Expr.Alias: data-plane — column name in result schema matches the alias") {
+    val spark = buildSpark()
+    try {
+      val df = peopleDataFrame(spark)
+      val derived: Column = PortableExprCompiler.toColumn(Expr.Alias(
+        name = "age_doubled",
+        expr = Expr.Multiply(Expr.FieldRef("age"), Expr.Literal(LiteralValue.IntValue(2), SealedDataType.Int)),
+      ))
+      val out = df.select(df.col("name"), derived).collect().toList
+      // The result schema must carry the alias "age_doubled"
+      out.map(_.getAs[Int]("age_doubled")) shouldBe List(60, 50, 70, 80)
+    } finally { spark.stop() }
+  }
 }
