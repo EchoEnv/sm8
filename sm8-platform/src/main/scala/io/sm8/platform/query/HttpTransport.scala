@@ -57,7 +57,8 @@
  */
 package io.sm8.platform.query
 
-import io.sm8.platform.query.cache._
+import io.sm8.plugins.cache.InMemoryResultCache
+
 import dev.restate.sdk.endpoint.Endpoint
 import dev.restate.sdk.http.vertx.RestateHttpServer
 

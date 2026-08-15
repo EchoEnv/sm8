@@ -36,7 +36,7 @@ import io.sm8.core.schema.{Field, SealedDataType}
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
-import io.sm8.platform.query.cache.CachePlugin
+import io.sm8.plugins.cache.CachePlugin
 
 /**
  * Unit tests for `QueryService.definition(...)` — exercises the
@@ -311,7 +311,7 @@ class QueryServiceSpec extends AnyFunSuite with Matchers {
       queryResult = null.asInstanceOf[Either[EngineError, PortableQueryResult]]
     )
     val registry = makeRegistry(Map("spark" -> spark))
-    val cache = new io.sm8.platform.query.cache.InMemoryResultCache(1)
+    val cache = new io.sm8.plugins.cache.InMemoryResultCache(1)
     val req = QueryRequest("flights", Nil, Nil, "", "spark")
     val mcpReq = EngineService.buildMCPRequest(req)
     val cacheKey = CacheBridge.platformCacheKey(

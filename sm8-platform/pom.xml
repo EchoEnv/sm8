@@ -36,6 +36,19 @@
             <artifactId>sm8-core_2.13</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <!--
+          Cache plugin (default ResultCache impl). Phase 3 of the
+          cache-plugin-rehome: the platform depends on this artifact
+          (compile-scope, the canonical consumer) for the default
+          cache wiring. The platform's own CachePlugin +
+          InMemoryResultCache are deleted in this PR — the plugin
+          JAR is the only source of caching behavior.
+        -->
+        <dependency>
+            <groupId>io.sm8.plugins</groupId>
+            <artifactId>cache-plugin_2.13</artifactId>
+            <version>${project.version}</version>
+        </dependency>
 
         <dependency>
             <groupId>org.scala-lang</groupId>

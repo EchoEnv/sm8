@@ -54,7 +54,9 @@
 package io.sm8.platform.query
 
 import io.sm8.core.cache._
-import io.sm8.platform.query.cache._
+import io.sm8.platform.query.cache.CacheBridge
+import io.sm8.core.cache._
+import io.sm8.platform.query.cache.CacheBridge
 import io.sm8.core.engine.{
   EngineError,
   MCPEngineProvider,
@@ -366,7 +368,7 @@ object EngineService {
     )
     // -- Executor: pure engine call; cache handled by CachePlugin hook --
     // The cache lookup + populate is no longer inline in the
-    // executor; the new io.sm8.platform.query.cache.CachePlugin
+    // executor; the new io.sm8.plugins.cache.CachePlugin
     // (registered via QueryService.definition's plugins: Seq[Plugin])
     // owns the read-through (PreExecute) and write-through
     // (PostExecute) hooks. On HIT, the PreExecute hook sets
