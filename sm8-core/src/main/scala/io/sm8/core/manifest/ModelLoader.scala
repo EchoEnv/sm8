@@ -24,7 +24,7 @@
  * legacy's `PortableModel` carries 8 sub-types
  * (`PortableJoin`, `PortableRollup`, `PortableCalculatedMeasure`,
  * `PortableFilter`, etc.). SM8-core's `Model` does NOT have those
- * fields yet (joins + calcs + rollups aren't in the engine-portable
+ * fields (PR-M1 added joins + calculated_measures; rollups remain
  * IR — they're deferred per the plan). So we port ONLY the subset
  * that maps to existing `Model` fields: name, version, description,
  * source, status, dimensions, measures, filters.
@@ -186,21 +186,35 @@ object ModelLoader {
       val meas    = parseMeasures(asSeq(root.get("measures")))
       val filters = parseFilters(asSeq(root.get("filters")))
 
-      // Use ModelBuilder so the validation + return-type contract
-      // matches the programmatic path (PR #44). The description
-      // is set only when present in the YAML (avoids the wart of
-      // `Some("")` when the field is absent).
-      val b0 = ModelBuilder()
-        .withName(name.get)
-        .withVersion(version.get)
-        .withSource(src)
-        .withStatus(status)
-      val b1 = description.fold(b0)(d => b0.withDescription(d))
-      val builder = b1
-        .withDimensions(dims)
-        .withMeasures(meas)
-        .withFilters(filters)
-      builder.build.left.map(err => ManifestError.InvalidYaml(err.message))
+      // PR-M1 (ADR-008-L Appendix GAP 4): parse joins + calculated
+      // measures. Both can fail (unknown join kind, unparsable calc
+      // expr) -- surface as typed ManifestError, never silent.
+      val joinsE  = parseJoins(asSeq(root.get("joins")))
+      val calcsE  = parseCalculatedMeasures(asSeq(root.get("calculated_measures")))
+
+      for {
+        joins <- joinsE
+        calcs <- calcsE
+        // Use ModelBuilder so the validation + return-type contract
+        // matches the programmatic path (PR #44). The description
+        // is set only when present in the YAML (avoids the wart of
+        // `Some("")` when the field is absent).
+        model <- {
+          val b0 = ModelBuilder()
+            .withName(name.get)
+            .withVersion(version.get)
+            .withSource(src)
+            .withStatus(status)
+          val b1 = description.fold(b0)(d => b0.withDescription(d))
+          b1
+            .withDimensions(dims)
+            .withMeasures(meas)
+            .withFilters(filters)
+            .withJoins(joins)
+            .withCalculatedMeasures(calcs)
+            .build
+        }.left.map(err => ManifestError.InvalidYaml(err.message))
+      } yield model
     }
   }
 
@@ -302,6 +316,62 @@ object ModelLoader {
     *   - bare "x" (no parens) -> AggregateCall(Sum, Some(FieldRef("x")), alias)
     *     (the legacy's implicit-sum default)
     */
+  /** PR-M1 (ADR-008-L Appendix GAP 4): parse the `joins:` block.
+    * YAML shape (each entry a map):
+    *   - name: j1
+    *     rightModel: customers
+    *     kind: inner            # inner|left|right|full|outer|cross (ci)
+    *     keys: [[region, region]]  # list of [leftKey, rightKey] pairs
+    * Unknown kind -> typed ManifestError.ParseFailure (never silent).
+    */
+  private def parseJoins(seq: Seq[Any]): Either[ManifestError, List[io.sm8.core.model.JoinSpec]] =
+    seq.toList.flatMap(asMap).map { m =>
+      val name       = stringField(m, "name").getOrElse("")
+      val rightModel = stringField(m, "rightModel").orElse(stringField(m, "right_model")).getOrElse("")
+      val kindStr    = stringField(m, "kind").getOrElse("inner")
+      val keysRaw    = asSeq(m.get("keys"))
+      val kind: Either[ManifestError, io.sm8.core.rel.JoinKind] = kindStr.toLowerCase match {
+        case "inner" => Right(io.sm8.core.rel.JoinKind.Inner)
+        case "left"  => Right(io.sm8.core.rel.JoinKind.Left)
+        case "right" => Right(io.sm8.core.rel.JoinKind.Right)
+        case "full" | "outer" => Right(io.sm8.core.rel.JoinKind.Full)
+        case "cross" => Right(io.sm8.core.rel.JoinKind.Cross)
+        case other   => Left(ManifestError.ParseFailure(
+          s"joins[$name]: unknown kind '$other' (supported: inner, left, right, full, outer, cross)"))
+      }
+      val keys: List[(String, String)] = keysRaw.toList.flatMap {
+        case pair: java.util.List[_] if pair.size == 2 =>
+          List((pair.get(0).toString, pair.get(1).toString))
+        case _ => Nil  // malformed pair entries are skipped; PR-M2's
+                       // ModelValidator cross-references catch them
+      }
+      kind.map(k => io.sm8.core.model.JoinSpec(name, rightModel, k, keys))
+    }.foldLeft[Either[ManifestError, List[io.sm8.core.model.JoinSpec]]](Right(Nil)) { (accE, jE) =>
+      for (acc <- accE; j <- jE) yield acc :+ j
+    }
+
+  /** PR-M1 (ADR-008-L Appendix GAP 4): parse the
+    * `calculated_measures:` block. Each entry: { name, expr }. The
+    * expr string goes through ExprParser (now CASE WHEN / AS alias /
+    * all() / measure() aware per GAP 1). Parse failure -> typed
+    * ManifestError.ParseFailure (never silent). */
+  private def parseCalculatedMeasures(
+      seq: Seq[Any],
+  ): Either[ManifestError, List[io.sm8.core.model.CalculatedMeasure]] =
+    seq.toList.flatMap(asMap).map { m =>
+      val name = stringField(m, "name").getOrElse("")
+      stringField(m, "expr") match {
+        case None =>
+          Left(ManifestError.ParseFailure(s"calculated_measures[$name]: missing 'expr'"))
+        case Some(exprStr) =>
+          io.sm8.core.expr.ExprParser.parseExpr(exprStr).left.map { pe =>
+            ManifestError.ParseFailure(s"calculated_measures[$name]: ${pe.toString}")
+          }.map(e => io.sm8.core.model.CalculatedMeasure(name, e))
+      }
+    }.foldLeft[Either[ManifestError, List[io.sm8.core.model.CalculatedMeasure]]](Right(Nil)) { (accE, cE) =>
+      for (acc <- accE; c <- cE) yield acc :+ c
+    }
+
   private def parseMeasures(seq: Seq[Any]): List[io.sm8.core.model.Measure] =
     seq.toList.flatMap {
       case m: java.util.Map[_, _] =>
