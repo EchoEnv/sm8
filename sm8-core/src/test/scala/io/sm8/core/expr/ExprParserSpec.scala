@@ -373,10 +373,21 @@ class ExprParserSpec extends AnyFunSuite with Matchers {
     )
   }
 
-  test("ExprParser: unknown cast target type returns Left(InvalidLiteral)") {
+  test("ExprParser: non-type token after AS is an ALIAS (PR-M1 contract change)") {
+    // PR-M1 (ADR-008-L Appendix GAP 1): `amount AS NOTAREALTYPE` is
+    // a column RENAME, not a malformed cast. Only type-keyword tokens
+    // (INT/DECIMAL/...) keep the fail-loud cast path.
     val out = ExprParser.parseExpr("amount AS NOTAREALTYPE")
-    out.isLeft shouldBe true
-    out.left.get shouldBe a [ExprParseError.InvalidLiteral]
+    out shouldBe Right(io.sm8.core.expr.Expr.Alias("NOTAREALTYPE", io.sm8.core.expr.Expr.FieldRef("amount")))
+  }
+
+  test("ExprParser: digit-leading alias token is accepted as a name (Spark backtick-legal)") {
+    // readIdentifier accepts letters/digits/underscore; `AS 123`
+    // yields Alias("123", ...). A digit-leading column name is odd
+    // but legal (Spark resolves it with backticks). The truly-empty
+    // case (`"amount AS "`) is covered in ExprParserM1Spec.
+    val out = ExprParser.parseExpr("amount AS 123")
+    out shouldBe Right(io.sm8.core.expr.Expr.Alias("123", io.sm8.core.expr.Expr.FieldRef("amount")))
   }
 
   test("ExprParser: malformed DECIMAL without parens returns Left(InvalidLiteral)") {

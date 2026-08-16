@@ -18,9 +18,21 @@
  *   - Boolean: and, or, not (unary prefix).
  *   - Parens for grouping.
  *
+ *   - `CAST`-style suffix (`x AS INT`) and `IS [NOT] NULL` postfix.
+ *   - `CASE WHEN c THEN v [WHEN c THEN v]* [ELSE e] END` (PR-M1,
+ *     per ADR-008-L Appendix GAP 1). Missing ELSE lowers to a
+ *     `Literal(NullValue)` per SQL semantics.
+ *   - `expr AS aliasName` when the token after AS is NOT a known
+ *     type name (PR-M1): lowers to `Expr.Alias`. Known type names
+ *     keep the `Cast` reading -- types win over column aliases
+ *     (documented disambiguation rule).
+ *   - `all(name)` / `measure(name)` rewrite (PR-M1, mirrors the
+ *     legacy CalcExpr DSL per DESIGN.md SS6.2): lower to
+ *     `Expr.All(name)` / `Expr.MeasureRef(name)` instead of a
+ *     generic FunctionCall.
+ *
  * NOT in v1 (deferred):
- *   - `Cast(...)`, `FunctionCall`, `MeasureRef`, `All`,
- *     `IsNull` / `IsNotNull` — future PRs.
+ *   - UDF registry resolution for arbitrary `FunctionCall` names.
  *
  * ==Recursive descent==
  *
@@ -257,6 +269,13 @@ object ExprParser {
 
     def parsePrimary(): Either[ExprParseError, Expr] = {
       skipWhitespace()
+      // PR-M1 (ADR-008-L Appendix GAP 1): CASE WHEN ... THEN ...
+      // [WHEN ... THEN ...]* [ELSE ...] END. Case-insensitive
+      // keywords, consistent with AND/OR/NOT/AS/IS. Missing ELSE
+      // lowers to Literal(NullValue) per SQL semantics.
+      if (startsWithWordCaseInsensitive("case")) {
+        parseCaseWhen().flatMap(parseAsSuffix)
+      } else {
       val head: Either[ExprParseError, Expr] = peekChar() match {
         case '(' =>
           advance()
@@ -280,6 +299,65 @@ object ExprParser {
           ))
       }
       head.flatMap(parseAsSuffix)
+      }
+    }
+
+    /** PR-M1 (ADR-008-L Appendix GAP 1): parse a full CASE WHEN
+      * expression. Grammar:
+      *   CASE WHEN cond THEN val [WHEN cond THEN val]* [ELSE val] END
+      * Keywords are case-insensitive. Missing ELSE lowers to
+      * `Literal(NullValue, Varchar)` (SQL: no ELSE yields NULL).
+      * Cursor is pre-"CASE" on entry; consumes through "END". */
+    private def parseCaseWhen(): Either[ExprParseError, Expr] = {
+      // consume "CASE" (4 chars) + ws
+      position += 4
+      skipWhitespace()
+      val branches = scala.collection.mutable.ArrayBuffer.empty[(Expr, Expr)]
+      def branch(): Either[ExprParseError, (Expr, Expr)] =
+        for {
+          cond <- parseOrExpr()
+          _    =  skipWhitespace()
+          ok    =  consumeWordCaseInsensitive("then")
+          _     =  if (!ok) return Left(ExprParseError.UnexpectedToken(
+                     token    = peekText(8),
+                     position = position,
+                     reason   = "expected 'THEN' in CASE WHEN",
+                   ))
+          _    =  skipWhitespace()
+          value <- parseOrExpr()
+        } yield (cond, value)
+      def loop(): Either[ExprParseError, Unit] = {
+        skipWhitespace()
+        if (consumeWordCaseInsensitive("when")) {
+          branch().flatMap { b => branches += b; loop() }
+        } else Right(())
+      }
+      loop().flatMap { _ =>
+        skipWhitespace()
+        val otherwise: Either[ExprParseError, Expr] =
+          if (consumeWordCaseInsensitive("else")) {
+            skipWhitespace(); parseOrExpr()
+          } else {
+            // SQL: missing ELSE yields NULL.
+            Right(Expr.Literal(LiteralValue.NullValue, SealedDataType.Varchar))
+          }
+        otherwise.flatMap { els =>
+          skipWhitespace()
+          if (!consumeWordCaseInsensitive("end"))
+            Left(ExprParseError.UnexpectedToken(
+              token    = peekText(8),
+              position = position,
+              reason   = "expected 'END' to close CASE WHEN",
+            ))
+          else if (branches.isEmpty)
+            Left(ExprParseError.UnexpectedToken(
+              token    = "CASE",
+              position = position,
+              reason   = "CASE requires at least one WHEN ... THEN branch",
+            ))
+          else Right(Expr.CaseWhen(branches.toList, els))
+        }
+      }
     }
 
     /** PR #50 + #53: handle optional postfix clauses after a primary.
@@ -300,11 +378,39 @@ object ExprParser {
         skipWhitespace()
         if (startsWithWordCaseInsensitive("as")) {
           // AS TYPE: consume "AS" (2 chars via 2 advance()), then the
-          // SealedDataType literal.
+          // SealedDataType literal. PR-M1: if the token after AS is
+          // NOT a known type name, fall back to reading it as a
+          // column ALIAS (Expr.Alias) -- types win over aliases
+          // (documented disambiguation per ADR-008-L Appendix GAP 1).
           advance()
           advance()
           skipWhitespace()
-          parseTypeName().map(targetType => Expr.Cast(expr = e, targetType = targetType))
+          val saved = position
+          parseTypeName() match {
+            case Right(targetType) =>
+              Right(Expr.Cast(expr = e, targetType = targetType))
+            case Left(typeErr) =>
+              // Backtrack: read the token. If it is NOT a known type
+              // KEYWORD, it is a column alias -> Expr.Alias. If it IS
+              // a type keyword (malformed DECIMAL without (p,s), etc.),
+              // keep the original fail-loud cast error -- a malformed
+              // cast must NOT silently degrade into a rename.
+              position = saved
+              val name = readIdentifier()
+              val isTypeKeyword = name.toUpperCase match {
+                case "INT" | "BIGINT" | "DOUBLE" | "VARCHAR" | "BOOLEAN"
+                   | "DATE" | "TIMESTAMP" | "DECIMAL" => true
+                case _                                => false
+              }
+              if (name.isEmpty)
+                Left(ExprParseError.UnexpectedToken(
+                  token    = peekText(8),
+                  position = position,
+                  reason   = "expected type name or alias after 'AS'",
+                ))
+              else if (isTypeKeyword) Left(typeErr)
+              else Right(Expr.Alias(name = name, expr = e))
+          }
         } else if (startsWithWordCaseInsensitive("is")) {
           // IS [NOT] NULL: consume "IS" (2 chars), optional "NOT",
           // then "NULL" (4 chars). The pattern is a single postfix
@@ -483,7 +589,16 @@ object ExprParser {
             Left(ExprParseError.UnclosedDelimiter('(', position))
           else {
             advance()
-            Right(Expr.FunctionCall(name = word, args = args))
+            // PR-M1 (ADR-008-L Appendix GAP 1): rewrite the legacy
+            // CalcExpr DSL forms (DESIGN.md SS6.2) -- all(name) and
+            // measure(name) -- into their typed Expr cases instead
+            // of generic FunctionCalls.
+            val lowered: Expr = (word.toLowerCase, args) match {
+              case ("all", Seq(Expr.FieldRef(n)))     => Expr.All(n)
+              case ("measure", Seq(Expr.FieldRef(n))) => Expr.MeasureRef(n)
+              case _                                   => Expr.FunctionCall(name = word, args = args)
+            }
+            Right(lowered)
           }
         }
       } else {
