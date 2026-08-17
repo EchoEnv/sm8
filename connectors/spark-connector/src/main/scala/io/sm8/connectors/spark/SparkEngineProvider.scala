@@ -50,16 +50,7 @@ final class SparkEngineProvider(
     val hookDispatcher: Option[io.sm8.core.engine.HookRunner] = None
 ) extends MCPEngineProvider {
 
-  /** No-arg constructor for Java ServiceLoader discovery.
-    *
-    * Produces the contract-gap stub (`spark = null`, `available = false`)
-    * so the class is loaded by ServiceLoader without a SparkSession. The
-    * production wiring (Main) constructs the real provider with a live
-    * SparkSession and replaces the stub. Per RFC §3 the engine is the
-    * only piece that knows about SparkSession; the descriptor here is
-    * a pure-data presence marker.
-    */
-  def this() = this(null, SparkTypeBridge, "spark-3.5")
+
 
   /**
     * Real-runtime constructor (Phase 4 — Driver-side Spark Connect).
@@ -115,6 +106,13 @@ final class SparkEngineProvider(
       engineAdapterVersion = "0.1.0"
     )
 
+  /** PR-O4g (ADR-008-O): the null-sentinel no-arg ctor is gone.
+    * ServiceLoader discovery now goes through
+    * SparkEngineProviderDescriptor. The `available` flag stays
+    * `spark != null`-aware as a defensive measure against
+    * direct null-injection (the constructor still allows any
+    * reference; null just disables the provider).
+    */
   override val available: Boolean = spark != null
 
   /** PR-O4a (ADR-008-O): lifecycle hook — stop the
