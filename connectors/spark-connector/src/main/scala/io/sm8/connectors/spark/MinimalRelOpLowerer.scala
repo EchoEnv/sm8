@@ -334,13 +334,31 @@ final class MinimalRelOpLowerer(
         message    = s"PR-N4 minimum: Join.condition must contain at least one Expr.Equal(FieldRef, FieldRef). Got: ${j.condition.getClass.getSimpleName}",
       ))
     }
+    // PR-O2 (ADR-008-O, P0-4): size-based broadcast-join hint.
+    // Decision (evaluated AFTER rightDf is loaded so size probe is meaningful):
+    // when `ctx.joinHints.broadcastRightBelowBytes` is set AND the right-side
+    // DataFrame's sizeInBytes is below the threshold, broadcast.
+    // See `PortableQueryCompiler.applyJoins` for the long form.
+    import org.apache.spark.sql.functions.broadcast
     for {
-      leftDf  <- lower(leftScan, ctx)
-      rightDf <- lower(rightScan, ctx)
-      joinExpr = keys.map { case (l, r) => leftDf.col(l) === rightDf.col(r) }
-        .reduce(_ && _)
-      joined   = if (joinType == "cross") leftDf.join(rightDf, joinExpr, "inner")  // Cross: no keys
-                 else                     leftDf.join(rightDf, joinExpr, joinType)
+      leftDf   <- lower(leftScan, ctx)
+      rightDf  <- lower(rightScan, ctx)
+      // Spark 3.5: sizeInBytes returns BigInt; toLong for comparison.
+      rightBytes: Long = try {
+        rightDf.queryExecution.analyzed.stats.sizeInBytes.toLong
+      } catch { case _: Throwable => Long.MaxValue }
+      shouldBroadcast: Boolean = ctx.joinHints.broadcastRightBelowBytes match {
+        case Some(threshold) => rightBytes >= 0L && rightBytes <= threshold
+        case None            => false
+      }
+      rightDfEff: org.apache.spark.sql.DataFrame =
+        if (shouldBroadcast) broadcast(rightDf) else rightDf
+      joinExpr: org.apache.spark.sql.Column = keys.map { case (l, r) =>
+        leftDf.col(l) === rightDfEff.col(r)
+      }.reduce(_ && _)
+      joined: org.apache.spark.sql.DataFrame =
+        if (joinType == "cross") leftDf.join(rightDfEff, joinExpr, "inner")
+        else                     leftDf.join(rightDfEff, joinExpr, joinType)
     } yield joined
   }
 }
