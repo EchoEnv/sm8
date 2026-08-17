@@ -111,7 +111,7 @@ final case class ModelBuilder private (
   def withDescription(value: String): ModelBuilder =
     copy(description = Option(value))
 
-  def withDimension(name: String, expr: String): ModelBuilder =
+  def withDimension(name: String, expr: io.sm8.core.expr.Expr): ModelBuilder =
     copy(dimensions = dimensions :+ Dimension(name, expr))
 
   def withDimensions(values: List[Dimension]): ModelBuilder =

@@ -392,7 +392,7 @@ final class PortableQueryCompiler(val spark: SparkSession)
         ))
       } else {
         val dimCols: Array[Column] = model.dimensions
-          .map(d => PortableExprCompiler.toColumn(Expr.FieldRef(d.expr)))
+          .map(d => PortableExprCompiler.toColumn(d.expr))
           .toArray
         val result =
           if (collectAllReferences(model.calculatedMeasures).nonEmpty)
@@ -527,7 +527,14 @@ final class PortableQueryCompiler(val spark: SparkSession)
       df:    DataFrame,
       model: Model,
   ): DataFrame = {
-    val dimNames: Array[String] = model.dimensions.map(_.expr).toArray
+    // PR-O4b (ADR-008-O): dimension expr is now a typed Expr. For the
+    // common FieldRef case we extract the name; other Expr shapes are
+    // flattened to their first FieldRef here (the column-projection
+    // contract is "select these column names").
+    val dimNames: Array[String] = model.dimensions.map(d =>
+      io.sm8.core.expr.Calculator.fieldNamesOf(d.expr).headOption
+        .getOrElse(d.name)
+    ).toArray
     if (dimNames.isEmpty) df
     else df.select(dimNames.map(name => df.col(name)): _*)
   }

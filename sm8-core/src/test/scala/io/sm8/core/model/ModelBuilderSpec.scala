@@ -69,15 +69,15 @@ class ModelBuilderSpec extends AnyFunSuite with Matchers {
       .withName("dm-test")
       .withVersion(2)
       .withSource(SourceRef.ByName("default", "sales"))
-      .withDimension("region", "region")
-      .withDimension("product", "product")
+      .withDimension("region", io.sm8.core.expr.Expr.FieldRef("region"))
+      .withDimension("product", io.sm8.core.expr.Expr.FieldRef("product"))
       .withMeasureAgg("revenue", io.sm8.core.rel.AggregateFn.Sum, io.sm8.core.expr.Expr.FieldRef("amount"))
       .build
     val expected = Model.of(
       name       = "dm-test",
       version    = 2,
       source     = SourceRef.ByName("default", "sales"),
-      dimensions = List(Dimension("region", "region"), Dimension("product", "product")),
+      dimensions = List(Dimension.field("region", "region"), Dimension.field("product", "product")),
       measures   = List(Measure.aggregate("revenue", io.sm8.core.rel.AggregateFn.Sum, io.sm8.core.expr.Expr.FieldRef("amount"))),
     )
     built shouldBe expected
@@ -121,7 +121,7 @@ class ModelBuilderSpec extends AnyFunSuite with Matchers {
       .withName("serialize-test")
       .withVersion(3)
       .withSource(SourceRef.ByName("default", "t"))
-      .withDimension("a", "a")
+      .withDimension("a", io.sm8.core.expr.Expr.FieldRef("a"))
       .withMeasureAgg("b", io.sm8.core.rel.AggregateFn.Sum, io.sm8.core.expr.Expr.FieldRef("b"))
       .build
       .toOption

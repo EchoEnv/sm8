@@ -119,7 +119,7 @@ class QueryBuilderSpec extends AnyFunSuite with Matchers {
 
   test("Model with dims+measures -> Scan -> Aggregate -> Project") {
     val m = model("t",
-      dimensions = List(Dimension("region", "region")),
+      dimensions = List(Dimension.field("region", "region")),
       measures   = List(agg("total", AggregateFn.Sum, "amount")),
     )
     val plan = QueryBuilder.build(m, FakeResolver(), identity).toOption.get
@@ -141,7 +141,7 @@ class QueryBuilderSpec extends AnyFunSuite with Matchers {
 
   test("CalculatedMeasure appears as Expr.Alias(name, expr) in the Project") {
     val m = model("t",
-      dimensions = List(Dimension("region", "region")),
+      dimensions = List(Dimension.field("region", "region")),
       measures   = List(agg("total", AggregateFn.Sum, "amount")),
       calcs      = List(CalculatedMeasure(
         name = "share",
@@ -178,7 +178,7 @@ class QueryBuilderSpec extends AnyFunSuite with Matchers {
 
   test("Model with one Join -> Scan_1 -> Join -> Scan_2 -> ...") {
     val m = model("orders",
-      dimensions = List(Dimension("region", "region")),
+      dimensions = List(Dimension.field("region", "region")),
       joins      = List(JoinSpec("j", "customers", JoinKind.Inner, List(("region", "region")))),
     )
     val plan = QueryBuilder.build(m, FakeResolver(primaryFields = List(

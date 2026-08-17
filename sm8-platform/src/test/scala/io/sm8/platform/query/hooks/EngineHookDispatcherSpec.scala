@@ -134,7 +134,7 @@ class EngineHookDispatcherSpec extends AnyFunSuite with Matchers {
       version    = 1,
       source     = SourceRef.ByName("n", "t"),
       status     = ModelStatus.Draft,
-      dimensions = List(Dimension("d", "d")),
+      dimensions = List(Dimension.field("d", "d")),
       measures   = List(Measure.aggregate("v", io.sm8.core.rel.AggregateFn.Sum, io.sm8.core.expr.Expr.FieldRef("v")))
     ).toOption.get
 

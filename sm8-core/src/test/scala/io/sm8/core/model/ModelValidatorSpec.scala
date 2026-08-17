@@ -44,8 +44,8 @@ class ModelValidatorSpec extends AnyFunSuite with Matchers {
       version    = 1,
       source     = io.sm8.core.model.SourceRef.ByName("default", "people"),
       dimensions = List(
-        io.sm8.core.model.Dimension("id", "id"),
-        io.sm8.core.model.Dimension("region", "region"),
+        io.sm8.core.model.Dimension.field("id", "id"),
+        io.sm8.core.model.Dimension.field("region", "region"),
       ),
       measures = List(
         io.sm8.core.model.Measure(
@@ -69,8 +69,8 @@ class ModelValidatorSpec extends AnyFunSuite with Matchers {
       version    = 1,
       source     = io.sm8.core.model.SourceRef.ByName("default", "people"),
       dimensions = List(
-        io.sm8.core.model.Dimension("id", "id"),
-        io.sm8.core.model.Dimension("id", "region"),  // dup name
+        io.sm8.core.model.Dimension.field("id", "id"),
+        io.sm8.core.model.Dimension.field("id", "region"),  // dup name
       ),
     )
     out.isLeft shouldBe true
@@ -141,7 +141,7 @@ class ModelValidatorSpec extends AnyFunSuite with Matchers {
       name    = "ok",
       version = 1,
       source  = io.sm8.core.model.SourceRef.ByName("default", "people"),
-      dimensions = List(io.sm8.core.model.Dimension("age", "amount")),
+      dimensions = List(io.sm8.core.model.Dimension.field("age", "amount")),
       measures   = List(io.sm8.core.model.Measure(
         "age", AggregateCall(AggregateFn.Count, Some(Expr.FieldRef("amount")), "age"))),
     )
@@ -156,8 +156,8 @@ class ModelValidatorSpec extends AnyFunSuite with Matchers {
       version = 1,
       source  = io.sm8.core.model.SourceRef.ByName("default", "people"),
       dimensions = List(
-        io.sm8.core.model.Dimension("id", "id"),
-        io.sm8.core.model.Dimension("region", "region"),
+        io.sm8.core.model.Dimension.field("id", "id"),
+        io.sm8.core.model.Dimension.field("region", "region"),
       ),
       measures = List(io.sm8.core.model.Measure(
         "total", AggregateCall(AggregateFn.Sum, Some(Expr.FieldRef("amount")), "total"))),
@@ -174,7 +174,7 @@ class ModelValidatorSpec extends AnyFunSuite with Matchers {
       name    = "ok",
       version = 1,
       source  = io.sm8.core.model.SourceRef.ByName("default", "people"),
-      dimensions = List(io.sm8.core.model.Dimension("d", "ghost_field")),
+      dimensions = List(io.sm8.core.model.Dimension.field("d", "ghost_field")),
     ).toOption.get
     val msgs = ModelValidator.validateAgainstSchema(m, peopleScan).left.toOption.get
       .asInstanceOf[ModelValidationError.SchemaValidation].messages
@@ -229,7 +229,7 @@ class ModelValidatorSpec extends AnyFunSuite with Matchers {
       name    = "ok",
       version = 1,
       source  = io.sm8.core.model.SourceRef.ByName("default", "people"),
-      dimensions = List(io.sm8.core.model.Dimension("a", "ghost1")),
+      dimensions = List(io.sm8.core.model.Dimension.field("a", "ghost1")),
       filters    = List(io.sm8.core.model.FilterSpec("f", Expr.FieldRef("ghost2"))),
     ).toOption.get
     val msgs = ModelValidator.validateAgainstSchema(m, peopleScan).left.toOption.get
@@ -266,4 +266,76 @@ class ModelValidatorSpec extends AnyFunSuite with Matchers {
     // amount exists; total is engine-known -- no spurious errors.
     ModelValidator.validateAgainstSchema(m, peopleScan) shouldBe Right(())
   }
+
+  // ===== PR-O4b (ADR-008-O): typed Dimension.expr =====
+
+  test("Dimension.field: smart constructor wraps the column name in a FieldRef") {
+    val d = io.sm8.core.model.Dimension.field("region", "region")
+    d.name shouldBe "region"
+    d.expr shouldBe io.sm8.core.expr.Expr.FieldRef("region")
+    d.dataType shouldBe None
+  }
+
+  test("Dimension.field(name, fieldName, dataType): declared-type overload") {
+    val d = io.sm8.core.model.Dimension.field("amount", "amount",
+      io.sm8.core.schema.SealedDataType.Int)
+    d.name shouldBe "amount"
+    d.expr shouldBe io.sm8.core.expr.Expr.FieldRef("amount")
+    d.dataType shouldBe Some(io.sm8.core.schema.SealedDataType.Int)
+  }
+
+  test("PR-O4b: validateAgainstSchema walks non-FieldRef dimension exprs") {
+    // A dimension declared as Expr.Add(FieldRef("a"), FieldRef("b"))
+    // must report BOTH a and b as referenced fields.
+    val m = Model.of(
+      name    = "typed-dim-add",
+      version = 1,
+      source  = io.sm8.core.model.SourceRef.ByName("default", "t"),
+      dimensions = List(
+        io.sm8.core.model.Dimension(
+          name     = "sum",
+          expr     = io.sm8.core.expr.Expr.Add(
+            io.sm8.core.expr.Expr.FieldRef("a"),
+            io.sm8.core.expr.Expr.FieldRef("b"),
+          ),
+          dataType = None,
+        ),
+      ),
+    ).toOption.get
+    val schema = io.sm8.core.engine.ResolvedSource.Scan(
+      source = m.source,
+      schema = List(
+        Field("a", SealedDataType.Int, nullable = true),
+        Field("b", SealedDataType.Int, nullable = true),
+      ),
+    )
+    val res = ModelValidator.validateAgainstSchema(m, schema)
+    res.isRight shouldBe true
+  }
+
+  test("PR-O4b: validateAgainstSchema flags Dimension.expr referencing unknown fields") {
+    val m = Model.of(
+      name    = "typed-dim-ghost",
+      version = 1,
+      source  = io.sm8.core.model.SourceRef.ByName("default", "t"),
+      dimensions = List(
+        io.sm8.core.model.Dimension(
+          name     = "ghost",
+          expr     = io.sm8.core.expr.Expr.Add(
+            io.sm8.core.expr.Expr.FieldRef("a"),
+            io.sm8.core.expr.Expr.FieldRef("ghost_field"),
+          ),
+          dataType = None,
+        ),
+      ),
+    ).toOption.get
+    val schema = io.sm8.core.engine.ResolvedSource.Scan(
+      source = m.source,
+      schema = List(Field("a", SealedDataType.Int, nullable = true)),
+    )
+    val res = ModelValidator.validateAgainstSchema(m, schema)
+    res.isLeft shouldBe true
+    res.left.toOption.get shouldBe a [io.sm8.core.model.ModelValidationError]
+  }
+
 }

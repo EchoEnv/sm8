@@ -165,8 +165,8 @@ class EndToEndPipelineSpec extends AnyFunSuite with Matchers {
 
     // Dimensions
     m.dimensions shouldBe List(
-      Dimension("region", "region"),
-      Dimension("product", "product"),
+      Dimension.field("region", "region"),
+      Dimension.field("product", "product"),
     )
 
     // Measures
@@ -318,8 +318,8 @@ class EndToEndPipelineSpec extends AnyFunSuite with Matchers {
       .withDescription("End-to-end pipeline smoke test manifest")
       .withStatus(ModelStatus.Published)
       .withSource(SourceRef.ByName(name = "default", table = "people"))
-      .withDimension("region", "region")
-      .withDimension("product", "product")
+      .withDimension("region", io.sm8.core.expr.Expr.FieldRef("region"))
+      .withDimension("product", io.sm8.core.expr.Expr.FieldRef("product"))
       .withMeasureAgg("revenue", io.sm8.core.rel.AggregateFn.Sum, io.sm8.core.expr.Expr.FieldRef("amount"))
       .build
       .toOption

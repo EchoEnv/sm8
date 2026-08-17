@@ -67,7 +67,7 @@ class SparkEngineProviderProductionWiringSpec extends AnyFunSuite with Matchers 
         source = SourceRef.ByName("default", "orders"),
         status = ModelStatus.Draft,
         defaultPolicies = mpd(),
-        dimensions = List(Dimension("region", "region")),
+        dimensions = List(Dimension.field("region", "region")),
         measures = List(Measure("total",
           AggregateCall(AggregateFn.Sum, Some(Expr.FieldRef("amount")), "total"))),
       ).toOption.get
@@ -96,7 +96,7 @@ class SparkEngineProviderProductionWiringSpec extends AnyFunSuite with Matchers 
         source = SourceRef.ByName("default", "valid_table"),
         status = ModelStatus.Draft,
         defaultPolicies = mpd(),
-        dimensions = List(Dimension("ghost", "ghost_field")),
+        dimensions = List(Dimension.field("ghost", "ghost_field")),
       ).toOption.get
       val out = provider.query(model, io.sm8.core.engine.MCPQueryRequest.empty, EngineContext.defaultContext)
       out.isLeft shouldBe true
@@ -138,7 +138,7 @@ class SparkEngineProviderProductionWiringSpec extends AnyFunSuite with Matchers 
         source = SourceRef.ByName("default", "calc_test"),
         status = ModelStatus.Draft,
         defaultPolicies = mpd(),
-        dimensions = List(Dimension("region", "region")),
+        dimensions = List(Dimension.field("region", "region")),
         measures = List(Measure("total",
           AggregateCall(AggregateFn.Sum, Some(Expr.FieldRef("amount")), "total"))),
         calculatedMeasures = List(CalculatedMeasure("pct",

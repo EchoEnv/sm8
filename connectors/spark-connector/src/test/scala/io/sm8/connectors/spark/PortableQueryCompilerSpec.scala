@@ -152,8 +152,8 @@ class PortableQueryCompilerSpec extends AnyFunSuite with Matchers {
       val model = makeModel(
         source     = SourceRef.ByName("default.people", "people"),
         dimensions = List(
-          io.sm8.core.model.Dimension(name = "name", expr = "name"),
-          io.sm8.core.model.Dimension(name = "city", expr = "city"),
+          io.sm8.core.model.Dimension.field(name = "name", "name"),
+          io.sm8.core.model.Dimension.field(name = "city", "city"),
         ),
       )
       val compiler = new PortableQueryCompiler(spark)
@@ -189,7 +189,7 @@ class PortableQueryCompilerSpec extends AnyFunSuite with Matchers {
       // Dimensions: model says ["name"] (the valid one)
       val model = makeModel(
         source     = SourceRef.ByName("default.people", "people"),
-        dimensions = List(io.sm8.core.model.Dimension("name", "name")),
+        dimensions = List(io.sm8.core.model.Dimension.field("name", "name")),
       )
       val compiler = new PortableQueryCompiler(spark)
       val out = compiler.compile(model, EngineContext.defaultContext)

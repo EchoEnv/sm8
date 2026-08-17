@@ -78,14 +78,15 @@ object ModelValidator {
     val available = schema.schema.map(_.name).toSet
     val missing = scala.collection.mutable.LinkedHashSet.empty[String]
 
-    // Dimensions: the Dimension.expr is a column name (String).
-    // Per [[karpathy-guidelines-mindset]]: we trust the legacy
-    // "dimensions are column-name references" contract (no Expr
-    // parser for dimensions yet -- they're declared as raw strings
-    // in the manifest).
+    // Dimensions: PR-O4b (ADR-008-O) — `Dimension.expr` is now a typed
+    // Expr. For the common FieldRef case we extract the column name and
+    // look it up in the source schema; any non-FieldRef case (e.g. an
+    // Expr.Add on two columns) walks every FieldRef it references.
     model.dimensions.foreach { d =>
-      if (!available.contains(d.expr))
-        missing += s"dimensions[${d.name}].expr='${d.expr}' (unknown field)"
+      val refs = walkExprForFields(d.expr)  // Set[String]
+      val unmapped = refs.filterNot(available.contains)
+      if (unmapped.nonEmpty)
+        missing += s"dimensions[${d.name}].expr references unknown field(s): ${unmapped.mkString(", ")}"
     }
 
     // Measures: the input expression (AggregateCall.input).

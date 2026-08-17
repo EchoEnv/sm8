@@ -296,7 +296,7 @@ object ModelLoader {
         val name = stringField(m, "name")
         val expr = stringField(m, "expr").orElse(name)
         (name, expr) match {
-          case (Some(n), Some(e)) => Some(io.sm8.core.model.Dimension(n, e))
+          case (Some(n), Some(e)) => Some(io.sm8.core.model.Dimension.field(n, e))
           case _ => None
         }
       case _ => None

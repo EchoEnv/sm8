@@ -86,8 +86,8 @@ class ModelLoaderSpec extends AnyFunSuite with Matchers {
       options = Map("header" -> "true", "inferSchema" -> "true"),
     )
     m.dimensions shouldBe List(
-      Dimension("region", "region"),
-      Dimension("product", "product_name"),
+      Dimension.field("region", "region"),
+      Dimension.field("product", "product_name"),
     )
     m.measures shouldBe List(Measure(
       "revenue",

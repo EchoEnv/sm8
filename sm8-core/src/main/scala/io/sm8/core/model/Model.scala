@@ -90,8 +90,35 @@ object AuditPolicy {
   final case class EmitEvents(sinkRef: String) extends AuditPolicy
 }
 
-/** A dimension field on a Model. */
-final case class Dimension(name: String, expr: String)
+/** A dimension field on a Model. PR-O4b (ADR-008-O):
+  * re-typed `expr: String` -> `Expr` (matching the legacy semanticdf
+  * pre-tag audit). Per [[scala-data-driven-refactor-mindset]]: data
+  * is the IR, not free-form strings. A String allowed silent typos
+  * at engine-compile time (the legacy's stated reason for typed
+  * Expr). `dataType: Option[SealedDataType]` carries the optional
+  * declared type for model validators; default `None` means
+  * "infer from expr".
+  *
+  * Smart constructor `Dimension.field(name, fieldName)` for the
+  * common case (a column reference). The structural constructor is
+  * for `Dimension(name, Expr.Add(...))` etc.
+  */
+final case class Dimension(
+    name:     String,
+    expr:     io.sm8.core.expr.Expr,
+    dataType: Option[io.sm8.core.schema.SealedDataType] = None,
+) extends Product with Serializable
+
+object Dimension {
+  /** Convenience factory: a typed FieldRef dimension, no declared
+    * dataType (inferred from the column). */
+  def field(name: String, fieldName: String): Dimension =
+    Dimension(name = name, expr = io.sm8.core.expr.Expr.FieldRef(fieldName))
+  /** Convenience factory: a typed FieldRef dimension WITH declared
+    * dataType. */
+  def field(name: String, fieldName: String, dataType: io.sm8.core.schema.SealedDataType): Dimension =
+    Dimension(name = name, expr = io.sm8.core.expr.Expr.FieldRef(fieldName), dataType = Some(dataType))
+}
 
 /** A measure field on a Model. PR-J (2026-08-16): `expr` is now a
   * typed `AggregateCall` (was `String`). The typed form forces
@@ -155,6 +182,8 @@ final case class ProviderRef(name: String)
  * boundary per [[karpathy-guidelinesmindset]]. Returns
  * `Left(validationError)` on failure, `Right(model)` on success.
  */
+import io.sm8.core.schema.SealedDataType
+
 object Model {
   def of(
       name: String,

@@ -293,7 +293,7 @@ object QueryBuilder {
     val projected: RelOp = if (model.measures.nonEmpty) {
       val aggNode = RelOp.Aggregate(
         input      = filtered,
-        groupBy    = model.dimensions.map(d => Expr.FieldRef(d.expr)),
+        groupBy    = model.dimensions.map(d => d.expr),
         aggregates = model.measures.map(m => AggregateCall(
           fn        = m.expr.fn,
           input     = m.expr.input,
@@ -329,7 +329,7 @@ object QueryBuilder {
     * adapter can name the resulting column.
     */
   private def projectExpressions(model: Model): List[(Expr, String)] = {
-    val dimCols  = model.dimensions.map(d => (Expr.FieldRef(d.expr), d.name))
+    val dimCols  = model.dimensions.map(d => (d.expr, d.name))
     val measCols = model.measures.map(m => (Expr.FieldRef(m.name), m.name))
     val calcCols = model.calculatedMeasures.map(c => (Expr.Alias(c.name, c.expr), c.name))
     dimCols ++ measCols ++ calcCols
