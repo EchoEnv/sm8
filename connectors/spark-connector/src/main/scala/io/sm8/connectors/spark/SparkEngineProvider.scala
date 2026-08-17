@@ -47,7 +47,13 @@ final class SparkEngineProvider(
     val spark:           SparkSession,
     val bridge:          SparkTypeBridge.type,
     val sparkEngineName: String = "spark-3.5",
-    val hookDispatcher: Option[io.sm8.core.engine.HookRunner] = None
+    // PR-O3 (ADR-008-O, P0-5): the legacy `Option[HookRunner]` is
+    // removed. The platform now provides an `EngineHookDispatcher`
+    // whose bridge into the spark-connector requires a finer
+    // per-IR-step protocol (Context-shaped payloads, not DataFrame).
+    // That bridge is a future PR; this commit cleans up the false
+    // abstraction: the trait had only `Noop` and the dispatch
+    // was a no-op (per the architect review P0-5).
 ) extends MCPEngineProvider {
 
 
@@ -197,12 +203,12 @@ final class SparkEngineProvider(
     //      detection runs here (built-in).
     //   4. Compile the RelOp via `PortableQueryCompiler.compileRelOp`.
     //   5. PR-M4 (GAP 6): wrap the build+compile step in the bound
-    //      `HookRunner` if one is configured. None = no hooks fire.
+    //      dispatcher (deferred -- O3+1).
     //   6. Apply request-level where + limit + collect + decode.
     //
     // The compile steps are factored into a thunk; the for-comp
     // returns the final DataFrame; the dispatching code wraps that
-    // thunk with the optional HookRunner.
+    // thunk.
     val resolver = new SparkSourceResolver(spark)
     val compileSteps: io.sm8.core.engine.EngineContext => Either[EngineError, org.apache.spark.sql.DataFrame] = { eCtx =>
       for {
@@ -223,18 +229,11 @@ final class SparkEngineProvider(
         df       <- new PortableQueryCompiler(spark).compileRelOp(relOp, eCtx)
       } yield df
     }
-    val compiled: Either[EngineError, org.apache.spark.sql.DataFrame] = hookDispatcher match {
-      case Some(hr) =>
-        try hr.run[org.apache.spark.sql.DataFrame](ctx, compileSteps)
-        catch {
-          case e: RuntimeException => Left(EngineError.CancellationFailed(
-            engine = sparkEngineName,
-            reason  = "hook-throw",
-            message = s"Hook dispatcher threw: ${e.getMessage}",
-          ))
-        }
-      case None => compileSteps(ctx)
-    }
+    // PR-O3 (ADR-008-O, P0-5): hook dispatch is deferred.
+    // The future `O3+1` PR will integrate the per-IR-step
+    // dispatcher (Context-shaped payloads). For now, the
+    // compileSteps thunk runs directly.
+    val compiled: Either[EngineError, org.apache.spark.sql.DataFrame] = compileSteps(ctx)
 
     // PR-M4 (GAP 7 -- already wired in PortableQueryCompiler):
     // `applyGroupByAgg` now applies `calculatedMeasures` via
