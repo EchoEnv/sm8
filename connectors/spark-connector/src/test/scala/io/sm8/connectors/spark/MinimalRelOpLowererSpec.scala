@@ -98,7 +98,7 @@ class MinimalRelOpLowererSpec extends AnyFunSuite with Matchers {
       val rows = Array(org.apache.spark.sql.RowFactory.create(1: java.lang.Integer))
       spark.createDataFrame(java.util.Arrays.asList(rows: _*), schema).createOrReplaceTempView("t")
       val agg = RelOp.Aggregate(
-        input      = RelOp.Scan(SourceRef.ByName("default", "t"), Nil, Nil),
+        input      = RelOp.Scan(SourceRef.ByName(table = "t"), Nil, Nil),
         groupBy    = List(Expr.Literal(LiteralValue.IntValue(1), SealedDataType.Int)),  // not a FieldRef
         aggregates = List(AggregateCall(AggregateFn.Sum, Some(Expr.FieldRef("a")), "sum_a", false, Nil)),
       )
@@ -115,8 +115,8 @@ class MinimalRelOpLowererSpec extends AnyFunSuite with Matchers {
 
   test("lowerJoin: Join.left is not a Scan returns Left(UnsupportedCapability)") {
     val join = RelOp.Join(
-      left      = RelOp.Project(RelOp.Scan(SourceRef.ByName("default", "t"), Nil, Nil), Nil),  // not a Scan
-      right     = RelOp.Scan(SourceRef.ByName("default", "t"), Nil, Nil),
+      left      = RelOp.Project(RelOp.Scan(SourceRef.ByName(table = "t"), Nil, Nil), Nil),  // not a Scan
+      right     = RelOp.Scan(SourceRef.ByName(table = "t"), Nil, Nil),
       kind      = io.sm8.core.rel.JoinKind.Inner,
       condition = Expr.Equal(Expr.FieldRef("a"), Expr.FieldRef("a")),
     )
@@ -128,8 +128,8 @@ class MinimalRelOpLowererSpec extends AnyFunSuite with Matchers {
 
   test("lowerJoin: Join.right is not a Scan returns Left(UnsupportedCapability)") {
     val join = RelOp.Join(
-      left      = RelOp.Scan(SourceRef.ByName("default", "t"), Nil, Nil),
-      right     = RelOp.Project(RelOp.Scan(SourceRef.ByName("default", "t"), Nil, Nil), Nil),  // not a Scan
+      left      = RelOp.Scan(SourceRef.ByName(table = "t"), Nil, Nil),
+      right     = RelOp.Project(RelOp.Scan(SourceRef.ByName(table = "t"), Nil, Nil), Nil),  // not a Scan
       kind      = io.sm8.core.rel.JoinKind.Inner,
       condition = Expr.Equal(Expr.FieldRef("a"), Expr.FieldRef("a")),
     )
@@ -141,8 +141,8 @@ class MinimalRelOpLowererSpec extends AnyFunSuite with Matchers {
 
   test("lowerJoin: condition with no extractable keys returns Left(UnsupportedCapability)") {
     val join = RelOp.Join(
-      left      = RelOp.Scan(SourceRef.ByName("default", "t"), Nil, Nil),
-      right     = RelOp.Scan(SourceRef.ByName("default", "t"), Nil, Nil),
+      left      = RelOp.Scan(SourceRef.ByName(table = "t"), Nil, Nil),
+      right     = RelOp.Scan(SourceRef.ByName(table = "t"), Nil, Nil),
       kind      = io.sm8.core.rel.JoinKind.Inner,
       condition = Expr.GreaterThan(Expr.FieldRef("a"), Expr.Literal(LiteralValue.IntValue(1), SealedDataType.Int)),  // not Equal
     )

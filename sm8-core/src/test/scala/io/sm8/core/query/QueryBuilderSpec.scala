@@ -56,8 +56,8 @@ class QueryBuilderSpec extends AnyFunSuite with Matchers {
         identity: EngineIdentity,
     ): Either[EngineError, SourceRef] =
       rightModels.get(name) match {
-        case Some(_) => Right(SourceRef.ByName("default", name))
-        case None    => Right(SourceRef.ByName("default", name))
+        case Some(_) => Right(SourceRef.ByName(table = name))
+        case None    => Right(SourceRef.ByName(table = name))
       }
   }
 
@@ -86,7 +86,7 @@ class QueryBuilderSpec extends AnyFunSuite with Matchers {
   ): Model = Model.of(
     name    = "qb-test",
     version = 1,
-    source  = SourceRef.ByName("default", table),
+    source  = SourceRef.ByName(table = table),
     status  = ModelStatus.Draft,
     defaultPolicies = ModelPolicyDefaults(
       io.sm8.core.model.MaterializePolicy.None,
@@ -108,7 +108,7 @@ class QueryBuilderSpec extends AnyFunSuite with Matchers {
     val m = model("t")
     val out = QueryBuilder.build(m, FakeResolver(), identity).toOption.get
     val s = unwrapSortLimit(out).asInstanceOf[RelOp.Project].input.asInstanceOf[RelOp.Scan]
-    s.sourceRef shouldBe SourceRef.ByName("default", "t")
+    s.sourceRef shouldBe SourceRef.ByName(table = "t")
     s.schema shouldBe List(
       Field("id",   SealedDataType.Int,    nullable = false),
       Field("name", SealedDataType.Varchar, nullable = false),
@@ -215,7 +215,7 @@ class QueryBuilderSpec extends AnyFunSuite with Matchers {
 
   test("source NotFound -> typed FeatureDeferred") {
     val nf = ResolvedSource.NotFound(
-      SourceRef.ByName("default", "missing"), reason = "table not in catalog")
+      SourceRef.ByName(table = "missing"), reason = "table not in catalog")
     val out = QueryBuilder.build(model("missing"), FakeResolver(failAs = Some(nf)), identity)
     out.isLeft shouldBe true
     out.left.toOption.get shouldBe a [EngineError.FeatureDeferred]
@@ -266,7 +266,7 @@ class QueryBuilderSpec extends AnyFunSuite with Matchers {
 
   test("FeatureDeferred error is tagged with the model name (diagnostics)") {
     val nf = ResolvedSource.NotFound(
-      SourceRef.ByName("default", "missing"), reason = "nope")
+      SourceRef.ByName(table = "missing"), reason = "nope")
     val out = QueryBuilder.build(model("missing"), FakeResolver(failAs = Some(nf)), identity)
     val err = out.left.toOption.get.asInstanceOf[EngineError.FeatureDeferred]
     err.feature should include ("qb-test")

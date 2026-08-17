@@ -103,7 +103,7 @@ class SparkConnectorBigDataScaleSpec extends AnyFunSuite with Matchers {
       // no static-state contamination.
       val compiler = new PortableQueryCompiler(spark)
       val df = compiler.compile(
-        makeModel(SourceRef.ByName("default.big_people", "big_people")),
+        makeModel(SourceRef.ByName(table = "big_people")),
         EngineContext.defaultContext,
       ) match {
         case Right(d) => d
@@ -147,7 +147,7 @@ class SparkConnectorBigDataScaleSpec extends AnyFunSuite with Matchers {
       val provider = new SparkEngineProvider(spark, SparkTypeBridge, "spark-3.5")
       val startNs = System.nanoTime()
       val out = provider.query(
-        makeModel(SourceRef.ByName("default.hot_decode", "hot_decode")),
+        makeModel(SourceRef.ByName(table = "hot_decode")),
         MCPQueryRequest.empty,
         EngineContext.defaultContext,
       )
@@ -195,7 +195,7 @@ class SparkConnectorBigDataScaleSpec extends AnyFunSuite with Matchers {
       data.createOrReplaceTempView("driver_only")
       val compiler = new PortableQueryCompiler(spark)
       val df = compiler.compile(
-        makeModel(SourceRef.ByName("default.driver_only", "driver_only")),
+        makeModel(SourceRef.ByName(table = "driver_only")),
         EngineContext.defaultContext,
       ).toOption.get
       // The DataFrame is LAZY; no executor work has happened yet.

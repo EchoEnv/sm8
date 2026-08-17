@@ -70,7 +70,7 @@ class PortableQueryCompilerJoinsAggsSpec extends AnyFunSuite with Matchers {
   ): Model = Model.of(
     name    = "prk",
     version = 1,
-    source  = SourceRef.ByName("default", table),
+    source  = SourceRef.ByName(table = table),
     status  = ModelStatus.Draft,
     defaultPolicies = ModelPolicyDefaults(
       io.sm8.core.model.MaterializePolicy.None,

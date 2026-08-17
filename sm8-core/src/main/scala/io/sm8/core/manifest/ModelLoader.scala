@@ -256,7 +256,11 @@ object ModelLoader {
         // SourceRef.ByName(name, table) — `name` field can carry the
         // catalog.legacy combo. If absent, use "default".
         val name = stringField(inner, "name").getOrElse("default")
-        Right(SourceRef.ByName(name = name, table = table.get))
+        Right(SourceRef.ByName(
+          catalog   = None,
+          namespace = if (name == "default") None else Some(name),
+          table     = table.get,
+        ))
       }
     } else if (m.containsKey("byPath")) {
       val inner = asMap(m.get("byPath")).getOrElse(return Left(ManifestError.InvalidYaml("source.byPath is not a map")))

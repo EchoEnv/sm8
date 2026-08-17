@@ -72,10 +72,10 @@ class SparkSourceResolverSpec extends AnyFunSuite with Matchers {
       rows.createOrReplaceTempView("people")
 
       val resolver = new SparkSourceResolver(spark)
-      val out = resolver.resolve(SourceRef.ByName("default", "people"), identity)
+      val out = resolver.resolve(SourceRef.ByName(table = "people"), identity)
       out.isRight shouldBe true
       val scan = out.toOption.get.asInstanceOf[ResolvedSource.Scan]
-      scan.source shouldBe SourceRef.ByName("default", "people")
+      scan.source shouldBe SourceRef.ByName(table = "people")
       scan.schema.map(_.name) should contain theSameElementsAs List("id", "name", "score")
       scan.schema.find(_.name == "id").get.dataType   shouldBe SealedDataType.Int
       scan.schema.find(_.name == "name").get.dataType shouldBe SealedDataType.Varchar
@@ -89,7 +89,7 @@ class SparkSourceResolverSpec extends AnyFunSuite with Matchers {
     val spark = buildSpark()
     dropAfter(spark) {
       val resolver = new SparkSourceResolver(spark)
-      val out = resolver.resolve(SourceRef.ByName("default", "no_such_table"), identity)
+      val out = resolver.resolve(SourceRef.ByName(table = "no_such_table"), identity)
       out.isLeft shouldBe true
       val err = out.left.toOption.get
       err shouldBe a [EngineError.UnsupportedCapability]
@@ -179,7 +179,7 @@ class SparkSourceResolverSpec extends AnyFunSuite with Matchers {
         spark,
         registry = SparkSourceResolver.SessionCatalogModelRegistry)
       val out = resolver.resolveModel("products", identity)
-      out shouldBe Right(SourceRef.ByName("default", "products"))
+      out shouldBe Right(SourceRef.ByName(catalog = Some("default"), namespace = None, table = "products"))
     }
   }
 
@@ -221,7 +221,7 @@ class SparkSourceResolverSpec extends AnyFunSuite with Matchers {
       // The PR-L QueryBuilder's resolve(source, identity) signature
       // is exactly what we implement. Verify the contract by
       // resolving a model that the QueryBuilder would build against.
-      val out = resolver.resolve(SourceRef.ByName("default", "orders"), identity)
+      val out = resolver.resolve(SourceRef.ByName(table = "orders"), identity)
       val scan = out.toOption.get.asInstanceOf[ResolvedSource.Scan]
       scan.schema.map(_.name) should contain theSameElementsAs List("id", "name", "region")
     }

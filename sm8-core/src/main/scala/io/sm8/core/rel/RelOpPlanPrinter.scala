@@ -75,8 +75,11 @@ object RelOpPlanPrinter {
   }
 
   private def renderSourceRef(s: io.sm8.core.model.SourceRef): String = s match {
-    case io.sm8.core.model.SourceRef.ByName(name, table) =>
-      s"name=$name, table=$table"
+    case io.sm8.core.model.SourceRef.ByName(catalog, namespace, table) =>
+      // PR-O4c (ADR-008-O): print all 3 fields; omit None options from the output
+      val catalogPart   = catalog.fold("")(n => s"catalog=$n, ")
+      val namespacePart = namespace.fold("")(n => s"namespace=$n, ")
+      s"$catalogPart$namespacePart" + s"table=$table"
     case io.sm8.core.model.SourceRef.ByPath(format, path, _) =>
       s"format=$format, path=$path"
     case io.sm8.core.model.SourceRef.ByProvider(providerRefName) =>

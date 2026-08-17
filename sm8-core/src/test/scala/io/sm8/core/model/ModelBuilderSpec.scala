@@ -50,7 +50,7 @@ class ModelBuilderSpec extends AnyFunSuite with Matchers {
   // -- Happy path: full builder produces a valid Model --
 
   test("ModelBuilder.build: withName + withVersion + withSource produces Right(Model) equivalent to Model.of(...)") {
-    val src: SourceRef = SourceRef.ByName("default", "people")
+    val src: SourceRef = SourceRef.ByName(table = "people")
     val built = ModelBuilder()
       .withName("test-model")
       .withVersion(1)
@@ -68,7 +68,7 @@ class ModelBuilderSpec extends AnyFunSuite with Matchers {
     val built = ModelBuilder()
       .withName("dm-test")
       .withVersion(2)
-      .withSource(SourceRef.ByName("default", "sales"))
+      .withSource(SourceRef.ByName(table = "sales"))
       .withDimension("region", io.sm8.core.expr.Expr.FieldRef("region"))
       .withDimension("product", io.sm8.core.expr.Expr.FieldRef("product"))
       .withMeasureAgg("revenue", io.sm8.core.rel.AggregateFn.Sum, io.sm8.core.expr.Expr.FieldRef("amount"))
@@ -76,7 +76,7 @@ class ModelBuilderSpec extends AnyFunSuite with Matchers {
     val expected = Model.of(
       name       = "dm-test",
       version    = 2,
-      source     = SourceRef.ByName("default", "sales"),
+      source     = SourceRef.ByName(table = "sales"),
       dimensions = List(Dimension.field("region", "region"), Dimension.field("product", "product")),
       measures   = List(Measure.aggregate("revenue", io.sm8.core.rel.AggregateFn.Sum, io.sm8.core.expr.Expr.FieldRef("amount"))),
     )
@@ -88,7 +88,7 @@ class ModelBuilderSpec extends AnyFunSuite with Matchers {
   test("ModelBuilder.build: without withName returns Left(InvalidName)") {
     val built = ModelBuilder()
       .withVersion(1)
-      .withSource(SourceRef.ByName("default", "t"))
+      .withSource(SourceRef.ByName(table = "t"))
       .build
     built.isLeft shouldBe true
     built.left.get shouldBe a [ModelValidationError.InvalidName]
@@ -97,7 +97,7 @@ class ModelBuilderSpec extends AnyFunSuite with Matchers {
   test("ModelBuilder.build: without withVersion returns Left(InvalidVersion)") {
     val built = ModelBuilder()
       .withName("no-version-model")
-      .withSource(SourceRef.ByName("default", "t"))
+      .withSource(SourceRef.ByName(table = "t"))
       .build
     built.isLeft shouldBe true
     built.left.get shouldBe a [ModelValidationError.InvalidVersion]
@@ -109,7 +109,7 @@ class ModelBuilderSpec extends AnyFunSuite with Matchers {
     val direct = Model.of(
       name    = "compat-model",
       version = 1,
-      source  = SourceRef.ByName("default", "t"),
+      source  = SourceRef.ByName(table = "t"),
     )
     direct.isRight shouldBe true
   }
@@ -120,7 +120,7 @@ class ModelBuilderSpec extends AnyFunSuite with Matchers {
     val built = ModelBuilder()
       .withName("serialize-test")
       .withVersion(3)
-      .withSource(SourceRef.ByName("default", "t"))
+      .withSource(SourceRef.ByName(table = "t"))
       .withDimension("a", io.sm8.core.expr.Expr.FieldRef("a"))
       .withMeasureAgg("b", io.sm8.core.rel.AggregateFn.Sum, io.sm8.core.expr.Expr.FieldRef("b"))
       .build
@@ -139,7 +139,7 @@ class ModelBuilderSpec extends AnyFunSuite with Matchers {
   // -- Per [[scala-data-driven-refactor-mindset]] §3 sealed-trait dispatch --
 
   test("ModelBuilder.build: supports all 3 SourceRef variants (ByName, ByPath, ByProvider)") {
-    val byName = ModelBuilder().withName("n").withVersion(1).withSource(SourceRef.ByName("c", "t")).build
+    val byName = ModelBuilder().withName("n").withVersion(1).withSource(SourceRef.ByName(table = "t")).build
     val byPath = ModelBuilder().withName("p").withVersion(1).withSource(SourceRef.ByPath("csv", "/tmp/x")).build
     val byProvider = ModelBuilder().withName("pr").withVersion(1).withSource(SourceRef.ByProvider("driver-ref")).build
     byName.isRight shouldBe true

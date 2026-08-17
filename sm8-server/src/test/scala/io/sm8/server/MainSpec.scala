@@ -33,7 +33,7 @@ class MainSpec extends AnyFunSuite with Matchers {
   private def sampleModel(name: String = "main-test"): Model = Model.of(
     name    = name,
     version = 1,
-    source  = SourceRef.ByName("default", "stub_table"),
+    source  = SourceRef.ByName(table = "stub_table"),
   ).toOption.get
 
   // ---- CLI parsing (pure) ----
@@ -250,7 +250,7 @@ class MainSpec extends AnyFunSuite with Matchers {
     val providers = Main.discoverProviders(getClass.getClassLoader)
     // The in-memory engine is available without a URL
     val wired = Main.wire(
-      Model.of(name = "m", version = 1, source = io.sm8.core.model.SourceRef.ByName("n", "t")).toOption.get,
+      Model.of(name = "m", version = 1, source = io.sm8.core.model.SourceRef.ByName(table = "t")).toOption.get,
       providers,
       engineName   = Some("test-engine"),
       connectorUrl = Some("local[1]")

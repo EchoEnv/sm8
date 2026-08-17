@@ -118,7 +118,7 @@ class PortableQueryCompilerSpec extends AnyFunSuite with Matchers {
         ),
       )
       val model = makeModel(
-        source  = SourceRef.ByName("default.people", "people"),
+        source  = SourceRef.ByName(table = "people"),
         filters = List(ageFilter),
       )
       val compiler = new PortableQueryCompiler(spark)
@@ -150,7 +150,7 @@ class PortableQueryCompilerSpec extends AnyFunSuite with Matchers {
       val data = spark.createDataFrame(spark.sparkContext.parallelize(rows), schema)
       data.createOrReplaceTempView("people")
       val model = makeModel(
-        source     = SourceRef.ByName("default.people", "people"),
+        source     = SourceRef.ByName(table = "people"),
         dimensions = List(
           io.sm8.core.model.Dimension.field(name = "name", "name"),
           io.sm8.core.model.Dimension.field(name = "city", "city"),
@@ -188,7 +188,7 @@ class PortableQueryCompilerSpec extends AnyFunSuite with Matchers {
       data.createOrReplaceTempView("people")
       // Dimensions: model says ["name"] (the valid one)
       val model = makeModel(
-        source     = SourceRef.ByName("default.people", "people"),
+        source     = SourceRef.ByName(table = "people"),
         dimensions = List(io.sm8.core.model.Dimension.field("name", "name")),
       )
       val compiler = new PortableQueryCompiler(spark)
@@ -223,7 +223,7 @@ class PortableQueryCompilerSpec extends AnyFunSuite with Matchers {
       )
       val data = spark.createDataFrame(spark.sparkContext.parallelize(rows), schema)
       data.createOrReplaceTempView("people")
-      val model = makeModel(source = SourceRef.ByName("default.people", "people"))
+      val model = makeModel(source = SourceRef.ByName(table = "people"))
       val compiler = new PortableQueryCompiler(spark)
       val out = compiler.compile(model, EngineContext.defaultContext)
       out.isRight shouldBe true
@@ -255,7 +255,7 @@ class PortableQueryCompilerSpec extends AnyFunSuite with Matchers {
       val model = Model.of(
         name    = "persist-model",
         version = 1,
-        source  = SourceRef.ByName("default", "t"),
+        source  = SourceRef.ByName(table = "t"),
         measures = List(
           io.sm8.core.model.Measure(
             name = "total",
@@ -298,7 +298,7 @@ class PortableQueryCompilerSpec extends AnyFunSuite with Matchers {
       val model = Model.of(
         name    = "bogus-persist-model",
         version = 1,
-        source  = SourceRef.ByName("default", "t"),
+        source  = SourceRef.ByName(table = "t"),
         measures = List(
           io.sm8.core.model.Measure(
             name = "total",
@@ -344,7 +344,7 @@ class PortableQueryCompilerSpec extends AnyFunSuite with Matchers {
       val model = Model.of(
         name    = "none-persist-model",
         version = 1,
-        source  = SourceRef.ByName("default", "t"),
+        source  = SourceRef.ByName(table = "t"),
         measures = List(
           io.sm8.core.model.Measure(
             name = "total",

@@ -181,7 +181,7 @@ final case class ModelBuilder private (
     val n: String = name.getOrElse("")
     val v: Int    = version.getOrElse(-1)
     val s: SourceRef = source.getOrElse(
-      SourceRef.ByName(name = "default", table = "unknown")
+      SourceRef.ByName(table = "unknown")
     )
     Model.of(
       name            = n,

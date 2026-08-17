@@ -77,7 +77,7 @@ class ModelExtensionsSpec extends AnyFunSuite with Matchers {
     val model = Model.of(
       name    = "m",
       version = 1,
-      source  = SourceRef.ByName("default", "t"),
+      source  = SourceRef.ByName(table = "t"),
       calculatedMeasures = List(
         CalculatedMeasure("pct_of_total", Expr.Divide(
           Expr.FieldRef("amount"),
@@ -101,7 +101,7 @@ class ModelExtensionsSpec extends AnyFunSuite with Matchers {
     val model = Model.of(
       name    = "orders",
       version = 1,
-      source  = SourceRef.ByName("default", "orders"),
+      source  = SourceRef.ByName(table = "orders"),
       joins   = List(JoinSpec(
         name       = "customer_lookup",
         rightModel = "customers",
@@ -125,7 +125,7 @@ class ModelExtensionsSpec extends AnyFunSuite with Matchers {
     val built = ModelBuilder()
       .withName("mb")
       .withVersion(1)
-      .withSource(SourceRef.ByName("default", "t"))
+      .withSource(SourceRef.ByName(table = "t"))
       .withMeasureAgg("total", AggregateFn.Sum, Expr.FieldRef("amount"))
       .build
       .toOption.get
@@ -137,7 +137,7 @@ class ModelExtensionsSpec extends AnyFunSuite with Matchers {
     val built = ModelBuilder()
       .withName("mb2")
       .withVersion(1)
-      .withSource(SourceRef.ByName("default", "t"))
+      .withSource(SourceRef.ByName(table = "t"))
       .withCalculatedMeasure("ratio", Expr.Divide(Expr.FieldRef("a"), Expr.FieldRef("b")))
       .withJoin(JoinSpec("j", "right", JoinKind.Left, List(("k1", "k2"))))
       .build
@@ -151,7 +151,7 @@ class ModelExtensionsSpec extends AnyFunSuite with Matchers {
     val built = ModelBuilder()
       .withName("mb3")
       .withVersion(1)
-      .withSource(SourceRef.ByName("default", "t"))
+      .withSource(SourceRef.ByName(table = "t"))
       .withMeasureAgg("total", AggregateFn.Sum, Expr.FieldRef("amount"))
       .withCalculatedMeasure("ratio", Expr.Divide(Expr.FieldRef("a"), Expr.FieldRef("b")))
       .withJoin(JoinSpec("j", "right", JoinKind.Inner, List(("k1", "k2"))))

@@ -132,7 +132,7 @@ class EngineHookDispatcherSpec extends AnyFunSuite with Matchers {
     Model.of(
       name       = "m",
       version    = 1,
-      source     = SourceRef.ByName("n", "t"),
+      source     = SourceRef.ByName(table = "t"),
       status     = ModelStatus.Draft,
       dimensions = List(Dimension.field("d", "d")),
       measures   = List(Measure.aggregate("v", io.sm8.core.rel.AggregateFn.Sum, io.sm8.core.expr.Expr.FieldRef("v")))

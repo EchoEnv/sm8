@@ -64,7 +64,7 @@ class SparkEngineProviderProductionWiringSpec extends AnyFunSuite with Matchers 
       val model = Model.of(
         name = "orders-model",
         version = 1,
-        source = SourceRef.ByName("default", "orders"),
+        source = SourceRef.ByName(table = "orders"),
         status = ModelStatus.Draft,
         defaultPolicies = mpd(),
         dimensions = List(Dimension.field("region", "region")),
@@ -93,7 +93,7 @@ class SparkEngineProviderProductionWiringSpec extends AnyFunSuite with Matchers 
       val model = Model.of(
         name = "bad-model",
         version = 1,
-        source = SourceRef.ByName("default", "valid_table"),
+        source = SourceRef.ByName(table = "valid_table"),
         status = ModelStatus.Draft,
         defaultPolicies = mpd(),
         dimensions = List(Dimension.field("ghost", "ghost_field")),
@@ -135,7 +135,7 @@ class SparkEngineProviderProductionWiringSpec extends AnyFunSuite with Matchers 
       val model = Model.of(
         name = "calc-model",
         version = 1,
-        source = SourceRef.ByName("default", "calc_test"),
+        source = SourceRef.ByName(table = "calc_test"),
         status = ModelStatus.Draft,
         defaultPolicies = mpd(),
         dimensions = List(Dimension.field("region", "region")),
@@ -166,7 +166,7 @@ class SparkEngineProviderProductionWiringSpec extends AnyFunSuite with Matchers 
       val model = Model.of(
         name = "gap8-min",
         version = 1,
-        source = SourceRef.ByName("default", "only_left"),
+        source = SourceRef.ByName(table = "only_left"),
         status = ModelStatus.Draft,
         defaultPolicies = mpd(),
         joins = List(JoinSpec("j1", "no_such_right_t", JoinKind.Inner, List(("id", "id")))),
@@ -197,7 +197,7 @@ class SparkEngineProviderProductionWiringSpec extends AnyFunSuite with Matchers 
       val model = Model.of(
         name = "hook-test",
         version = 1,
-        source = SourceRef.ByName("default", "hook_test"),
+        source = SourceRef.ByName(table = "hook_test"),
         status = ModelStatus.Draft,
         defaultPolicies = mpd(),
       ).toOption.get
@@ -230,7 +230,7 @@ class SparkEngineProviderProductionWiringSpec extends AnyFunSuite with Matchers 
       val model = Model.of(
         name = "hook-rec-test",
         version = 1,
-        source = SourceRef.ByName("default", "hook_rec"),
+        source = SourceRef.ByName(table = "hook_rec"),
         status = ModelStatus.Draft,
         defaultPolicies = mpd(),
       ).toOption.get

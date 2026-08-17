@@ -36,7 +36,7 @@ class SparkEngineProviderSpec extends AnyFunSuite with Matchers {
     Model.of(
       name    = "test-model",
       version = 1,
-      source  = SourceRef.ByName("n", tableName),
+      source  = SourceRef.ByName(table = tableName),
       status  = ModelStatus.Draft,
       defaultPolicies = ModelPolicyDefaults(
         io.sm8.core.model.MaterializePolicy.None,

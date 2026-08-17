@@ -47,7 +47,7 @@ class ModelLoaderSpec extends AnyFunSuite with Matchers {
     val m = out.toOption.get
     m.name shouldBe "people-model"
     m.version shouldBe 1
-    m.source shouldBe SourceRef.ByName(name = "default", table = "people")
+    m.source shouldBe SourceRef.ByName(table = "people")
     m.status shouldBe ModelStatus.Draft
   }
 

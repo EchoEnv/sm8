@@ -166,11 +166,32 @@ object Measure {
  */
 sealed trait SourceRef extends Product with Serializable
 object SourceRef {
-  /** Source identified by name + table name. Resolver registered separately. */
-  final case class ByName(name: String, table: String) extends SourceRef
+  /** Source identified by catalog / namespace / table. PR-O4c
+    * (ADR-008-O): re-port the legacy semanticdf pre-tag shape
+    * (Option[String] for catalog + namespace). The wired SM8 was
+    * missing these 2 fields -- they were dropped as "smallest
+    * correct change" but the data-engineer parity review flagged
+    * this as a wire-breaking regression for any YAML/MCP payload
+    * referencing the 3-part name. The smart constructors preserve
+    * the 2-arg legacy 1.x / 2.x form.
+    */
+  final case class ByName(
+    catalog:   Option[String] = None,
+    namespace: Option[String] = None,
+    table:     String,
+  ) extends SourceRef
+
+  /** Smart constructor: bare `(name, table)` 2-arg form preserved
+    * for legacy callers (every existing test) and tests written
+    * before the catalog/namespace fields landed. Maps to the legacy
+    * semanticdf pre-tag shape (catalog=None, namespace=None). */
+  def byName(name: String, table: String): ByName = ByName(
+    catalog = None, namespace = None, table = table
+  )
+
   /** Source identified by file path + format. */
   final case class ByPath(format: String, path: String, options: Map[String, String] = Map.empty) extends SourceRef
-  /** ProviderRef — name + driver-local closure. */
+  /** ProviderRef -- name + driver-local closure. */
   final case class ByProvider(providerRefName: String) extends SourceRef
 }
 

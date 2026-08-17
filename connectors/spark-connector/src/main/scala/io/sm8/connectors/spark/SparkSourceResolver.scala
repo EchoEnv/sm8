@@ -164,6 +164,6 @@ object SparkSourceResolver {
     * deployments -- every model is a table or temp view. */
   object SessionCatalogModelRegistry extends ModelRegistry {
     override def resolveModel(name: String): Either[EngineError, SourceRef] =
-      Right(SourceRef.ByName(name = "default", table = name))
+      Right(SourceRef.ByName(catalog = Some("default"), namespace = None, table = name))
   }
 }
