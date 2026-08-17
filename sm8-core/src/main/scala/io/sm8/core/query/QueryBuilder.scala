@@ -174,38 +174,21 @@ object QueryBuilder {
     def refs(name: String): Set[String] =
       byName.get(name).map(measureRefs).getOrElse(Set.empty)
 
+    // Measure-dependency extraction (cycle detection). A name is
+    // a cycle ref if it is EITHER:
+    //   - a MeasureRef / All (Calculator.measureNamesOf), OR
+    //   - a FieldRef that matches one of the declared calculated
+    //     measure names (so a FieldRef to "x" inside calc "a" is a
+    //     cycle back to "a" if "x" is also a calc)
+    //
+    // Per [[karpathy-guidelines-mindset]]: Calculator is the single
+    // source of truth for Expr walking -- QueryBuilder composes the
+    // two field-name + measure-name views and filters by the
+    // declared-calc set.
     def measureRefs(c: CalculatedMeasure): Set[String] = {
-      val out = scala.collection.mutable.Set.empty[String]
-      def go(e: Expr): Unit = e match {
-        case Expr.FieldRef(n)   => if (byName.contains(n)) out += n
-        case Expr.MeasureRef(n) => if (byName.contains(n)) out += n
-        case Expr.Alias(_, inner) => go(inner)
-        case Expr.Not(inner) => go(inner)
-        case Expr.IsNull(inner) => go(inner)
-        case Expr.IsNotNull(inner) => go(inner)
-        case Expr.Cast(inner, _) => go(inner)
-        case Expr.All(_)         => ()
-        case Expr.Literal(_, _) => ()
-        case Expr.Add(l, r) => go(l); go(r)
-        case Expr.Subtract(l, r) => go(l); go(r)
-        case Expr.Multiply(l, r) => go(l); go(r)
-        case Expr.Divide(l, r) => go(l); go(r)
-        case Expr.Modulo(l, r) => go(l); go(r)
-        case Expr.Equal(l, r) => go(l); go(r)
-        case Expr.NotEqual(l, r) => go(l); go(r)
-        case Expr.LessThan(l, r) => go(l); go(r)
-        case Expr.LessOrEqual(l, r) => go(l); go(r)
-        case Expr.GreaterThan(l, r) => go(l); go(r)
-        case Expr.GreaterOrEqual(l, r) => go(l); go(r)
-        case Expr.And(l, r) => go(l); go(r)
-        case Expr.Or(l, r) => go(l); go(r)
-        case Expr.CaseWhen(branches, otherwise) =>
-          branches.foreach { case (c, v) => go(c); go(v) }
-          go(otherwise)
-        case Expr.FunctionCall(_, args) => args.foreach(go)
-      }
-      go(c.expr)
-      out.toSet
+      val m = io.sm8.core.expr.Calculator.measureNamesOf(c.expr)
+      val f = io.sm8.core.expr.Calculator.fieldNamesOf(c.expr)
+      (m ++ f).filter(byName.contains)
     }
 
     // Iterative DFS with an explicit path stack (no recursion -- the

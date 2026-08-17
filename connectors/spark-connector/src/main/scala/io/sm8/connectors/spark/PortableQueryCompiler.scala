@@ -141,104 +141,22 @@ final class PortableQueryCompiler(val spark: SparkSession)
     * is the next major PR; the minimum that GAP 5 demands is a
     * public entry point + the existing pipeline accepting the
     * produced tree. */
-  /** PR-M4 (GAP 5): IR -> DataFrame lowering. Walks the RelOp
-    * tree recursively and applies each node to the DataFrame.
-    * Covers Scan / Filter / Project / Sort / Limit (the nodes
-    * that come out of QueryBuilder.build for a model with no
-    * measures / joins); for Aggregate / Join we use a synthesised
-    * Model through the legacy compile() path (the legacy code
-    * already supports those). Full RelOp->DataFrame is a future
-    * PR per the ADR-008-L Appendix plan. */
+  /** PR-M5 commit 2: delegate to `MinimalRelOpLowerer`. The
+    * per-node lowering logic now lives in its own class (one place
+    * to extend the full RelOp -> DataFrame lowering in future PRs).
+    * Per [[karpathy-guidelines-mindset]] "smallest correct change":
+    * behavior is identical to the prior inlining. */
+  private val minimalRelOpLowerer: MinimalRelOpLowerer =
+    new MinimalRelOpLowerer(spark, this)
+
+  /** PR-M4 (GAP 5) + PR-M5 commit 2: IR -> DataFrame lowering.
+    * Thin delegator to `MinimalRelOpLowerer`. The 7 RelOp cases
+    * (Scan / Filter / Project / Sort / Limit / Aggregate / Join)
+    * are owned by the lowerer. */
   def compileRelOp(
       relOp: io.sm8.core.rel.RelOp,
       ctx:   EngineContext,
-  ): Either[EngineError, DataFrame] = relOp match {
-    case scan: io.sm8.core.rel.RelOp.Scan =>
-      compileRelOpScan(scan)
-    case io.sm8.core.rel.RelOp.Filter(input, predicate) =>
-      compileRelOp(input, ctx).map(_.filter(PortableExprCompiler.toColumn(predicate)))
-    case io.sm8.core.rel.RelOp.Project(input, expressions) =>
-      compileRelOp(input, ctx).map { df =>
-        val cols = expressions.map { case (e, alias) =>
-          PortableExprCompiler.toColumn(e).as(alias)
-        }
-        if (cols.isEmpty) df else df.select(cols: _*)
-      }
-    case io.sm8.core.rel.RelOp.Sort(input, keys) =>
-      compileRelOp(input, ctx).map { df =>
-        if (keys.isEmpty) df
-        else {
-          val sortCols = keys.map { k =>
-            val base = df.col(k.expression.toString)
-            val dirCol: org.apache.spark.sql.Column = k.direction match {
-              case io.sm8.core.rel.SortDirection.Ascending  => base.asc
-              case io.sm8.core.rel.SortDirection.Descending => base.desc
-            }
-            // nullsFirst / nullsLast: use the per-method form on Column
-            // (`.asc_nulls_first` / `.desc_nulls_last`) -- this is a
-            // documented alternative to the chained `SortOrder` form.
-            (k.direction, k.nullOrdering) match {
-              case (io.sm8.core.rel.SortDirection.Ascending,
-                    io.sm8.core.rel.NullOrdering.First)  => dirCol.asc_nulls_first
-              case (io.sm8.core.rel.SortDirection.Ascending,
-                    io.sm8.core.rel.NullOrdering.Last)   => dirCol.asc_nulls_last
-              case (io.sm8.core.rel.SortDirection.Descending,
-                    io.sm8.core.rel.NullOrdering.First)  => dirCol.desc_nulls_first
-              case (io.sm8.core.rel.SortDirection.Descending,
-                    io.sm8.core.rel.NullOrdering.Last)   => dirCol.desc_nulls_last
-            }
-          }
-          df.orderBy(sortCols: _*)
-        }
-      }
-    case io.sm8.core.rel.RelOp.Limit(input, count, offset) =>
-      // PR-L emits a pass-through Limit with `count = Long.MaxValue`
-      // when the model has no request-level limit. .limit(Long.MaxValue.toInt)
-      // overflows to -1, which Spark rejects. Per the pass-through
-      // contract: skip the limit application when count is at the
-      // sentinel; honor explicit counts.
-      compileRelOp(input, ctx).map { df =>
-        if (count == Long.MaxValue) df
-        else df.limit(count.toInt).offset(offset.toInt)
-      }
-    case agg: io.sm8.core.rel.RelOp.Aggregate =>
-      // Fall through to the legacy path: synthesise a Model
-      // from the Aggregate's groupBy + measures (the only node
-      // shape that the legacy path supports end-to-end). For
-      // joins (which the legacy path ALSO supports), the caller
-      // should pass the model directly to compile(model, ctx).
-      compileRelOpAggregate(agg, ctx)
-    case join: io.sm8.core.rel.RelOp.Join =>
-      // For joins, we delegate to the legacy path with a
-      // synthesised model carrying the join spec. The legacy
-      // applyJoins already does the right thing.
-      compileRelOpJoin(join, ctx)
-  }
-
-  /** Scan -> DataFrame: read the source via spark.table / spark.read.
-    * Mirrors the legacy resolveSource() but typed for the IR path. */
-  private def compileRelOpScan(
-      scan: io.sm8.core.rel.RelOp.Scan,
-  ): Either[EngineError, DataFrame] = scan.sourceRef match {
-    case src: io.sm8.core.model.SourceRef.ByName =>
-      try Right(spark.table(src.table)) catch {
-        case _: Exception => try Right(spark.read.table(src.table)) catch {
-          case _: Exception => Left(EngineError.UnsupportedCapability(
-            engine = "spark-3.5", capability = "SourceRef.ByName",
-            message = s"Spark table '${src.table}' not found."))
-        }
-      }
-    case src: io.sm8.core.model.SourceRef.ByPath =>
-      try Right(spark.read.format(src.format).options(src.options).load(src.path)) catch {
-        case e: Exception => Left(EngineError.UnsupportedCapability(
-          engine = "spark-3.5", capability = "SourceRef.ByPath",
-          message = s"Spark path read failed: ${e.getMessage}"))
-      }
-    case _: io.sm8.core.model.SourceRef.ByProvider =>
-      Left(EngineError.UnsupportedCapability(
-        engine = "spark-3.5", capability = "SourceRef.ByProvider",
-        message = "SourceRef.ByProvider requires a registered ProviderRef closure."))
-  }
+  ): Either[EngineError, DataFrame] = minimalRelOpLowerer.lower(relOp, ctx)
 
   /** Aggregate -> DataFrame: for the GAP-5 minimum, we use the
     * `compileRelOpAggregateSubtree` helper that recursively walks
@@ -252,118 +170,6 @@ final class PortableQueryCompiler(val spark: SparkSession)
     * we re-use the existing `applyAggregations` rather than write
     * a new RelOp->DataFrame aggregator. The model is reconstructed
     * from the relOp's aggregates (the IR carries the call shape). */
-  private def compileRelOpAggregate(
-      agg: io.sm8.core.rel.RelOp.Aggregate,
-      ctx: EngineContext,
-  ): Either[EngineError, DataFrame] = {
-    val base = compileRelOp(agg.input, ctx)
-    base.flatMap { df =>
-      // Build a minimal Model from the IR's aggregates + source for
-      // the existing applyAggregations to consume. dims/joins/etc
-      // are at the higher RelOp level (already consumed).
-      val scan = agg.input match {
-        case s: io.sm8.core.rel.RelOp.Scan => Some(s)
-        case _ => None
-      }
-      val src = scan.map(_.sourceRef).getOrElse(
-        io.sm8.core.model.SourceRef.ByName("default", "ir-aggregate"))
-      // PR-M4 (GAP 5): extract groupBy dims from the IR Aggregate.
-      // The legacy applyAggregations reads model.dimensions as the
-      // groupBy keys; for the IR path we convert the Expr groupBy
-      // to Dimension(name, expr.toString) -- the legacy path uses
-      // expr as a column-name reference (the SM8 Dimension.expr is
-      // String, not Expr).
-      val dimsForLegacy: List[io.sm8.core.model.Dimension] = agg.groupBy.map { e =>
-        val n = e match {
-          case Expr.FieldRef(name) => name
-          case Expr.MeasureRef(name) => name
-          case _ => return Left(EngineError.UnsupportedCapability(
-            engine = "spark-3.5",
-            capability = "compileRelOpAggregate.dim",
-            message = s"PR-M4 minimum: only FieldRef/MeasureRef groupBy keys are supported. Got: ${e.getClass.getSimpleName}"))
-        }
-        io.sm8.core.model.Dimension(name = n, expr = n)
-      }
-      val synthModel = io.sm8.core.model.Model(
-        name              = "ir-aggregate",
-        version           = 0,
-        description       = None,
-        dimensions        = dimsForLegacy,
-        measures          = agg.aggregates.map { call =>
-          io.sm8.core.model.Measure(name = call.alias, expr = call)
-        },
-        defaultPolicies   = io.sm8.core.model.ModelPolicyDefaults(
-          materialize = io.sm8.core.model.MaterializePolicy.None,
-          cache       = io.sm8.core.model.CachePolicy.NoCache,
-          audit       = io.sm8.core.model.AuditPolicy.NoAudit),
-        source            = src,
-        status            = io.sm8.core.model.ModelStatus.Draft,
-        filters           = Nil,
-        calculatedMeasures = Nil,
-        joins             = Nil,
-      )
-      // Use the synthesized source to resolve the schema; then
-      // apply aggregations to the base DataFrame.
-      new SparkSourceResolver(spark).resolve(src, io.sm8.core.engine.EngineIdentity("sm8-pr-m4", "3.5", "0.1.0")).flatMap {
-        case scanRes: io.sm8.core.engine.ResolvedSource.Scan =>
-          applyAggregations(df, synthModel)
-        case _ =>
-          Left(EngineError.UnsupportedCapability(
-            engine = "spark-3.5", capability = "compileRelOpAggregate",
-            message = "non-Scan base for Aggregate"))
-      }
-    }
-  }
-
-  /** Join -> DataFrame: synthesise a Model with the join spec,
-    * call the legacy compile(model, ctx) (which runs applyJoins). */
-  private def compileRelOpJoin(
-      join: io.sm8.core.rel.RelOp.Join,
-      ctx: EngineContext,
-  ): Either[EngineError, DataFrame] = {
-    val left = join.left
-    val right = join.right
-    val leftScan = left match {
-      case s: io.sm8.core.rel.RelOp.Scan => s
-      case _ => return Left(EngineError.UnsupportedCapability(
-        engine = "spark-3.5", capability = "RelOp.Join.left",
-        message = s"PR-M4 minimum: Join.left must be a Scan. Got: ${left.getClass.getSimpleName}"))
-    }
-    val synthModel = io.sm8.core.model.Model(
-      name              = "ir-join",
-      version           = 0,
-      description       = None,
-      dimensions        = Nil,
-      measures          = Nil,
-      defaultPolicies   = io.sm8.core.model.ModelPolicyDefaults(
-        materialize = io.sm8.core.model.MaterializePolicy.None,
-        cache       = io.sm8.core.model.CachePolicy.NoCache,
-        audit       = io.sm8.core.model.AuditPolicy.NoAudit),
-      source            = leftScan.sourceRef,
-      status            = io.sm8.core.model.ModelStatus.Draft,
-      filters           = Nil,
-      calculatedMeasures = Nil,
-      joins             = List(io.sm8.core.model.JoinSpec(
-        name = "ir-join-1",
-        rightModel = right match {
-          case s: io.sm8.core.rel.RelOp.Scan => s.sourceRef match {
-            case b: io.sm8.core.model.SourceRef.ByName => b.table
-            case _ => "ir-join-right"
-          }
-          case _ => "ir-join-right"
-        },
-        kind = join.kind,
-        keys = Nil,  // RelOp.Join carries `condition`, not keys (single-join-condition model). The legacy applyJoins uses (lKey, rKey) from JoinSpec -- the IR shape is the unified condition.
-      )),
-    )
-    compile(synthModel, ctx).left.map(e => e)
-  }
-
-  // (remove the unused private def resolveAndCompileScan -- replaced by compileRelOpScan)
-
-
-  // -- source resolution --
-
   private def resolveSource(
       source: SourceRef,
   ): Either[EngineError, DataFrame] = source match {
@@ -564,7 +370,7 @@ final class PortableQueryCompiler(val spark: SparkSession)
     * surface as typed `EngineError.FeatureDeferred` at this
     * boundary (never a silent no-op).
     */
-  private def applyAggregations(
+  def applyAggregations(
       df:    DataFrame,
       model: Model,
   ): Either[EngineError, DataFrame] = {
