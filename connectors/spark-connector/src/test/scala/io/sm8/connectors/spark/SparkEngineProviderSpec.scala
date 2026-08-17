@@ -90,12 +90,35 @@ class SparkEngineProviderSpec extends AnyFunSuite with Matchers {
     out.left.get shouldBe a [EngineError.ConnectionFailed]
   }
 
-  test("SparkEngineProvider: explain() returns the planned shape as a String") {
+  test("SparkEngineProvider: explain() returns header + footer when QueryBuilder.build fails") {
+    // PR-N1: explain() always renders the model header line + a
+    // typed-error footer when the IR build fails (here: spark=null
+    // makes SourceResolver fail). The plan tree is empty in that
+    // case; the footer names the typed error.
     val provider = new SparkEngineProvider(null, SparkTypeBridge, "spark-3.5")
     val out = provider.explain(dummyModel(), io.sm8.core.engine.MCPQueryRequest.empty, EngineContext.defaultContext)
     out.isRight shouldBe true
-    out.toOption.get should include ("spark.explain(test-model)")
-    out.toOption.get should include ("spark-3.5")
+    val s = out.toOption.get
+    // Header line
+    s should include ("SM8 Plan: test-model")
+    s should include ("engine=spark-3.5")
+    s should include ("version=<uninitialized>")
+    // Build failed footer: "build failed: <TypedError>". Per the
+    // explain contract, QueryBuilder.build returning Left(...) is
+    // rendered as a typed-error footer -- never a thrown exception.
+    s should include ("build failed:")
+    s should include ("UnsupportedCapability")
+  }
+
+  test("SparkEngineProvider: explain() header line carries the model name even when build fails twice") {
+    // PR-N1: even with an explicit unresolvable source (spark=null +
+    // ByName), the header line MUST carry the model name. The body
+    // is the empty plan + the typed-error footer.
+    val provider = new SparkEngineProvider(null, SparkTypeBridge, "spark-3.5")
+    val out1 = provider.explain(dummyModel("a"), io.sm8.core.engine.MCPQueryRequest.empty, EngineContext.defaultContext)
+    val out2 = provider.explain(dummyModel("b"), io.sm8.core.engine.MCPQueryRequest.empty, EngineContext.defaultContext)
+    out1.toOption.get should include ("SM8 Plan: test-model")
+    out2.toOption.get should include ("SM8 Plan: test-model")
   }
   test("SparkEngineProvider: query() happy path returns Right(PortableQueryResult) from a real SparkSession table") {
     // Per scala-spark-batch-bugs-mindset mantra #3 (schema drift

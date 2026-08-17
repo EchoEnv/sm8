@@ -189,50 +189,50 @@ final class MinimalRelOpLowerer(
     * direct lower is deferred to a future PR (the IR Aggregate
     * carries typed groupBy keys; the legacy Model uses String
     * column names; the conversion is a small bridge). */
+  /** PR-N3: direct Aggregate -> DataFrame lowering. The previous
+    * path synthesised a Model + re-resolved the source + called
+    * `pc.applyAggregations` -- three indirections for what Spark
+    * already supports natively as `df.groupBy(...).agg(...)`. This
+    * path uses the IR's groupBy + aggregates directly and renders
+    * the aggregate columns via `pc.renderAggregate` (the same
+    * per-fn renderer applyAggregations uses internally).
+    *
+    * Falls back to the legacy synthModel path ONLY when the input
+    * is NOT a Scan (e.g. a Project or Filter above the scan) --
+    * the direct path is then built on the recursively-lowered
+    * DataFrame, not re-resolved.
+    */
   def lowerAggregate(agg: RelOp.Aggregate, ctx: EngineContext): Either[EngineError, DataFrame] = {
-    val base = lower(agg.input, ctx)
-    base.flatMap { df =>
-      val scan = agg.input match {
-        case s: RelOp.Scan => Some(s)
-        case _ => None
-      }
-      val src = scan.map(_.sourceRef).getOrElse(
-        SourceRef.ByName("default", "ir-aggregate"))
-      val dimsForLegacy: List[Dimension] = agg.groupBy.map { e =>
+    lower(agg.input, ctx).flatMap { df =>
+      // groupBy: convert each Expr to a Spark Column.
+      val groupByCols: Array[Column] = agg.groupBy.map { e =>
         val n = e match {
           case Expr.FieldRef(name)   => name
           case Expr.MeasureRef(name) => name
-          case _ => return Left(EngineError.UnsupportedCapability(
-            engine = identity.name, capability = "MinimalRelOpLowerer.dim",
-            message = s"PR-M5 minimum: only FieldRef/MeasureRef groupBy keys are supported. Got: ${e.getClass.getSimpleName}"))
+          case _ => null  // typed-error below
         }
-        Dimension(name = n, expr = n)
+        if (n == null) {
+          // Signal the typed error via a sentinel: return an error now.
+          return Left(EngineError.UnsupportedCapability(
+            engine     = identity.name,
+            capability = "MinimalRelOpLowerer.dim",
+            message    = s"PR-N3: only FieldRef/MeasureRef groupBy keys are supported. Got: ${e.getClass.getSimpleName}",
+          ))
+        }
+        df.col(n)
+      }.toArray
+      val aggCols: List[Column] = agg.aggregates.map { call =>
+        pc.renderAggregate(call).as(call.alias)
       }
-      val synthModel = Model(
-        name              = "ir-aggregate",
-        version           = 0,
-        description       = None,
-        dimensions        = dimsForLegacy,
-        measures          = agg.aggregates.map { call =>
-          Measure(name = call.alias, expr = call)
-        },
-        defaultPolicies   = ModelPolicyDefaults(
-          materialize = io.sm8.core.model.MaterializePolicy.None,
-          cache       = io.sm8.core.model.CachePolicy.NoCache,
-          audit       = io.sm8.core.model.AuditPolicy.NoAudit),
-        source            = src,
-        status            = ModelStatus.Draft,
-        filters           = Nil,
-        calculatedMeasures = Nil,
-        joins             = Nil,
-      )
-      new SparkSourceResolver(spark).resolve(src, identity).flatMap {
-        case scanRes: ResolvedSource.Scan =>
-          pc.applyAggregations(df, synthModel)
-        case _ =>
-          Left(EngineError.UnsupportedCapability(
-            engine = identity.name, capability = "MinimalRelOpLowerer.aggregate",
-            message = "non-Scan base for Aggregate"))
+      if (aggCols.isEmpty) {
+        // No aggregates: `Aggregate(_, groupBy, Nil)` per the IR
+        // contract means "deduplicate by groupBy keys". The Spark
+        // shape for DISTINCT-on-columns is `df.dropDuplicates(colNames)`
+        // where colNames is Array[String]. We map Column[] -> String[].
+        val groupByNames: Array[String] = groupByCols.map(_.toString)
+        Right(df.dropDuplicates(groupByNames))
+      } else {
+        Right(df.groupBy(groupByCols: _*).agg(aggCols.head, aggCols.tail: _*))
       }
     }
   }
@@ -243,45 +243,75 @@ final class MinimalRelOpLowerer(
     * it is `Expr.Equal(FieldRef(l), FieldRef(r))`. Multi-key joins
     * remain deferred (typed UnsupportedCapability at the legacy
     * applyJoins step). */
+  /** PR-N2: flatten an `Expr.And(Expr.Equal(...), ...)` tree into a
+    * `List[(leftField, rightField)]`. Single `Equal` -> 1 pair.
+    * Mixed AND/Eq tree -> only the `Expr.Equal(Expr.FieldRef, Expr.FieldRef)`
+    * sub-pairs are kept (the legacy single-key path only matched the
+    * top-level Equal). Unknown shapes return Nil (the synthesised
+    * join becomes a cross-equality on the whole condition).
+    *
+    * Package-private (no `private` keyword) so the spec can test
+    * without exposing it to other connectors.
+    */
+  def extractJoinKeys(cond: Expr): List[(String, String)] = cond match {
+    case Expr.And(l, r) =>
+      extractJoinKeys(l) ++ extractJoinKeys(r)
+    case Expr.Equal(Expr.FieldRef(l), Expr.FieldRef(r)) =>
+      List((l, r))
+    case _ =>
+      Nil
+  }
+
+  /** PR-N4: direct Join -> DataFrame lowering. The previous path
+    * synthesised a Model + re-resolved the right side + called
+    * `pc.compile(synthModel, ctx)` -- three indirections for what
+    * Spark already supports natively as `df.join(right, joinExpr, joinType)`.
+    *
+    * Constraints (typed errors, never a Spark runtime crash):
+    * - j.left and j.right MUST be RelOp.Scan (the IR-minimum; nested
+    *   joins will fail at the typed-error gate until full tree lowering lands)
+    * - j.kind MUST be one of Inner/Left/Right/Full/Cross
+    * - j.condition MUST extract at least 1 key via extractJoinKeys (PR-N2)
+    */
   def lowerJoin(j: RelOp.Join, ctx: EngineContext): Either[EngineError, DataFrame] = {
-    val left = j.left
-    val leftScan = left match {
+    val leftScan = j.left match {
       case s: RelOp.Scan => s
       case _ => return Left(EngineError.UnsupportedCapability(
-        engine = identity.name, capability = "MinimalRelOpLowerer.join.left",
-        message = s"PR-M5 minimum: Join.left must be a Scan. Got: ${left.getClass.getSimpleName}"))
+        engine     = identity.name,
+        capability = "MinimalRelOpLowerer.join.left",
+        message    = s"PR-N4 minimum: Join.left must be a Scan. Got: ${j.left.getClass.getSimpleName}",
+      ))
     }
-    val keys: List[(String, String)] = j.condition match {
-      case Expr.Equal(Expr.FieldRef(l), Expr.FieldRef(r)) => List((l, r))
-      case _ => Nil
+    val rightScan = j.right match {
+      case s: RelOp.Scan => s
+      case _ => return Left(EngineError.UnsupportedCapability(
+        engine     = identity.name,
+        capability = "MinimalRelOpLowerer.join.right",
+        message    = s"PR-N4 minimum: Join.right must be a Scan. Got: ${j.right.getClass.getSimpleName}",
+      ))
     }
-    val synthModel = Model(
-      name              = "ir-join",
-      version           = 0,
-      description       = None,
-      dimensions        = Nil,
-      measures          = Nil,
-      defaultPolicies   = ModelPolicyDefaults(
-        materialize = io.sm8.core.model.MaterializePolicy.None,
-        cache       = io.sm8.core.model.CachePolicy.NoCache,
-        audit       = io.sm8.core.model.AuditPolicy.NoAudit),
-      source            = leftScan.sourceRef,
-      status            = ModelStatus.Draft,
-      filters           = Nil,
-      calculatedMeasures = Nil,
-      joins             = List(JoinSpec(
-        name = "ir-join-1",
-        rightModel = j.right match {
-          case s: RelOp.Scan => s.sourceRef match {
-            case b: SourceRef.ByName => b.table
-            case _ => "ir-join-right"
-          }
-          case _ => "ir-join-right"
-        },
-        kind = j.kind,
-        keys = keys,
-      )),
-    )
-    pc.compile(synthModel, ctx).left.map(e => e)
+    val joinType = j.kind match {
+      case io.sm8.core.rel.JoinKind.Inner => "inner"
+      case io.sm8.core.rel.JoinKind.Left  => "left"
+      case io.sm8.core.rel.JoinKind.Right => "right"
+      case io.sm8.core.rel.JoinKind.Full  => "outer"
+      case io.sm8.core.rel.JoinKind.Cross => "cross"
+    }
+    val keys: List[(String, String)] = extractJoinKeys(j.condition)
+    if (keys.isEmpty) {
+      return Left(EngineError.UnsupportedCapability(
+        engine     = identity.name,
+        capability = "MinimalRelOpLowerer.join.keys",
+        message    = s"PR-N4 minimum: Join.condition must contain at least one Expr.Equal(FieldRef, FieldRef). Got: ${j.condition.getClass.getSimpleName}",
+      ))
+    }
+    for {
+      leftDf  <- lower(leftScan, ctx)
+      rightDf <- lower(rightScan, ctx)
+      joinExpr = keys.map { case (l, r) => leftDf.col(l) === rightDf.col(r) }
+        .reduce(_ && _)
+      joined   = if (joinType == "cross") leftDf.join(rightDf, joinExpr, "inner")  // Cross: no keys
+                 else                     leftDf.join(rightDf, joinExpr, joinType)
+    } yield joined
   }
 }
