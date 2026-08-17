@@ -96,7 +96,7 @@ class PortableExprCompilerDataFrameSpec extends AnyFunSuite with Matchers {
       // derived = age + score (handle null via spark null propagation)
       val derived: Column = PortableExprCompiler.toColumn(
         Expr.Add(Expr.FieldRef("age"), Expr.FieldRef("score"))
-      )
+      ).toOption.get
       val out = df.select(df.col("name"), derived.as("derived")).collect().toList
       out.map(_.getAs[String]("name")) shouldBe List("alice", "bob", "carol", "dave")
       // alice=130, bob=105, carol=155, dave=null
@@ -114,7 +114,7 @@ class PortableExprCompilerDataFrameSpec extends AnyFunSuite with Matchers {
           Expr.FieldRef("age"),
           Expr.Multiply(Expr.FieldRef("age"), intLit(2)),
         )
-      )
+      ).toOption.get
       val out = df.select(df.col("name"), derived.as("derived")).collect().toList
       // 30+60=90, 25+50=75, 35+70=105, 40+80=120
       out.map(_.getAs[Int]("derived")) shouldBe List(90, 75, 105, 120)
@@ -129,7 +129,7 @@ class PortableExprCompilerDataFrameSpec extends AnyFunSuite with Matchers {
       val df = peopleDataFrame(spark)
       val filterCol: Column = PortableExprCompiler.toColumn(
         Expr.Equal(Expr.FieldRef("name"), strLit("bob"))
-      )
+      ).toOption.get
       val out = df.filter(filterCol).collect().toList
       out.size shouldBe 1
       out.head.getAs[String]("name") shouldBe "bob"
@@ -142,7 +142,7 @@ class PortableExprCompilerDataFrameSpec extends AnyFunSuite with Matchers {
       val df = peopleDataFrame(spark)
       val filterCol: Column = PortableExprCompiler.toColumn(
         Expr.GreaterThan(Expr.FieldRef("age"), intLit(30))
-      )
+      ).toOption.get
       val out = df.filter(filterCol).collect().toList.map(_.getAs[String]("name"))
       out.sorted shouldBe List("carol", "dave")
     } finally { spark.stop() }
@@ -154,7 +154,7 @@ class PortableExprCompilerDataFrameSpec extends AnyFunSuite with Matchers {
       val df = peopleDataFrame(spark)
       val filterCol: Column = PortableExprCompiler.toColumn(
         Expr.IsNull(Expr.FieldRef("score"))
-      )
+      ).toOption.get
       val out = df.filter(filterCol).collect().toList.map(_.getAs[String]("name"))
       out shouldBe List("dave")
     } finally { spark.stop() }
@@ -171,7 +171,7 @@ class PortableExprCompilerDataFrameSpec extends AnyFunSuite with Matchers {
           Expr.GreaterThan(Expr.FieldRef("age"), intLit(20)),
           Expr.LessThan(Expr.FieldRef("age"), intLit(40)),
         )
-      )
+      ).toOption.get
       val out = df.filter(filterCol).collect().toList.map(_.getAs[String]("name"))
       out.sorted shouldBe List("alice", "bob", "carol")
     } finally { spark.stop() }
@@ -186,7 +186,7 @@ class PortableExprCompilerDataFrameSpec extends AnyFunSuite with Matchers {
           Expr.Equal(Expr.FieldRef("name"), strLit("alice")),
           Expr.Equal(Expr.FieldRef("name"), strLit("carol")),
         )
-      )
+      ).toOption.get
       val out = df.filter(filterCol).collect().toList.map(_.getAs[String]("name"))
       out.sorted shouldBe List("alice", "carol")
     } finally { spark.stop() }
@@ -198,7 +198,7 @@ class PortableExprCompilerDataFrameSpec extends AnyFunSuite with Matchers {
       val df = peopleDataFrame(spark)
       val filterCol: Column = PortableExprCompiler.toColumn(
         Expr.Not(Expr.GreaterThan(Expr.FieldRef("age"), intLit(30)))
-      )
+      ).toOption.get
       val out = df.filter(filterCol).collect().toList.map(_.getAs[String]("name"))
       // NOT (age > 30) → age <= 30 → alice (30), bob (25)
       out.sorted shouldBe List("alice", "bob")
@@ -214,11 +214,11 @@ class PortableExprCompilerDataFrameSpec extends AnyFunSuite with Matchers {
       // derived = age + 10
       val derived: Column = PortableExprCompiler.toColumn(
         Expr.Add(Expr.FieldRef("age"), intLit(10))
-      )
+      ).toOption.get
       // filter = age > 25
       val filterCol: Column = PortableExprCompiler.toColumn(
         Expr.GreaterThan(Expr.FieldRef("age"), intLit(25))
-      )
+      ).toOption.get
       val out = df
         .filter(filterCol)
         .select(df.col("name"), derived.as("age_plus_10"))
@@ -238,7 +238,7 @@ class PortableExprCompilerDataFrameSpec extends AnyFunSuite with Matchers {
       // derived = score + 1 (dave's score is null → result is null)
       val derived: Column = PortableExprCompiler.toColumn(
         Expr.Add(Expr.FieldRef("score"), intLit(1))
-      )
+      ).toOption.get
       val out = df.select(df.col("name"), derived.as("score_plus_1")).collect().toList
       out.find(_.getAs[String]("name") == "dave").get
         .getAs[AnyRef]("score_plus_1") shouldBe null
@@ -259,7 +259,7 @@ class PortableExprCompilerDataFrameSpec extends AnyFunSuite with Matchers {
            Expr.Literal(LiteralValue.StringValue("senior"), SealedDataType.Varchar)),
         ),
         otherwise = Expr.Literal(LiteralValue.StringValue("not_senior"), SealedDataType.Varchar),
-      ))
+      )).toOption.get
       val out = df.select(df.col("name"), derived.as("seniority")).collect().toList
       // alice (30) → not_senior, bob (25) → not_senior, carol (35) → senior, dave (40) → senior
       out.map(_.getAs[String]("seniority")) shouldBe List("not_senior", "not_senior", "senior", "senior")
@@ -273,7 +273,7 @@ class PortableExprCompilerDataFrameSpec extends AnyFunSuite with Matchers {
       val derived: Column = PortableExprCompiler.toColumn(Expr.Alias(
         name = "age_doubled",
         expr = Expr.Multiply(Expr.FieldRef("age"), Expr.Literal(LiteralValue.IntValue(2), SealedDataType.Int)),
-      ))
+      )).toOption.get
       val out = df.select(df.col("name"), derived).collect().toList
       // The result schema must carry the alias "age_doubled"
       out.map(_.getAs[Int]("age_doubled")) shouldBe List(60, 50, 70, 80)

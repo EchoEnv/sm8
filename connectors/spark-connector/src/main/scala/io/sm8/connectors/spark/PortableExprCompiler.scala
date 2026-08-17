@@ -40,6 +40,7 @@
  */
 package io.sm8.connectors.spark
 
+import io.sm8.core.engine.{EngineError, EngineIdentity}
 import io.sm8.core.expr.{Expr, LiteralValue}
 
 import org.apache.spark.sql.Column
@@ -74,96 +75,110 @@ object PortableExprCompiler extends java.io.Serializable {
    * extended to all 14 in the reactor (ByteValue, ShortValue,
    * BinaryValue, ArrayValue added).
    */
-  def toColumn(expr: Expr): Column = expr match {
+  // PR-O1c (ADR-008-O, P0-2): toColumn now returns
+  // `Either[EngineError, Column]` instead of `Column`. The 2
+  // throw sites (`Expr.FunctionCall` + `LiteralValue.ArrayValue`)
+  // become typed `Left(EngineError.UnsupportedCapability)` so
+  // the typed error flows through the compile boundary instead
+  // of crashing executors at scale.
+  //
+  // Per [[scala-error-handling-mindset]] decision rule #1:
+  // `Either[Error, T]` for expected business errors the caller
+  // should handle. FunctionCall + ArrayValue are expected errors
+  // (UDF resolution + array-literal support deferred to future
+  // PRs), not programmer errors.
+  //
+  // The happy path (Literal, FieldRef, Add/Sub/Mul/Div/Mod,
+  // comparisons, booleans, Cast, MeasureRef, All, CaseWhen, Alias)
+  // threads the typed error via `Right`; a single Either fold
+  // covers all 6 prod callsites in MinimalRelOpLowerer +
+  // PortableQueryCompiler. Per
+  // [[scala-spark-batch-bugs-mindset]] mantra #1 (closure-safety):
+  // the fold runs in the driver, no executor-side closure capture.
+  def toColumn(expr: Expr): Either[EngineError, Column] = expr match {
     // -- Literal: dispatch on the closed LiteralValue ADT --
     case Expr.Literal(value, _)    => literalToColumn(value)
 
     // -- Column reference --
-    case Expr.FieldRef(name)       => col(name)
+    case Expr.FieldRef(name)       => Right(col(name))
 
-    // -- Arithmetic: pure delegation --
-    case Expr.Add(l, r)            => toColumn(l) + toColumn(r)
-    case Expr.Subtract(l, r)       => toColumn(l) - toColumn(r)
-    case Expr.Multiply(l, r)       => toColumn(l) * toColumn(r)
-    case Expr.Divide(l, r)         => toColumn(l) / toColumn(r)
-    case Expr.Modulo(l, r)         => toColumn(l) % toColumn(r)
+    // -- Arithmetic: pure delegation via Either flatMap --
+    case Expr.Add(l, r)            => toColumn(l).flatMap(cl => toColumn(r).map(cr => cl + cr))
+    case Expr.Subtract(l, r)       => toColumn(l).flatMap(cl => toColumn(r).map(cr => cl - cr))
+    case Expr.Multiply(l, r)       => toColumn(l).flatMap(cl => toColumn(r).map(cr => cl * cr))
+    case Expr.Divide(l, r)         => toColumn(l).flatMap(cl => toColumn(r).map(cr => cl / cr))
+    case Expr.Modulo(l, r)         => toColumn(l).flatMap(cl => toColumn(r).map(cr => cl % cr))
 
     // -- Comparison: Spark's ===, =!=, <, <=, >, >= --
-    case Expr.Equal(l, r)          => toColumn(l) === toColumn(r)
-    case Expr.NotEqual(l, r)       => toColumn(l) =!= toColumn(r)
-    case Expr.LessThan(l, r)       => toColumn(l) <  toColumn(r)
-    case Expr.LessOrEqual(l, r)    => toColumn(l) <= toColumn(r)
-    case Expr.GreaterThan(l, r)    => toColumn(l) >  toColumn(r)
-    case Expr.GreaterOrEqual(l, r) => toColumn(l) >= toColumn(r)
-
-    // -- Boolean: Spark's &&, ||, unary ! --
-    case Expr.And(l, r)            => toColumn(l) && toColumn(r)
-    case Expr.Or(l, r)             => toColumn(l) || toColumn(r)
-    case Expr.Not(e)               => !toColumn(e)
-    case Expr.IsNull(e)            => toColumn(e).isNull
-    case Expr.IsNotNull(e)         => toColumn(e).isNotNull
-
+    case Expr.Equal(l, r)          => toColumn(l).flatMap(cl => toColumn(r).map(cr => cl === cr))
+    case Expr.NotEqual(l, r)       => toColumn(l).flatMap(cl => toColumn(r).map(cr => cl =!= cr))
+    case Expr.LessThan(l, r)       => toColumn(l).flatMap(cl => toColumn(r).map(cr => cl <  cr))
+    case Expr.LessOrEqual(l, r)    => toColumn(l).flatMap(cl => toColumn(r).map(cr => cl <= cr))
+    case Expr.GreaterThan(l, r)    => toColumn(l).flatMap(cl => toColumn(r).map(cr => cl >  cr))
+    case Expr.GreaterOrEqual(l, r) => toColumn(l).flatMap(cl => toColumn(r).map(cr => cl >= cr))
+    case Expr.And(l, r)            => toColumn(l).flatMap(cl => toColumn(r).map(cr => cl && cr))
+    case Expr.Or(l, r)             => toColumn(l).flatMap(cl => toColumn(r).map(cr => cl || cr))
+    // -- Logical NOT (unary): thread the inner expr via flatMap so the
+    //    typed error flows through (P0-2 contract). Uses the renamed
+    //    `sparkNot` import (line 47) to disambiguate from
+    //    io.sm8.connectors.spark.PortableExprCompiler.not.
+    case Expr.Not(e)               => toColumn(e).map(sparkNot)
+    // -- Null checks: Spark's `Column.isNull` / `Column.isNotNull`.
+    //    Threaded via flatMap for the same reason as Not.
+    case Expr.IsNull(e)            => toColumn(e).map(_.isNull)
+    case Expr.IsNotNull(e)         => toColumn(e).map(_.isNotNull)
     // -- Cast: lowered to Spark's cast (PR-O1b, ADR-008-O,
-    //    P0-1 data-correctness fix). Previously this rendered
-    //    `cast("string")` regardless of `targetType` -- the
-    //    wire-schema lied and the row-cell decoder fell through
-    //    to ResultValue.StringV(cell.toString). Now the cast
-    //    uses the portable SealedDataType via
+    //    P0-1 data-correctness fix). Uses
     //    SparkTypeBridge.sealedDataTypeToSparkType (PR-O1a).
     case Expr.Cast(e, targetType) =>
-      toColumn(e).cast(
+      toColumn(e).map(_.cast(
         SparkTypeBridge.sealedDataTypeToSparkType(targetType)
-      )
+      ))
 
     // -- MeasureRef: a measure reference resolved at the engine
     // side (the existing measure column is in scope after the
-    // aggregate). For the GAP-5/7 minimum: `col(name)` -- the measure
-    // name must already be a groupBy-produced column at this point.
-    // The PR-M2 ModelValidator walker skips MeasureRef as engine-known
-    // (schema validation does not require it to be a schema field).
-    case Expr.MeasureRef(name) => col(name)
+    // aggregate). `col(name)` -- the measure name must already
+    // be a groupBy-produced column at this point.
+    case Expr.MeasureRef(name) => Right(col(name))
 
     // -- Expr.All: lowered to a simple column reference. The
     //    aggregation is already applied at this point in the
     //    plan; the column is present. --
     case Expr.All(name) =>
-      col(name)
+      Right(col(name))
 
     // -- Conditional: CASE WHEN --
     //
     // Maps to SQL's `CASE WHEN cond THEN x ELSE y END`. Spark's
     // `Column.when(condition, value)` is left-associative; we fold
     // the branches left-to-right so the SQL semantics match
-    // ("first matching condition wins"):
-    //   branches = [(c1, x1), (c2, x2)] ->
-    //     when(c1, x1).when(c2, x2).otherwise(otherwise)
-    //
-    // Per [[scala-spark-batch-bugs-mindset]] mantra #1 (closure-safety):
-    // the foldLeft runs in the driver, no executor-side closure
-    // capture. Each `toColumn` is a pure function call.
+    // ("first matching condition wins"). Per
+    // [[scala-spark-batch-bugs-mindset]] mantra #1 (closure-safety):
+    // the fold runs in the driver; each `toColumn` is a pure
+    // function call.
     case Expr.CaseWhen(branches, otherwise) =>
-      // Spark's `Column.when(c, v)` can ONLY be chained on a Column
-      // that came from a previous `.when()` (Spark 3.5 contract:
-      // "when() can only be applied on a Column previously generated
-      // by when() function"). The free function `functions.when(c, v)`
-      // creates a fresh CASE-WHEN Column — that's the entry point.
-      // Then chain with `.when(...)` for subsequent branches, and
-      // terminate with `.otherwise(...)`.
-      //
-      // Per [[scala-spark-batch-bugs-mindset]] mantra #1 (closure-safety):
-      // the fold runs in the driver; each `toColumn` is a pure
-      // function call. No executor-side closure capture.
+      val otherwiseE: Either[EngineError, Column] = toColumn(otherwise)
       branches match {
         case Nil =>
           // Empty branches → just `otherwise`. Mirrors SQL's
           // `CASE WHEN FALSE THEN x ELSE y END` shape.
-          toColumn(otherwise)
+          otherwiseE
         case (firstCond, firstResult) :: tail =>
-          val head = when(toColumn(firstCond), toColumn(firstResult))
-          tail.foldLeft(head) { (acc, branch) =>
-            val (cond, result) = branch
-            acc.when(toColumn(cond), toColumn(result))
-          }.otherwise(toColumn(otherwise))
+          for {
+            firstC <- toColumn(firstCond)
+            firstR <- toColumn(firstResult)
+            tailCs <- tail.foldLeft[Either[EngineError, List[(Column, Column)]]](Right(Nil)) {
+              case (accE, (cond, result)) =>
+                for {
+                  acc   <- accE
+                  cCol  <- toColumn(cond)
+                  rCol  <- toColumn(result)
+                } yield acc :+ ((cCol, rCol))
+            }
+            otherwiseC <- otherwiseE
+            head = when(firstC, firstR)
+            chained = tailCs.foldLeft(head) { case (acc, (c, v)) => acc.when(c, v) }
+          } yield chained.otherwise(otherwiseC)
       }
 
     // -- Alias: expr AS name --
@@ -172,16 +187,44 @@ object PortableExprCompiler extends java.io.Serializable {
     // expression-level form; `RelOp.Project` carries the higher-
     // level `List[(Expr, String)]` shape (PR-J adds that).
     case Expr.Alias(name, expr) =>
-      toColumn(expr).as(name)
+      toColumn(expr).map(_.as(name))
 
     // -- FunctionCall: UDF resolution deferred. --
+    // PR-O1c (ADR-008-O, P0-2): the previous throw-bomb
+    // (`throw new UnsupportedOperationException(...)`) became
+    // a typed `Left(EngineError.UnsupportedCapability(...))`
+    // so the error flows through the compile boundary instead
+    // of crashing the driver or (worse, at scale) killing
+    // executors + retrying indefinitely.
     case Expr.FunctionCall(name, _) =>
-      throw new UnsupportedOperationException(
-        s"PortableExprCompiler.toColumn: Expr.FunctionCall('$name', ...) is " +
-        "not supported in this Layer C follow-up (UDF resolution " +
-        "deferred to a future PR that wires the Spark UDF registry).",
-      )
+      Left(EngineError.UnsupportedCapability(
+        engine     = "spark-3.5",
+        capability = "Expr.FunctionCall",
+        message    = s"PortableExprCompiler.toColumn: Expr.FunctionCall('$name', ...) is " +
+                     "not supported in this Layer C follow-up (UDF resolution " +
+                     "deferred to a future PR that wires the Spark UDF registry).",
+      ))
   }
+
+  /**
+   * Helper: compile a `List[Expr]` to `Array[Column]` via Either-fold.
+   *
+   * Per [[karpathy-guidelines-mindset]] "smallest correct change":
+   * a single helper to share between MinimalRelOpLowerer.lowerScan
+   * (projection pruning), MinimalRelOpLowerer.lowerProject
+   * (the per-alias list), and PortableQueryCompiler.applyAggregations
+   * (the dimensions list). Exposed package-private (no `private`
+   * keyword) so MinimalRelOpLowerer can call it without exposing
+   * it to the SDK surface.
+   */
+  def colsOf(exprs: List[Expr]): Either[EngineError, Array[Column]] =
+    exprs.foldLeft[Either[EngineError, Array[Column]]](Right(Array.empty[Column])) {
+      case (accE, e) =>
+        for {
+          acc <- accE
+          c   <- toColumn(e)
+        } yield acc :+ c
+    }
 
   /**
    * Map a portable [[LiteralValue]] to a Spark `lit(...)` column.
@@ -191,30 +234,34 @@ object PortableExprCompiler extends java.io.Serializable {
    * type-preserving: the Spark `Column` carries the typed
    * value through the DataFrame ops.
    */
-  private def literalToColumn(value: LiteralValue): Column = value match {
-    case LiteralValue.NullValue         => lit(null)
-    case LiteralValue.BoolValue(b)       => lit(b)
-    case LiteralValue.IntValue(n)        => lit(n)
-    case LiteralValue.LongValue(n)       => lit(n)
-    case LiteralValue.ByteValue(b)       => lit(b)
-    case LiteralValue.ShortValue(s)      => lit(s)
-    case LiteralValue.FloatValue(f)      => lit(f)
-    case LiteralValue.DoubleValue(d)     => lit(d)
-    case LiteralValue.DecimalValue(d)    => lit(d)
-    case LiteralValue.StringValue(s)     => lit(s)
-    case LiteralValue.TimestampValue(i)  => lit(i)
-    case LiteralValue.DateValue(d)       => lit(d)
-    case LiteralValue.BinaryValue(b)     => lit(b.toArray)
-    case LiteralValue.ArrayValue(_)      =>
-      // Per the v0.3.0 design review: array literals are JSON-
-      // serialized into a single string column. The legacy does
-      // not support array literal value expressions; we follow
-      // the same path. A future PR can land array-literal
-      // support via Spark's `array(...)` function.
-      throw new UnsupportedOperationException(
-        "PortableExprCompiler.toColumn: LiteralValue.ArrayValue is not " +
-        "supported (array literals are JSON-serialized; future PR can " +
-        "land native Spark array support).",
-      )
+  private def literalToColumn(value: LiteralValue): Either[EngineError, Column] = value match {
+    case LiteralValue.NullValue         => Right(lit(null))
+    case LiteralValue.BoolValue(b)       => Right(lit(b))
+    case LiteralValue.IntValue(n)        => Right(lit(n))
+    case LiteralValue.LongValue(n)       => Right(lit(n))
+    case LiteralValue.ByteValue(b)       => Right(lit(b))
+    case LiteralValue.ShortValue(s)      => Right(lit(s))
+    case LiteralValue.FloatValue(f)      => Right(lit(f))
+    case LiteralValue.DoubleValue(d)     => Right(lit(d))
+    case LiteralValue.DecimalValue(d)    => Right(lit(d))
+    case LiteralValue.StringValue(s)     => Right(lit(s))
+    case LiteralValue.TimestampValue(i)  => Right(lit(i))
+    case LiteralValue.DateValue(d)       => Right(lit(d))
+    case LiteralValue.BinaryValue(b)     => Right(lit(b.toArray))
+    // PR-O1c (ADR-008-O, P0-2): array literal returns a typed
+    // `Left(EngineError.UnsupportedCapability(...))` instead of
+    // a thrown `UnsupportedOperationException`. Same
+    // reasoning as `Expr.FunctionCall` above: the throw-bomb
+    // could kill executors at scale. The typed error flows
+    // through the compile boundary and the MCP server maps it
+    // to a 501 UNSUPPORTED_CAPABILITY wire response.
+    case LiteralValue.ArrayValue(_) =>
+      Left(EngineError.UnsupportedCapability(
+        engine     = "spark-3.5",
+        capability = "LiteralValue.ArrayValue",
+        message    = "PortableExprCompiler.toColumn: LiteralValue.ArrayValue is not " +
+                     "supported (array literals are JSON-serialized; future PR can " +
+                     "land native Spark array support).",
+      ))
   }
 }

@@ -31,6 +31,7 @@ package io.sm8.connectors.spark
 
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream, ObjectInputStream, ObjectOutputStream}
 
+import io.sm8.core.engine.{EngineError, EngineIdentity}
 import io.sm8.core.expr.{Expr, LiteralValue}
 import io.sm8.core.schema.{Field, SealedDataType}
 
@@ -56,7 +57,7 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
   test("Expr.Literal: dispatches to lit(value) for IntValue") {
     val spark = buildFakeSpark()
     try {
-      val col = PortableExprCompiler.toColumn(Expr.Literal(LiteralValue.IntValue(42), SealedDataType.Int))
+      val col = PortableExprCompiler.toColumn(Expr.Literal(LiteralValue.IntValue(42), SealedDataType.Int)).toOption.get
       col should not be null
       col.expr.sql should include ("42")
     } finally { spark.stop() }
@@ -65,7 +66,7 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
   test("Expr.Literal: dispatches to lit(null) for NullValue") {
     val spark = buildFakeSpark()
     try {
-      val col = PortableExprCompiler.toColumn(Expr.Literal(LiteralValue.NullValue, SealedDataType.Int))
+      val col = PortableExprCompiler.toColumn(Expr.Literal(LiteralValue.NullValue, SealedDataType.Int)).toOption.get
       col should not be null
     } finally { spark.stop() }
   }
@@ -73,7 +74,7 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
   test("Expr.Literal: dispatches to lit for StringValue") {
     val spark = buildFakeSpark()
     try {
-      val col = PortableExprCompiler.toColumn(Expr.Literal(LiteralValue.StringValue("hi"), SealedDataType.Varchar))
+      val col = PortableExprCompiler.toColumn(Expr.Literal(LiteralValue.StringValue("hi"), SealedDataType.Varchar)).toOption.get
       col.expr.sql should include ("hi")
     } finally { spark.stop() }
   }
@@ -81,7 +82,7 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
   test("Expr.Literal: dispatches to lit for BoolValue") {
     val spark = buildFakeSpark()
     try {
-      val col = PortableExprCompiler.toColumn(Expr.Literal(LiteralValue.BoolValue(true), SealedDataType.Boolean))
+      val col = PortableExprCompiler.toColumn(Expr.Literal(LiteralValue.BoolValue(true), SealedDataType.Boolean)).toOption.get
       col.expr.sql should include ("true")
     } finally { spark.stop() }
   }
@@ -89,7 +90,7 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
   test("Expr.FieldRef: dispatches to col(name)") {
     val spark = buildFakeSpark()
     try {
-      val col = PortableExprCompiler.toColumn(Expr.FieldRef("foo"))
+      val col = PortableExprCompiler.toColumn(Expr.FieldRef("foo")).toOption.get
       col.expr.sql should include ("foo")
     } finally { spark.stop() }
   }
@@ -98,7 +99,7 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
     val spark = buildFakeSpark()
     try {
       val col = PortableExprCompiler.toColumn(Expr.Add(Expr.Literal(LiteralValue.IntValue(1), SealedDataType.Int),
-        Expr.Literal(LiteralValue.IntValue(2), SealedDataType.Int)))
+        Expr.Literal(LiteralValue.IntValue(2), SealedDataType.Int))).toOption.get
       col.expr.sql should include ("+")
     } finally { spark.stop() }
   }
@@ -107,7 +108,7 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
     val spark = buildFakeSpark()
     try {
       val col = PortableExprCompiler.toColumn(Expr.Subtract(Expr.Literal(LiteralValue.IntValue(5), SealedDataType.Int),
-        Expr.Literal(LiteralValue.IntValue(3), SealedDataType.Int)))
+        Expr.Literal(LiteralValue.IntValue(3), SealedDataType.Int))).toOption.get
       col.expr.sql should include ("-")
     } finally { spark.stop() }
   }
@@ -116,7 +117,7 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
     val spark = buildFakeSpark()
     try {
       val col = PortableExprCompiler.toColumn(Expr.Multiply(Expr.Literal(LiteralValue.IntValue(2), SealedDataType.Int),
-        Expr.Literal(LiteralValue.IntValue(3), SealedDataType.Int)))
+        Expr.Literal(LiteralValue.IntValue(3), SealedDataType.Int))).toOption.get
       col.expr.sql should include ("*")
     } finally { spark.stop() }
   }
@@ -125,7 +126,7 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
     val spark = buildFakeSpark()
     try {
       val col = PortableExprCompiler.toColumn(Expr.Divide(Expr.Literal(LiteralValue.IntValue(6), SealedDataType.Int),
-        Expr.Literal(LiteralValue.IntValue(2), SealedDataType.Int)))
+        Expr.Literal(LiteralValue.IntValue(2), SealedDataType.Int))).toOption.get
       col.expr.sql should include ("/")
     } finally { spark.stop() }
   }
@@ -134,7 +135,7 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
     val spark = buildFakeSpark()
     try {
       val col = PortableExprCompiler.toColumn(Expr.Modulo(Expr.Literal(LiteralValue.IntValue(7), SealedDataType.Int),
-        Expr.Literal(LiteralValue.IntValue(3), SealedDataType.Int)))
+        Expr.Literal(LiteralValue.IntValue(3), SealedDataType.Int))).toOption.get
       col.expr.sql should include ("%")
     } finally { spark.stop() }
   }
@@ -144,7 +145,7 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
     try {
       val col = PortableExprCompiler.toColumn(Expr.Equal(
         Expr.Literal(LiteralValue.IntValue(1), SealedDataType.Int),
-        Expr.Literal(LiteralValue.IntValue(1), SealedDataType.Int)))
+        Expr.Literal(LiteralValue.IntValue(1), SealedDataType.Int))).toOption.get
       col.expr.sql should include ("=")
     } finally { spark.stop() }
   }
@@ -154,7 +155,7 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
     try {
       val col = PortableExprCompiler.toColumn(Expr.NotEqual(
         Expr.Literal(LiteralValue.IntValue(1), SealedDataType.Int),
-        Expr.Literal(LiteralValue.IntValue(2), SealedDataType.Int)))
+        Expr.Literal(LiteralValue.IntValue(2), SealedDataType.Int))).toOption.get
       col.expr.sql should include ("NOT (")
     } finally { spark.stop() }
   }
@@ -164,7 +165,7 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
     try {
       val col = PortableExprCompiler.toColumn(Expr.LessThan(
         Expr.Literal(LiteralValue.IntValue(1), SealedDataType.Int),
-        Expr.Literal(LiteralValue.IntValue(2), SealedDataType.Int)))
+        Expr.Literal(LiteralValue.IntValue(2), SealedDataType.Int))).toOption.get
       col.expr.sql should include ("<")
     } finally { spark.stop() }
   }
@@ -174,7 +175,7 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
     try {
       val col = PortableExprCompiler.toColumn(Expr.LessOrEqual(
         Expr.Literal(LiteralValue.IntValue(1), SealedDataType.Int),
-        Expr.Literal(LiteralValue.IntValue(1), SealedDataType.Int)))
+        Expr.Literal(LiteralValue.IntValue(1), SealedDataType.Int))).toOption.get
       col.expr.sql should include ("<=")
     } finally { spark.stop() }
   }
@@ -184,7 +185,7 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
     try {
       val col = PortableExprCompiler.toColumn(Expr.GreaterThan(
         Expr.Literal(LiteralValue.IntValue(2), SealedDataType.Int),
-        Expr.Literal(LiteralValue.IntValue(1), SealedDataType.Int)))
+        Expr.Literal(LiteralValue.IntValue(1), SealedDataType.Int))).toOption.get
       col.expr.sql should include (">")
     } finally { spark.stop() }
   }
@@ -194,7 +195,7 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
     try {
       val col = PortableExprCompiler.toColumn(Expr.GreaterOrEqual(
         Expr.Literal(LiteralValue.IntValue(2), SealedDataType.Int),
-        Expr.Literal(LiteralValue.IntValue(2), SealedDataType.Int)))
+        Expr.Literal(LiteralValue.IntValue(2), SealedDataType.Int))).toOption.get
       col.expr.sql should include (">=")
     } finally { spark.stop() }
   }
@@ -204,7 +205,7 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
     try {
       val col = PortableExprCompiler.toColumn(Expr.And(
         Expr.Literal(LiteralValue.BoolValue(true), SealedDataType.Boolean),
-        Expr.Literal(LiteralValue.BoolValue(false), SealedDataType.Boolean)))
+        Expr.Literal(LiteralValue.BoolValue(false), SealedDataType.Boolean))).toOption.get
       col.expr.sql should include ("AND")
     } finally { spark.stop() }
   }
@@ -214,7 +215,7 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
     try {
       val col = PortableExprCompiler.toColumn(Expr.Or(
         Expr.Literal(LiteralValue.BoolValue(true), SealedDataType.Boolean),
-        Expr.Literal(LiteralValue.BoolValue(false), SealedDataType.Boolean)))
+        Expr.Literal(LiteralValue.BoolValue(false), SealedDataType.Boolean))).toOption.get
       col.expr.sql should include ("OR")
     } finally { spark.stop() }
   }
@@ -223,7 +224,7 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
     val spark = buildFakeSpark()
     try {
       val col = PortableExprCompiler.toColumn(Expr.Not(
-        Expr.Literal(LiteralValue.BoolValue(true), SealedDataType.Boolean)))
+        Expr.Literal(LiteralValue.BoolValue(true), SealedDataType.Boolean))).toOption.get
       col.expr.sql should include ("NOT")
     } finally { spark.stop() }
   }
@@ -232,7 +233,7 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
     val spark = buildFakeSpark()
     try {
       val col = PortableExprCompiler.toColumn(Expr.IsNull(
-        Expr.Literal(LiteralValue.IntValue(0), SealedDataType.Int)))
+        Expr.Literal(LiteralValue.IntValue(0), SealedDataType.Int))).toOption.get
       col.expr.sql should include ("IS NULL")
     } finally { spark.stop() }
   }
@@ -241,7 +242,7 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
     val spark = buildFakeSpark()
     try {
       val col = PortableExprCompiler.toColumn(Expr.IsNotNull(
-        Expr.Literal(LiteralValue.IntValue(0), SealedDataType.Int)))
+        Expr.Literal(LiteralValue.IntValue(0), SealedDataType.Int))).toOption.get
       col.expr.sql should include ("IS NOT NULL")
     } finally { spark.stop() }
   }
@@ -251,7 +252,7 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
     try {
       val col = PortableExprCompiler.toColumn(Expr.Cast(
         Expr.Literal(LiteralValue.IntValue(0), SealedDataType.Int),
-        SealedDataType.Varchar))
+        SealedDataType.Varchar)).toOption.get
       col should not be null
     } finally { spark.stop() }
   }
@@ -263,7 +264,7 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
     try {
       val col = PortableExprCompiler.toColumn(Expr.Cast(
         Expr.FieldRef("amount"),
-        SealedDataType.Varchar))
+        SealedDataType.Varchar)).toOption.get
       val sql = col.expr.sql.toUpperCase
       sql should include ("CAST")
       sql should not include "INT"
@@ -276,7 +277,7 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
     try {
       val col = PortableExprCompiler.toColumn(Expr.Cast(
         Expr.FieldRef("amount_str"),
-        SealedDataType.Int))
+        SealedDataType.Int)).toOption.get
       val sql = col.expr.sql.toUpperCase
       sql should include ("CAST")
       sql should include ("INT")
@@ -288,7 +289,7 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
     try {
       val col = PortableExprCompiler.toColumn(Expr.Cast(
         Expr.FieldRef("raw_amount"),
-        SealedDataType.Decimal(precision = 10, scale = 2)))
+        SealedDataType.Decimal(precision = 10, scale = 2))).toOption.get
       val sql = col.expr.sql.toUpperCase
       sql should include ("CAST")
       sql should include ("DECIMAL")
@@ -298,7 +299,7 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
   test("Expr.All: dispatches to col(name)") {
     val spark = buildFakeSpark()
     try {
-      val col = PortableExprCompiler.toColumn(Expr.All("rows"))
+      val col = PortableExprCompiler.toColumn(Expr.All("rows")).toOption.get
       col.expr.sql should include ("rows")
     } finally { spark.stop() }
   }
@@ -308,28 +309,17 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
   test("Expr.MeasureRef: lowers to col(name) (PR-M4 contract change)") {
     val spark = buildFakeSpark()
     try {
-      val col = PortableExprCompiler.toColumn(Expr.MeasureRef("total"))
+      val col = PortableExprCompiler.toColumn(Expr.MeasureRef("total")).toOption.get
       col should not be null
       col.expr.sql should include ("total")
     } finally { spark.stop() }
   }
-
-  test("Expr.FunctionCall: throws UnsupportedOperationException (UDF deferred)") {
-    val spark = buildFakeSpark()
-    try {
-      val ex = intercept[UnsupportedOperationException] {
-        PortableExprCompiler.toColumn(Expr.FunctionCall("myUdf", Nil))
-      }
-      ex.getMessage should include ("myUdf")
-    } finally { spark.stop() }
-  }
-
   // -- LiteralValue: all 14 cases --
 
   test("LiteralValue.ByteValue: lit(b)") {
     val spark = buildFakeSpark()
     try {
-      val col = PortableExprCompiler.toColumn(Expr.Literal(LiteralValue.ByteValue(7.toByte), SealedDataType.Int))
+      val col = PortableExprCompiler.toColumn(Expr.Literal(LiteralValue.ByteValue(7.toByte), SealedDataType.Int)).toOption.get
       col should not be null
     } finally { spark.stop() }
   }
@@ -337,7 +327,7 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
   test("LiteralValue.ShortValue: lit(s)") {
     val spark = buildFakeSpark()
     try {
-      val col = PortableExprCompiler.toColumn(Expr.Literal(LiteralValue.ShortValue(7.toShort), SealedDataType.Int))
+      val col = PortableExprCompiler.toColumn(Expr.Literal(LiteralValue.ShortValue(7.toShort), SealedDataType.Int)).toOption.get
       col should not be null
     } finally { spark.stop() }
   }
@@ -345,7 +335,7 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
   test("LiteralValue.LongValue: lit(n)") {
     val spark = buildFakeSpark()
     try {
-      val col = PortableExprCompiler.toColumn(Expr.Literal(LiteralValue.LongValue(7L), SealedDataType.Int))
+      val col = PortableExprCompiler.toColumn(Expr.Literal(LiteralValue.LongValue(7L), SealedDataType.Int)).toOption.get
       col should not be null
     } finally { spark.stop() }
   }
@@ -353,7 +343,7 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
   test("LiteralValue.FloatValue: lit(f)") {
     val spark = buildFakeSpark()
     try {
-      val col = PortableExprCompiler.toColumn(Expr.Literal(LiteralValue.FloatValue(3.14f), SealedDataType.Double))
+      val col = PortableExprCompiler.toColumn(Expr.Literal(LiteralValue.FloatValue(3.14f), SealedDataType.Double)).toOption.get
       col should not be null
     } finally { spark.stop() }
   }
@@ -361,7 +351,7 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
   test("LiteralValue.DoubleValue: lit(d)") {
     val spark = buildFakeSpark()
     try {
-      val col = PortableExprCompiler.toColumn(Expr.Literal(LiteralValue.DoubleValue(3.14), SealedDataType.Double))
+      val col = PortableExprCompiler.toColumn(Expr.Literal(LiteralValue.DoubleValue(3.14), SealedDataType.Double)).toOption.get
       col should not be null
     } finally { spark.stop() }
   }
@@ -370,7 +360,7 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
     val spark = buildFakeSpark()
     try {
       val col = PortableExprCompiler.toColumn(Expr.Literal(
-        LiteralValue.DecimalValue(BigDecimal("3.14")), SealedDataType.Decimal(38, 18)))
+        LiteralValue.DecimalValue(BigDecimal("3.14")), SealedDataType.Decimal(38, 18))).toOption.get
       col should not be null
     } finally { spark.stop() }
   }
@@ -379,7 +369,7 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
     val spark = buildFakeSpark()
     try {
       val col = PortableExprCompiler.toColumn(Expr.Literal(
-        LiteralValue.TimestampValue(java.time.Instant.now()), SealedDataType.Timestamp))
+        LiteralValue.TimestampValue(java.time.Instant.now()), SealedDataType.Timestamp)).toOption.get
       col should not be null
     } finally { spark.stop() }
   }
@@ -388,7 +378,7 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
     val spark = buildFakeSpark()
     try {
       val col = PortableExprCompiler.toColumn(Expr.Literal(
-        LiteralValue.DateValue(java.time.LocalDate.now()), SealedDataType.Date))
+        LiteralValue.DateValue(java.time.LocalDate.now()), SealedDataType.Date)).toOption.get
       col should not be null
     } finally { spark.stop() }
   }
@@ -397,22 +387,11 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
     val spark = buildFakeSpark()
     try {
       val col = PortableExprCompiler.toColumn(Expr.Literal(
-        LiteralValue.BinaryValue(Vector(1.toByte, 2.toByte, 3.toByte)), SealedDataType.Binary))
+        LiteralValue.BinaryValue(Vector(1.toByte, 2.toByte, 3.toByte)), SealedDataType.Binary)).toOption.get
       col should not be null
     } finally { spark.stop() }
   }
 
-  test("LiteralValue.ArrayValue: throws UnsupportedOperationException (deferred)") {
-    val spark = buildFakeSpark()
-    try {
-      val ex = intercept[UnsupportedOperationException] {
-        PortableExprCompiler.toColumn(Expr.Literal(
-          LiteralValue.ArrayValue(List(LiteralValue.IntValue(1), LiteralValue.IntValue(2))),
-          SealedDataType.Array(SealedDataType.Int)))
-      }
-      ex.getMessage should include ("ArrayValue")
-    } finally { spark.stop() }
-  }
 
   // -- Closure-safety baseline --
 
@@ -452,7 +431,7 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
            Expr.Literal(LiteralValue.StringValue("teen"), SealedDataType.Varchar)),
         ),
         otherwise = Expr.Literal(LiteralValue.StringValue("child"), SealedDataType.Varchar),
-      ))
+      )).toOption.get
       col should not be null
       // The compiled Column must carry "CASE WHEN ... ELSE ... END"
       // in its SQL rendering (per RFC §12 conformance).
@@ -466,9 +445,59 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
       val col = PortableExprCompiler.toColumn(Expr.Alias(
         name = "age_plus_one",
         expr = Expr.Add(Expr.FieldRef("age"), Expr.Literal(LiteralValue.IntValue(1), SealedDataType.Int)),
-      ))
+      )).toOption.get
       col should not be null
       col.expr.sql should include ("AS")
     } finally { spark.stop() }
   }
+
+  // PR-O1c (ADR-008-O, P0-2): typed-error tests at the
+  // toColumn boundary. Per [[scala-error-handling-mindset]]
+  // decision rule #1, FunctionCall and ArrayValue are EXPECTED
+  // errors (UDF resolution + array-literal support deferred),
+  // not programmer errors -- hence typed Left(UnsupportedCapability)
+  // instead of throw. Both cases are wired here as contract
+  // assertions so a future refactor that re-introduces a throw
+  // site will be caught by the reactor.
+  test("PR-O1c: toColumn(Expr.FunctionCall) returns Left(UnsupportedCapability) -- no throw") {
+    val spark = buildFakeSpark()
+    try {
+      val fc: Expr = Expr.FunctionCall(
+        name = "concat_ws",
+        args = List(Expr.FieldRef("a"), Expr.FieldRef("b")),
+      )
+      val res: Either[EngineError, Column] = PortableExprCompiler.toColumn(fc)
+      res shouldBe a [Left[_, _]]
+      res.swap.toOption.get shouldBe a [EngineError.UnsupportedCapability]
+    } finally { spark.stop() }
+  }
+
+  test("PR-O1c: toColumn(LiteralValue.ArrayValue) returns Left(UnsupportedCapability) -- no throw") {
+    val spark = buildFakeSpark()
+    try {
+      val lit: Expr = Expr.Literal(
+        LiteralValue.ArrayValue(List(LiteralValue.IntValue(1), LiteralValue.IntValue(2))),
+        SealedDataType.Array(SealedDataType.Int),
+      )
+      val res: Either[EngineError, Column] = PortableExprCompiler.toColumn(lit)
+      res shouldBe a [Left[_, _]]
+      res.swap.toOption.get shouldBe a [EngineError.UnsupportedCapability]
+    } finally { spark.stop() }
+  }
+
+  test("PR-O1c: colsOf([expr1, expr2]) folds Either through the list (no throw on partial failure)") {
+    val spark = buildFakeSpark()
+    try {
+      // Mix a valid expr (FieldRef -> ok) with an unsupported one
+      // (FunctionCall -> Left). The fold must short-circuit to
+      // Left instead of throwing on the bad entry.
+      val ok: Expr = Expr.FieldRef("age")
+      val bad: Expr = Expr.FunctionCall("fn", List(Expr.FieldRef("x")))
+      val res: Either[EngineError, Array[Column]] =
+        PortableExprCompiler.colsOf(List(ok, bad))
+      res shouldBe a [Left[_, _]]
+      res.swap.toOption.get shouldBe a [EngineError.UnsupportedCapability]
+    } finally { spark.stop() }
+  }
+
 }
