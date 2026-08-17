@@ -177,7 +177,25 @@ object Model {
     else if (version < 0)
       Left(ModelValidationError.InvalidVersion(version))
     else
-      Right(new Model(
+      // PR-M2 (ADR-008-L Appendix GAP 2): pure model-level
+      // cross-reference validation (duplicate-name detection).
+      // Schema-level validation lives in
+      // `ModelValidator.validateAgainstSchema` (caller-side, after
+      // SourceResolver.resolve).
+      ModelValidator.validate(
+        Model(
+          name = name,
+          version = version,
+          description = description,
+          dimensions = dimensions,
+          measures = measures,
+          defaultPolicies = defaultPolicies,
+          source = source,
+          status = status,
+          filters = filters,
+          calculatedMeasures = calculatedMeasures,
+          joins = joins)
+      ).right.map(_ => new Model(
         name = name,
         version = version,
         description = description,
@@ -202,5 +220,12 @@ object ModelValidationError {
   }
   final case class InvalidVersion(value: Int) extends ModelValidationError {
     val message = s"Model version must be non-negative, got $value"
+  }
+
+  /** PR-M2: aggregated cross-reference validation errors. All
+    * collected errors are surfaced at once (per [[debug-mantra-mindset]]
+    * SS1) -- never silent partial-validation. */
+  final case class SchemaValidation(messages: List[String]) extends ModelValidationError {
+    val message = s"Model schema validation failed: ${messages.mkString("; ")}"
   }
 }
