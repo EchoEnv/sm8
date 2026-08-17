@@ -129,43 +129,12 @@ object ModelValidator {
     if (missing.isEmpty) Right(()) else Left(ModelValidationError.SchemaValidation(missing.toList))
   }
 
-  /** Walk an Expr AST and collect all `FieldRef.name` it references.
-    * Covers the full 24-case family incl. PR-I's CaseWhen / Alias.
-    * Shared walker shape (per [[scala-data-driven-refactor-mindset]] SS1:
-    * pure data walk, single accumulator, no behavior). */
-  private def walkExprForFields(e: Expr): Set[String] = {
-    val out = scala.collection.mutable.LinkedHashSet.empty[String]
-    def go(x: Expr): Unit = x match {
-      case Expr.FieldRef(n)             => out += n
-      case Expr.MeasureRef(_)           => ()  // measure refs are engine-known
-      case Expr.All(_)                  => ()
-      case Expr.Literal(_, _)           => ()
-      case Expr.Not(inner)              => go(inner)
-      case Expr.IsNull(inner)           => go(inner)
-      case Expr.IsNotNull(inner)        => go(inner)
-      case Expr.Cast(inner, _)          => go(inner)
-      case Expr.Alias(_, inner)         => go(inner)
-      case Expr.Add(l, r)               => go(l); go(r)
-      case Expr.Subtract(l, r)          => go(l); go(r)
-      case Expr.Multiply(l, r)          => go(l); go(r)
-      case Expr.Divide(l, r)            => go(l); go(r)
-      case Expr.Modulo(l, r)            => go(l); go(r)
-      case Expr.Equal(l, r)             => go(l); go(r)
-      case Expr.NotEqual(l, r)          => go(l); go(r)
-      case Expr.LessThan(l, r)          => go(l); go(r)
-      case Expr.LessOrEqual(l, r)       => go(l); go(r)
-      case Expr.GreaterThan(l, r)       => go(l); go(r)
-      case Expr.GreaterOrEqual(l, r)    => go(l); go(r)
-      case Expr.And(l, r)               => go(l); go(r)
-      case Expr.Or(l, r)                => go(l); go(r)
-      case Expr.CaseWhen(branches, o)   =>
-        branches.foreach { case (c, v) => go(c); go(v) }
-        go(o)
-      case Expr.FunctionCall(_, args)   => args.foreach(go)
-    }
-    go(e)
-    out.toSet
-  }
+  /** Field-name extraction: delegates to the engine-portable
+    * walker in sm8-core/expr/Calculator (PR-M5). Per RFC SS3 the
+    * walker is core; per ADR-008-L the Calculator is the SINGLE
+    * source of truth for Expr walking (ModelValidator + QueryBuilder
+    * both use it). */
+  private def walkExprForFields(e: Expr): Set[String] = io.sm8.core.expr.Calculator.fieldNamesOf(e)
 
   /** Detect duplicate names within a single field kind. */
   private def duplicateNames(
