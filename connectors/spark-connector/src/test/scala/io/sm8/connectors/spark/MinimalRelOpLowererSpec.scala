@@ -151,4 +151,66 @@ class MinimalRelOpLowererSpec extends AnyFunSuite with Matchers {
     val err = out.left.toOption.get.asInstanceOf[io.sm8.core.engine.EngineError.UnsupportedCapability]
     err.message should include ("at least one Expr.Equal")
   }
+  // ===== PR-O1e (ADR-008-O, P0-3): column pruning via scan.projection =====
+
+  test("lowerScan: applies projection when scan.projection is non-empty") {
+    // Per [[scala-spark-batch-bugs-mindset]] mantra #6
+    // (partition-pruning + projection-pushdown): a non-empty
+    // scan.projection MUST select only those columns. Without
+    // this, every query reads all columns of every partition --
+    // fatal at scale for wide tables.
+    val spark = SparkSession.builder().master("local[1]").appName("tPrune").getOrCreate()
+    try {
+      val schema = new org.apache.spark.sql.types.StructType(Array(
+        org.apache.spark.sql.types.StructField("a", org.apache.spark.sql.types.IntegerType),
+        org.apache.spark.sql.types.StructField("b", org.apache.spark.sql.types.IntegerType),
+        org.apache.spark.sql.types.StructField("c", org.apache.spark.sql.types.IntegerType),
+      ))
+      val rows = Array(
+        org.apache.spark.sql.RowFactory.create(1: java.lang.Integer, 2: java.lang.Integer, 3: java.lang.Integer),
+      )
+      spark.createDataFrame(java.util.Arrays.asList(rows: _*), schema).createOrReplaceTempView("tPrune")
+
+      val scan = RelOp.Scan(
+        sourceRef  = SourceRef.ByName(table = "tPrune"),
+        schema     = Nil,
+        projection = List(Expr.FieldRef("a"), Expr.FieldRef("c")),  // skip b
+      )
+      val lowererWithSpark = new MinimalRelOpLowerer(spark, null, EngineIdentity("spark-3.5", "3.5", "0.1.0"))
+      val out = lowererWithSpark.lowerScan(scan)
+      out.isRight shouldBe true
+      val pruned = out.toOption.get
+      pruned.columns.toSet shouldBe Set("a", "c")
+    } finally {
+      spark.stop()
+    }
+  }
+
+  test("lowerScan: empty projection returns the full DataFrame (no select)") {
+    val spark = SparkSession.builder().master("local[1]").appName("tNoPrune").getOrCreate()
+    try {
+      val schema = new org.apache.spark.sql.types.StructType(Array(
+        org.apache.spark.sql.types.StructField("a", org.apache.spark.sql.types.IntegerType),
+        org.apache.spark.sql.types.StructField("b", org.apache.spark.sql.types.IntegerType),
+      ))
+      val rows = Array(
+        org.apache.spark.sql.RowFactory.create(1: java.lang.Integer, 2: java.lang.Integer),
+      )
+      spark.createDataFrame(java.util.Arrays.asList(rows: _*), schema).createOrReplaceTempView("tNoPrune")
+
+      val scan = RelOp.Scan(
+        sourceRef  = SourceRef.ByName(table = "tNoPrune"),
+        schema     = Nil,
+        projection = Nil,
+      )
+      val lowererWithSpark = new MinimalRelOpLowerer(spark, null, EngineIdentity("spark-3.5", "3.5", "0.1.0"))
+      val out = lowererWithSpark.lowerScan(scan)
+      out.isRight shouldBe true
+      val df = out.toOption.get
+      df.columns.toSet shouldBe Set("a", "b")
+    } finally {
+      spark.stop()
+    }
+  }
+
 }

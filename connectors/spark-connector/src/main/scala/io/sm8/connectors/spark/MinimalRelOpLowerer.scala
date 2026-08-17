@@ -110,25 +110,54 @@ final class MinimalRelOpLowerer(
     * The schema comes from the ACTUAL `df.schema` -- per
     * scala-spark-batch-bugs-mindset mantra #3 (schema-drift verify
     * at the boundary). No caller-supplied "expected" schema. */
-  def lowerScan(scan: RelOp.Scan): Either[EngineError, DataFrame] = scan.sourceRef match {
-    case src: SourceRef.ByName =>
-      try Right(spark.table(src.table)) catch {
-        case _: Exception => try Right(spark.read.table(src.table)) catch {
-          case _: Exception => Left(EngineError.UnsupportedCapability(
-            engine = identity.name, capability = "SourceRef.ByName",
-            message = s"Spark table '${src.table}' not found."))
+  def lowerScan(scan: RelOp.Scan): Either[EngineError, DataFrame] = {
+    // PR-O1e (ADR-008-O, P0-3): column pruning via scan.projection.
+    // Per [[scala-spark-batch-bugs-mindset]] mantra #6
+    // (partition-pruning + projection-pushdown): without this,
+    // every query reads ALL columns of the table (every partition),
+    // which is fatal at scale for wide tables. The IR carries
+    // the projection list (PR-H). When non-Nil, apply it via
+    // `df.select(projection.map(_.toColumn): _*)` BEFORE the rest
+    // of the plan sees the DataFrame.
+    //
+    // Per [[scala-spark-batch-bugs-mindset]] mantra #1 (closure-safety):
+    // the .toColumn calls run in the driver; no executor-side closure
+    // capture. The resulting DataFrame is lazy.
+    //
+    // Implementation: bind the match's Either result, then .map over
+    // it to apply the projection. The match's arms stay return-typed
+    // `Either[EngineError, DataFrame]`; the projection is applied via
+    // .map which short-circuits the Left side.
+    val resolved: Either[EngineError, DataFrame] = scan.sourceRef match {
+      case src: SourceRef.ByName =>
+        try Right(spark.table(src.table)) catch {
+          case _: Exception => try Right(spark.read.table(src.table)) catch {
+            case _: Exception => Left(EngineError.UnsupportedCapability(
+              engine = identity.name, capability = "SourceRef.ByName",
+              message = s"Spark table '${src.table}' not found."))
+          }
         }
-      }
-    case src: SourceRef.ByPath =>
-      try Right(spark.read.format(src.format).options(src.options).load(src.path)) catch {
-        case e: Exception => Left(EngineError.UnsupportedCapability(
-          engine = identity.name, capability = "SourceRef.ByPath",
-          message = s"Spark path read failed: ${e.getMessage}"))
-      }
-    case _: SourceRef.ByProvider =>
-      Left(EngineError.UnsupportedCapability(
-        engine = identity.name, capability = "SourceRef.ByProvider",
-        message = "SourceRef.ByProvider requires a registered ProviderRef closure."))
+      case src: SourceRef.ByPath =>
+        try Right(spark.read.format(src.format).options(src.options).load(src.path)) catch {
+          case e: Exception => Left(EngineError.UnsupportedCapability(
+            engine = identity.name, capability = "SourceRef.ByPath",
+            message = s"Spark path read failed: ${e.getMessage}"))
+        }
+      case _: SourceRef.ByProvider =>
+        Left(EngineError.UnsupportedCapability(
+          engine = identity.name, capability = "SourceRef.ByProvider",
+          message = "SourceRef.ByProvider requires a registered ProviderRef closure."))
+    }
+    // .toColumn here is called outside an Either-returning function:
+    // a synchronous projection-column compiler never throws (only
+    // FunctionCall + ArrayValue do, and the projection list is normally
+    // all FieldRefs). Until PR-O1c lands, we use the legacy Column-returning
+    // toColumn; a future migration to Either-returning toColumn will
+    // replace this with a fold.
+    resolved.map { df =>
+      if (scan.projection.isEmpty) df
+      else df.select(scan.projection.map(PortableExprCompiler.toColumn): _*)
+    }
   }
 
   /** Filter -> DataFrame: walk the child, then df.filter(expr). */
