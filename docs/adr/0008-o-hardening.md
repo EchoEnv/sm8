@@ -116,9 +116,9 @@ The user explicitly directed "seperate commit but in 1 PR" — one branch, one P
 | Metric | Value |
 |---|---|
 | Branch | `step-pr-o-hardening` from `main` = `e5903d0` |
-| Number of commits | 20 (= 7 sub-commits for O4 + 5 for O1 + 3 for O2 + 5 for O3) |
-| Estimated LOC | ~830 (across main + tests) |
-| Estimated tests | +17 (4 O4 + 5 O1 + 3 O2 + 5 O3) |
+| Number of commits | 23 (= 9 sub-commits for O4 + 5 for O1 + 3 for O2 + 5 for O3, where O1 is itself 4 sub-commits: O1a/O1b/O1c-1/O1c-2/O1c-3) |
+| Estimated LOC | ~1100 (across main + tests) |
+| Estimated tests | +27 (12 O4 + 10 O1 + 3 O2 + 5 O3, O1c-1..3 nets ~8 tests) |
 | Pre-push gates per commit | LSP + codegraph + enforcer + reactor + resource monitor (per the user's standing rule) |
 | Net tests after O-series | 470 + 140 + ~30 across other modules = ~640 in the snapshot reactor |
 
