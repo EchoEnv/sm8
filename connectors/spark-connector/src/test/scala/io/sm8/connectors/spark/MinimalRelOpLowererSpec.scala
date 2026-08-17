@@ -213,4 +213,53 @@ class MinimalRelOpLowererSpec extends AnyFunSuite with Matchers {
     }
   }
 
+  test("lowerJoin: broadcastRightBelowBytes set joins small right side cleanly (IR path)") {
+    // PR-O2 (ADR-008-O, P0-4): the IR path (compileRelOp -> lowerJoin)
+    // must honor `ctx.joinHints.broadcastRightBelowBytes` the same way
+    // the legacy applyJoins path does. Covers the broadcast decision
+    // (size probe -> broadcast(rightDf) wrap -> join) end to end: a
+    // 1-row right table under a 1MB threshold joins without error and
+    // produces the correct rows. Plan-shape assertions are deliberately
+    // avoided -- AQE re-planning differs between Spark 3.5.x and 4.1.x.
+    val spark = SparkSession.builder().master("local[1]").appName("tJoinBcast").getOrCreate()
+    try {
+      val leftSchema = new org.apache.spark.sql.types.StructType(Array(
+        org.apache.spark.sql.types.StructField("id", org.apache.spark.sql.types.IntegerType),
+        org.apache.spark.sql.types.StructField("name", org.apache.spark.sql.types.StringType),
+      ))
+      val leftRow = Array(
+        org.apache.spark.sql.RowFactory.create(1: java.lang.Integer, "alpha": String),
+      )
+      spark.createDataFrame(java.util.Arrays.asList(leftRow: _*), leftSchema).createOrReplaceTempView("tJoinBcastL")
+
+      val rightSchema = new org.apache.spark.sql.types.StructType(Array(
+        org.apache.spark.sql.types.StructField("id", org.apache.spark.sql.types.IntegerType),
+        org.apache.spark.sql.types.StructField("label", org.apache.spark.sql.types.StringType),
+      ))
+      val rightRow = Array(
+        org.apache.spark.sql.RowFactory.create(1: java.lang.Integer, "one": String),
+      )
+      spark.createDataFrame(java.util.Arrays.asList(rightRow: _*), rightSchema).createOrReplaceTempView("tJoinBcastR")
+
+      val join = RelOp.Join(
+        left      = RelOp.Scan(SourceRef.ByName(table = "tJoinBcastL"), Nil, Nil),
+        right     = RelOp.Scan(SourceRef.ByName(table = "tJoinBcastR"), Nil, Nil),
+        kind      = io.sm8.core.rel.JoinKind.Inner,
+        condition = Expr.Equal(Expr.FieldRef("id"), Expr.FieldRef("id")),
+      )
+      val ctx = EngineContext.defaultContext.copy(
+        joinHints = io.sm8.core.engine.JoinHints(broadcastRightBelowBytes = Some(1048576L)),
+      )
+      val lowererWithSpark = new MinimalRelOpLowerer(spark, null, EngineIdentity("spark-3.5", "3.5", "0.1.0"))
+      val out = lowererWithSpark.lowerJoin(join, ctx)
+      out.isRight shouldBe true
+      val rows = out.toOption.get.collect()
+      rows should have size 1
+      rows(0).getAs[String]("name") shouldBe "alpha"
+      rows(0).getAs[String]("label") shouldBe "one"
+    } finally {
+      spark.stop()
+    }
+  }
+
 }
