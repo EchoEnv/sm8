@@ -21,7 +21,7 @@ import java.io.{ByteArrayInputStream, ByteArrayOutputStream, ObjectInputStream, 
 
 import io.sm8.core.engine.{EngineContext, EngineError}
 import io.sm8.core.expr.{Expr, LiteralValue}
-import io.sm8.core.model.{FilterSpec, Model, ModelPolicyDefaults, ModelStatus, SourceRef}
+import io.sm8.core.model.{FilterSpec, MaterializePolicy, Model, ModelPolicyDefaults, ModelStatus, SourceRef}
 import io.sm8.core.schema.{Field, SealedDataType}
 
 import org.apache.spark.sql.SparkSession
@@ -232,6 +232,142 @@ class PortableQueryCompilerSpec extends AnyFunSuite with Matchers {
       collected.length shouldBe 2
       collected(0).getString(0) shouldBe "alice"
       collected(1).getString(0) shouldBe "bob"
+    } finally {
+      spark.stop()
+    }
+  }
+
+  // ===== PR-N5: MaterializePolicy.Persist dispatch =====
+
+  test("PortableQueryCompiler.applyAggregations: MaterializePolicy.Persist(MEMORY_ONLY) calls df.persist(MEMORY_ONLY)") {
+    // PR-N5: when a model's materialize policy is Persist("MEMORY_ONLY"),
+    // applyAggregations calls df.persist(StorageLevel.MEMORY_ONLY) on
+    // the resulting DataFrame. The DataFrame's storageLevel reflects
+    // the change. None / Cache paths are a no-op (no persist call).
+    val spark = SparkSession.builder().master("local[1]").appName("tPersistOK").getOrCreate()
+    try {
+      val schema = new StructType(Array(
+        StructField("val", IntegerType, nullable = false),
+      ))
+      val rows = Array(org.apache.spark.sql.RowFactory.create(1: java.lang.Integer))
+      val df = spark.createDataFrame(java.util.Arrays.asList(rows: _*), schema)
+      // Build a Model with a Sum measure and the Persist policy.
+      val model = Model.of(
+        name    = "persist-model",
+        version = 1,
+        source  = SourceRef.ByName("default", "t"),
+        measures = List(
+          io.sm8.core.model.Measure(
+            name = "total",
+            expr = io.sm8.core.rel.AggregateCall(
+              fn = io.sm8.core.rel.AggregateFn.Sum,
+              input = Some(Expr.FieldRef("val")),
+              alias = "total",
+              distinct = false ,
+              arguments = Nil,
+            ),
+          ),
+        ),
+        defaultPolicies = ModelPolicyDefaults(
+          materialize = MaterializePolicy.Persist("MEMORY_ONLY"),
+          cache       = io.sm8.core.model.CachePolicy.NoCache,
+          audit       = io.sm8.core.model.AuditPolicy.NoAudit,
+        ),
+        status = ModelStatus.Published,
+      ).toOption.get
+      val compiler = new PortableQueryCompiler(spark)
+      val out = compiler.applyAggregations(df, model)
+      out.isRight shouldBe true
+      val persisted = out.toOption.get
+      persisted.storageLevel.useMemory shouldBe true
+    } finally {
+      spark.stop()
+    }
+  }
+
+  test("PortableQueryCompiler.applyAggregations: MaterializePolicy.Persist(NOT_A_REAL_LEVEL) returns Left(UnsupportedCapability)") {
+    // PR-N5: an unknown StorageLevel name (typo, wrong case) is a
+    // typed error, not a thrown IllegalArgumentException.
+    val spark = SparkSession.builder().master("local[1]").appName("tPersistBad").getOrCreate()
+    try {
+      val schema = new StructType(Array(
+        StructField("val", IntegerType, nullable = false),
+      ))
+      val rows = Array(org.apache.spark.sql.RowFactory.create(1: java.lang.Integer))
+      val df = spark.createDataFrame(java.util.Arrays.asList(rows: _*), schema)
+      val model = Model.of(
+        name    = "bogus-persist-model",
+        version = 1,
+        source  = SourceRef.ByName("default", "t"),
+        measures = List(
+          io.sm8.core.model.Measure(
+            name = "total",
+            expr = io.sm8.core.rel.AggregateCall(
+              fn = io.sm8.core.rel.AggregateFn.Sum,
+              input = Some(Expr.FieldRef("val")),
+              alias = "total",
+              distinct = false ,
+              arguments = Nil,
+            ),
+          ),
+        ),
+        defaultPolicies = ModelPolicyDefaults(
+          materialize = MaterializePolicy.Persist("NOT_A_REAL_LEVEL"),
+          cache       = io.sm8.core.model.CachePolicy.NoCache,
+          audit       = io.sm8.core.model.AuditPolicy.NoAudit,
+        ),
+        status = ModelStatus.Published,
+      ).toOption.get
+      val compiler = new PortableQueryCompiler(spark)
+      val out = compiler.applyAggregations(df, model)
+      out.isLeft shouldBe true
+      val err = out.left.toOption.get
+      err shouldBe a [EngineError.UnsupportedCapability]
+      err.asInstanceOf[EngineError.UnsupportedCapability].message should include ("Unknown Spark StorageLevel")
+      err.asInstanceOf[EngineError.UnsupportedCapability].message should include ("NOT_A_REAL_LEVEL")
+    } finally {
+      spark.stop()
+    }
+  }
+
+  test("PortableQueryCompiler.applyAggregations: MaterializePolicy.None is a no-op (no persist call)") {
+    // PR-N5 contract: the None / Cache paths MUST NOT call persist --
+    // only the Persist(level) case calls it. The Cache case is
+    // owned by the cache-plugin (out of scope for the connector).
+    val spark = SparkSession.builder().master("local[1]").appName("tPersistNone").getOrCreate()
+    try {
+      val schema = new StructType(Array(
+        StructField("val", IntegerType, nullable = false),
+      ))
+      val rows = Array(org.apache.spark.sql.RowFactory.create(1: java.lang.Integer))
+      val df = spark.createDataFrame(java.util.Arrays.asList(rows: _*), schema)
+      val model = Model.of(
+        name    = "none-persist-model",
+        version = 1,
+        source  = SourceRef.ByName("default", "t"),
+        measures = List(
+          io.sm8.core.model.Measure(
+            name = "total",
+            expr = io.sm8.core.rel.AggregateCall(
+              fn = io.sm8.core.rel.AggregateFn.Sum,
+              input = Some(Expr.FieldRef("val")),
+              alias = "total",
+              distinct = false ,
+              arguments = Nil,
+            ),
+          ),
+        ),
+        defaultPolicies = ModelPolicyDefaults(
+          materialize = MaterializePolicy.None,
+          cache       = io.sm8.core.model.CachePolicy.NoCache,
+          audit       = io.sm8.core.model.AuditPolicy.NoAudit,
+        ),
+        status = ModelStatus.Published,
+      ).toOption.get
+      val compiler = new PortableQueryCompiler(spark)
+      val out = compiler.applyAggregations(df, model)
+      out.isRight shouldBe true
+      out.toOption.get.storageLevel.useMemory shouldBe false  // NONE
     } finally {
       spark.stop()
     }

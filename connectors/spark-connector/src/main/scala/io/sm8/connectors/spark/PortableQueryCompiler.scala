@@ -399,7 +399,29 @@ final class PortableQueryCompiler(val spark: SparkSession)
             applyWithWindows(df, model, dimCols)
           else
             applyGroupByAgg(df, model, dimCols)
-        Right(result)
+        // PR-N5: apply MaterializePolicy.Persist(level) at the
+        // aggregate boundary -- one df.persist() per model query.
+        // Per [[scala-spark-batch-bugs-mindset]] mantra #4
+        // (cache-the-stable-shape): the aggregated result is the
+        // shape most likely to be reused across multiple downstream
+        // queries (dashboard refreshes, drill-downs, etc.), so this
+        // is the right boundary. None / Cache dispatch is a no-op
+        // (Cache is owned by the cache-plugin, not the connector).
+        model.defaultPolicies.materialize match {
+          case io.sm8.core.model.MaterializePolicy.Persist(level) =>
+            try {
+              Right(result.persist(org.apache.spark.storage.StorageLevel.fromString(level)))
+            } catch {
+              case e: java.lang.IllegalArgumentException =>
+                Left(EngineError.UnsupportedCapability(
+                  engine     = "spark-3.5",
+                  capability = "MaterializePolicy.Persist",
+                  message    = s"Unknown Spark StorageLevel: '$level'. Expected one of: DISK_ONLY, DISK_ONLY_2, MEMORY_ONLY, MEMORY_ONLY_2, MEMORY_AND_DISK, MEMORY_AND_DISK_2, MEMORY_AND_DISK_SER, MEMORY_AND_DISK_SER_2, OFF_HEAP.",
+                ))
+            }
+          case _ =>
+            Right(result)
+        }
       }
     }
   }
@@ -469,8 +491,12 @@ final class PortableQueryCompiler(val spark: SparkSession)
     * Total for the 6 SupportedAggregates (pre-validated by
     * applyAggregations -- reaching the fallback here is an internal
     * invariant violation, hence the loud throw with the fn name).
+    *
+    * Package-private (no `private` keyword) so `MinimalRelOpLowerer`
+    * can compose the direct `df.groupBy().agg()` path without
+    * duplicating the per-fn rendering logic.
     */
-  private def renderAggregate(call: AggregateCall): Column = {
+  def renderAggregate(call: AggregateCall): Column = {
     val inputCol = PortableExprCompiler.toColumn(
       call.input.getOrElse(Expr.FieldRef(call.alias))
     )

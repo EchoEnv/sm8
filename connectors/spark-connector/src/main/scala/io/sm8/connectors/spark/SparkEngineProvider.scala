@@ -38,6 +38,7 @@ import io.sm8.core.engine.{
 }
 import io.sm8.core.model.Model
 import io.sm8.core.query.QueryBuilder
+import io.sm8.core.rel.RelOpPlanPrinter
 import io.sm8.core.schema.{Field, SealedDataType}
 
 import org.apache.spark.sql.SparkSession
@@ -236,12 +237,41 @@ final class SparkEngineProvider(
       ))
     }
   }
+  /** PR-N1: walk the produced `RelOp` tree via the engine-portable
+    * `QueryBuilder` + the core `RelOpPlanPrinter`. Output is a
+    * multi-line indented plan: 1 header line (model name + engine
+    * identity) + 1 line per RelOp node. Per RFC §3 ownership the
+    * IR building + plan serialisation are core; this method only
+    * glues them together with the Spark-specific resolver + identity.
+    *
+    * Per [[scala-error-handling-mindset]]: a `Left` from
+    * `QueryBuilder.build` (cycle in calculatedMeasures, unresolved
+    * source, etc.) is rendered as the plan prefix plus a typed error
+    * line -- never a thrown exception.
+    */
   override def explain(
       model:   Model,
       request: MCPQueryRequest,
       ctx:     EngineContext,
-  ): Either[EngineError, String] =
-    Right(s"spark.explain(${model.name}): engine=${sparkEngineName} version=${if (spark != null) spark.version else "<uninitialized>"}")
+  ): Either[EngineError, String] = {
+    val header =
+      s"=== SM8 Plan: ${model.name} | engine=${sparkEngineName} version=${identity.nativeVersion} ==="
+    QueryBuilder.build(model, resolver, identity) match {
+      case Right(relOp) =>
+        Right(header + "\n" + RelOpPlanPrinter.print(relOp))
+      case Left(err) =>
+        Right(header + "\n" + s"<<build failed: ${err.getClass.getSimpleName}: ${err.toString}>>")
+    }
+  }
+
+  // PR-N1: the resolver used by `explain` to produce the IR tree.
+  // Per [[karpathy-guidelines-mindset]] "smallest correct change":
+  // the same model registry / spark session as the compiler's path.
+  private lazy val resolver: io.sm8.core.engine.SourceResolver = {
+    val registry = sparkSourceRegistry.getOrElse(io.sm8.connectors.spark.ModelRegistry.NoopModelRegistry)
+    new SparkSourceResolver(spark, registry)
+  }
+  private lazy val sparkSourceRegistry: Option[io.sm8.connectors.spark.ModelRegistry] = None
 
   /** Decode a Spark `Row` to a `List[ResultValue]` aligned with `schema.fields`.
     *
