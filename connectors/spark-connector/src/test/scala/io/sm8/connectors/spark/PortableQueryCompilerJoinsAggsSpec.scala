@@ -70,7 +70,7 @@ class PortableQueryCompilerJoinsAggsSpec extends AnyFunSuite with Matchers {
   ): Model = Model.of(
     name    = "prk",
     version = 1,
-    source  = SourceRef.ByName("default", table),
+    source  = SourceRef.ByName(table = table),
     status  = ModelStatus.Draft,
     defaultPolicies = ModelPolicyDefaults(
       io.sm8.core.model.MaterializePolicy.None,
@@ -115,7 +115,7 @@ class PortableQueryCompilerJoinsAggsSpec extends AnyFunSuite with Matchers {
     try {
       ordersFixture(spark)
       val m = model("orders",
-        dimensions = List(Dimension("region", "region")),
+        dimensions = List(Dimension.field("region", "region")),
         measures = List(
           agg("total", AggregateFn.Sum, Expr.FieldRef("amount")),
           agg("n", AggregateFn.Count, Expr.FieldRef("amount")),
@@ -133,7 +133,7 @@ class PortableQueryCompilerJoinsAggsSpec extends AnyFunSuite with Matchers {
     try {
       ordersFixture(spark)
       val m = model("orders",
-        dimensions = List(Dimension("region", "region")),
+        dimensions = List(Dimension.field("region", "region")),
         measures = List(
           agg("a", AggregateFn.Avg, Expr.FieldRef("amount")),
           agg("lo", AggregateFn.Min, Expr.FieldRef("amount")),
@@ -160,7 +160,7 @@ class PortableQueryCompilerJoinsAggsSpec extends AnyFunSuite with Matchers {
       )
       spark.createDataFrame(rows, schema).createOrReplaceTempView("visits")
       val m = model("visits",
-        dimensions = List(Dimension("region", "region")),
+        dimensions = List(Dimension.field("region", "region")),
         measures = List(agg("d", AggregateFn.CountDistinct, Expr.FieldRef("cust"))))
       val out = new PortableQueryCompiler(spark)
         .compile(m, EngineContext.defaultContext)
@@ -176,7 +176,7 @@ class PortableQueryCompilerJoinsAggsSpec extends AnyFunSuite with Matchers {
     try {
       ordersFixture(spark); customersFixture(spark)
       val m = model("orders",
-        dimensions = List(Dimension("region", "region")),
+        dimensions = List(Dimension.field("region", "region")),
         joins = List(JoinSpec("j", "customers", JoinKind.Inner, List(("region", "region")))))
       val out = new PortableQueryCompiler(spark)
         .compile(m, EngineContext.defaultContext)
@@ -192,7 +192,7 @@ class PortableQueryCompilerJoinsAggsSpec extends AnyFunSuite with Matchers {
     try {
       ordersFixture(spark); customersFixture(spark)
       val m = model("orders",
-        dimensions = List(Dimension("region", "region"), Dimension("label", "label")),
+        dimensions = List(Dimension.field("region", "region"), Dimension.field("label", "label")),
         joins = List(JoinSpec("j", "customers", JoinKind.Left, List(("region", "region")))))
       val out = new PortableQueryCompiler(spark)
         .compile(m, EngineContext.defaultContext)
@@ -207,7 +207,7 @@ class PortableQueryCompilerJoinsAggsSpec extends AnyFunSuite with Matchers {
     try {
       ordersFixture(spark); customersFixture(spark)
       val m = model("orders",
-        dimensions = List(Dimension("region", "region")),
+        dimensions = List(Dimension.field("region", "region")),
         joins = List(JoinSpec("j", "customers", JoinKind.Right, List(("region", "region")))))
       val out = new PortableQueryCompiler(spark)
         .compile(m, EngineContext.defaultContext)
@@ -222,7 +222,7 @@ class PortableQueryCompilerJoinsAggsSpec extends AnyFunSuite with Matchers {
     try {
       ordersFixture(spark); customersFixture(spark)
       val m = model("orders",
-        dimensions = List(Dimension("region", "region")),
+        dimensions = List(Dimension.field("region", "region")),
         joins = List(JoinSpec("j", "customers", JoinKind.Full, List(("region", "region")))))
       val out = new PortableQueryCompiler(spark)
         .compile(m, EngineContext.defaultContext)
@@ -237,7 +237,7 @@ class PortableQueryCompilerJoinsAggsSpec extends AnyFunSuite with Matchers {
     try {
       ordersFixture(spark); customersFixture(spark)
       val m = model("orders",
-        dimensions = List(Dimension("region", "region")),
+        dimensions = List(Dimension.field("region", "region")),
         joins = List(JoinSpec("j", "customers", JoinKind.Cross, List(("region", "region")))))
       val out = new PortableQueryCompiler(spark)
         .compile(m, EngineContext.defaultContext)
@@ -254,7 +254,7 @@ class PortableQueryCompilerJoinsAggsSpec extends AnyFunSuite with Matchers {
     try {
       ordersFixture(spark)
       val m = model("orders",
-        dimensions = List(Dimension("region", "region")),
+        dimensions = List(Dimension.field("region", "region")),
         measures = List(agg("sd", AggregateFn.StddevSample, Expr.FieldRef("amount"))))
       val out = new PortableQueryCompiler(spark)
         .compile(m, EngineContext.defaultContext)
@@ -274,7 +274,7 @@ class PortableQueryCompilerJoinsAggsSpec extends AnyFunSuite with Matchers {
     try {
       ordersFixture(spark); customersFixture(spark)
       val m = model("orders",
-        dimensions = List(Dimension("region", "region")),
+        dimensions = List(Dimension.field("region", "region")),
         joins = List(JoinSpec("j", "customers", JoinKind.Inner,
           List(("region", "region"), ("region", "region")))))
       val out = new PortableQueryCompiler(spark)
@@ -289,7 +289,7 @@ class PortableQueryCompilerJoinsAggsSpec extends AnyFunSuite with Matchers {
     try {
       ordersFixture(spark)
       val m = model("orders",
-        dimensions = List(Dimension("region", "region")),
+        dimensions = List(Dimension.field("region", "region")),
         joins = List(JoinSpec("j", "no_such_table", JoinKind.Inner, List(("region", "region")))))
       val out = new PortableQueryCompiler(spark)
         .compile(m, EngineContext.defaultContext)
@@ -313,7 +313,7 @@ class PortableQueryCompilerJoinsAggsSpec extends AnyFunSuite with Matchers {
         ),
       )
       val m = model("orders",
-        dimensions = List(Dimension("region", "region")),
+        dimensions = List(Dimension.field("region", "region")),
         measures = List(agg("total", AggregateFn.Sum, Expr.FieldRef("amount"))),
         calcs = List(calc))
       val out = new PortableQueryCompiler(spark)
@@ -332,7 +332,7 @@ class PortableQueryCompilerJoinsAggsSpec extends AnyFunSuite with Matchers {
     try {
       ordersFixture(spark)
       val m = model("orders",
-        dimensions = List(Dimension("region", "region")))
+        dimensions = List(Dimension.field("region", "region")))
       val out = new PortableQueryCompiler(spark)
         .compile(m, EngineContext.defaultContext)
         .toOption.get.collect().toList

@@ -21,7 +21,8 @@ import java.io.{ByteArrayInputStream, ByteArrayOutputStream, ObjectInputStream, 
 
 import io.sm8.core.engine.{EngineContext, EngineError}
 import io.sm8.core.expr.{Expr, LiteralValue}
-import io.sm8.core.model.{FilterSpec, MaterializePolicy, Model, ModelPolicyDefaults, ModelStatus, SourceRef}
+import io.sm8.core.model.{FilterSpec, JoinSpec, MaterializePolicy, Model, ModelPolicyDefaults, ModelStatus, SourceRef}
+import io.sm8.core.rel.JoinKind
 import io.sm8.core.schema.{Field, SealedDataType}
 
 import org.apache.spark.sql.SparkSession
@@ -118,7 +119,7 @@ class PortableQueryCompilerSpec extends AnyFunSuite with Matchers {
         ),
       )
       val model = makeModel(
-        source  = SourceRef.ByName("default.people", "people"),
+        source  = SourceRef.ByName(table = "people"),
         filters = List(ageFilter),
       )
       val compiler = new PortableQueryCompiler(spark)
@@ -150,10 +151,10 @@ class PortableQueryCompilerSpec extends AnyFunSuite with Matchers {
       val data = spark.createDataFrame(spark.sparkContext.parallelize(rows), schema)
       data.createOrReplaceTempView("people")
       val model = makeModel(
-        source     = SourceRef.ByName("default.people", "people"),
+        source     = SourceRef.ByName(table = "people"),
         dimensions = List(
-          io.sm8.core.model.Dimension(name = "name", expr = "name"),
-          io.sm8.core.model.Dimension(name = "city", expr = "city"),
+          io.sm8.core.model.Dimension.field(name = "name", "name"),
+          io.sm8.core.model.Dimension.field(name = "city", "city"),
         ),
       )
       val compiler = new PortableQueryCompiler(spark)
@@ -188,8 +189,8 @@ class PortableQueryCompilerSpec extends AnyFunSuite with Matchers {
       data.createOrReplaceTempView("people")
       // Dimensions: model says ["name"] (the valid one)
       val model = makeModel(
-        source     = SourceRef.ByName("default.people", "people"),
-        dimensions = List(io.sm8.core.model.Dimension("name", "name")),
+        source     = SourceRef.ByName(table = "people"),
+        dimensions = List(io.sm8.core.model.Dimension.field("name", "name")),
       )
       val compiler = new PortableQueryCompiler(spark)
       val out = compiler.compile(model, EngineContext.defaultContext)
@@ -223,7 +224,7 @@ class PortableQueryCompilerSpec extends AnyFunSuite with Matchers {
       )
       val data = spark.createDataFrame(spark.sparkContext.parallelize(rows), schema)
       data.createOrReplaceTempView("people")
-      val model = makeModel(source = SourceRef.ByName("default.people", "people"))
+      val model = makeModel(source = SourceRef.ByName(table = "people"))
       val compiler = new PortableQueryCompiler(spark)
       val out = compiler.compile(model, EngineContext.defaultContext)
       out.isRight shouldBe true
@@ -255,7 +256,7 @@ class PortableQueryCompilerSpec extends AnyFunSuite with Matchers {
       val model = Model.of(
         name    = "persist-model",
         version = 1,
-        source  = SourceRef.ByName("default", "t"),
+        source  = SourceRef.ByName(table = "t"),
         measures = List(
           io.sm8.core.model.Measure(
             name = "total",
@@ -298,7 +299,7 @@ class PortableQueryCompilerSpec extends AnyFunSuite with Matchers {
       val model = Model.of(
         name    = "bogus-persist-model",
         version = 1,
-        source  = SourceRef.ByName("default", "t"),
+        source  = SourceRef.ByName(table = "t"),
         measures = List(
           io.sm8.core.model.Measure(
             name = "total",
@@ -344,7 +345,7 @@ class PortableQueryCompilerSpec extends AnyFunSuite with Matchers {
       val model = Model.of(
         name    = "none-persist-model",
         version = 1,
-        source  = SourceRef.ByName("default", "t"),
+        source  = SourceRef.ByName(table = "t"),
         measures = List(
           io.sm8.core.model.Measure(
             name = "total",
@@ -372,4 +373,93 @@ class PortableQueryCompilerSpec extends AnyFunSuite with Matchers {
       spark.stop()
     }
   }
+
+  // ===== PR-O2 (ADR-008-O, P0-4): size-based broadcast-join hint =====
+
+  test("PortableQueryCompiler.applyJoins: unset broadcastRightBelowBytes trusts Spark default") {
+    // When the hint is unset (None), the connector does NOT wrap
+    // with broadcast -- it lets Spark's `autoBroadcastJoinThreshold`
+    // (typically 10MB) apply naturally. This is the SAFE default.
+    val spark = SparkSession.builder().master("local[1]").appName("tO2NoHint").getOrCreate()
+    try {
+      val schema = new org.apache.spark.sql.types.StructType(Array(
+        org.apache.spark.sql.types.StructField("id", org.apache.spark.sql.types.IntegerType),
+      ))
+      spark.createDataFrame(
+        java.util.Arrays.asList(org.apache.spark.sql.RowFactory.create(1: java.lang.Integer)),
+        schema,
+      ).createOrReplaceTempView("O2NHKLeft")
+      spark.createDataFrame(
+        java.util.Arrays.asList(org.apache.spark.sql.RowFactory.create(1: java.lang.Integer)),
+        schema,
+      ).createOrReplaceTempView("O2NHKRight")
+      val ctxNoHint = io.sm8.core.engine.EngineContext.defaultContext  // joinHints = JoinHints() = None
+      val model = Model.of(
+        name   = "o2-nohint",
+        version = 1,
+        source = io.sm8.core.model.SourceRef.ByName(table = "O2NHKLeft"),
+        joins  = List(JoinSpec(
+          name       = "j1",
+          rightModel = "O2NHKRight",
+          kind       = JoinKind.Inner,
+          keys       = List(("id", "id")),
+        )),
+      ).toOption.get
+      val compiler = new PortableQueryCompiler(spark)
+      val out = compiler.compile(model, ctxNoHint)
+      out.isRight shouldBe true
+      out.toOption.get.count() shouldBe 1
+    } finally {
+      spark.stop()
+    }
+  }
+
+  test("PortableQueryCompiler.applyJoins: broadcastRightBelowBytes set above right-side runs join cleanly") {
+    // Per [[scala-spark-batch-bugs-mindset]] mantra #7 (broadcast joins):
+    // when the hint is set AND rightDf.sizeInBytes <= threshold, the
+    // join uses `broadcast(rightDf)` instead of shuffle-hash.
+    val spark = SparkSession.builder().master("local[1]").appName("tO2Hint").getOrCreate()
+    try {
+      val schema = new org.apache.spark.sql.types.StructType(Array(
+        org.apache.spark.sql.types.StructField("id", org.apache.spark.sql.types.IntegerType),
+        org.apache.spark.sql.types.StructField("val", org.apache.spark.sql.types.IntegerType),
+      ))
+      spark.createDataFrame(
+        java.util.Arrays.asList(
+          org.apache.spark.sql.RowFactory.create(1: java.lang.Integer, 10: java.lang.Integer),
+        ),
+        schema,
+      ).createOrReplaceTempView("O2HintLeft")
+      spark.createDataFrame(
+        java.util.Arrays.asList(
+          org.apache.spark.sql.RowFactory.create(1: java.lang.Integer, 100: java.lang.Integer),
+        ),
+        schema,
+      ).createOrReplaceTempView("O2HintRight")
+      val joinHints = io.sm8.core.engine.JoinHints(
+        broadcastRightBelowBytes = Some(1048576L),  // 1MB
+        skewFactor               = None,
+        preferredStrategy        = None,
+      )
+      val ctxWithHint = io.sm8.core.engine.EngineContext.defaultContext.copy(joinHints = joinHints)
+      val model = Model.of(
+        name   = "o2-hint",
+        version = 1,
+        source = io.sm8.core.model.SourceRef.ByName(table = "O2HintLeft"),
+        joins  = List(JoinSpec(
+          name       = "j1",
+          rightModel = "O2HintRight",
+          kind       = JoinKind.Inner,
+          keys       = List(("id", "id")),
+        )),
+      ).toOption.get
+      val compiler = new PortableQueryCompiler(spark)
+      val out = compiler.compile(model, ctxWithHint)
+      out.isRight shouldBe true
+      out.toOption.get.count() shouldBe 1
+    } finally {
+      spark.stop()
+    }
+  }
+
 }

@@ -128,4 +128,31 @@ object SparkTypeBridge extends java.io.Serializable {
     // Unknown — Json fallback (matches legacy's last `case _` arm).
     case _             => SealedDataType.Json
   }
+
+  /** Inverse: portable `SealedDataType` -> Spark `DataType`.
+    * PR-O1a (ADR-008-O): P0-1's Expr.Cast fix relies on this.
+    * Previously Expr.Cast always rendered `cast("string")` regardless
+    * of targetType -- the wire-schema lied and the row-cell decoder
+    * fell through to `ResultValue.StringV(cell.toString)`. With this
+    * method the Cast honors the declared type.
+    *
+    * Per [[scala-jvm-safety-mindset]]: no Spark import outside this
+    * module (SparkTypeBridge already lives in spark-connector; the
+    * method is in scope).
+    */
+  def sealedDataTypeToSparkType(t: SealedDataType): DataType = t match {
+    case SealedDataType.Varchar                => StringType
+    case SealedDataType.Int                    => IntegerType
+    case SealedDataType.Double                 => DoubleType
+    case SealedDataType.Boolean                => BooleanType
+    case SealedDataType.Timestamp              => TimestampType
+    case SealedDataType.Date                  => DateType
+    case SealedDataType.Binary                 => BinaryType
+    case SealedDataType.BigInt                 => LongType
+    case SealedDataType.Json                   => StringType
+    case SealedDataType.Row(_)                => StringType  // portable Row -> Spark String (nested decoding deferred)
+    case SealedDataType.Array(elementType)     => ArrayType(sealedDataTypeToSparkType(elementType))
+    case SealedDataType.Map(kt, vt)            => MapType(sealedDataTypeToSparkType(kt), sealedDataTypeToSparkType(vt))
+    case SealedDataType.Decimal(p, s)          => DecimalType(p, s)
+  }
 }

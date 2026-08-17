@@ -194,7 +194,7 @@ class RelOpConformanceSpec extends AnyFunSuite with Matchers {
   // ===== RelOp (7 nodes) =====
 
   private val sampleScan = RelOp.Scan(
-    sourceRef  = SourceRef.ByName("default", "people"),
+    sourceRef  = SourceRef.ByName(table = "people"),
     schema     = List(Field("id", SealedDataType.Int, nullable = false)),
     projection = List(Expr.FieldRef("id")),
   )
@@ -218,12 +218,12 @@ class RelOpConformanceSpec extends AnyFunSuite with Matchers {
 
   test("RelOp.Scan: case-class equality") {
     val s1 = RelOp.Scan(
-      sourceRef  = SourceRef.ByName("default", "people"),
+      sourceRef  = SourceRef.ByName(table = "people"),
       schema     = List(Field("id", SealedDataType.Int, nullable = false)),
       projection = List(Expr.FieldRef("id")),
     )
     val s2 = RelOp.Scan(
-      sourceRef  = SourceRef.ByName("default", "people"),
+      sourceRef  = SourceRef.ByName(table = "people"),
       schema     = List(Field("id", SealedDataType.Int, nullable = false)),
       projection = List(Expr.FieldRef("id")),
     )

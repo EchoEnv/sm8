@@ -48,7 +48,7 @@ class SparkEngineProviderDiscoverySpec extends AnyFunSuite with Matchers {
     urls.asScala.foreach { u =>
       scala.io.Source.fromURL(u).getLines().foreach(lines += _)
     }
-    lines.toSet should contain (classOf[SparkEngineProvider].getName)
+    lines.toSet should contain (classOf[SparkEngineProviderDescriptor].getName)
   }
 
   test("Portal: ServiceLoader discovers SparkEngineProvider from the classpath") {
@@ -58,13 +58,13 @@ class SparkEngineProviderDiscoverySpec extends AnyFunSuite with Matchers {
       .asScala
       .toList
     val classes = providers.map(_.getClass.getName).toSet
-    classes should contain (classOf[SparkEngineProvider].getName)
+    classes should contain (classOf[SparkEngineProviderDescriptor].getName)
   }
 
   // -- No-arg constructor: the contract-gap stub shape --
 
   test("SparkEngineProvider no-arg ctor: produces the contract-gap stub (available = false)") {
-    val p = new SparkEngineProvider()
+    val p = new SparkEngineProviderDescriptor()
     p.identity.name shouldBe "spark-3.5"
     p.available shouldBe false
   }

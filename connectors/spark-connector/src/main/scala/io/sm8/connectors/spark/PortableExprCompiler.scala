@@ -103,11 +103,17 @@ object PortableExprCompiler extends java.io.Serializable {
     case Expr.IsNull(e)            => toColumn(e).isNull
     case Expr.IsNotNull(e)         => toColumn(e).isNotNull
 
-    // -- Cast: lowered to Spark's cast (the Spark `Column` cast
-    //    is a no-op at the type level; the DataFrame's analyzer
-    //    handles the schema-level type cast via the output
-    //    schema we set on the resulting DataFrame). --
-    case Expr.Cast(e, _)           => toColumn(e).cast("string")
+    // -- Cast: lowered to Spark's cast (PR-O1b, ADR-008-O,
+    //    P0-1 data-correctness fix). Previously this rendered
+    //    `cast("string")` regardless of `targetType` -- the
+    //    wire-schema lied and the row-cell decoder fell through
+    //    to ResultValue.StringV(cell.toString). Now the cast
+    //    uses the portable SealedDataType via
+    //    SparkTypeBridge.sealedDataTypeToSparkType (PR-O1a).
+    case Expr.Cast(e, targetType) =>
+      toColumn(e).cast(
+        SparkTypeBridge.sealedDataTypeToSparkType(targetType)
+      )
 
     // -- MeasureRef: a measure reference resolved at the engine
     // side (the existing measure column is in scope after the

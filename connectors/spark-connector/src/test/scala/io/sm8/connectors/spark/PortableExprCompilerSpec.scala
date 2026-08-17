@@ -256,6 +256,45 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
     } finally { spark.stop() }
   }
 
+  // ===== PR-O1b (ADR-008-O, P0-1): Expr.Cast honors targetType =====
+
+  test("PR-O1b: Expr.Cast(targetType = Varchar) renders cast(string) not cast(int)") {
+    val spark = buildFakeSpark()
+    try {
+      val col = PortableExprCompiler.toColumn(Expr.Cast(
+        Expr.FieldRef("amount"),
+        SealedDataType.Varchar))
+      val sql = col.expr.sql.toUpperCase
+      sql should include ("CAST")
+      sql should not include "INT"
+      sql should include ("STRING")
+    } finally { spark.stop() }
+  }
+
+  test("PR-O1b: Expr.Cast(targetType = Int) renders cast(int)") {
+    val spark = buildFakeSpark()
+    try {
+      val col = PortableExprCompiler.toColumn(Expr.Cast(
+        Expr.FieldRef("amount_str"),
+        SealedDataType.Int))
+      val sql = col.expr.sql.toUpperCase
+      sql should include ("CAST")
+      sql should include ("INT")
+    } finally { spark.stop() }
+  }
+
+  test("PR-O1b: Expr.Cast(targetType = Decimal(10,2)) renders cast(DECIMAL(10,2))") {
+    val spark = buildFakeSpark()
+    try {
+      val col = PortableExprCompiler.toColumn(Expr.Cast(
+        Expr.FieldRef("raw_amount"),
+        SealedDataType.Decimal(precision = 10, scale = 2)))
+      val sql = col.expr.sql.toUpperCase
+      sql should include ("CAST")
+      sql should include ("DECIMAL")
+    } finally { spark.stop() }
+  }
+
   test("Expr.All: dispatches to col(name)") {
     val spark = buildFakeSpark()
     try {

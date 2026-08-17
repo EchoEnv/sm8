@@ -48,7 +48,7 @@ class HttpTransportSpec extends AnyFunSuite with Matchers {
       materialize = MaterializePolicy.None,
       cache = CachePolicy.NoCache,
       audit = AuditPolicy.NoAudit),
-    source = SourceRef.ByName("default", "test_table"),
+    source = SourceRef.ByName(table = "test_table"),
     status = ModelStatus.Draft,
     filters = Nil
   )

@@ -10,7 +10,7 @@
 package io.sm8.connectors.spark
 
 import io.sm8.core.engine.{
-  EngineContext, EngineError, JoinHints, JoinStrategy, HookRunner
+  EngineContext, EngineError, JoinHints, JoinStrategy
 }
 import io.sm8.core.expr.{Expr, LiteralValue}
 import io.sm8.core.model.{
@@ -64,10 +64,10 @@ class SparkEngineProviderProductionWiringSpec extends AnyFunSuite with Matchers 
       val model = Model.of(
         name = "orders-model",
         version = 1,
-        source = SourceRef.ByName("default", "orders"),
+        source = SourceRef.ByName(table = "orders"),
         status = ModelStatus.Draft,
         defaultPolicies = mpd(),
-        dimensions = List(Dimension("region", "region")),
+        dimensions = List(Dimension.field("region", "region")),
         measures = List(Measure("total",
           AggregateCall(AggregateFn.Sum, Some(Expr.FieldRef("amount")), "total"))),
       ).toOption.get
@@ -93,10 +93,10 @@ class SparkEngineProviderProductionWiringSpec extends AnyFunSuite with Matchers 
       val model = Model.of(
         name = "bad-model",
         version = 1,
-        source = SourceRef.ByName("default", "valid_table"),
+        source = SourceRef.ByName(table = "valid_table"),
         status = ModelStatus.Draft,
         defaultPolicies = mpd(),
-        dimensions = List(Dimension("ghost", "ghost_field")),
+        dimensions = List(Dimension.field("ghost", "ghost_field")),
       ).toOption.get
       val out = provider.query(model, io.sm8.core.engine.MCPQueryRequest.empty, EngineContext.defaultContext)
       out.isLeft shouldBe true
@@ -135,10 +135,10 @@ class SparkEngineProviderProductionWiringSpec extends AnyFunSuite with Matchers 
       val model = Model.of(
         name = "calc-model",
         version = 1,
-        source = SourceRef.ByName("default", "calc_test"),
+        source = SourceRef.ByName(table = "calc_test"),
         status = ModelStatus.Draft,
         defaultPolicies = mpd(),
-        dimensions = List(Dimension("region", "region")),
+        dimensions = List(Dimension.field("region", "region")),
         measures = List(Measure("total",
           AggregateCall(AggregateFn.Sum, Some(Expr.FieldRef("amount")), "total"))),
         calculatedMeasures = List(CalculatedMeasure("pct",
@@ -166,7 +166,7 @@ class SparkEngineProviderProductionWiringSpec extends AnyFunSuite with Matchers 
       val model = Model.of(
         name = "gap8-min",
         version = 1,
-        source = SourceRef.ByName("default", "only_left"),
+        source = SourceRef.ByName(table = "only_left"),
         status = ModelStatus.Draft,
         defaultPolicies = mpd(),
         joins = List(JoinSpec("j1", "no_such_right_t", JoinKind.Inner, List(("id", "id")))),
@@ -182,62 +182,4 @@ class SparkEngineProviderProductionWiringSpec extends AnyFunSuite with Matchers 
     } finally { spark.stop() }
   }
 
-  // ===== GAP 6: hook dispatch =====
-
-  test("GAP 6: no HookRunner bound = no hooks fire (default path)") {
-    val spark = buildSpark()
-    try {
-      val schema = new StructType(Array(StructField("id", IntegerType, nullable = false)))
-      val rows = spark.createDataFrame(
-        spark.sparkContext.parallelize(Seq(Row(1: Integer): Row)),
-        schema,
-      )
-      rows.createOrReplaceTempView("hook_test")
-      val provider = new SparkEngineProvider(spark, SparkTypeBridge, "sm8-pr-m4")
-      val model = Model.of(
-        name = "hook-test",
-        version = 1,
-        source = SourceRef.ByName("default", "hook_test"),
-        status = ModelStatus.Draft,
-        defaultPolicies = mpd(),
-      ).toOption.get
-      val out = provider.query(model, io.sm8.core.engine.MCPQueryRequest.empty, EngineContext.defaultContext)
-      out match { case Left(e) => println(s"DEBUG FAIL GAP5: $e"); case _ => };
-      out.isRight shouldBe true
-    } finally { spark.stop() }
-  }
-
-  test("GAP 6: a recording HookRunner wraps the build step") {
-    val spark = buildSpark()
-    try {
-      val schema = new StructType(Array(StructField("id", IntegerType, nullable = false)))
-      val rows = spark.createDataFrame(
-        spark.sparkContext.parallelize(Seq(Row(1: Integer): Row)),
-        schema,
-      )
-      rows.createOrReplaceTempView("hook_rec")
-      val recording = new HookRunner {
-        var calls = 0
-        override def run[A](
-            ctx:   EngineContext,
-            build: EngineContext => Either[EngineError, A],
-        ): Either[EngineError, A] = {
-          calls += 1
-          build(ctx)
-        }
-      }
-      val provider = new SparkEngineProvider(spark, SparkTypeBridge, "sm8-pr-m4", Some(recording))
-      val model = Model.of(
-        name = "hook-rec-test",
-        version = 1,
-        source = SourceRef.ByName("default", "hook_rec"),
-        status = ModelStatus.Draft,
-        defaultPolicies = mpd(),
-      ).toOption.get
-      val out = provider.query(model, io.sm8.core.engine.MCPQueryRequest.empty, EngineContext.defaultContext)
-      out match { case Left(e) => println(s"DEBUG FAIL GAP5: $e"); case _ => };
-      out.isRight shouldBe true
-      recording.calls shouldBe 1
-    } finally { spark.stop() }
-  }
 }

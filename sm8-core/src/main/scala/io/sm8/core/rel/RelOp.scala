@@ -65,6 +65,17 @@ object RelOp {
       sourceRef:  io.sm8.core.model.SourceRef,
       schema:     List[Field],
       projection: List[Expr],
+      /** PR-O4d (ADR-008-O): resolution provenance. Restored the
+        * legacy semanticdf pre-tag shape -- the IR carries the
+        * 4-case `ResolvedSource` ADT (Scan / NotFound /
+        * Incompatible / AuthFailed) so engine adapters can
+        * pattern-match the failure states directly without
+        * re-invoking `SourceResolver.resolve(...)`. Populated by
+        * `QueryBuilder.assembleRelOp` when the source resolves;
+        * `None` when the QueryBuilder's resolver produced a Left
+        * (the calling code surfaces the typed error instead).
+        */
+      resolution: Option[io.sm8.core.engine.ResolvedSource] = None,
   ) extends RelOp
 
   /** Apply a predicate to a child. Maps to Spark's `Filter`,

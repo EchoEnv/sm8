@@ -90,8 +90,35 @@ object AuditPolicy {
   final case class EmitEvents(sinkRef: String) extends AuditPolicy
 }
 
-/** A dimension field on a Model. */
-final case class Dimension(name: String, expr: String)
+/** A dimension field on a Model. PR-O4b (ADR-008-O):
+  * re-typed `expr: String` -> `Expr` (matching the legacy semanticdf
+  * pre-tag audit). Per [[scala-data-driven-refactor-mindset]]: data
+  * is the IR, not free-form strings. A String allowed silent typos
+  * at engine-compile time (the legacy's stated reason for typed
+  * Expr). `dataType: Option[SealedDataType]` carries the optional
+  * declared type for model validators; default `None` means
+  * "infer from expr".
+  *
+  * Smart constructor `Dimension.field(name, fieldName)` for the
+  * common case (a column reference). The structural constructor is
+  * for `Dimension(name, Expr.Add(...))` etc.
+  */
+final case class Dimension(
+    name:     String,
+    expr:     io.sm8.core.expr.Expr,
+    dataType: Option[io.sm8.core.schema.SealedDataType] = None,
+) extends Product with Serializable
+
+object Dimension {
+  /** Convenience factory: a typed FieldRef dimension, no declared
+    * dataType (inferred from the column). */
+  def field(name: String, fieldName: String): Dimension =
+    Dimension(name = name, expr = io.sm8.core.expr.Expr.FieldRef(fieldName))
+  /** Convenience factory: a typed FieldRef dimension WITH declared
+    * dataType. */
+  def field(name: String, fieldName: String, dataType: io.sm8.core.schema.SealedDataType): Dimension =
+    Dimension(name = name, expr = io.sm8.core.expr.Expr.FieldRef(fieldName), dataType = Some(dataType))
+}
 
 /** A measure field on a Model. PR-J (2026-08-16): `expr` is now a
   * typed `AggregateCall` (was `String`). The typed form forces
@@ -139,11 +166,32 @@ object Measure {
  */
 sealed trait SourceRef extends Product with Serializable
 object SourceRef {
-  /** Source identified by name + table name. Resolver registered separately. */
-  final case class ByName(name: String, table: String) extends SourceRef
+  /** Source identified by catalog / namespace / table. PR-O4c
+    * (ADR-008-O): re-port the legacy semanticdf pre-tag shape
+    * (Option[String] for catalog + namespace). The wired SM8 was
+    * missing these 2 fields -- they were dropped as "smallest
+    * correct change" but the data-engineer parity review flagged
+    * this as a wire-breaking regression for any YAML/MCP payload
+    * referencing the 3-part name. The smart constructors preserve
+    * the 2-arg legacy 1.x / 2.x form.
+    */
+  final case class ByName(
+    catalog:   Option[String] = None,
+    namespace: Option[String] = None,
+    table:     String,
+  ) extends SourceRef
+
+  /** Smart constructor: bare `(name, table)` 2-arg form preserved
+    * for legacy callers (every existing test) and tests written
+    * before the catalog/namespace fields landed. Maps to the legacy
+    * semanticdf pre-tag shape (catalog=None, namespace=None). */
+  def byName(name: String, table: String): ByName = ByName(
+    catalog = None, namespace = None, table = table
+  )
+
   /** Source identified by file path + format. */
   final case class ByPath(format: String, path: String, options: Map[String, String] = Map.empty) extends SourceRef
-  /** ProviderRef — name + driver-local closure. */
+  /** ProviderRef -- name + driver-local closure. */
   final case class ByProvider(providerRefName: String) extends SourceRef
 }
 
@@ -155,6 +203,8 @@ final case class ProviderRef(name: String)
  * boundary per [[karpathy-guidelinesmindset]]. Returns
  * `Left(validationError)` on failure, `Right(model)` on success.
  */
+import io.sm8.core.schema.SealedDataType
+
 object Model {
   def of(
       name: String,

@@ -36,8 +36,9 @@ object RelOpPlanPrinter {
   private def printNode(node: RelOp, depth: Int): String = {
     val pad = "  " * depth
     node match {
-      case RelOp.Scan(sourceRef, _, _) =>
-        s"${pad}Scan(${renderSourceRef(sourceRef)})"
+      case RelOp.Scan(sourceRef, _, _, resolution) =>
+        val resPart = resolution.fold("")(r => s", resolution=${renderResolution(r)}")
+        s"${pad}Scan(${renderSourceRef(sourceRef)}" + resPart + ")"
 
       case RelOp.Filter(input, predicate) =>
         s"${pad}Filter(${renderExpr(predicate)})\n" + printNode(input, depth + 1)
@@ -75,12 +76,26 @@ object RelOpPlanPrinter {
   }
 
   private def renderSourceRef(s: io.sm8.core.model.SourceRef): String = s match {
-    case io.sm8.core.model.SourceRef.ByName(name, table) =>
-      s"name=$name, table=$table"
+    case io.sm8.core.model.SourceRef.ByName(catalog, namespace, table) =>
+      // PR-O4c (ADR-008-O): print all 3 fields; omit None options from the output
+      val catalogPart   = catalog.fold("")(n => s"catalog=$n, ")
+      val namespacePart = namespace.fold("")(n => s"namespace=$n, ")
+      s"$catalogPart$namespacePart" + s"table=$table"
     case io.sm8.core.model.SourceRef.ByPath(format, path, _) =>
       s"format=$format, path=$path"
     case io.sm8.core.model.SourceRef.ByProvider(providerRefName) =>
       s"provider=$providerRefName"
+  }
+
+  /** Render a 4-case ResolvedSource as a short tag for the printer.
+    * PR-O4d (ADR-008-O): the failure-state provenance is now first-class
+    * on the IR; the printer surfaces it inline at Scan time.
+    */
+  private def renderResolution(r: io.sm8.core.engine.ResolvedSource): String = r match {
+    case io.sm8.core.engine.ResolvedSource.Scan(_, _)         => "Scan"
+    case io.sm8.core.engine.ResolvedSource.NotFound(_, _)     => "NotFound"
+    case io.sm8.core.engine.ResolvedSource.Incompatible(_, _) => "Incompatible"
+    case io.sm8.core.engine.ResolvedSource.AuthFailed(_, _)    => "AuthFailed"
   }
 
   private def renderExpr(e: Expr): String = e match {

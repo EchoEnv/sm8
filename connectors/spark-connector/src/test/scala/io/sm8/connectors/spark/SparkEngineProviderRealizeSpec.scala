@@ -16,14 +16,14 @@ import org.scalatest.matchers.should.Matchers
 class SparkEngineProviderRealizeSpec extends AnyFunSuite with Matchers {
 
   test("realize(blank) → None (per-connector grammar: non-blank required)") {
-    val stub = new SparkEngineProvider()
+    val stub = new SparkEngineProviderDescriptor()
     stub.realize("") shouldBe None
     stub.realize("   ") shouldBe None
     stub.realize(null) shouldBe None
   }
 
   test("realize(valid master url) → Some with available=true + real session") {
-    val p = new SparkEngineProvider()
+    val p = new SparkEngineProviderDescriptor()
     val realized = p.realize("local[1]")
     realized shouldBe defined
     val r = realized.get.asInstanceOf[SparkEngineProvider]
@@ -34,18 +34,18 @@ class SparkEngineProviderRealizeSpec extends AnyFunSuite with Matchers {
 
   test("realize: typed result is a SparkEngineProvider (not a generic cast)") {
     val realized: Option[MCPEngineProvider] =
-      new SparkEngineProvider().realize("local[1]")
+      new SparkEngineProviderDescriptor().realize("local[1]")
     realized.get shouldBe a [SparkEngineProvider]
   }
 
   test("realize returns a DIFFERENT instance than the stub (no self-mutation)") {
-    val stub = new SparkEngineProvider()
+    val stub = new SparkEngineProviderDescriptor()
     val realized = stub.realize("local[1]")
     realized.get should not be theSameInstanceAs (stub)
   }
 
   test("realize(local[1]) survives Java-serialization round-trip (closure-safety)") {
-    val p = new SparkEngineProvider().realize("local[1]").get
+    val p = new SparkEngineProviderDescriptor().realize("local[1]").get
     val bytes = {
       val bos = new java.io.ByteArrayOutputStream()
       val oos = new java.io.ObjectOutputStream(bos)

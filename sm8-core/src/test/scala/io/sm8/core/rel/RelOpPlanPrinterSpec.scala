@@ -27,14 +27,14 @@ class RelOpPlanPrinterSpec extends AnyFunSuite with Matchers {
 
   test("print: renders a single Scan with byName source") {
     val plan = RelOp.Scan(
-      sourceRef = SourceRef.ByName("default", "people"),
+      sourceRef = SourceRef.ByName(table = "people"),
       schema     = Nil,
       projection = Nil,
     )
     val s = RelOpPlanPrinter.print(plan)
     s should include ("Scan(")
     s should include ("table=people")
-    s should include ("name=default")
+    s should not include "name="
   }
 
   test("print: renders a Scan with byPath source") {
@@ -49,7 +49,7 @@ class RelOpPlanPrinterSpec extends AnyFunSuite with Matchers {
 
   test("print: renders a Filter wrapping a Scan") {
     val plan = RelOp.Filter(
-      input     = RelOp.Scan(SourceRef.ByName("d", "t"), Nil, Nil),
+      input     = RelOp.Scan(SourceRef.ByName(table = "t"), Nil, Nil),
       predicate = Expr.GreaterThan(Expr.FieldRef("amount"), intLit(100)),
     )
     val s = RelOpPlanPrinter.print(plan)
@@ -63,7 +63,7 @@ class RelOpPlanPrinterSpec extends AnyFunSuite with Matchers {
 
   test("print: renders a Project with aliases") {
     val plan = RelOp.Project(
-      input = RelOp.Scan(SourceRef.ByName("d", "t"), Nil, Nil),
+      input = RelOp.Scan(SourceRef.ByName(table = "t"), Nil, Nil),
       expressions = List(
         (Expr.FieldRef("a"), "alpha"),
         (Expr.FieldRef("b"), "beta"),
@@ -78,7 +78,7 @@ class RelOpPlanPrinterSpec extends AnyFunSuite with Matchers {
 
   test("print: renders an Aggregate with Sum + CountDistinct") {
     val plan = RelOp.Aggregate(
-      input      = RelOp.Scan(SourceRef.ByName("d", "t"), Nil, Nil),
+      input      = RelOp.Scan(SourceRef.ByName(table = "t"), Nil, Nil),
       groupBy    = List(Expr.FieldRef("region")),
       aggregates = List(
         AggregateCall(AggregateFn.Sum, Some(Expr.FieldRef("amount")), "total", false, Nil),
@@ -97,8 +97,8 @@ class RelOpPlanPrinterSpec extends AnyFunSuite with Matchers {
   test("print: renders all 5 JoinKind cases") {
     for (kind <- Seq(JoinKind.Inner, JoinKind.Left, JoinKind.Right, JoinKind.Full, JoinKind.Cross)) {
       val plan = RelOp.Join(
-        left = RelOp.Scan(SourceRef.ByName("l", "t"), Nil, Nil),
-        right = RelOp.Scan(SourceRef.ByName("r", "t"), Nil, Nil),
+        left = RelOp.Scan(SourceRef.ByName(table = "t"), Nil, Nil),
+        right = RelOp.Scan(SourceRef.ByName(table = "t"), Nil, Nil),
         kind = kind,
         condition = Expr.Equal(Expr.FieldRef("id"), Expr.FieldRef("id")),
       )
@@ -110,7 +110,7 @@ class RelOpPlanPrinterSpec extends AnyFunSuite with Matchers {
 
   test("print: renders Sort with ASC + DESC + nulls FIRST + nulls LAST") {
     val plan = RelOp.Sort(
-      input = RelOp.Scan(SourceRef.ByName("d", "t"), Nil, Nil),
+      input = RelOp.Scan(SourceRef.ByName(table = "t"), Nil, Nil),
       keys = List(
         SortKey(Expr.FieldRef("a"), SortDirection.Ascending,  NullOrdering.First),
         SortKey(Expr.FieldRef("b"), SortDirection.Descending, NullOrdering.Last),
@@ -126,7 +126,7 @@ class RelOpPlanPrinterSpec extends AnyFunSuite with Matchers {
 
   test("print: renders Limit with explicit count and offset") {
     val plan = RelOp.Limit(
-      input = RelOp.Scan(SourceRef.ByName("d", "t"), Nil, Nil),
+      input = RelOp.Scan(SourceRef.ByName(table = "t"), Nil, Nil),
       count = 10L,
       offset = 5L,
     )
@@ -138,7 +138,7 @@ class RelOpPlanPrinterSpec extends AnyFunSuite with Matchers {
 
   test("print: renders CaseWhen with branches + otherwise") {
     val plan = RelOp.Project(
-      input = RelOp.Scan(SourceRef.ByName("d", "t"), Nil, Nil),
+      input = RelOp.Scan(SourceRef.ByName(table = "t"), Nil, Nil),
       expressions = List(
         (Expr.Alias("band",
           Expr.CaseWhen(
@@ -159,7 +159,7 @@ class RelOpPlanPrinterSpec extends AnyFunSuite with Matchers {
   test("print: indentation reflects depth (Filter > Scan)") {
     val plan = RelOp.Filter(
       input = RelOp.Filter(
-        input = RelOp.Scan(SourceRef.ByName("d", "t"), Nil, Nil),
+        input = RelOp.Scan(SourceRef.ByName(table = "t"), Nil, Nil),
         predicate = Expr.Equal(Expr.FieldRef("x"), intLit(1)),
       ),
       predicate = Expr.Equal(Expr.FieldRef("y"), intLit(2)),
@@ -167,7 +167,7 @@ class RelOpPlanPrinterSpec extends AnyFunSuite with Matchers {
     val s = RelOpPlanPrinter.print(plan)
     s should include ("Filter((FieldRef(y) = Literal(IntValue(2),Int)))")
     s should include ("  Filter((FieldRef(x) = Literal(IntValue(1),Int)))")
-    s should include ("    Scan(name=d, table=t)")
+    s should include ("    Scan(table=t)")
     val outerFilterPos = s.indexOf("Filter(")
     val innerFilterPos = s.indexOf("  Filter(")
     val scanPos        = s.indexOf("    Scan(")
@@ -180,7 +180,7 @@ class RelOpPlanPrinterSpec extends AnyFunSuite with Matchers {
       input = RelOp.Sort(
         input = RelOp.Project(
           input = RelOp.Filter(
-            input = RelOp.Scan(SourceRef.ByName("default", "people"), Nil, Nil),
+            input = RelOp.Scan(SourceRef.ByName(table = "people"), Nil, Nil),
             predicate = Expr.GreaterThan(Expr.FieldRef("age"), intLit(0)),
           ),
           expressions = List((Expr.FieldRef("name"), "n")),
@@ -199,4 +199,49 @@ class RelOpPlanPrinterSpec extends AnyFunSuite with Matchers {
     // The order (outermost first) matches the tree structure
     (List("Limit", "Sort", "Project", "Filter", "Scan").map(s.indexOf).sorted == List("Limit", "Sort", "Project", "Filter", "Scan").map(s.indexOf)) shouldBe true
   }
+
+  // ===== PR-O4d (ADR-008-O): RelOp.Scan.resolution rendered as a short tag =====
+
+  test("print: Scan with resolution = Some(Scan) renders resolution=Scan") {
+    val plan = RelOp.Scan(
+      sourceRef  = SourceRef.ByName(table = "people"),
+      schema     = Nil,
+      projection = Nil,
+      resolution = Some(io.sm8.core.engine.ResolvedSource.Scan(
+        source = SourceRef.ByName(table = "people"),
+        schema = Nil,
+      )),
+    )
+    val s = RelOpPlanPrinter.print(plan)
+    s should include ("Scan(")
+    s should include ("table=people")
+    s should include ("resolution=Scan")
+  }
+
+  test("print: Scan with resolution = None omits the resolution tag") {
+    val plan = RelOp.Scan(
+      sourceRef  = SourceRef.ByName(table = "events"),
+      schema     = Nil,
+      projection = Nil,
+      // resolution = None (the new default)
+    )
+    val s = RelOpPlanPrinter.print(plan)
+    s should include ("table=events")
+    s should not include "resolution="
+  }
+
+  test("print: Scan with resolution = NotFound surfaces the failure tag") {
+    val plan = RelOp.Scan(
+      sourceRef  = SourceRef.ByName(table = "ghost"),
+      schema     = Nil,
+      projection = Nil,
+      resolution = Some(io.sm8.core.engine.ResolvedSource.NotFound(
+        source = SourceRef.ByName(table = "ghost"),
+        reason = "table not in catalog",
+      )),
+    )
+    val s = RelOpPlanPrinter.print(plan)
+    s should include ("resolution=NotFound")
+  }
+
 }

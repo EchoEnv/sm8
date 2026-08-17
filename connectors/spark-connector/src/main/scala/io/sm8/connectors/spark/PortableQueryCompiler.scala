@@ -279,15 +279,42 @@ final class PortableQueryCompiler(val spark: SparkSession)
             // map-side broadcast). Per [[scala-spark-batch-bugs-mindset]]
             // mantra #1 (closure-safety): the hint is a string
             // descriptor -- no captured lambdas.
+            // PR-O2 (ADR-008-O, P0-4): honor
+            // `ctx.joinHints.broadcastRightBelowBytes`. Per
+            // [[scala-spark-batch-bugs-mindset]] mantra #7
+            // (broadcast joins for small right-side tables): a
+            // 100MB-left x 1MB-right join WITHOUT broadcast
+            // becomes a shuffle-hash join -- slow at scale.
+            //
+            // Decision: when the hint is set AND `rDf.sizeInBytes`
+            // is below the threshold, broadcast. Otherwise fall
+            // through to the default (no broadcast). When the hint
+            // is unset, we trust Spark's own
+            // `autoBroadcastJoinThreshold` (typically 10MB).
+            //
+            // Per [[scala-perf-testing-mindset]]: the size probe
+            // is a single `queryExecution.analyzed.stats.sizeInBytes`
+            // call -- O(1), no row materialization.
+            import org.apache.spark.sql.functions.broadcast
+            // Spark 3.5 returns sizeInBytes as BigInt; convert to Long.
+            val rightBytes: Long = try {
+              rDf.queryExecution.analyzed.stats.sizeInBytes.toLong
+            } catch { case _: Throwable => Long.MaxValue }
+            val shouldBroadcast: Boolean = ctx.joinHints.broadcastRightBelowBytes match {
+              case Some(threshold) => rightBytes >= 0L && rightBytes <= threshold
+              case None            => false  // trust Spark's default heuristic
+            }
+            val rDfEff: DataFrame = if (shouldBroadcast) broadcast(rDf) else rDf
+
             val baseJoin: DataFrame = js.kind match {
-              case JoinKind.Inner => accDf.join(rDf, accDf(leftKey) === rDf(rightKey), "inner")
-              case JoinKind.Left  => accDf.join(rDf, accDf(leftKey) === rDf(rightKey), "left")
-              case JoinKind.Right => accDf.join(rDf, accDf(leftKey) === rDf(rightKey), "right")
-              case JoinKind.Full  => accDf.join(rDf, accDf(leftKey) === rDf(rightKey), "outer")
+              case JoinKind.Inner => accDf.join(rDfEff, accDf(leftKey) === rDfEff(rightKey), "inner")
+              case JoinKind.Left  => accDf.join(rDfEff, accDf(leftKey) === rDfEff(rightKey), "left")
+              case JoinKind.Right => accDf.join(rDfEff, accDf(leftKey) === rDfEff(rightKey), "right")
+              case JoinKind.Full  => accDf.join(rDfEff, accDf(leftKey) === rDfEff(rightKey), "outer")
               // Per the RelOp.Join contract (PR-H): Cross is UNCONDITIONAL
               // -- the key/condition is ignored; the join is the plain
               // Cartesian product.
-              case JoinKind.Cross => accDf.crossJoin(rDf)
+              case JoinKind.Cross => accDf.crossJoin(rDfEff)
             }
             val hinted: DataFrame = ctx.joinHints.preferredStrategy match {
               case Some(JoinStrategy.Broadcast) => baseJoin.hint("broadcast")
@@ -295,7 +322,7 @@ final class PortableQueryCompiler(val spark: SparkSession)
               case Some(JoinStrategy.SortMerge) => baseJoin.hint("merge")
               case None => baseJoin
             }
-            hinted.drop(rDf(rightKey))
+            hinted.drop(rDfEff(rightKey))
           }
         }
       }
@@ -392,7 +419,7 @@ final class PortableQueryCompiler(val spark: SparkSession)
         ))
       } else {
         val dimCols: Array[Column] = model.dimensions
-          .map(d => PortableExprCompiler.toColumn(Expr.FieldRef(d.expr)))
+          .map(d => PortableExprCompiler.toColumn(d.expr))
           .toArray
         val result =
           if (collectAllReferences(model.calculatedMeasures).nonEmpty)
@@ -527,7 +554,14 @@ final class PortableQueryCompiler(val spark: SparkSession)
       df:    DataFrame,
       model: Model,
   ): DataFrame = {
-    val dimNames: Array[String] = model.dimensions.map(_.expr).toArray
+    // PR-O4b (ADR-008-O): dimension expr is now a typed Expr. For the
+    // common FieldRef case we extract the name; other Expr shapes are
+    // flattened to their first FieldRef here (the column-projection
+    // contract is "select these column names").
+    val dimNames: Array[String] = model.dimensions.map(d =>
+      io.sm8.core.expr.Calculator.fieldNamesOf(d.expr).headOption
+        .getOrElse(d.name)
+    ).toArray
     if (dimNames.isEmpty) df
     else df.select(dimNames.map(name => df.col(name)): _*)
   }

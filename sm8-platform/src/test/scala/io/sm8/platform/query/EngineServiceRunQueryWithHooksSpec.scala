@@ -67,7 +67,7 @@ class EngineServiceRunQueryWithHooksSpec extends AnyFunSuite with Matchers {
       MaterializePolicy.None,
       CachePolicy.NoCache,
       AuditPolicy.NoAudit),
-    source = SourceRef.ByName("m", "t"),
+    source = SourceRef.ByName(table = "t"),
     status = ModelStatus.Draft,
     filters = Nil
   )

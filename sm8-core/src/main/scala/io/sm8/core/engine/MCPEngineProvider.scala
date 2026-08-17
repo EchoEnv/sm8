@@ -50,6 +50,14 @@ trait MCPEngineProvider extends Serializable {
     * configured AND can serve queries right now. */
   def available: Boolean
 
+  /** Lifecycle hook for resource cleanup at shutdown. PR-O4a
+    * (ADR-008-O): the sm8-server runtime installs this in a
+    * `sys.addShutdownHook` so realized SparkSessions stop on exit.
+    * The default is a no-op (in-memory connectors have nothing to
+    * release). Safe to call multiple times.
+    */
+  def close(): Unit = ()
+
   /** Execute a query against this engine. Returns the
     * engine-portable `PortableQueryResult` (not the engine-native
     * shape).

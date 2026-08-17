@@ -47,19 +47,16 @@ final class SparkEngineProvider(
     val spark:           SparkSession,
     val bridge:          SparkTypeBridge.type,
     val sparkEngineName: String = "spark-3.5",
-    val hookDispatcher: Option[io.sm8.core.engine.HookRunner] = None
+    // PR-O3 (ADR-008-O, P0-5): the legacy `Option[HookRunner]` is
+    // removed. The platform now provides an `EngineHookDispatcher`
+    // whose bridge into the spark-connector requires a finer
+    // per-IR-step protocol (Context-shaped payloads, not DataFrame).
+    // That bridge is a future PR; this commit cleans up the false
+    // abstraction: the trait had only `Noop` and the dispatch
+    // was a no-op (per the architect review P0-5).
 ) extends MCPEngineProvider {
 
-  /** No-arg constructor for Java ServiceLoader discovery.
-    *
-    * Produces the contract-gap stub (`spark = null`, `available = false`)
-    * so the class is loaded by ServiceLoader without a SparkSession. The
-    * production wiring (Main) constructs the real provider with a live
-    * SparkSession and replaces the stub. Per RFC §3 the engine is the
-    * only piece that knows about SparkSession; the descriptor here is
-    * a pure-data presence marker.
-    */
-  def this() = this(null, SparkTypeBridge, "spark-3.5")
+
 
   /**
     * Real-runtime constructor (Phase 4 — Driver-side Spark Connect).
@@ -115,7 +112,52 @@ final class SparkEngineProvider(
       engineAdapterVersion = "0.1.0"
     )
 
+  /** PR-O4g (ADR-008-O): the null-sentinel no-arg ctor is gone.
+    * ServiceLoader discovery now goes through
+    * SparkEngineProviderDescriptor. The `available` flag stays
+    * `spark != null`-aware as a defensive measure against
+    * direct null-injection (the constructor still allows any
+    * reference; null just disables the provider).
+    */
   override val available: Boolean = spark != null
+
+  /** PR-O4a (ADR-008-O): lifecycle hook — stop the
+    * constructor-frozen SparkSession on JVM exit. Idempotent
+    * (SparkSession.stop is a no-op after the first call).
+    */
+  // PR-O4e (ADR-008-O): track every DataFrame we persist() so we
+  // can unpersist() them at JVM exit (per the cache-plugin
+  // long-lived-model intent). ConcurrentHashMap for thread-safe
+  // put/remove with no per-call allocation.
+  private val persistedFrames: java.util.concurrent.ConcurrentHashMap[java.lang.Long, org.apache.spark.sql.Dataset[_]] =
+    new java.util.concurrent.ConcurrentHashMap()
+  private val persistedSeq: java.util.concurrent.atomic.AtomicLong =
+    new java.util.concurrent.atomic.AtomicLong(0L)
+
+  /** PR-O4e: register a persisted DataFrame for paired
+    * unpersist-on-shutdown. Returns the unregister-token.
+    */
+  private[spark] def trackPersist(df: org.apache.spark.sql.Dataset[_]): Long = {
+    val tok = persistedSeq.incrementAndGet()
+    persistedFrames.put(tok, df)
+    tok
+  }
+
+  /** PR-O4a + PR-O4e: lifecycle hook -- unpersist every tracked
+    * DataFrame, then stop the constructor-frozen SparkSession.
+    * Idempotent (SparkSession.stop is a no-op after the first call).
+    */
+  override def close(): Unit = try {
+    import scala.collection.JavaConverters._
+    persistedFrames.asScala.foreach { case (_, df) =>
+      try df.unpersist()
+      catch { case _: Throwable => () }
+    }
+    persistedFrames.clear()
+    if (spark != null) spark.stop()
+  } catch {
+    case _: Throwable => ()
+  }
 
   // PR-M4 (GAP 5 — the most critical): the IR-extension path
   // (PR-H/I/J/K/L) was inert in production — `query` called
@@ -161,12 +203,12 @@ final class SparkEngineProvider(
     //      detection runs here (built-in).
     //   4. Compile the RelOp via `PortableQueryCompiler.compileRelOp`.
     //   5. PR-M4 (GAP 6): wrap the build+compile step in the bound
-    //      `HookRunner` if one is configured. None = no hooks fire.
+    //      dispatcher (deferred -- O3+1).
     //   6. Apply request-level where + limit + collect + decode.
     //
     // The compile steps are factored into a thunk; the for-comp
     // returns the final DataFrame; the dispatching code wraps that
-    // thunk with the optional HookRunner.
+    // thunk.
     val resolver = new SparkSourceResolver(spark)
     val compileSteps: io.sm8.core.engine.EngineContext => Either[EngineError, org.apache.spark.sql.DataFrame] = { eCtx =>
       for {
@@ -187,18 +229,11 @@ final class SparkEngineProvider(
         df       <- new PortableQueryCompiler(spark).compileRelOp(relOp, eCtx)
       } yield df
     }
-    val compiled: Either[EngineError, org.apache.spark.sql.DataFrame] = hookDispatcher match {
-      case Some(hr) =>
-        try hr.run[org.apache.spark.sql.DataFrame](ctx, compileSteps)
-        catch {
-          case e: RuntimeException => Left(EngineError.CancellationFailed(
-            engine = sparkEngineName,
-            reason  = "hook-throw",
-            message = s"Hook dispatcher threw: ${e.getMessage}",
-          ))
-        }
-      case None => compileSteps(ctx)
-    }
+    // PR-O3 (ADR-008-O, P0-5): hook dispatch is deferred.
+    // The future `O3+1` PR will integrate the per-IR-step
+    // dispatcher (Context-shaped payloads). For now, the
+    // compileSteps thunk runs directly.
+    val compiled: Either[EngineError, org.apache.spark.sql.DataFrame] = compileSteps(ctx)
 
     // PR-M4 (GAP 7 -- already wired in PortableQueryCompiler):
     // `applyGroupByAgg` now applies `calculatedMeasures` via
@@ -222,7 +257,20 @@ final class SparkEngineProvider(
           )
         }.toList
       )
+      // PR-O4e (ADR-008-O): MaterializePolicy.Persist -> paired
+      // unpersist at query boundary. After .collect() the result rows
+      // are already in-memory in `collected`; the persisted Spark
+      // form is then unpersisted to free executor cache. The
+      // cache-plugin InMemoryResultCache keeps the per-query
+      // answer for its own TTL. The Spark-level persist() then
+      // unpersist() is opt-in; without MaterializePolicy.Persist
+      // the DF was never persisted so this is a no-op.
+      val wasPersisted = !withLimit.storageLevel.equals(
+        org.apache.spark.storage.StorageLevel.NONE
+      )
+      if (wasPersisted) try withLimit.persist() catch { case _: Throwable => () }
       val collected: Array[org.apache.spark.sql.Row] = withLimit.collect()
+      if (wasPersisted) try withLimit.unpersist() catch { case _: Throwable => () }
       val rows: Vector[ResultRow] = collected.iterator.map { row =>
         ResultRow(values = decodeRow(row, schema), schema = schema)
       }.toVector

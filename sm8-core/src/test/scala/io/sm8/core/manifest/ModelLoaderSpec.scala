@@ -47,7 +47,7 @@ class ModelLoaderSpec extends AnyFunSuite with Matchers {
     val m = out.toOption.get
     m.name shouldBe "people-model"
     m.version shouldBe 1
-    m.source shouldBe SourceRef.ByName(name = "default", table = "people")
+    m.source shouldBe SourceRef.ByName(table = "people")
     m.status shouldBe ModelStatus.Draft
   }
 
@@ -86,8 +86,8 @@ class ModelLoaderSpec extends AnyFunSuite with Matchers {
       options = Map("header" -> "true", "inferSchema" -> "true"),
     )
     m.dimensions shouldBe List(
-      Dimension("region", "region"),
-      Dimension("product", "product_name"),
+      Dimension.field("region", "region"),
+      Dimension.field("product", "product_name"),
     )
     m.measures shouldBe List(Measure(
       "revenue",

@@ -98,7 +98,7 @@ class MinimalRelOpLowererSpec extends AnyFunSuite with Matchers {
       val rows = Array(org.apache.spark.sql.RowFactory.create(1: java.lang.Integer))
       spark.createDataFrame(java.util.Arrays.asList(rows: _*), schema).createOrReplaceTempView("t")
       val agg = RelOp.Aggregate(
-        input      = RelOp.Scan(SourceRef.ByName("default", "t"), Nil, Nil),
+        input      = RelOp.Scan(SourceRef.ByName(table = "t"), Nil, Nil),
         groupBy    = List(Expr.Literal(LiteralValue.IntValue(1), SealedDataType.Int)),  // not a FieldRef
         aggregates = List(AggregateCall(AggregateFn.Sum, Some(Expr.FieldRef("a")), "sum_a", false, Nil)),
       )
@@ -115,8 +115,8 @@ class MinimalRelOpLowererSpec extends AnyFunSuite with Matchers {
 
   test("lowerJoin: Join.left is not a Scan returns Left(UnsupportedCapability)") {
     val join = RelOp.Join(
-      left      = RelOp.Project(RelOp.Scan(SourceRef.ByName("default", "t"), Nil, Nil), Nil),  // not a Scan
-      right     = RelOp.Scan(SourceRef.ByName("default", "t"), Nil, Nil),
+      left      = RelOp.Project(RelOp.Scan(SourceRef.ByName(table = "t"), Nil, Nil), Nil),  // not a Scan
+      right     = RelOp.Scan(SourceRef.ByName(table = "t"), Nil, Nil),
       kind      = io.sm8.core.rel.JoinKind.Inner,
       condition = Expr.Equal(Expr.FieldRef("a"), Expr.FieldRef("a")),
     )
@@ -128,8 +128,8 @@ class MinimalRelOpLowererSpec extends AnyFunSuite with Matchers {
 
   test("lowerJoin: Join.right is not a Scan returns Left(UnsupportedCapability)") {
     val join = RelOp.Join(
-      left      = RelOp.Scan(SourceRef.ByName("default", "t"), Nil, Nil),
-      right     = RelOp.Project(RelOp.Scan(SourceRef.ByName("default", "t"), Nil, Nil), Nil),  // not a Scan
+      left      = RelOp.Scan(SourceRef.ByName(table = "t"), Nil, Nil),
+      right     = RelOp.Project(RelOp.Scan(SourceRef.ByName(table = "t"), Nil, Nil), Nil),  // not a Scan
       kind      = io.sm8.core.rel.JoinKind.Inner,
       condition = Expr.Equal(Expr.FieldRef("a"), Expr.FieldRef("a")),
     )
@@ -141,8 +141,8 @@ class MinimalRelOpLowererSpec extends AnyFunSuite with Matchers {
 
   test("lowerJoin: condition with no extractable keys returns Left(UnsupportedCapability)") {
     val join = RelOp.Join(
-      left      = RelOp.Scan(SourceRef.ByName("default", "t"), Nil, Nil),
-      right     = RelOp.Scan(SourceRef.ByName("default", "t"), Nil, Nil),
+      left      = RelOp.Scan(SourceRef.ByName(table = "t"), Nil, Nil),
+      right     = RelOp.Scan(SourceRef.ByName(table = "t"), Nil, Nil),
       kind      = io.sm8.core.rel.JoinKind.Inner,
       condition = Expr.GreaterThan(Expr.FieldRef("a"), Expr.Literal(LiteralValue.IntValue(1), SealedDataType.Int)),  // not Equal
     )
@@ -151,4 +151,115 @@ class MinimalRelOpLowererSpec extends AnyFunSuite with Matchers {
     val err = out.left.toOption.get.asInstanceOf[io.sm8.core.engine.EngineError.UnsupportedCapability]
     err.message should include ("at least one Expr.Equal")
   }
+  // ===== PR-O1e (ADR-008-O, P0-3): column pruning via scan.projection =====
+
+  test("lowerScan: applies projection when scan.projection is non-empty") {
+    // Per [[scala-spark-batch-bugs-mindset]] mantra #6
+    // (partition-pruning + projection-pushdown): a non-empty
+    // scan.projection MUST select only those columns. Without
+    // this, every query reads all columns of every partition --
+    // fatal at scale for wide tables.
+    val spark = SparkSession.builder().master("local[1]").appName("tPrune").getOrCreate()
+    try {
+      val schema = new org.apache.spark.sql.types.StructType(Array(
+        org.apache.spark.sql.types.StructField("a", org.apache.spark.sql.types.IntegerType),
+        org.apache.spark.sql.types.StructField("b", org.apache.spark.sql.types.IntegerType),
+        org.apache.spark.sql.types.StructField("c", org.apache.spark.sql.types.IntegerType),
+      ))
+      val rows = Array(
+        org.apache.spark.sql.RowFactory.create(1: java.lang.Integer, 2: java.lang.Integer, 3: java.lang.Integer),
+      )
+      spark.createDataFrame(java.util.Arrays.asList(rows: _*), schema).createOrReplaceTempView("tPrune")
+
+      val scan = RelOp.Scan(
+        sourceRef  = SourceRef.ByName(table = "tPrune"),
+        schema     = Nil,
+        projection = List(Expr.FieldRef("a"), Expr.FieldRef("c")),  // skip b
+      )
+      val lowererWithSpark = new MinimalRelOpLowerer(spark, null, EngineIdentity("spark-3.5", "3.5", "0.1.0"))
+      val out = lowererWithSpark.lowerScan(scan)
+      out.isRight shouldBe true
+      val pruned = out.toOption.get
+      pruned.columns.toSet shouldBe Set("a", "c")
+    } finally {
+      spark.stop()
+    }
+  }
+
+  test("lowerScan: empty projection returns the full DataFrame (no select)") {
+    val spark = SparkSession.builder().master("local[1]").appName("tNoPrune").getOrCreate()
+    try {
+      val schema = new org.apache.spark.sql.types.StructType(Array(
+        org.apache.spark.sql.types.StructField("a", org.apache.spark.sql.types.IntegerType),
+        org.apache.spark.sql.types.StructField("b", org.apache.spark.sql.types.IntegerType),
+      ))
+      val rows = Array(
+        org.apache.spark.sql.RowFactory.create(1: java.lang.Integer, 2: java.lang.Integer),
+      )
+      spark.createDataFrame(java.util.Arrays.asList(rows: _*), schema).createOrReplaceTempView("tNoPrune")
+
+      val scan = RelOp.Scan(
+        sourceRef  = SourceRef.ByName(table = "tNoPrune"),
+        schema     = Nil,
+        projection = Nil,
+      )
+      val lowererWithSpark = new MinimalRelOpLowerer(spark, null, EngineIdentity("spark-3.5", "3.5", "0.1.0"))
+      val out = lowererWithSpark.lowerScan(scan)
+      out.isRight shouldBe true
+      val df = out.toOption.get
+      df.columns.toSet shouldBe Set("a", "b")
+    } finally {
+      spark.stop()
+    }
+  }
+
+  test("lowerJoin: broadcastRightBelowBytes set joins small right side cleanly (IR path)") {
+    // PR-O2 (ADR-008-O, P0-4): the IR path (compileRelOp -> lowerJoin)
+    // must honor `ctx.joinHints.broadcastRightBelowBytes` the same way
+    // the legacy applyJoins path does. Covers the broadcast decision
+    // (size probe -> broadcast(rightDf) wrap -> join) end to end: a
+    // 1-row right table under a 1MB threshold joins without error and
+    // produces the correct rows. Plan-shape assertions are deliberately
+    // avoided -- AQE re-planning differs between Spark 3.5.x and 4.1.x.
+    val spark = SparkSession.builder().master("local[1]").appName("tJoinBcast").getOrCreate()
+    try {
+      val leftSchema = new org.apache.spark.sql.types.StructType(Array(
+        org.apache.spark.sql.types.StructField("id", org.apache.spark.sql.types.IntegerType),
+        org.apache.spark.sql.types.StructField("name", org.apache.spark.sql.types.StringType),
+      ))
+      val leftRow = Array(
+        org.apache.spark.sql.RowFactory.create(1: java.lang.Integer, "alpha": String),
+      )
+      spark.createDataFrame(java.util.Arrays.asList(leftRow: _*), leftSchema).createOrReplaceTempView("tJoinBcastL")
+
+      val rightSchema = new org.apache.spark.sql.types.StructType(Array(
+        org.apache.spark.sql.types.StructField("id", org.apache.spark.sql.types.IntegerType),
+        org.apache.spark.sql.types.StructField("label", org.apache.spark.sql.types.StringType),
+      ))
+      val rightRow = Array(
+        org.apache.spark.sql.RowFactory.create(1: java.lang.Integer, "one": String),
+      )
+      spark.createDataFrame(java.util.Arrays.asList(rightRow: _*), rightSchema).createOrReplaceTempView("tJoinBcastR")
+
+      val join = RelOp.Join(
+        left      = RelOp.Scan(SourceRef.ByName(table = "tJoinBcastL"), Nil, Nil),
+        right     = RelOp.Scan(SourceRef.ByName(table = "tJoinBcastR"), Nil, Nil),
+        kind      = io.sm8.core.rel.JoinKind.Inner,
+        condition = Expr.Equal(Expr.FieldRef("id"), Expr.FieldRef("id")),
+      )
+      val ctx = EngineContext.defaultContext.copy(
+        joinHints = io.sm8.core.engine.JoinHints(broadcastRightBelowBytes = Some(1048576L)),
+      )
+      val lowererWithSpark = new MinimalRelOpLowerer(spark, null, EngineIdentity("spark-3.5", "3.5", "0.1.0"))
+      val out = lowererWithSpark.lowerJoin(join, ctx)
+      out.isRight shouldBe true
+      val rows = out.toOption.get.collect()
+      rows should have size 1
+      rows(0).getAs[String]("name") shouldBe "alpha"
+      rows(0).getAs[String]("label") shouldBe "one"
+    } finally {
+      spark.stop()
+    }
+  }
+
 }

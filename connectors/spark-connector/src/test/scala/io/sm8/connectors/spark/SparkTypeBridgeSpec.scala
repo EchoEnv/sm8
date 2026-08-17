@@ -150,4 +150,47 @@ class SparkTypeBridgeSpec extends AnyFunSuite with Matchers {
     val bridgeRestored = roundTripViaJavaSerialization(SparkTypeBridge)
     bridgeRestored shouldBe SparkTypeBridge
   }
+
+  // ===== PR-O1a (ADR-008-O): sealedDataTypeToSparkType round-trip =====
+
+  test("SparkTypeBridge.sealedDataTypeToSparkType: Varchar -> StringType") {
+    SparkTypeBridge.sealedDataTypeToSparkType(io.sm8.core.schema.SealedDataType.Varchar) shouldBe
+      org.apache.spark.sql.types.StringType
+  }
+
+  test("SparkTypeBridge.sealedDataTypeToSparkType: Int -> IntegerType") {
+    SparkTypeBridge.sealedDataTypeToSparkType(io.sm8.core.schema.SealedDataType.Int) shouldBe
+      org.apache.spark.sql.types.IntegerType
+  }
+
+  test("SparkTypeBridge.sealedDataTypeToSparkType: Decimal(p,s) -> DecimalType(p,s)") {
+    val dec = io.sm8.core.schema.SealedDataType.Decimal(precision = 10, scale = 2)
+    SparkTypeBridge.sealedDataTypeToSparkType(dec) shouldBe
+      org.apache.spark.sql.types.DecimalType(10, 2)
+  }
+
+  test("SparkTypeBridge.sealedDataTypeToSparkType: roundtrip sparkTypeToSealedDataType-then-back") {
+    // The inverse is deterministic for primitives + Decimal; the
+    // 'one-way' direction (sparkTypeToSealedDataType collapses
+    // Array/Map/Row to Json) is documented in the inverse method.
+    val samples = List(
+      org.apache.spark.sql.types.StringType,
+      org.apache.spark.sql.types.IntegerType,
+
+      org.apache.spark.sql.types.DoubleType,
+      org.apache.spark.sql.types.BooleanType,
+      org.apache.spark.sql.types.TimestampType,
+      org.apache.spark.sql.types.DateType,
+      org.apache.spark.sql.types.DecimalType(38, 18),
+
+    )
+    samples.foreach { t =>
+      val sdt = SparkTypeBridge.sparkTypeToSealedDataType(t)
+      val back = SparkTypeBridge.sealedDataTypeToSparkType(sdt)
+      withClue(s"roundtrip for $t: ") {
+        back shouldBe t
+      }
+    }
+  }
+
 }

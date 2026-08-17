@@ -177,20 +177,20 @@ object Main {
   /** Wire model + registry + transport WITHOUT starting the server.
     * Pure construction — unit-testable without binding a socket. */
   /**
-    * Realize a discovered provider against a URL by reflection.
+    * Realize a discovered provider against a connector URL via
+    * the typed `MCPEngineProvider.realize(url)` contract.
     *
-    * Per RFC §3 + the user's "no spark types in the platform"
-    * directive: the platform holds ONLY a string. For each
-    * discovered provider that is not available (i.e. the
-    * contract-gap stub from the connector's no-arg ctor), look
-    * for a `(String) ctor` on the class. If found, instantiate
-    * with the URL. The connector's (String) ctor builds the
-    * real SparkSession (or TrinoClient, etc.) — the platform
-    * never imports the connector class directly.
+    * Per RFC SS3 + ADR-006 (Post-#65 Refinement) + the user
+    * "no spark types in the platform" directive: the platform
+    * holds ONLY a string. For each discovered provider, the
+    * `realize(url: String): Option[MCPEngineProvider]` is
+    * invoked; `Some(realized)` replaces the stub with the
+    * configured instance, `None` keeps the stub. This replaced
+    * the deprecated `(String) ctor` reflection pattern (PR-B).
     *
-    * Future connectors that support a URL realization (Trino URL,
-    * DuckDB path, etc.) just need a `(String) ctor` — no platform
-    * change.
+    * The platform never imports the connector class directly;
+    * every connector decides its realization contract via the
+    * `MCPEngineProvider.realize` override in core.
     */
   def realize(
       providers:    List[MCPEngineProvider],
@@ -214,7 +214,7 @@ object Main {
       providers:    List[MCPEngineProvider],
       engineName:   Option[String],
       connectorUrl: Option[String] = None,
-  ): Either[String, (MCPEngineRegistry, HttpTransport)] = {
+  ): Either[String, (MCPEngineRegistry, HttpTransport, List[MCPEngineProvider])] = {
     val realized = realize(providers, connectorUrl)
     val available = realized.filter(_.available)
     if (available.isEmpty)
@@ -229,7 +229,7 @@ object Main {
       else
         try {
           val registry = MCPEngineRegistry(engines, default)
-          Right((registry, HttpTransport(model, registry, io.sm8.plugins.cache.InMemoryResultCache(maxEntries = 1))))
+          Right((registry, HttpTransport(model, registry, io.sm8.plugins.cache.InMemoryResultCache(maxEntries = 1)), available))
         } catch {
           case e: IllegalArgumentException => Left(e.getMessage)
         }
@@ -253,7 +253,7 @@ object Main {
             wire(model, discoverProviders(Thread.currentThread().getContextClassLoader), cli.engine, cli.connectorUrl) match {
               case Left(bootErr) =>
                 System.err.println(bootErr); 3
-              case Right((_, transport)) =>
+              case Right((_, transport, realized)) =>
                 val boundPort = try transport.start(cli.port)
                 catch {
                   case e: IllegalStateException =>
@@ -261,8 +261,16 @@ object Main {
                 }
                 println(s"sm8: server listening on port $boundPort " +
                   s"(model=${model.name}, version=${model.version})")
-                // scala-jvm-safetymindset: release the socket on exit.
-                sys.addShutdownHook { transport.stop() }
+                // PR-O4a (ADR-008-O): release BOTH the socket AND any
+                // realized engine providers on JVM exit. The MCPEngineProvider
+                // trait carries `close()` — spark-connector implements it to
+                // stop the SparkSession; other connectors (in-memory, trino)
+                // inherit the no-op default. A SIGTERM without this leaves
+                // the cluster's executor processes orphaned.
+                sys.addShutdownHook {
+                  transport.stop()
+                  realized.foreach(_.close())
+                }
                 // Block the main thread; the shutdown hook stops the server.
                 Thread.currentThread().join()
                 0

@@ -33,7 +33,7 @@ class MainSpec extends AnyFunSuite with Matchers {
   private def sampleModel(name: String = "main-test"): Model = Model.of(
     name    = name,
     version = 1,
-    source  = SourceRef.ByName("default", "stub_table"),
+    source  = SourceRef.ByName(table = "stub_table"),
   ).toOption.get
 
   // ---- CLI parsing (pure) ----
@@ -119,7 +119,7 @@ class MainSpec extends AnyFunSuite with Matchers {
   test("wire: default engine = first available (sorted) when --engine absent") {
     val providers = Main.discoverProviders(getClass.getClassLoader)
     Main.wire(sampleModel(), providers, engineName = None) match {
-      case Right((registry, transport)) =>
+      case Right((registry, transport, _)) =>
         registry.defaultEngine shouldBe "test-engine"
         // transport not started — safe to drop
       case Left(msg) => fail(s"unexpected: $msg")
@@ -131,7 +131,7 @@ class MainSpec extends AnyFunSuite with Matchers {
   test("wire: the wired registry survives ObjectOutputStream round-trip") {
     val providers = Main.discoverProviders(getClass.getClassLoader)
     Main.wire(sampleModel(), providers, engineName = None) match {
-      case Right((registry, _)) =>
+      case Right((registry, _, _)) =>
         val bytes = {
           val bos = new ByteArrayOutputStream()
           val oos = new ObjectOutputStream(bos)
@@ -167,6 +167,35 @@ class MainSpec extends AnyFunSuite with Matchers {
   test("parseArgs: --connector-url without value is a typed error") {
     Main.parseArgs(List("--model", "m.yaml", "--connector-url")) shouldBe
       Left(Main.CliError.MissingValue("--connector-url"))
+  }
+
+  // ===== PR-O4a (ADR-008-O): shutdown hook + close() lifecycle =====
+
+  test("PR-O4a: shutdown hook calls close() on every realized engine provider") {
+    val providers = Main.discoverProviders(getClass.getClassLoader)
+    Main.wire(sampleModel(), providers, engineName = None) match {
+      case Right((registry, transport, realized)) =>
+        realized.foreach { p =>
+          p.close()
+          p.close()  // idempotent
+        }
+        transport.stop()
+      case Left(msg) => fail(s"unexpected: $msg")
+    }
+  }
+
+  test("PR-O4a: MCPEngineProvider.close() default impl is a no-op") {
+    val stub: io.sm8.core.engine.MCPEngineProvider = new io.sm8.core.engine.MCPEngineProvider {
+      override def identity = io.sm8.core.engine.EngineIdentity("stub", "0", "0")
+      override def available = true
+      override def query(m: Model, r: io.sm8.core.engine.MCPQueryRequest, c: io.sm8.core.engine.EngineContext) =
+        Right(io.sm8.core.engine.PortableQueryResult(
+          io.sm8.core.engine.ResultSchema(Nil), Vector.empty, Map.empty))
+      override def explain(m: Model, r: io.sm8.core.engine.MCPQueryRequest, c: io.sm8.core.engine.EngineContext) =
+        Right("stub-explain")
+    }
+    noException should be thrownBy stub.close()
+    noException should be thrownBy { stub.close(); stub.close() }
   }
 
   // ---- Main.realize() — reflection-based URL realization ----
@@ -221,7 +250,7 @@ class MainSpec extends AnyFunSuite with Matchers {
     val providers = Main.discoverProviders(getClass.getClassLoader)
     // The in-memory engine is available without a URL
     val wired = Main.wire(
-      Model.of(name = "m", version = 1, source = io.sm8.core.model.SourceRef.ByName("n", "t")).toOption.get,
+      Model.of(name = "m", version = 1, source = io.sm8.core.model.SourceRef.ByName(table = "t")).toOption.get,
       providers,
       engineName   = Some("test-engine"),
       connectorUrl = Some("local[1]")

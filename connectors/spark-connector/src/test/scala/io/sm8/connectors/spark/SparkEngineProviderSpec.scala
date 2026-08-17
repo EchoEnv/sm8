@@ -36,7 +36,7 @@ class SparkEngineProviderSpec extends AnyFunSuite with Matchers {
     Model.of(
       name    = "test-model",
       version = 1,
-      source  = SourceRef.ByName("n", tableName),
+      source  = SourceRef.ByName(table = tableName),
       status  = ModelStatus.Draft,
       defaultPolicies = ModelPolicyDefaults(
         io.sm8.core.model.MaterializePolicy.None,
@@ -78,9 +78,11 @@ class SparkEngineProviderSpec extends AnyFunSuite with Matchers {
     provider.identity.engineAdapterVersion shouldBe "0.1.0"
   }
 
-  test("SparkEngineProvider: available = false when spark is null (defensive)") {
-    val provider = new SparkEngineProvider(null, SparkTypeBridge, "spark-3.5")
-    provider.available shouldBe false
+  test("SparkEngineProvider: descriptor carries available = false (PR-O4g replaces null-sentinel)") {
+    // PR-O4g: the null-sentinel ctor is gone. The available = false
+    // case is now exclusively SparkEngineProviderDescriptor.
+    val descriptor = new SparkEngineProviderDescriptor()
+    descriptor.available shouldBe false
   }
 
   test("SparkEngineProvider: query() with null spark returns Left(ConnectionFailed)") {
