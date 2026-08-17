@@ -199,4 +199,49 @@ class RelOpPlanPrinterSpec extends AnyFunSuite with Matchers {
     // The order (outermost first) matches the tree structure
     (List("Limit", "Sort", "Project", "Filter", "Scan").map(s.indexOf).sorted == List("Limit", "Sort", "Project", "Filter", "Scan").map(s.indexOf)) shouldBe true
   }
+
+  // ===== PR-O4d (ADR-008-O): RelOp.Scan.resolution rendered as a short tag =====
+
+  test("print: Scan with resolution = Some(Scan) renders resolution=Scan") {
+    val plan = RelOp.Scan(
+      sourceRef  = SourceRef.ByName(table = "people"),
+      schema     = Nil,
+      projection = Nil,
+      resolution = Some(io.sm8.core.engine.ResolvedSource.Scan(
+        source = SourceRef.ByName(table = "people"),
+        schema = Nil,
+      )),
+    )
+    val s = RelOpPlanPrinter.print(plan)
+    s should include ("Scan(")
+    s should include ("table=people")
+    s should include ("resolution=Scan")
+  }
+
+  test("print: Scan with resolution = None omits the resolution tag") {
+    val plan = RelOp.Scan(
+      sourceRef  = SourceRef.ByName(table = "events"),
+      schema     = Nil,
+      projection = Nil,
+      // resolution = None (the new default)
+    )
+    val s = RelOpPlanPrinter.print(plan)
+    s should include ("table=events")
+    s should not include "resolution="
+  }
+
+  test("print: Scan with resolution = NotFound surfaces the failure tag") {
+    val plan = RelOp.Scan(
+      sourceRef  = SourceRef.ByName(table = "ghost"),
+      schema     = Nil,
+      projection = Nil,
+      resolution = Some(io.sm8.core.engine.ResolvedSource.NotFound(
+        source = SourceRef.ByName(table = "ghost"),
+        reason = "table not in catalog",
+      )),
+    )
+    val s = RelOpPlanPrinter.print(plan)
+    s should include ("resolution=NotFound")
+  }
+
 }

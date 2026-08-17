@@ -254,16 +254,23 @@ object QueryBuilder {
     // PR-K handles the engine side (5 kinds, single-key equi-join
     // dedup); here we just emit the structural RelOp.
     val multiScan: RelOp = joinScans.foldLeft[RelOp](
+      // PR-O4d (ADR-008-O): carry the resolution provenance on the IR
+      // (the legacy pre-tag shape). Every RelOp.Scan carries the
+      // ResolvedSource it was lowered from -- the engine adapter
+      // pattern-matches the 4 failure cases directly instead of
+      // re-invoking the resolver.
       RelOp.Scan(
         sourceRef = primary.source,
         schema    = primary.schema,
         projection = Nil,  // v0.1.0: read all columns; engine can prune
+        resolution = Some(primary),
       )
     ) { (acc, sj) =>
       val rightScanNode = RelOp.Scan(
         sourceRef  = sj.rightScan.source,
         schema     = sj.rightScan.schema,
         projection = Nil,
+        resolution = Some(sj.rightScan),
       )
       // Build the join condition from the single (left, right) key.
       // The single-key constraint matches PR-K's spark-side compile.
