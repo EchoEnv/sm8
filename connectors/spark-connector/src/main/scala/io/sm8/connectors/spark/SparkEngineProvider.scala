@@ -117,6 +117,16 @@ final class SparkEngineProvider(
 
   override val available: Boolean = spark != null
 
+  /** PR-O4a (ADR-008-O): lifecycle hook — stop the
+    * constructor-frozen SparkSession on JVM exit. Idempotent
+    * (SparkSession.stop is a no-op after the first call).
+    */
+  override def close(): Unit = try {
+    if (spark != null) spark.stop()
+  } catch {
+    case _: Throwable => ()
+  }
+
   // PR-M4 (GAP 5 — the most critical): the IR-extension path
   // (PR-H/I/J/K/L) was inert in production — `query` called
   // `PortableQueryCompiler.compile(model, ctx)` directly, bypassing
