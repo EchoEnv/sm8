@@ -14,10 +14,18 @@ their context, the options considered, and the consequences of the chosen path.
 
 | # | Title | Status |
 |---|---|---|
-| [0001-0004](0001-0004-engine-portable-architecture.md) | Engine-portable + manifest-validator + plugin-portal + typed-expr-parser (combined) | Accepted |
-| [0005](0005-expr-parser-is-null-postfix.md) | ExprParser IS [NOT] NULL postfix | Accepted |
-| [0006](0006-step-11-sm8-mcp-server.md) | Step 11 — SM8 MCP server integration (Post-#65 Refinement) | Accepted |
-| [0007](0007-v0.1.0-cut-plan.md) | v0.1.0 cut plan + RFC §12/§13 conformance gaps | Accepted |
+| [0008-h](0008-h-rel-package.md) | rel/ IR package | Accepted |
+| [0008-i](0008-i-casewhen-alias.md) | CaseWhen + Alias expressions | Accepted |
+| [0008-j](0008-j-model-extensions.md) | Model extensions (typed fields + joins + calc measures) | Accepted |
+| [0008-k](0008-k-spark-compile.md) | Spark compile of joins + aggregates | Accepted |
+| [0008-l](0008-l-querybuilder.md) | QueryBuilder — Model → RelOp lowering (with 8 GAPs appendix) | Accepted |
+| [0008-m1](0008-m1-parser-loader.md) | ExprParser CaseWhen/Alias/MeasureRef/All grammar + ModelLoader joins/calcMeasures | Accepted |
+| [0008-m2](0008-m2-model-validator.md) | ModelValidator — cross-reference validation against ResolvedSource.Scan.schema | Accepted |
+| [0008-m4](0008-m4-production-wiring.md) | Production wiring: closes ADR-008-L GAPs 5/6/7/8 | Accepted |
+| [0008-m5](0008-m5-calculator-lowerer.md) | Calculator (Expr visitor) + MinimalRelOpLowerer | Accepted |
+| [0008-m6](0008-m6-h-hardening.md) | PR-M6 hardening: explain / multi-key / direct lowerer / Persist dispatch | Accepted |
+| [0008-o](0008-o-hardening.md) | O-series hardening (4 PRs in 1, ~1100 LOC) + PR-O1c follow-up | Accepted |
+| [0008-p](0008-p-post-review-followup.md) | Post-review follow-up plan (10 P0 + 11 P1 + 14 P2, 6 phases) | Proposed |
 
 ## Tools
 
