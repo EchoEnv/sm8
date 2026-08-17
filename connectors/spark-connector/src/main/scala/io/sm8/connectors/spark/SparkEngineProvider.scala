@@ -37,6 +37,7 @@ import io.sm8.core.engine.{
   ResultValue
 }
 import io.sm8.core.model.Model
+import io.sm8.core.query.QueryBuilder
 import io.sm8.core.schema.{Field, SealedDataType}
 
 import org.apache.spark.sql.SparkSession
@@ -44,7 +45,8 @@ import org.apache.spark.sql.SparkSession
 final class SparkEngineProvider(
     val spark:           SparkSession,
     val bridge:          SparkTypeBridge.type,
-    val sparkEngineName: String = "spark-3.5"
+    val sparkEngineName: String = "spark-3.5",
+    val hookDispatcher: Option[io.sm8.core.engine.HookRunner] = None
 ) extends MCPEngineProvider {
 
   /** No-arg constructor for Java ServiceLoader discovery.
@@ -114,6 +116,29 @@ final class SparkEngineProvider(
 
   override val available: Boolean = spark != null
 
+  // PR-M4 (GAP 5 — the most critical): the IR-extension path
+  // (PR-H/I/J/K/L) was inert in production — `query` called
+  // `PortableQueryCompiler.compile(model, ctx)` directly, bypassing
+  // `QueryBuilder.build` entirely. PR-M4 wires the IR path:
+  //
+  //   1. Resolve the model's primary source via `SparkSourceResolver`
+  //      (PR-M3) -- brings the live `df.schema` into scope.
+  //   2. Run `ModelValidator.validateAgainstSchema` (PR-M2) on the
+  //      model + resolved schema. Fail-loud typed `SchemaValidation`
+  //      on unknown-field references.
+  //   3. Run `QueryBuilder.build` (PR-L) to lower Model -> RelOp.
+  //      Cycle detection runs here (built-in, no extra wiring).
+  //   4. Apply the existing pipeline: compile the RelOp via
+  //      `PortableQueryCompiler.compileRelOp` (new in PR-M4), then
+  //      request-level `where` + `limit` + `collect` + `decode`.
+  //
+  // Per [[scala-error-handling-mindset]]: every step's failure
+  // surfaces as a typed `EngineError` -- no silent defaults.
+  //
+  // PR-M4 (GAP 6): hook dispatch. The dispatcher is OPTIONAL --
+  // `None` means no plugin hooks fire (the default for the
+  // bare-deploy shape). Production deployments inject a real
+  // `EngineHookDispatcher` via the new constructor parameter.
   override def query(
       model:   Model,
       request: MCPQueryRequest,
@@ -126,35 +151,69 @@ final class SparkEngineProvider(
         message = "SparkEngineProvider.query called with null SparkSession",
       ))
     }
-    // Per scala-spark-batch-bugs-mindset mantra #5 (driver vs
-    // executor asymmetry): every step in this for-comprehension
-    // runs in the driver process. compile() builds the typed
-    // DataFrame (lazy); filter/limit are typed transforms; collect()
-    // materializes rows to the driver; decodeRow/decodeCell build
-    // portable ResultValue carriers. No driver-side resource leaks
-    // to executors; no executor-side closures.
-    val pipeline: Either[EngineError, PortableQueryResult] = for {
-      // 1. compile the model: source + filters + dimension projection.
-      //    Per scala-spark-batch-bugs-mindset mantra #3 (schema-drift
-      //    verify at the boundary): the schema comes from the actual
-      //    compiled DataFrame.schema, not caller-supplied dimensions.
-      compiled <- new PortableQueryCompiler(spark).compile(model, ctx)
-      // 2. apply the request-level where clause (raw SQL path
-      //    from MCPQueryRequest) on top of the compiled model.
-      //    Per scala-spark-batch-bugs-mindset mantra #5: the
-      //    .filter(w) here runs in the driver (it builds a Column
-      //    expression, not a UDF); collect() below materializes.
-      filtered = request.where.filter(_.nonEmpty) match {
-        case Some(w) => compiled.filter(w)
-        case None    => compiled
+    // PR-M4 (GAP 5 -- the most critical): the IR-extension path
+    // (PR-H/I/J/K/L) is now LIVE in production. Steps:
+    //   1. Resolve the primary source via `SparkSourceResolver` (PR-M3).
+    //   2. Run `ModelValidator.validateAgainstSchema` (PR-M2) -- fail-loud
+    //      typed `SchemaValidation` on unknown-field references.
+    //   3. Lower Model -> RelOp via `QueryBuilder.build` (PR-L). Cycle
+    //      detection runs here (built-in).
+    //   4. Compile the RelOp via `PortableQueryCompiler.compileRelOp`.
+    //   5. PR-M4 (GAP 6): wrap the build+compile step in the bound
+    //      `HookRunner` if one is configured. None = no hooks fire.
+    //   6. Apply request-level where + limit + collect + decode.
+    //
+    // The compile steps are factored into a thunk; the for-comp
+    // returns the final DataFrame; the dispatching code wraps that
+    // thunk with the optional HookRunner.
+    val resolver = new SparkSourceResolver(spark)
+    val compileSteps: io.sm8.core.engine.EngineContext => Either[EngineError, org.apache.spark.sql.DataFrame] = { eCtx =>
+      for {
+        resolved <- resolver.resolve(model.source, identity)
+        scan     <- resolved match {
+                     case s: io.sm8.core.engine.ResolvedSource.Scan => Right[EngineError, io.sm8.core.engine.ResolvedSource.Scan](s)
+                     case _ => Left(EngineError.UnsupportedCapability(
+                              engine = sparkEngineName,
+                              capability = "SourceResolver.resolve",
+                              message = s"non-Scan resolution (deferred to PR-M4 full RelOp path)"))
+                   }
+        _        <- io.sm8.core.model.ModelValidator.validateAgainstSchema(model, scan)
+                    .left.map(e => EngineError.UnsupportedCapability(
+                      engine = sparkEngineName,
+                      capability = "ModelValidator.validateAgainstSchema",
+                      message = e.message))
+        relOp    <- QueryBuilder.build(model, resolver, identity)
+        df       <- new PortableQueryCompiler(spark).compileRelOp(relOp, eCtx)
+      } yield df
+    }
+    val compiled: Either[EngineError, org.apache.spark.sql.DataFrame] = hookDispatcher match {
+      case Some(hr) =>
+        try hr.run[org.apache.spark.sql.DataFrame](ctx, compileSteps)
+        catch {
+          case e: RuntimeException => Left(EngineError.CancellationFailed(
+            engine = sparkEngineName,
+            reason  = "hook-throw",
+            message = s"Hook dispatcher threw: ${e.getMessage}",
+          ))
+        }
+      case None => compileSteps(ctx)
+    }
+
+    // PR-M4 (GAP 7 -- already wired in PortableQueryCompiler):
+    // `applyGroupByAgg` now applies `calculatedMeasures` via
+    // `withColumn` AFTER the agg. The pipeline below applies the
+    // request-level where + limit + collect + decode. Per
+    // [[scala-spark-batch-bugs-mindset]] mantras #1 + #5: the
+    // `.filter` + `.limit` + `collect` are driver-side; no
+    // executor-side closure capture.
+    compiled.flatMap { limited =>
+      val filtered = request.where.filter(_.nonEmpty) match {
+        case Some(w) => limited.filter(w)
+        case None    => limited
       }
-      // 3. apply the request-level limit
-      limited  = request.limit.fold(filtered)(l => filtered.limit(l.toInt))
-      // 4. materialize: schema + collect() + per-row decode.
-      //    Per scala-spark-batch-bugs-mindset mantra #5: collect()
-      //    runs in the driver. ResultRow construction happens here.
-      schema = ResultSchema(
-        limited.schema.fields.map { f =>
+      val withLimit = request.limit.fold(filtered)(l => filtered.limit(l.toInt))
+      val schema = ResultSchema(
+        withLimit.schema.fields.map { f =>
           Field(
             name     = f.name,
             dataType = bridge.sparkTypeToSealedDataType(f.dataType),
@@ -162,37 +221,21 @@ final class SparkEngineProvider(
           )
         }.toList
       )
-      collected: Array[org.apache.spark.sql.Row] = limited.collect()
-      rows: Vector[ResultRow] = collected.iterator.map { row =>
+      val collected: Array[org.apache.spark.sql.Row] = withLimit.collect()
+      val rows: Vector[ResultRow] = collected.iterator.map { row =>
         ResultRow(values = decodeRow(row, schema), schema = schema)
       }.toVector
-    } yield PortableQueryResult(
-      schema   = schema,
-      rows     = rows,
-      metadata = Map("engine.id" -> sparkEngineName, "engine.version" -> spark.version),
-    )
-    try {
-      pipeline
-    } catch {
-      case e: Exception =>
-        e match {
-          case _: org.apache.spark.sql.AnalysisException =>
-            Left(EngineError.ProviderInvocationFailed(
-              engine = sparkEngineName,
-              name   = "SparkEngineProvider",
-              reason = "SparkAnalysisException",
-              message = s"${e.getClass.getSimpleName}: ${e.getMessage}",
-            ))
-          case _ =>
-            Left(EngineError.ConnectionFailed(
-              engine  = sparkEngineName,
-              reason  = s"${e.getClass.getSimpleName}: ${e.getMessage}",
-              message = s"non-AnalysisException runtime failure: ${e.getMessage}",
-            ))
-        }
+      Right(PortableQueryResult(
+        schema   = schema,
+        rows     = rows,
+        metadata = Map(
+          "engine.id"      -> sparkEngineName,
+          "engine.version" -> (if (spark != null) spark.version else "<uninitialized>"),
+          "ir.path"        -> "pr-m4",
+        ),
+      ))
     }
   }
-
   override def explain(
       model:   Model,
       request: MCPQueryRequest,
