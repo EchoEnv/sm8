@@ -126,3 +126,61 @@ The user explicitly directed "seperate commit but in 1 PR" — one branch, one P
 
 Per commit: `git commit -F - << 'MSG'` (heredoc, NOT the Edit tool per the user's standing rule) + `git push origin step-pr-o-hardening` (cumulative push after each commit).
 Per PR (final): `gh pr create --base main --head step-pr-o-hardening --title "Post-Review Hardening (O-series: 4 PRs in 1, ~830 LOC)" --body-file /tmp/pr-body.md` + `gh pr view N --json state,mergeable,mergeStateStatus`.
+
+## PR-O1c follow-up (post-#88 squash-merge)
+
+**Status:** Accepted. **Date:** 2026-08-18. **Branch:** `step-pr-o1c-tocolumn-either` from `main` = `075021e`.
+
+Per Option C of the PR #88 review (2026-08-17 user decision: "Open O1c follow-up PR"), the `toColumn: Column → Either[EngineError, Column]` signature change (PR-O1 P0-2) was carved out of the squash-merge because the 7 test failures needed a separate review surface. This ADR records what landed in the follow-up.
+
+### Change
+
+`PortableExprCompiler.toColumn(expr: Expr): Either[EngineError, Column]` — replaces the old `Column` return. The 2 throw sites (`Expr.FunctionCall` + `LiteralValue.ArrayValue`) become typed `Left(EngineError.UnsupportedCapability(...))`. Threaded through 6 prod callsites:
+
+1. `PortableQueryCompiler.compile` (entry point) — `Either[EngineError, DataFrame]`
+2. `PortableQueryCompiler.applyFilters` — `Either[EngineError, DataFrame]`
+3. `PortableQueryCompiler.applyAggregations` — `Either[EngineError, DataFrame]`
+4. `PortableQueryCompiler.applyCalculatedMeasures` — `Either[EngineError, DataFrame]`
+5. `PortableQueryCompiler.applyGroupByAgg` — `Either[EngineError, DataFrame]`
+6. `PortableQueryCompiler.applyWithWindows` — `Either[EngineError, DataFrame]`
+7. `PortableQueryCompiler.renderAggregate` — `Either[EngineError, Column]`
+8. `MinimalRelOpLowerer.lowerScan` (projection) — `Either[EngineError, DataFrame]`
+9. `MinimalRelOpLowerer.lowerFilter` — `Either[EngineError, DataFrame]`
+10. `MinimalRelOpLowerer.lowerProject` — `Either[EngineError, DataFrame]`
+11. `MinimalRelOpLowerer.lowerAggregate` — `Either[EngineError, DataFrame]`
+12. `MaterializePolicy.Persist` dispatch — `Either[EngineError, StorageLevel]` with typed `Left(UnsupportedCapability)` on invalid level
+
+Helper `colsOf(List[Expr]): Either[EngineError, Array[Column]]` (package-private) — shared by `MinimalRelOpLowerer` and `PortableQueryCompiler` for the Either-fold over `List[Expr]`.
+
+### Why typed `Left` instead of `throw`
+
+Per [[scala-error-handling-mindset]] decision rule #1: `Either[Error, T]` for expected business errors the caller should handle. `Expr.FunctionCall` (UDF resolution deferred) and `LiteralValue.ArrayValue` (array literals deferred) are **expected** errors, not programmer errors. The throw-bomb could crash the driver or — worse, at scale — kill executors and trigger Spark's retry, multiplying the failure. Typed `Left(EngineError.UnsupportedCapability(...))` flows through the compile boundary and the MCP server maps it to a 501 `UNSUPPORTED_CAPABILITY` wire response.
+
+### Three missing Expr cases filled in
+
+While making the 7 test failures green, the underlying compiler was missing `Expr.Not`, `Expr.IsNull`, `Expr.IsNotNull` cases — pre-existing gaps (not introduced by O1c). Without these, `MatchError` was thrown at runtime for any filter using `IS NULL` / `IS NOT NULL` / `NOT`. Threaded via `flatMap` to honor the P0-2 contract:
+
+```scala
+case Expr.Not(e)       => toColumn(e).map(sparkNot)
+case Expr.IsNull(e)    => toColumn(e).map(_.isNull)
+case Expr.IsNotNull(e) => toColumn(e).map(_.isNotNull)
+```
+
+This fixes 5 of 7 reactor failures at once (3 Spec tests + 2 DataFrameSpec filter tests using `Expr.IsNull` and `Expr.Not`). The remaining 2 failures were the old "throws" tests (`Expr.FunctionCall: throws UnsupportedOperationException` + `LiteralValue.ArrayValue: throws UnsupportedOperationException`) — **deleted**, their old contract is replaced by the 3 new typed `Left` tests already present.
+
+### Tests
+
+- **2 old tests deleted** (old contract no longer exists): `Expr.FunctionCall: throws UnsupportedOperationException` + `LiteralValue.ArrayValue: throws UnsupportedOperationException`.
+- **3 new tests added** (PR-O1c typed-error contract): `toColumn(Expr.FunctionCall) returns Left(UnsupportedCapability)` + `toColumn(LiteralValue.ArrayValue) returns Left(UnsupportedCapability)` + `colsOf([expr1, expr2]) folds Either through the list (no throw on partial failure)`.
+- **13 + 17 = 30 existing call sites mechanically unwrapped** via `.toOption.get` in DataFrameSpec + Spec.
+
+Reactor: `151/151 succeeded` in spark-connector; full reactor: 480 (sm8-core) + 33 (sm8-platform) + 24 (sm8-server) + 151 (spark-connector) = **688/688 passed** across 6 modules.
+
+### RFC §3 + PLAN alignment
+
+| Direction | Status |
+|---|---|
+| `~/.claude/plans/agile-kindling-beacon.md` Step 12 (sm8-platform/server split) | ALIGNED — error flows up the compile boundary, no layer shift |
+| `docs/rfcs/2026-08-12_v1_architecture-spec/adapters.md` typed-error at adapter boundary | ALIGNED — every compile call returns `Either[EngineError, T]` |
+| ADR-008-O P0-2 (typed Left instead of throw) | CLOSED |
+| EngineError ADT | REUSED — no new error type added; `UnsupportedCapability` carries engine + capability + message |

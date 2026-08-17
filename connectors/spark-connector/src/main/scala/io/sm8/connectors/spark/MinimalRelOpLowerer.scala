@@ -148,32 +148,36 @@ final class MinimalRelOpLowerer(
           engine = identity.name, capability = "SourceRef.ByProvider",
           message = "SourceRef.ByProvider requires a registered ProviderRef closure."))
     }
-    // .toColumn here is called outside an Either-returning function:
-    // a synchronous projection-column compiler never throws (only
-    // FunctionCall + ArrayValue do, and the projection list is normally
-    // all FieldRefs). Until PR-O1c lands, we use the legacy Column-returning
-    // toColumn; a future migration to Either-returning toColumn will
-    // replace this with a fold.
-    resolved.map { df =>
-      if (scan.projection.isEmpty) df
-      else df.select(scan.projection.map(PortableExprCompiler.toColumn): _*)
+    // PR-O1c (ADR-008-O, P0-2): toColumn returns
+    // Either[EngineError, Column]; the projection compiles via
+    // the shared colsOf fold (no throw can escape -- FunctionCall
+    // and ArrayValue surface as typed Left here).
+    resolved.flatMap { df =>
+      if (scan.projection.isEmpty) Right(df)
+      else PortableExprCompiler.colsOf(scan.projection).map(df.select(_: _*))
     }
   }
 
   /** Filter -> DataFrame: walk the child, then df.filter(expr). */
   def lowerFilter(f: RelOp.Filter, ctx: EngineContext): Either[EngineError, DataFrame] =
-    lower(f.input, ctx).map(_.filter(PortableExprCompiler.toColumn(f.predicate)))
+    for {
+      child <- lower(f.input, ctx)
+      pred  <- PortableExprCompiler.toColumn(f.predicate)
+    } yield child.filter(pred)
 
   /** Project -> DataFrame: walk the child, then df.select with
     * `(expr, alias)` per the IR's projection list. An empty list
     * returns the child unchanged. */
   def lowerProject(p: RelOp.Project, ctx: EngineContext): Either[EngineError, DataFrame] =
-    lower(p.input, ctx).map { df =>
-      val cols = p.expressions.map { case (e, alias) =>
-        PortableExprCompiler.toColumn(e).as(alias)
+    for {
+      child <- lower(p.input, ctx)
+      cols  <- p.expressions.foldLeft[Either[EngineError, List[Column]]](Right(Nil)) {
+        (accE, pair) => for {
+          acc   <- accE
+          c     <- PortableExprCompiler.toColumn(pair._1)
+        } yield acc :+ c.as(pair._2)
       }
-      if (cols.isEmpty) df else df.select(cols: _*)
-    }
+    } yield if (cols.isEmpty) child else child.select(cols: _*)
 
   /** Sort -> DataFrame: walk the child, then df.orderBy with
     * per-key direction + null ordering. */
@@ -250,18 +254,24 @@ final class MinimalRelOpLowerer(
         }
         df.col(n)
       }.toArray
-      val aggCols: List[Column] = agg.aggregates.map { call =>
-        pc.renderAggregate(call).as(call.alias)
-      }
-      if (aggCols.isEmpty) {
-        // No aggregates: `Aggregate(_, groupBy, Nil)` per the IR
-        // contract means "deduplicate by groupBy keys". The Spark
-        // shape for DISTINCT-on-columns is `df.dropDuplicates(colNames)`
-        // where colNames is Array[String]. We map Column[] -> String[].
-        val groupByNames: Array[String] = groupByCols.map(_.toString)
-        Right(df.dropDuplicates(groupByNames))
-      } else {
-        Right(df.groupBy(groupByCols: _*).agg(aggCols.head, aggCols.tail: _*))
+      val aggColsE: Either[EngineError, List[Column]] =
+        agg.aggregates.foldLeft[Either[EngineError, List[Column]]](Right(Nil)) {
+          (accE, call) => for {
+            acc <- accE
+            c   <- pc.renderAggregate(call)
+          } yield acc :+ c.as(call.alias)
+        }
+      aggColsE.flatMap { aggCols =>
+        if (aggCols.isEmpty) {
+          // No aggregates: `Aggregate(_, groupBy, Nil)` per the IR
+          // contract means "deduplicate by groupBy keys". The Spark
+          // shape for DISTINCT-on-columns is `df.dropDuplicates(colNames)`
+          // where colNames is Array[String]. We map Column[] -> String[].
+          val groupByNames: Array[String] = groupByCols.map(_.toString)
+          Right(df.dropDuplicates(groupByNames))
+        } else {
+          Right(df.groupBy(groupByCols: _*).agg(aggCols.head, aggCols.tail: _*))
+        }
       }
     }
   }

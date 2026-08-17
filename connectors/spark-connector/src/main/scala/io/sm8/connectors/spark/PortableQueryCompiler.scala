@@ -122,7 +122,7 @@ final class PortableQueryCompiler(val spark: SparkSession)
   ): Either[EngineError, DataFrame] = {
     for {
       sourceDf    <- resolveSource(model.source)
-      filtered     = applyFilters(sourceDf, model.filters)
+      filtered    <- applyFilters(sourceDf, model.filters)
       joined      <- applyJoins(filtered, model.joins, ctx)
       aggregated  <- applyAggregations(joined, model)
     } yield aggregated
@@ -222,8 +222,11 @@ final class PortableQueryCompiler(val spark: SparkSession)
   private def applyFilters(
       df:      DataFrame,
       filters: List[FilterSpec],
-  ): DataFrame = filters.foldLeft(df) { (acc, f) =>
-    acc.filter(PortableExprCompiler.toColumn(f.predicate))
+  ): Either[EngineError, DataFrame] = filters.foldLeft[Either[EngineError, DataFrame]](Right(df)) {
+    (accE, f) => for {
+      acc <- accE
+      col <- PortableExprCompiler.toColumn(f.predicate)
+    } yield acc.filter(col)
   }
 
   // -- join application (PR-K) --
@@ -418,14 +421,15 @@ final class PortableQueryCompiler(val spark: SparkSession)
                      "defer to a future PR (use SQL-side or engine-specific paths).",
         ))
       } else {
-        val dimCols: Array[Column] = model.dimensions
-          .map(d => PortableExprCompiler.toColumn(d.expr))
-          .toArray
-        val result =
+        val dimColsE: Either[EngineError, Array[Column]] = PortableExprCompiler.colsOf(
+          model.dimensions.map(_.expr).toList
+        )
+        val resultE: Either[EngineError, DataFrame] = dimColsE.flatMap { dimCols =>
           if (collectAllReferences(model.calculatedMeasures).nonEmpty)
             applyWithWindows(df, model, dimCols)
           else
             applyGroupByAgg(df, model, dimCols)
+        }
         // PR-N5: apply MaterializePolicy.Persist(level) at the
         // aggregate boundary -- one df.persist() per model query.
         // Per [[scala-spark-batch-bugs-mindset]] mantra #4
@@ -434,24 +438,26 @@ final class PortableQueryCompiler(val spark: SparkSession)
         // queries (dashboard refreshes, drill-downs, etc.), so this
         // is the right boundary. None / Cache dispatch is a no-op
         // (Cache is owned by the cache-plugin, not the connector).
-        model.defaultPolicies.materialize match {
-          case io.sm8.core.model.MaterializePolicy.Persist(level) =>
-            try {
-              Right(result.persist(org.apache.spark.storage.StorageLevel.fromString(level)))
-            } catch {
-              case e: java.lang.IllegalArgumentException =>
-                Left(EngineError.UnsupportedCapability(
-                  engine     = "spark-3.5",
-                  capability = "MaterializePolicy.Persist",
-                  message    = s"Unknown Spark StorageLevel: '$level'. Expected one of: DISK_ONLY, DISK_ONLY_2, MEMORY_ONLY, MEMORY_ONLY_2, MEMORY_AND_DISK, MEMORY_AND_DISK_2, MEMORY_AND_DISK_SER, MEMORY_AND_DISK_SER_2, OFF_HEAP.",
-                ))
-            }
-          case _ =>
-            Right(result)
+        resultE.flatMap { result =>
+          model.defaultPolicies.materialize match {
+            case io.sm8.core.model.MaterializePolicy.Persist(level) =>
+              try {
+                Right(result.persist(org.apache.spark.storage.StorageLevel.fromString(level)))
+              } catch {
+                case e: java.lang.IllegalArgumentException =>
+                  Left(EngineError.UnsupportedCapability(
+                    engine     = "spark-3.5",
+                    capability = "MaterializePolicy.Persist",
+                    message    = s"Unknown Spark StorageLevel: '$level'. Expected one of: DISK_ONLY, DISK_ONLY_2, MEMORY_ONLY, MEMORY_ONLY_2, MEMORY_AND_DISK, MEMORY_AND_DISK_2, MEMORY_AND_DISK_SER, MEMORY_AND_DISK_SER_2, OFF_HEAP.",
+                  ))
+              }
+            case _ =>
+              Right(result)
+          }
         }
-      }
     }
   }
+}
 
   /** groupBy+agg path. Per-group totals; loses per-row data.
     * Used when no calculated measure references Expr.All.
@@ -468,14 +474,20 @@ final class PortableQueryCompiler(val spark: SparkSession)
       df:      DataFrame,
       model:   Model,
       dimCols: Array[Column],
-  ): DataFrame = {
-    val aggCols: List[Column] = model.measures.map { m =>
-      renderAggregate(m.expr).as(m.name)
-    }
-    val aggregated: DataFrame =
-      if (dimCols.isEmpty) df.agg(aggCols.head, aggCols.tail: _*)
-      else df.groupBy(dimCols: _*).agg(aggCols.head, aggCols.tail: _*)
-    applyCalculatedMeasures(aggregated, model)
+  ): Either[EngineError, DataFrame] = {
+    val aggColsE: Either[EngineError, List[Column]] =
+      model.measures.foldLeft[Either[EngineError, List[Column]]](Right(Nil)) {
+        (accE, m) => for {
+          acc <- accE
+          c   <- renderAggregate(m.expr)
+        } yield acc :+ c.as(m.name)
+      }
+    for {
+      aggCols    <- aggColsE
+      aggregated  = if (dimCols.isEmpty) df.agg(aggCols.head, aggCols.tail: _*)
+                    else df.groupBy(dimCols: _*).agg(aggCols.head, aggCols.tail: _*)
+      result     <- applyCalculatedMeasures(aggregated, model)
+    } yield result
   }
 
   /** PR-M4 (GAP 7): apply all calculated measures as withColumn.
@@ -487,8 +499,11 @@ final class PortableQueryCompiler(val spark: SparkSession)
   private def applyCalculatedMeasures(
       df:    DataFrame,
       model: Model,
-  ): DataFrame = model.calculatedMeasures.foldLeft(df) { (acc, calc) =>
-    acc.withColumn(calc.name, PortableExprCompiler.toColumn(calc.expr))
+  ): Either[EngineError, DataFrame] = model.calculatedMeasures.foldLeft[Either[EngineError, DataFrame]](Right(df)) {
+    (accE, calc) => for {
+      acc <- accE
+      c   <- PortableExprCompiler.toColumn(calc.expr)
+    } yield acc.withColumn(calc.name, c)
   }
 
   /** Window-function path. Computes each measure via a window
@@ -503,14 +518,18 @@ final class PortableQueryCompiler(val spark: SparkSession)
       df:      DataFrame,
       model:   Model,
       dimCols: Array[Column],
-  ): DataFrame = {
+  ): Either[EngineError, DataFrame] = {
     val windowSpec =
       if (dimCols.isEmpty) Window.partitionBy()
       else Window.partitionBy(dimCols: _*)
-    val withMeasures = model.measures.foldLeft(df) { (acc, m) =>
-      acc.withColumn(m.name, renderAggregate(m.expr).over(windowSpec))
-    }
-    applyCalculatedMeasures(withMeasures, model)
+    val withMeasuresE: Either[EngineError, DataFrame] =
+      model.measures.foldLeft[Either[EngineError, DataFrame]](Right(df)) {
+        (accE, m) => for {
+          acc <- accE
+          c   <- renderAggregate(m.expr)
+        } yield acc.withColumn(m.name, c.over(windowSpec))
+      }
+    withMeasuresE.flatMap(applyCalculatedMeasures(_, model))
   }
 
   /** Render a portable [[AggregateCall]] as a Spark [[Column]].
@@ -523,23 +542,36 @@ final class PortableQueryCompiler(val spark: SparkSession)
     * can compose the direct `df.groupBy().agg()` path without
     * duplicating the per-fn rendering logic.
     */
-  def renderAggregate(call: AggregateCall): Column = {
-    val inputCol = PortableExprCompiler.toColumn(
+  def renderAggregate(call: AggregateCall): Either[EngineError, Column] = {
+    val inputColE: Either[EngineError, Column] = PortableExprCompiler.toColumn(
       call.input.getOrElse(Expr.FieldRef(call.alias))
     )
-    call.fn match {
-      case AggregateFn.Sum           => sparkSum(inputCol)
-      case AggregateFn.Count         => count(lit(1))
-      case AggregateFn.CountDistinct => countDistinct(inputCol)
-      case AggregateFn.Avg           => avg(inputCol)
-      case AggregateFn.Min           => sparkMin(inputCol)
-      case AggregateFn.Max           => sparkMax(inputCol)
-      case other =>
-        throw new UnsupportedOperationException(
-          s"PortableQueryCompiler.renderAggregate: $other reached the renderer " +
-          s"without FeatureDeferred pre-validation -- internal invariant violation.",
-        )
-    }
+    for {
+      inputCol <- inputColE
+      out <- call.fn match {
+        case AggregateFn.Sum           => Right(sparkSum(inputCol))
+        case AggregateFn.Count         => Right(count(lit(1)))
+        case AggregateFn.CountDistinct => Right(countDistinct(inputCol))
+        case AggregateFn.Avg           => Right(avg(inputCol))
+        case AggregateFn.Min           => Right(sparkMin(inputCol))
+        case AggregateFn.Max           => Right(sparkMax(inputCol))
+        case other =>
+          // Programmer error: applyAggregations pre-validates
+          // against SupportedAggregates. Reaching here is an
+          // internal invariant violation, hence the loud typed
+          // error (not a throw per [[scala-error-handling-mindset]]
+          // rule #3: throw only for programmer errors; here the
+          // invariant break surfaces as a typed EngineError so
+          // the MCP server maps it to a 5xx).
+          Left(EngineError.ProviderInvocationFailed(
+            engine = "spark-3.5",
+            name   = "PortableQueryCompiler.renderAggregate",
+            reason = "InvariantViolation",
+            message = s"PortableQueryCompiler.renderAggregate: $other reached the renderer " +
+                     s"without FeatureDeferred pre-validation -- internal invariant violation.",
+          ))
+      }
+    } yield out
   }
 
   // -- dimension projection (measure-less models) --
