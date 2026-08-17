@@ -266,13 +266,12 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
 
   // -- Unsupported cases throw with diagnostic --
 
-  test("Expr.MeasureRef: throws UnsupportedOperationException (subquery deferred)") {
+  test("Expr.MeasureRef: lowers to col(name) (PR-M4 contract change)") {
     val spark = buildFakeSpark()
     try {
-      val ex = intercept[UnsupportedOperationException] {
-        PortableExprCompiler.toColumn(Expr.MeasureRef("foo"))
-      }
-      ex.getMessage should include ("MeasureRef")
+      val col = PortableExprCompiler.toColumn(Expr.MeasureRef("total"))
+      col should not be null
+      col.expr.sql should include ("total")
     } finally { spark.stop() }
   }
 

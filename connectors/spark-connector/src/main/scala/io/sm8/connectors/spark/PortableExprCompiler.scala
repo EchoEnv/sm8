@@ -109,13 +109,13 @@ object PortableExprCompiler extends java.io.Serializable {
     //    schema we set on the resulting DataFrame). --
     case Expr.Cast(e, _)           => toColumn(e).cast("string")
 
-    // -- MeasureRef: subquery resolution deferred. --
-    case Expr.MeasureRef(_) =>
-      throw new UnsupportedOperationException(
-        "PortableExprCompiler.toColumn: Expr.MeasureRef is not supported " +
-        "in this Layer C follow-up (deferred to a future PR that adds " +
-        "subquery resolution).",
-      )
+    // -- MeasureRef: a measure reference resolved at the engine
+    // side (the existing measure column is in scope after the
+    // aggregate). For the GAP-5/7 minimum: `col(name)` -- the measure
+    // name must already be a groupBy-produced column at this point.
+    // The PR-M2 ModelValidator walker skips MeasureRef as engine-known
+    // (schema validation does not require it to be a schema field).
+    case Expr.MeasureRef(name) => col(name)
 
     // -- Expr.All: lowered to a simple column reference. The
     //    aggregation is already applied at this point in the
