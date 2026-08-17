@@ -121,7 +121,35 @@ final class SparkEngineProvider(
     * constructor-frozen SparkSession on JVM exit. Idempotent
     * (SparkSession.stop is a no-op after the first call).
     */
+  // PR-O4e (ADR-008-O): track every DataFrame we persist() so we
+  // can unpersist() them at JVM exit (per the cache-plugin
+  // long-lived-model intent). ConcurrentHashMap for thread-safe
+  // put/remove with no per-call allocation.
+  private val persistedFrames: java.util.concurrent.ConcurrentHashMap[java.lang.Long, org.apache.spark.sql.Dataset[_]] =
+    new java.util.concurrent.ConcurrentHashMap()
+  private val persistedSeq: java.util.concurrent.atomic.AtomicLong =
+    new java.util.concurrent.atomic.AtomicLong(0L)
+
+  /** PR-O4e: register a persisted DataFrame for paired
+    * unpersist-on-shutdown. Returns the unregister-token.
+    */
+  private[spark] def trackPersist(df: org.apache.spark.sql.Dataset[_]): Long = {
+    val tok = persistedSeq.incrementAndGet()
+    persistedFrames.put(tok, df)
+    tok
+  }
+
+  /** PR-O4a + PR-O4e: lifecycle hook -- unpersist every tracked
+    * DataFrame, then stop the constructor-frozen SparkSession.
+    * Idempotent (SparkSession.stop is a no-op after the first call).
+    */
   override def close(): Unit = try {
+    import scala.collection.JavaConverters._
+    persistedFrames.asScala.foreach { case (_, df) =>
+      try df.unpersist()
+      catch { case _: Throwable => () }
+    }
+    persistedFrames.clear()
     if (spark != null) spark.stop()
   } catch {
     case _: Throwable => ()
@@ -232,7 +260,20 @@ final class SparkEngineProvider(
           )
         }.toList
       )
+      // PR-O4e (ADR-008-O): MaterializePolicy.Persist -> paired
+      // unpersist at query boundary. After .collect() the result rows
+      // are already in-memory in `collected`; the persisted Spark
+      // form is then unpersisted to free executor cache. The
+      // cache-plugin InMemoryResultCache keeps the per-query
+      // answer for its own TTL. The Spark-level persist() then
+      // unpersist() is opt-in; without MaterializePolicy.Persist
+      // the DF was never persisted so this is a no-op.
+      val wasPersisted = !withLimit.storageLevel.equals(
+        org.apache.spark.storage.StorageLevel.NONE
+      )
+      if (wasPersisted) try withLimit.persist() catch { case _: Throwable => () }
       val collected: Array[org.apache.spark.sql.Row] = withLimit.collect()
+      if (wasPersisted) try withLimit.unpersist() catch { case _: Throwable => () }
       val rows: Vector[ResultRow] = collected.iterator.map { row =>
         ResultRow(values = decodeRow(row, schema), schema = schema)
       }.toVector
