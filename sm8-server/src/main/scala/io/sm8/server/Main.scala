@@ -177,20 +177,20 @@ object Main {
   /** Wire model + registry + transport WITHOUT starting the server.
     * Pure construction — unit-testable without binding a socket. */
   /**
-    * Realize a discovered provider against a URL by reflection.
+    * Realize a discovered provider against a connector URL via
+    * the typed `MCPEngineProvider.realize(url)` contract.
     *
-    * Per RFC §3 + the user's "no spark types in the platform"
-    * directive: the platform holds ONLY a string. For each
-    * discovered provider that is not available (i.e. the
-    * contract-gap stub from the connector's no-arg ctor), look
-    * for a `(String) ctor` on the class. If found, instantiate
-    * with the URL. The connector's (String) ctor builds the
-    * real SparkSession (or TrinoClient, etc.) — the platform
-    * never imports the connector class directly.
+    * Per RFC SS3 + ADR-006 (Post-#65 Refinement) + the user
+    * "no spark types in the platform" directive: the platform
+    * holds ONLY a string. For each discovered provider, the
+    * `realize(url: String): Option[MCPEngineProvider]` is
+    * invoked; `Some(realized)` replaces the stub with the
+    * configured instance, `None` keeps the stub. This replaced
+    * the deprecated `(String) ctor` reflection pattern (PR-B).
     *
-    * Future connectors that support a URL realization (Trino URL,
-    * DuckDB path, etc.) just need a `(String) ctor` — no platform
-    * change.
+    * The platform never imports the connector class directly;
+    * every connector decides its realization contract via the
+    * `MCPEngineProvider.realize` override in core.
     */
   def realize(
       providers:    List[MCPEngineProvider],
