@@ -1,0 +1,12 @@
+patient_id,mrn,first_name,last_name,date_of_birth,gender,city,insurance
+P001,MRN-1001,john,smith,1955-03-12,M,Boston,BlueCross
+P002,MRN-1002,JANE,doe,1962-07-25,F,chicago,Aetna
+P003,MRN-1003,John,Smith,1955-03-12,M,Boston,BlueCross
+P004,MRN-1001,John,Smith,1955-03-12,M,Boston,BlueCross
+P005,MRN-1005,MARY,JOHNSON,1978-11-30,F,New York,UnitedHealth
+P006,,james,brown,1990-05-15,M,Los Angeles,Medicare
+P007,MRN-1007,Linda,Garcia,1985-09-08,F,Houston,Cigna
+P008,MRN-1008,michael,lee,2000-02-14,M,Seattle,BlueCross
+P009,MRN-1009,susan,martinez,1968-12-03,F,Miami,Aetna
+P010,MRN-1010,Robert,Chen,1995-08-22,M,San Francisco,Kaiser
+P011,MRN-1003,John,A Smith,1955-03-12,M,Boston,BlueCross

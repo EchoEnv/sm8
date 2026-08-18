@@ -1,0 +1,64 @@
+# sm8 model: encounters (cleansed)
+#
+# Schema:
+#   encounter_id, patient_id, admission_date, discharge_date, department,
+#   primary_diagnosis, discharge_status
+#
+# Per-row transforms: the los_days column is computed at model-load
+# time. In sm8's current Model API, this is done via the `transforms`
+# path in the YAML loader (future). For this example we compute
+# los_days in the Main.scala via `withColumn` before building the
+# model — equivalent in semantics, just expressed in Scala.
+
+encounters:
+    status: published
+    table: encounters_clean_csv
+    description: "Patient hospital encounters (admissions)"
+
+    transforms:
+        los_days:
+            expr: "datediff(discharge_date, admission_date)"
+            description: "Length of stay in days (per-row)"
+
+    dimensions:
+        encounter_id:
+            expr: encounter_id
+            description: "Encounter ID (primary key)"
+        patient_id:
+            expr: patient_id
+            description: "Foreign key to patients.patient_id"
+        admission_date:
+            expr: admission_date
+            description: "Date the patient was admitted"
+            is_time_dimension: true
+            smallest_time_grain: day
+        discharge_date:
+            expr: discharge_date
+            description: "Date the patient was discharged"
+        department:
+            expr: department
+            description: "Hospital department (e.g. Cardiology, Pediatrics)"
+        primary_diagnosis:
+            expr: primary_diagnosis
+            description: "ICD-10 code of the primary diagnosis"
+        discharge_status:
+            expr: discharge_status
+            description: "How the patient left (home, transferred, expired)"
+
+    measures:
+        encounter_count:
+            expr: "count(1)"
+            description: "Number of encounters in the group"
+        total_los:
+            expr: "sum(los_days)"
+            description: "Sum of length-of-stay days across encounters in the group"
+        expired_count:
+            expr: "sum(case when discharge_status = 'expired' then 1 else 0 end)"
+            description: "Number of encounters that ended in mortality"
+
+    calculated_measures:
+        avg_los:
+            expr: "total_los / encounter_count"
+            description: "Average length of stay in days"
+            metadata:
+                unit: days
