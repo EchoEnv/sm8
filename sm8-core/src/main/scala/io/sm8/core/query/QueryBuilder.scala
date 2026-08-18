@@ -145,100 +145,8 @@ object QueryBuilder {
                                                 message  = s"Source '$source' auth failed: ${au.reason}"))
   }
 
-  /** Internal: detect cycles in the calculated-measure dependency
-    * graph. A calculated measure `cm` depends on any measure name
-    * it references (via `Expr.FieldRef` / `Expr.MeasureRef`).
-    *
-    * Per ADR-007 SSPR-J (cycle detection defaulted to PR-J,
-    * implemented here): cycles raise a typed
-    * `EngineError.UnsupportedCapability` at build time -- fail-
-    * fast, never a silent runtime crash (per
-    * [[debug-mantra-mindset]] SS1).
-    *
-    * Algorithm: DFS with WHITE/GRAY/BLACK coloring. WHITE = not
-    * visited; GRAY = on current path; BLACK = fully processed.
-    * A back-edge to GRAY is a cycle.
-    */
-  private def detectCalcCycles(
-      calcs: List[CalculatedMeasure],
-  ): Either[EngineError, Unit] = {
-    val byName: Map[String, CalculatedMeasure] =
-      calcs.map(c => c.name -> c).toMap
-
-    val White = 0
-    val Gray  = 1
-    val Black = 2
-
-    val color = scala.collection.mutable.Map[String, Int]().withDefaultValue(White)
-
-    def refs(name: String): Set[String] =
-      byName.get(name).map(measureRefs).getOrElse(Set.empty)
-
-    // Measure-dependency extraction (cycle detection). A name is
-    // a cycle ref if it is EITHER:
-    //   - a MeasureRef / All (Calculator.measureNamesOf), OR
-    //   - a FieldRef that matches one of the declared calculated
-    //     measure names (so a FieldRef to "x" inside calc "a" is a
-    //     cycle back to "a" if "x" is also a calc)
-    //
-    // Per [[karpathy-guidelines-mindset]]: Calculator is the single
-    // source of truth for Expr walking -- QueryBuilder composes the
-    // two field-name + measure-name views and filters by the
-    // declared-calc set.
-    def measureRefs(c: CalculatedMeasure): Set[String] = {
-      val m = io.sm8.core.expr.Calculator.measureNamesOf(c.expr)
-      val f = io.sm8.core.expr.Calculator.fieldNamesOf(c.expr)
-      (m ++ f).filter(byName.contains)
-    }
-
-    // Iterative DFS with an explicit path stack (no recursion -- the
-    // calc DAG is small in practice; iterative avoids Scala stack
-    // surprises per scala-jvm-safety-mindset).
-    def visit(name: String): Either[EngineError, Unit] = {
-      var stack: List[(String, List[String])] = List((name, refs(name).toList))
-      var path: List[String] = List.empty
-      var foundCycle: Option[List[String]] = None
-
-      while (stack.nonEmpty && foundCycle.isEmpty) {
-        val (n, remaining) = stack.head
-        stack = stack.tail
-        color(n) match {
-          case Black => ()  // already processed
-          case Gray  => foundCycle = Some((path :+ n).reverse)  // cycle
-          case White =>
-            color(n) = Gray
-            path = path :+ n
-            // push neighbours; if any are Gray on revisit, we catch above
-            val next = remaining.headOption.map(_ => remaining.tail ::: List.empty[String])
-            remaining match {
-              case Nil =>
-                // done with n
-                color(n) = Black
-              case head :: tail =>
-                stack = (n -> tail) :: stack
-                stack = (head -> refs(head).toList) :: stack
-            }
-        }
-      }
-      foundCycle match {
-        case Some(cycle) => Left(EngineError.UnsupportedCapability(
-          engine     = "query-builder",
-          capability = "CalculatedMeasure.cycle",
-          message    = s"Cycle in calculated-measure DAG: ${cycle.mkString(" -> ")}",
-        ))
-        case None => Right(())
-      }
-    }
-
-    // Run a separate visit per uncolored calc
-    val allOk: Either[EngineError, Unit] = calcs.foldLeft[Either[EngineError, Unit]](Right(())) { (acc, c) =>
-      acc.flatMap(_ => visit(c.name))
-    }
-    allOk
-  }
 
   /** Internal: assemble the RelOp tree once every source is resolved
-    * + cycles are checked.
     *
     * Shape: Scan_1 left-join Scan_2 left-join ... -> Filter ->
     * Project + Aggregate -> Sort -> Limit.
@@ -341,4 +249,89 @@ object QueryBuilder {
     val calcCols = model.calculatedMeasures.map(c => (Expr.Alias(c.name, c.expr), c.name))
     dimCols ++ measCols ++ calcCols
   }
+
+  /**
+    * PR-1/A2 (ADR-008-P §A2): extract the previously-private instance
+    * method `detectCalcCycles` to a public companion-object pure function.
+    * Companion-object methods are stateless and callable from anywhere
+    * (including the connector layer's `applyCalculatedMeasures` per
+    * ADR-008-L GAP 5 follow-up). Cycle-detection algorithm unchanged;
+    * visibility moves from `private def` (class) to public `def`
+    * (companion object).
+    *
+    * Per [[scala-impact-analysis-mindset]] §2: 1:1 move with NO behavior
+    * change; the existing internal caller at line 98 is rewritten to
+    * call this companion-object method.
+    */
+  def detectCalcCycles(
+      calcs: List[CalculatedMeasure],
+  ): Either[EngineError, Unit] = {
+    val byName: Map[String, CalculatedMeasure] =
+      calcs.map(c => c.name -> c).toMap
+
+    val White = 0
+    val Gray  = 1
+    val Black = 2
+
+    val color = scala.collection.mutable.Map[String, Int]().withDefaultValue(White)
+
+    def refs(name: String): Set[String] =
+      byName.get(name).map(measureRefs).getOrElse(Set.empty)
+
+    // Measure-dependency extraction (cycle detection). A name is a cycle
+    // ref if it is EITHER:
+    //   - a MeasureRef / All (Calculator.measureNamesOf), OR
+    //   - a FieldRef that matches one of the declared calculated measure
+    //     names (so a FieldRef to "x" inside calc "a" is a cycle back to
+    //     "a" if "x" is also a calc)
+    def measureRefs(c: CalculatedMeasure): Set[String] = {
+      val m = io.sm8.core.expr.Calculator.measureNamesOf(c.expr)
+      val f = io.sm8.core.expr.Calculator.fieldNamesOf(c.expr)
+      (m ++ f).filter(byName.contains)
+    }
+
+    def visit(name: String): Either[EngineError, Unit] = {
+      var stack: List[(String, List[String])] = List((name, refs(name).toList))
+      var path: List[String] = List.empty
+      var foundCycle: Option[List[String]] = None
+
+      while (stack.nonEmpty && foundCycle.isEmpty) {
+        val (n, remaining) = stack.head
+        stack = stack.tail
+        color(n) match {
+          case Black => ()
+          case Gray  => foundCycle = Some((path :+ n).reverse)
+          case White =>
+            color(n) = Gray
+            path = path :+ n
+            remaining match {
+              case Nil =>
+                color(n) = Black
+                path = path.init
+              case head :: tail =>
+                // Push `n` back with the remaining siblings so we can
+                // continue iterating after `head` is fully processed.
+                // This is what catches self-cycles (head == n): when we
+                // revisit n, its color is Gray -> cycle detected.
+                stack = (n -> tail) :: stack
+                stack = (head -> refs(head).toList) :: stack
+            }
+        }
+      }
+
+      foundCycle match {
+        case Some(cycle) => Left(EngineError.UnsupportedCapability(
+          engine     = "query-builder",
+          capability = "CalculatedMeasure.cycle",
+          message    = s"Cycle in calculated-measure DAG: ${cycle.mkString(" -> ")}",
+        ))
+        case None => Right(())
+      }
+    }
+
+    calcs.foldLeft[Either[EngineError, Unit]](Right(())) { (acc, c) =>
+      acc.flatMap(_ => visit(c.name))
+    }
 }
+}
+

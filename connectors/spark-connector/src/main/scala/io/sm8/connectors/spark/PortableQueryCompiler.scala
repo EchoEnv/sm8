@@ -484,8 +484,12 @@ final class PortableQueryCompiler(val spark: SparkSession)
       }
     for {
       aggCols    <- aggColsE
-      aggregated  = if (dimCols.isEmpty) df.agg(aggCols.head, aggCols.tail: _*)
-                    else df.groupBy(dimCols: _*).agg(aggCols.head, aggCols.tail: _*)
+      aggregated  = (dimCols.isEmpty, aggCols.isEmpty) match {
+                    case (true, true)   => df                                                      // SELECT * with no aggregations
+                    case (true, false)  => df.agg(aggCols.head, aggCols.tail: _*)                 // agg only
+                    case (false, true)  => df.groupBy(dimCols: _*).count()                          // groupBy only, no measures — Spark requires agg() with >=1 arg; count() is the safest no-op aggregate
+                    case (false, false) => df.groupBy(dimCols: _*).agg(aggCols.head, aggCols.tail: _*)
+                  }
       result     <- applyCalculatedMeasures(aggregated, model)
     } yield result
   }

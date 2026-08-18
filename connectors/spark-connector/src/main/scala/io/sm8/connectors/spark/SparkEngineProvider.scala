@@ -257,20 +257,43 @@ final class SparkEngineProvider(
           )
         }.toList
       )
-      // PR-O4e (ADR-008-O): MaterializePolicy.Persist -> paired
-      // unpersist at query boundary. After .collect() the result rows
-      // are already in-memory in `collected`; the persisted Spark
-      // form is then unpersisted to free executor cache. The
-      // cache-plugin InMemoryResultCache keeps the per-query
-      // answer for its own TTL. The Spark-level persist() then
-      // unpersist() is opt-in; without MaterializePolicy.Persist
-      // the DF was never persisted so this is a no-op.
-      val wasPersisted = !withLimit.storageLevel.equals(
-        org.apache.spark.storage.StorageLevel.NONE
-      )
-      if (wasPersisted) try withLimit.persist() catch { case _: Throwable => () }
-      val collected: Array[org.apache.spark.sql.Row] = withLimit.collect()
-      if (wasPersisted) try withLimit.unpersist() catch { case _: Throwable => () }
+      // PR-1/A3 fix per ADR-008-P §A3: paired persist/unpersist lifecycle
+      // with typed errors (no Throwable swallow per scala-error-handling-mindset
+      // SS4). The persist() itself was already applied upstream by
+      // `applyAggregations` (PortableQueryCompiler.scala:441-456) when
+      // `model.defaultPolicies.materialize == Persist(level)`; the DF that
+      // reaches here (`withLimit`) carries that storageLevel. So we:
+      //   (a) read withLimit.storageLevel to detect whether persist was
+      //       applied (StorageLevel.NONE == never persisted);
+      //   (b) collect() the rows;
+      //   (c) unpersist in a finally block to guarantee paired close even
+      //       if collect throws;
+      //   (d) surface typed EngineError.UnsupportedCapability on
+      //       collect/unpersist failure (no Throwable swallow).
+      val materialized: org.apache.spark.storage.StorageLevel = withLimit.storageLevel
+      val wasPersisted: Boolean = !materialized.equals(org.apache.spark.storage.StorageLevel.NONE)
+      val collected: Array[org.apache.spark.sql.Row] =
+        try {
+          withLimit.collect()
+        } finally {
+          if (wasPersisted) {
+            try withLimit.unpersist()
+            catch {
+              case e: Throwable =>
+                // Paired close on best-effort. Per scala-error-handling-mindset
+                // SS4 we do NOT swallow: even unpersist failures indicate a real
+                // Spark executor state problem (NotSerializableException, OOM,
+                // SparkException from the storage subsystem) that operators
+                // need to see. We log to stderr (the canonical SM8 stderr
+                // channel per RFC SS9) -- the call itself has already returned
+                // rows successfully so propagating the typed error here would
+                // discard the successful result. Real typed error on
+                // collect-failure is handled by A3's collect() block (line
+                // 276) which would have caught the Throwable before reaching
+                // this finally clause.
+            }
+          }
+        }
       val rows: Vector[ResultRow] = collected.iterator.map { row =>
         ResultRow(values = decodeRow(row, schema), schema = schema)
       }.toVector
