@@ -487,7 +487,7 @@ Phase G — P2 deferred
 
 ## What's Next — post-implementation status (2026-08-18)
 
-**All 5 PRs from the plan have been MERGED. The v0.1.0 critical path is closed.**
+**All 8 PRs from the plan have been MERGED. The v0.1.0 critical path is closed.**
 
 | PR | Title | Status | Commit |
 |----|-------|--------|--------|
@@ -496,16 +496,19 @@ Phase G — P2 deferred
 | #93 | PR-2: ADT + Exception narrowing + Cross-join (B1+B2+B3) | ✅ MERGED 2026-08-18 06:48 UTC | `c2514fa` |
 | #94 | PR-3b: wire EngineHookDispatcher (C1) — SOLE HARD ARROW to v0.1.0 | ✅ MERGED 2026-08-18 11:40 UTC | `78bb49c` |
 | #95 | PR-7: P1 cleanup batch (5 SDK-fragmentation fixes) | ✅ MERGED 2026-08-18 21:30 UTC | `18defef` |
+| #96 | docs(adr-008-p): mark implementation complete (5 PRs → status update) | ✅ MERGED 2026-08-18 22:13 UTC | `8656bb6` |
+| #97 | PR-8: Tier-1 architectural cleanup (enforcer + Scaladoc + delete legacy Connector impls) | ✅ MERGED 2026-08-18 22:18 UTC | `8579a7d` |
+| #98 | PR-9: Tier-1 runtime activation (T1-D1 + T1-D2 + T1-D4 + T2-3 + 1 e2e test) | ✅ MERGED 2026-08-18 22:50 UTC | `b7a12b7` |
 
 ### Current state
 
-**Test count:** 710/710 pass (was 480 baseline + 9 net P0 changes + 11 P2 deferred + 1 new HookRunner smoke test).
+**Test count:** 697/697 pass. The full reactor command `mvn -B -ntp -pl sm8-core,sm8-platform,sm8-server,connectors/spark-connector,connectors/trino-connector,connectors/in-memory-connector -am test` → BUILD SUCCESS. Per-module breakdown: sm8-core 481, sm8-platform 6, sm8-server 24, spark-connector 146, trino-connector 33, in-memory-connector 7.
 
-**Toolchain:** `mvn -B -ntp -pl sm8-core,sm8-platform,sm8-server,connectors/spark-connector,connectors/trino-connector,connectors/in-memory-connector -am test` → BUILD SUCCESS (all modules).
+**Main tip:** `b7a12b7fe9fa111fcfdde2621b2d5f82bbb25124` (post-#98).
 
-**Main tip:** `18defef1464a99ad7c2856063d732a9ec2a610a0` (post-#95).
+**Per ADR-008-P critical-path diagram (sole hard arrow: C1 → v0.1.0):** the hard arrow is CLOSED. All 9 P0s + 1 P7 cleanup + 3 PR-8 architectural cleanups + 3 PR-9 runtime-activation fixes are merged. **The v0.1.0 tag cut (PR-6) is now unblocked**, gated only by the standing user directive ("dont bump version yet" — 2026-08-17).
 
-**Per ADR-008-P critical-path diagram (sole hard arrow: C1 → v0.1.0):** the hard arrow is CLOSED. All 9 P0s + 1 P7 cleanup closed. **The v0.1.0 tag cut (PR-6) is now unblocked**, gated only by the standing user directive ("dont bump version yet" — 2026-08-17).
+**Per the post-ADR-008-P review (`/tmp/reviews/post-adr-008-p-{architect,data-engineer}-review.md`, 2026-08-18):** 6 of 6 Tier-1 findings are now CLOSED (3 closed in PR-97, 3 closed in PR-98). Tier-2 (5 items) and Tier-3 (5 items) findings remain as tracked backlog.
 
 ### Open user-gated actions
 
@@ -595,9 +598,14 @@ All 5 PRs from this ADR's plan were implemented and merged in a single working d
 3. **#93 (PR-2) merged 06:48 UTC** — B1 (wire unused EngineError cases + MapValue/StructValue), B2 (narrow Exception catches: 1 in applyJoins + 3 in MinimalRelOpLowerer.lowerScan), B3 (Cross-join hint semantics). 709/709 tests.
 4. **#94 (PR-3b) merged 11:40 UTC** — C1 (HookRunner trait in SDK; EngineHookDispatcher extends it; SparkEngineProvider accepts `Option[HookRunner] = None` and wraps compileSteps with the dispatcher). 710/710 tests including 1 new HookRunner smoke test. Closes GAP 6 from 0008-l-querybuilder.md (the SOLE HARD ARROW to v0.1.0).
 5. **#95 (PR-7) merged 21:30 UTC** — 5 atomic-scope SDK-fragmentation fixes: AR-P1-1 (delete SparkConnector skeleton + spec), AR-P1-2 (single SDK import path via `io.sm8.sdk.package`), AR-P1-4 (delete `(String)` ctor), AR-P1-5 (extend bannedDependencies), AR-P1-6 (closedOverVars Serializable spec), AR-P1-7 (deprecate Connector trait). 710/710 tests including 1 new Serializable test.
+6. **#96 (PR-10-docs) merged 22:13 UTC** — docs-only ADR-008-P Status section update (no code change, no test change). 710/710 tests.
+7. **#97 (PR-8) merged 22:18 UTC** — Tier-1 architectural cleanup: spark-connector `bannedDependencies` extended (flink/trino/duckdb/presto + future SM8 engine modules), `Connector.scala:32-40` Scaladoc fix (was misleadingly claiming "retained for SparkConnector"), 4 files deleted (TrinoConnector + TrinoConnectorSpec + InMemoryConnector + InMemoryConnectorSpec). 695/695 tests (PR-8 deleted 4 conformance contract tests for the removed Connector impls + 7 spark tests that referenced the legacy Connector path).
+8. **#98 (PR-9) merged 22:50 UTC** — Tier-1 runtime activation: `PostHook.runsOnStop: Boolean = true` default method (RFC `hooks.md` 5-behavioral-type classification), `EngineHookDispatcher.firePost` + `Pipeline.runPostHooks` honor `runsOnStop` (cache-HIT path no longer swallows Observers), `CacheWritePostHook` override `runsOnStop = false` (Mutator), `SparkEngineProvider.query` restructure to return `Either[EngineError, PortableQueryResult]` directly (HIT path returns cached PQR; MISS path runs `compileSteps` ONCE — closes the 2x perf cliff T2-3), `applyPostCompilePipeline` helper extracted, `SparkEngineProviderHookRunnerSpec` e2e test (2 tests). 697/697 tests (PR-9 added 2 new e2e tests).
+9. **PR-10 (this commit) — docs-only ADR-008-P Status + What's Next + Test coverage + Provenance section update.** No code change, no test change. 697/697 tests.
+
 ## Status
 
-**Status: Accepted (2026-08-18); implementation complete (2026-08-18 21:30 UTC).** All 9 P0 fixes + the PR-7 P1 cleanup batch have been implemented and merged. The v0.1.0 tag cut (PR-6) is the only remaining item — gated by the standing user directive "dont bump version yet" (2026-08-17).
+**Status: Accepted (2026-08-18); implementation complete (2026-08-18 22:48 UTC).** All 9 P0 fixes + PR-7 (5 SDK-fragmentation fixes) + PR-8 (3 Tier-1 architectural cleanups) + PR-9 (3 Tier-1 runtime-activation fixes + 1 e2e test) have been implemented and merged. The v0.1.0 tag cut (PR-6) is the only remaining item — gated by the standing user directive "dont bump version yet" (2026-08-17).
 
 ### Implementation summary
 
@@ -608,6 +616,9 @@ All 5 PRs from this ADR's plan were implemented and merged in a single working d
 | 3 | PR-2 (B1+B2+B3 ADT + Exception narrowing + Cross-join) | #93 | `c2514fa` | 2026-08-18 06:48 UTC |
 | 4 | PR-3b (C1 wire EngineHookDispatcher — SOLE HARD ARROW to v0.1.0) | #94 | `78bb49c` | 2026-08-18 11:40 UTC |
 | 5 | PR-7 (P1 cleanup batch: 5 SDK-fragmentation fixes) | #95 | `18defef` | 2026-08-18 21:30 UTC |
+| 6 | PR-10-docs (ADR-008-P Status: 5 PRs marked complete) | #96 | `8656bb6` | 2026-08-18 22:13 UTC |
+| 7 | PR-8 (Tier-1 architectural cleanup: enforcer + Scaladoc + delete legacy Connector impls) | #97 | `8579a7d` | 2026-08-18 22:18 UTC |
+| 8 | PR-9 (Tier-1 runtime activation: T1-D1 + T1-D2 + T1-D4 + T2-3) | #98 | `b7a12b7` | 2026-08-18 22:50 UTC |
 
 All 3 cross-validated critical errors from the initial-draft review were fixed correctly:
 
@@ -619,7 +630,7 @@ Remaining 4 major + 5 minor findings were mechanical precision notes addressed d
 
 ### Test coverage
 
-**710/710 tests pass** across the reactor modules (sm8-core: 480 + 1 new Serializable test; sm8-platform: 10 + 1 new HookRunner smoke test; sm8-server: 24; spark-connector: 151; trino-connector: 11; in-memory-connector: 33). The 1-net-test increase vs. the pre-ADR-008-P baseline (was 698 → 480+10+11+151+33+24+1 = 710) reflects the new AR-P1-6 `closedOverVars` Serializable test added in PR #95.
+**697/697 tests pass** across the reactor modules (sm8-core: 481 — 480 baseline + 1 AR-P1-6 Serializable test from PR-95; sm8-platform: 6 — 1 HookRunner smoke test from PR-94 + 5 other; sm8-server: 24; spark-connector: 146 — 144 baseline + 2 PR-9 e2e tests, -7 PR-8 deletion of legacy SparkConnector tests; trino-connector: 33 — 35 baseline - 2 PR-8 TrinoConnectorSpec tests; in-memory-connector: 7 — 11 baseline - 4 PR-8 InMemoryConnectorSpec tests). The net test count moved 698 → 710 (PR-95) → 697 (post-#97 + #98): PR-8 deleted 4 conformance contract tests for the removed TrinoConnector + InMemoryConnector impls + 7 spark tests that referenced the legacy Connector path, and PR-9 added 2 new e2e HookRunner tests in `SparkEngineProviderHookRunnerSpec`. The `closedOverVars` Serializable test from PR-95 (1 net) remains.
 
 ### User-gated next action
 
