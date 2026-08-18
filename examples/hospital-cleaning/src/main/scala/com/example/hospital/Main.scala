@@ -169,14 +169,14 @@ object Main {
 
   // ====== STEP 4: build the sm8 Model ======
 
-  /** Build the patients `Model` from the cleansed DataFrame.
+  /** Build the patients `Model` (no DataFrame arg — temp view registered at call site).
     *
     * Uses `Model.of(...)` directly (the canonical pattern in the
     * existing sm8 tests like `SparkEngineProviderProductionWiringSpec`).
     * The model YAML in `models/patients.yml` documents the
     * target shape for the future sm8 ModelLoader YAML subset.
     */
-  private def buildPatientsModel(cleansedPatients: DataFrame): Model = {
+  private def buildPatientsModel(): Model = {
     val dimensions: List[Dimension] = List(
       Dimension.field("patient_id", "patient_id"),
       Dimension.field("mrn", "mrn"),
@@ -217,7 +217,7 @@ object Main {
     * Includes a `calculated_measures` for `avg_los` (total_los /
     * encounter_count) per the model YAML.
     */
-  private def buildEncountersModel(spark: SparkSession, cleansedEncounters: DataFrame): Model = {
+  private def buildEncountersModel(cleansedEncounters: DataFrame): Model = {
     // Per-row transform: los_days = datediff(discharge_date, admission_date)
     val withLos = cleansedEncounters.withColumn(
       "los_days", datediff(col("discharge_date"), col("admission_date"))
@@ -340,7 +340,6 @@ object Main {
       Logger.info(s"  diagnoses:        ${diagnoses.count()} rows")
 
       // Steps 2 + 3: quality report + cleansing
-      val _ = rawPatients.count()  // ensure raw is loaded
       val cleansedPatients = ingestAndCleansPatients(spark)
       val cleansedEncounters = ingestAndCleansEncounters(spark)
 
@@ -352,8 +351,8 @@ object Main {
       Logger.info("=" * 70)
       Logger.info("STEP 4: Build semantic models on the cleansed data")
       Logger.info("=" * 70)
-      val patientsModel  = buildPatientsModel(cleansedPatients)
-      val encountersModel = buildEncountersModel(spark, cleansedEncounters)
+      val patientsModel  = buildPatientsModel()
+      val encountersModel = buildEncountersModel(cleansedEncounters)
       Logger.info(s"  loaded models: ${patientsModel.name}, ${encountersModel.name}")
 
       // ----- Initialize the spark-connector engine provider -----
