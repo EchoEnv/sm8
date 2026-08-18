@@ -16,13 +16,12 @@
     architectural boundary mechanical.
 
     Per agile-kindling-beacon plan line 287: "Each becomes a Plugin
-    that .use()s itself." For Step 8 the SparkConnector is the
-    adapter (extends `Connector with java.io.Serializable`) — the
-    Plugin-loading machinery lands in the next PR cycle (Step 7 +
-    Step 9 integration). For now, this module proves the
-    closure-safety contract holds with REAL Spark types captured
-    in the constructor (the `StorageLevel` referenced by the
-    materialize-plugin's persist/unpersist lifecycle).
+    that .use()s itself." This module hosts the Spark impl of
+    `MCPEngineProvider` (the production abstraction per ADR-001
+    §P1-3 + ADR-006 Post-#65). The legacy `SparkConnector`
+    (Connector-trait skeleton) was deleted in PR-95 (ADR-008-P
+    §AR-P1-1, 2026-08-18) per the Connector → MCPEngineProvider
+    migration tracked by AR-P1-7.
 
     Per [[karpathy-guidelines-mindset]] "smallest correct core":
     Step 8 ships the skeleton — real Spark Connect runtime lands in
@@ -117,10 +116,29 @@
                      on org.apache.spark. The other modules' poms have
                      `enforce-no-spark` rules. This module does NOT
                      re-state the exclusion — its purpose is to host
-                     Spark. The narrower ban below catches test-scope
-                     violations: no other connector-engine classes
-                     should leak in. -->
+                     Spark.
+
+                     The narrower bans below enforce RFC §3 Core Boundary:
+                     one connector module per engine. Catches test-scope
+                     or contributor-introduced violations where another
+                     engine's types leak into the spark connector (e.g.
+                     `import io.sm8.duckdb._` in a spark file).
+                     Per ADR-008-P §AR-P1-5 review (PR-97, 2026-08-18). -->
                 <exclude>org.apache.kafka:kafka-clients</exclude>
+                <!-- Other engines: forbidden here. -->
+                <exclude>org.apache.flink:*</exclude>
+                <exclude>io.trino:*</exclude>
+                <exclude>org.apache.duckdb:*</exclude>
+                <exclude>com.facebook.presto:*</exclude>
+                <!-- Future SM8 engine modules: forbidden here (tracked by ADR-008-P §"Post-v0.1.0"). -->
+                <exclude>io.sm8:duckdb-connector_2.13</exclude>
+                <exclude>io.sm8:unity-catalog-connector_2.13</exclude>
+                <exclude>io.sm8:hive-metastore-connector_2.13</exclude>
+                <exclude>io.sm8:postgresql-connector_2.13</exclude>
+                <!-- Trino: forbidden here (only the trino-connector module may host it). -->
+                <exclude>io.sm8:trino-connector_2.13</exclude>
+                <!-- In-memory connector: forbidden here (only the in-memory-connector test module may host it). -->
+                <exclude>io.sm8:in-memory-connector_2.13</exclude>
               </excludes>
             </bannedDependencies>
           </rules>
