@@ -3,7 +3,7 @@
  */
 package io.sm8.connectors.trino
 
-import io.sm8.core.engine.MCPEngineProvider
+import io.sm8.core.engine.EngineProvider
 
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers

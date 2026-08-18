@@ -1,7 +1,8 @@
 package io.sm8.platform.query
 
 import io.sm8.platform.query.cache._
-import io.sm8.core.engine.{EngineContext, EngineError, MCPEngineProvider, MCPEngineRegistry, MCPQueryRequest, PortableQueryResult, ResultRow, ResultSchema, ResultValue}
+import io.sm8.core.engine.{EngineContext, EngineError, EngineProvider, EngineRegistry, PortableQueryResult, ResultRow, ResultSchema, ResultValue}
+import io.sm8.core.engine.{ QueryRequest => CoreQueryRequest }
 import io.sm8.core.model.{AuditPolicy, CachePolicy, FilterSpec, MaterializePolicy, Model, ModelPolicyDefaults, ModelStatus, SourceRef}
 import io.sm8.core.schema.{Field, SealedDataType}
 
@@ -14,11 +15,11 @@ import org.scalatest.matchers.should.Matchers
  * Per [[scala-data-driven-refactor-mindset]]: pure data → Either
  * dispatch, no Map-based rule tables. The `buildMCPRequest` helper
  * is exhaustive over `Option` (Scala native). The `selectEngine`
- * helper delegates to `MCPEngineRegistry.select` (already tested
- * in `MCPEngineRegistrySpec`).
+ * helper delegates to `EngineRegistry.select` (already tested
+ * in `EngineRegistrySpec`).
  *
  * Per [[scala-error-handling-mindset]]: errors are data. The
- * `selectEngine` returns `Either[EngineError, MCPEngineProvider]`
+ * `selectEngine` returns `Either[EngineError, EngineProvider]`
  * — no `throw` at the boundary. The caller (PR-C5b) wraps the
  * error path.
  *
@@ -48,7 +49,7 @@ class EngineServiceSpec extends AnyFunSuite with Matchers {
     filters = Nil
   )
 
-  /** A minimal MCPEngineProvider stub. The `queryResult` and
+  /** A minimal EngineProvider stub. The `queryResult` and
     * `queryThrowable` are set per-test to control behavior. */
   private final class StubProvider(
       override val identity: io.sm8.core.engine.EngineIdentity,
@@ -56,10 +57,10 @@ class EngineServiceSpec extends AnyFunSuite with Matchers {
       var queryResult: Either[EngineError, PortableQueryResult] =
         Right(PortableQueryResult(schema = ResultSchema(Nil), rows = Vector.empty)),
       var queryThrowable: RuntimeException = null
-  ) extends MCPEngineProvider with java.io.Serializable {
+  ) extends EngineProvider with java.io.Serializable {
     override def query(
         model: Model,
-        request: MCPQueryRequest,
+        request: CoreQueryRequest,
         ctx: io.sm8.core.engine.EngineContext
     ): Either[EngineError, io.sm8.core.engine.PortableQueryResult] = {
       if (queryThrowable != null) throw queryThrowable
@@ -67,15 +68,15 @@ class EngineServiceSpec extends AnyFunSuite with Matchers {
     }
     override def explain(
         model: Model,
-        request: MCPQueryRequest,
+        request: CoreQueryRequest,
         ctx: io.sm8.core.engine.EngineContext
     ): Either[EngineError, String] = ???
   }
 
   private def makeRegistry(
-      providers: Map[String, MCPEngineProvider],
+      providers: Map[String, EngineProvider],
       default: String = "spark"
-  ): MCPEngineRegistry = MCPEngineRegistry(providers, default)
+  ): EngineRegistry = EngineRegistry(providers, default)
 
   // -- buildMCPRequest tests --
 
@@ -278,7 +279,7 @@ class EngineServiceSpec extends AnyFunSuite with Matchers {
     )
     val registry = makeRegistry(Map("spark" -> spark))
     val req = QueryRequest("m", Nil, Nil, "", "spark")
-    val out: Either[EngineError, MCPEngineProvider] =
+    val out: Either[EngineError, EngineProvider] =
       EngineService.selectEngine(dummyModel, req, registry)
     // Pattern match the Either directly — no index, no holder,
     // no unwrap-then-then-NPE.
@@ -347,7 +348,7 @@ class EngineServiceSpec extends AnyFunSuite with Matchers {
       available = true,
       queryResult = Right(emptyPortableResult)
     )
-    val mcpReq = MCPQueryRequest(model = "flights")
+    val mcpReq = CoreQueryRequest(model = "flights")
     val out = EngineService.executeEngine(dummyModel, mcpReq, spark)
     out shouldBe Right(emptyPortableResult)
   }
@@ -358,7 +359,7 @@ class EngineServiceSpec extends AnyFunSuite with Matchers {
       available = true,
       queryThrowable = new RuntimeException("engine blew up")
     )
-    val mcpReq = MCPQueryRequest(model = "flights")
+    val mcpReq = CoreQueryRequest(model = "flights")
     val out = EngineService.executeEngine(dummyModel, mcpReq, spark)
     out.isLeft shouldBe true
     out.left.get shouldBe a [EngineError.ProviderInvocationFailed]
@@ -381,7 +382,7 @@ class EngineServiceSpec extends AnyFunSuite with Matchers {
       available = true,
       queryResult = Left(typedError)
     )
-    val mcpReq = MCPQueryRequest(model = "flights")
+    val mcpReq = CoreQueryRequest(model = "flights")
     EngineService.executeEngine(dummyModel, mcpReq, spark) shouldBe Left(typedError)
   }
 
@@ -393,7 +394,7 @@ class EngineServiceSpec extends AnyFunSuite with Matchers {
       available = true,
       queryResult = Right(emptyPortableResult)
     )
-    val mcpReq = MCPQueryRequest(model = "flights")
+    val mcpReq = CoreQueryRequest(model = "flights")
     EngineService.executeEngine(dummyModel, mcpReq, spark) shouldBe Right(emptyPortableResult)
   }
 
@@ -456,7 +457,7 @@ class EngineServiceSpec extends AnyFunSuite with Matchers {
       available = true,
       queryResult = Right(portableResultWithRows)
     )
-    val mcpReq = MCPQueryRequest(model = "flights")
+    val mcpReq = CoreQueryRequest(model = "flights")
     val req = QueryRequest("flights", Nil, Nil, "", "")
     val either = EngineService.executeEngine(dummyModel, mcpReq, spark)
     val result = EngineService.toQueryResultFromPortable(either.toOption.get, req)

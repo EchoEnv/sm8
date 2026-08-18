@@ -6,9 +6,9 @@
  *   1. parse CLI args (typed, per scala-error-handlingmindset)
  *   2. load the Model from YAML (PlatformModelLoader — schema
  *      validation + semantic parse, both typed)
- *   3. discover MCPEngineProviders via Java ServiceLoader
- *      (`META-INF/services/io.sm8.core.engine.MCPEngineProvider`)
- *   4. build MCPEngineRegistry (fail-loud at boot per design §4.1)
+ *   3. discover EngineProviders via Java ServiceLoader
+ *      (`META-INF/services/io.sm8.core.engine.EngineProvider`)
+ *   4. build EngineRegistry (fail-loud at boot per design §4.1)
  *   5. start HttpTransport (binds the actual socket)
  *   6. install a JVM shutdown hook (scala-jvm-safetymindset:
  *      release the socket on SIGTERM/SIGINT)
@@ -16,7 +16,7 @@
  * ==Per [[karphyaguidsmindset]] "smallest correct change"==
  *
  * Pure composition. Every piece already exists: PlatformModelLoader,
- * MCPEngineRegistry, HttpTransport. Main adds NO engine logic.
+ * EngineRegistry, HttpTransport. Main adds NO engine logic.
  *
  * ==Per `semantic-layer-engine-architecture.md` §3 Core Boundary==
  *
@@ -39,7 +39,7 @@
  *
  * ==Per [[scala-spark-batch-bugs-mindset]] (per user directive)==
  *
- * - mantra #1 (closure-safety): the wired `MCPEngineRegistry` is
+ * - mantra #1 (closure-safety): the wired `EngineRegistry` is
  *   `Serializable` (verified by MainSpec round-trip + upstream
  *   `EngineServiceSpec` serializable-safe contract). Providers are
  *   instantiated on the DRIVER at boot — never shipped to executors.
@@ -63,7 +63,7 @@
  */
 package io.sm8.server
 
-import io.sm8.core.engine.{EngineError, EngineIdentity, MCPEngineProvider, MCPEngineRegistry, MCPQueryRequest, PortableQueryResult}
+import io.sm8.core.engine.{EngineError, EngineIdentity, EngineProvider, EngineRegistry, QueryRequest, PortableQueryResult}
 import io.sm8.core.model.Model
 
 import io.sm8.platform.query.{HttpTransport, PlatformModelLoader}
@@ -125,7 +125,7 @@ object Main {
       |  --model <path>   model manifest (YAML, schema-validated)
       |  --port <n>       TCP port (default 8080; 0 = ephemeral)
       |  --engine <name>     default engine (default: first discovered
-      |                      MCPEngineProvider on the classpath)
+      |                      EngineProvider on the classpath)
       |  --connector-url <u> optional connector URL (e.g.
       |                      'spark://host:7077', 'spark-connect://host:15002',
       |                      'local[*]'). When set, the platform asks
@@ -134,7 +134,7 @@ object Main {
       |                      (no spark types in the platform).
       |
       |Engines are discovered via META-INF/services/
-      |io.sm8.core.engine.MCPEngineProvider (Java ServiceLoader).""".stripMargin
+      |io.sm8.core.engine.EngineProvider (Java ServiceLoader).""".stripMargin
 
   /** Pure arg parser — fully unit-testable, no IO. */
   def parseArgs(args: List[String]): Either[CliError, CliArgs] = {
@@ -168,9 +168,9 @@ object Main {
     * to this entry point — does NOT touch the SDK Portal (which
     * discovers Plugins, a different extension type per plugins.md).
     */
-  def discoverProviders(classLoader: ClassLoader): List[MCPEngineProvider] = {
+  def discoverProviders(classLoader: ClassLoader): List[EngineProvider] = {
     import scala.jdk.CollectionConverters._
-    ServiceLoader.load(classOf[MCPEngineProvider], classLoader)
+    ServiceLoader.load(classOf[EngineProvider], classLoader)
       .iterator().asScala.toList
   }
 
@@ -178,24 +178,24 @@ object Main {
     * Pure construction — unit-testable without binding a socket. */
   /**
     * Realize a discovered provider against a connector URL via
-    * the typed `MCPEngineProvider.realize(url)` contract.
+    * the typed `EngineProvider.realize(url)` contract.
     *
     * Per RFC SS3 + ADR-006 (Post-#65 Refinement) + the user
     * "no spark types in the platform" directive: the platform
     * holds ONLY a string. For each discovered provider, the
-    * `realize(url: String): Option[MCPEngineProvider]` is
+    * `realize(url: String): Option[EngineProvider]` is
     * invoked; `Some(realized)` replaces the stub with the
     * configured instance, `None` keeps the stub. This replaced
     * the deprecated `(String) ctor` reflection pattern (PR-B).
     *
     * The platform never imports the connector class directly;
     * every connector decides its realization contract via the
-    * `MCPEngineProvider.realize` override in core.
+    * `EngineProvider.realize` override in core.
     */
   def realize(
-      providers:    List[MCPEngineProvider],
+      providers:    List[EngineProvider],
       connectorUrl: Option[String]
-  ): List[MCPEngineProvider] = connectorUrl match {
+  ): List[EngineProvider] = connectorUrl match {
     case None => providers
     case Some(url) =>
       // PR-B per RFC `adapters.md` Rule 4: the TYPED realize(url)
@@ -211,24 +211,24 @@ object Main {
 
   def wire(
       model:        Model,
-      providers:    List[MCPEngineProvider],
+      providers:    List[EngineProvider],
       engineName:   Option[String],
       connectorUrl: Option[String] = None,
-  ): Either[String, (MCPEngineRegistry, HttpTransport, List[MCPEngineProvider])] = {
+  ): Either[String, (EngineRegistry, HttpTransport, List[EngineProvider])] = {
     val realized = realize(providers, connectorUrl)
     val available = realized.filter(_.available)
     if (available.isEmpty)
-      Left("sm8: no MCPEngineProvider discovered (add a connector JAR " +
-        "with META-INF/services/io.sm8.core.engine.MCPEngineProvider)")
+      Left("sm8: no EngineProvider discovered (add a connector JAR " +
+        "with META-INF/services/io.sm8.core.engine.EngineProvider)")
     else {
-      val engines: Map[String, MCPEngineProvider] =
+      val engines: Map[String, EngineProvider] =
         available.map(p => p.identity.name -> p).toMap
       val default = engineName.getOrElse(available.map(_.identity.name).sorted.head)
       if (!engines.contains(default))
         Left(s"sm8: engine '$default' not discovered (available: ${engines.keys.toList.sorted.mkString(", ")})")
       else
         try {
-          val registry = MCPEngineRegistry(engines, default)
+          val registry = EngineRegistry(engines, default)
           Right((registry, HttpTransport(model, registry, io.sm8.plugins.cache.InMemoryResultCache(maxEntries = 1)), available))
         } catch {
           case e: IllegalArgumentException => Left(e.getMessage)
@@ -262,7 +262,7 @@ object Main {
                 println(s"sm8: server listening on port $boundPort " +
                   s"(model=${model.name}, version=${model.version})")
                 // PR-O4a (ADR-008-O): release BOTH the socket AND any
-                // realized engine providers on JVM exit. The MCPEngineProvider
+                // realized engine providers on JVM exit. The EngineProvider
                 // trait carries `close()` — spark-connector implements it to
                 // stop the SparkSession; other connectors (in-memory, trino)
                 // inherit the no-op default. A SIGTERM without this leaves

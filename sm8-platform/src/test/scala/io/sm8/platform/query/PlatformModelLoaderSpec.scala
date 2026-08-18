@@ -16,7 +16,7 @@
  *
  * Per [[scala-spark-batch-bugs-mindset]] mantras: N/A in this
  * spec (no Spark types). The Model produced can flow to
- * MCPEngineRegistry → SparkEngineProvider.query() via the
+ * EngineRegistry → SparkEngineProvider.query() via the
  * connector layer (PRs #38-#42 handle Spark concerns).
  */
 package io.sm8.platform.query

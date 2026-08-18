@@ -2,8 +2,8 @@ package io.sm8.core.engine
 
 import io.sm8.core.model.Model
 
-/** MCPEngine-portable MCP engine-provider trait \u2014 Phase 2 contract.
-  * Mirrors the design doc \u00a76.4 "MCPEngineProvider".
+/** Engine-portable engine-provider trait — Phase 2 contract.
+  * Mirrors the design doc §6.4 "EngineProvider".
   *
   * ==Why a trait (not a concrete class)==
   *
@@ -15,7 +15,7 @@ import io.sm8.core.model.Model
   *
   * ==Why `available: Boolean` (not just `identity: EngineIdentity`)==
   *
-  * Per the design's `MCPEngineRegistry`: "the registry's `select`
+  * Per the design's `EngineRegistry`: "the registry's `select`
   * filters availability". A provider can be registered but
   * unavailable (e.g. Spark Connect URL not configured; Trino cluster
   * not reachable). `available` is a runtime check, not a config
@@ -35,12 +35,12 @@ import io.sm8.core.model.Model
   * shape (from the spark adapter). The provider receives a `Model`
   * and translates it to its engine's native shape internally.
   *
-  * Extends `Serializable` so that `MCPEngineRegistry` (which stores
-  * `Map[String, MCPEngineProvider]`) can be safely serialized for
+  * Extends `Serializable` so that `EngineRegistry` (which stores
+  * `Map[String, EngineProvider]`) can be safely serialized for
   * `Restate.run` journal capture (PR-C5b-extension). Concrete
   * providers must therefore be Serializable themselves — enforced
   * at compile time by this trait. */
-trait MCPEngineProvider extends Serializable {
+trait EngineProvider extends Serializable {
 
   /** Wire-stable engine label. */
   def identity: EngineIdentity
@@ -72,15 +72,15 @@ trait MCPEngineProvider extends Serializable {
     *                 `ConnectionFailed`, `QueryTimedOut`) */
   def query(
       model:   Model,
-      request: io.sm8.core.engine.MCPQueryRequest,
+      request: io.sm8.core.engine.QueryRequest,
       ctx:     EngineContext,
   ): Either[EngineError, PortableQueryResult]
 
   /** Return a human-readable plan description (no execution).
-    * Mirrors `MCPEngine.explain`. Used by MCP's `explain` tool. */
+    * Mirrors `Engine.explain`. Used by the `explain` tool. */
   def explain(
       model:   Model,
-      request: io.sm8.core.engine.MCPQueryRequest,
+      request: io.sm8.core.engine.QueryRequest,
       ctx:     EngineContext,
   ): Either[EngineError, String]
 
@@ -111,10 +111,10 @@ trait MCPEngineProvider extends Serializable {
     *            `None` if this provider does not support URL
     *            realization or the URL is not valid for it
     */
-  def realize(url: String): Option[MCPEngineProvider] = None
+  def realize(url: String): Option[EngineProvider] = None
 }
 
-/** MCPEngine-portable MCP query-request shape. The shape is
+/** Engine-portable query-request shape. The shape is
   * engine-portable (no Spark, no Trino types). The provider
   * translates to its engine's native shape.
   *
@@ -124,7 +124,7 @@ trait MCPEngineProvider extends Serializable {
   * (spark-adapter) are TWO different types per the v0.3.0
   * DE review (Predicate type duplication). The MCP server
   * currently uses the spark-adapter Predicate for filter
-  * translation. For PR 5, the engine-portable `MCPQueryRequest`
+  * translation. For PR 5, the engine-portable `QueryRequest`
   * deliberately OMITS `where` / `having` — the MCP Query
   * handler in `semanticdf-mcp` keeps its own filter logic on
   * the legacy path. A future PR aligns the predicate types
@@ -154,7 +154,7 @@ trait MCPEngineProvider extends Serializable {
   * pragmatic compromise for Phase 1. The long-term shape
   * (typed FilterSpec) is documented as future work in
   * `docs/design/v0.3.2-platform-core-model-design.md` §6. */
-final case class MCPQueryRequest(
+final case class QueryRequest(
     model:      String,
     dimensions: Seq[String] = Seq.empty,
     measures:   Seq[String] = Seq.empty,
@@ -168,7 +168,7 @@ final case class MCPQueryRequest(
       * via `df.filter(where)` on Spark; engines decide how to
       * handle it (see trait doc above). */
     where:      Option[String] = None,
-    /** MCPEngine-portable typed filters, applied AFTER the model's
+    /** Engine-portable typed filters, applied AFTER the model's
       * compile-time filters and BEFORE where (the raw SQL
       * field). Each FilterSpec carries a name (for diagnostics)
       * and an Expr predicate. Per scala-data-driven-refacer:
@@ -179,8 +179,8 @@ final case class MCPQueryRequest(
     filters:    List[io.sm8.core.model.FilterSpec] = Nil,
 ) extends Product with Serializable
 
-object MCPQueryRequest {
+object QueryRequest {
 
   /** Empty query \u2014 the canonical "zero filters" shape. */
-  val empty: MCPQueryRequest = MCPQueryRequest(model = "")
+  val empty: QueryRequest = QueryRequest(model = "")
 }

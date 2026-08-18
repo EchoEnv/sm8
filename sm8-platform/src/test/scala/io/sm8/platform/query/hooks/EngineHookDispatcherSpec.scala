@@ -18,14 +18,14 @@ import io.sm8.core.engine.{
   EngineHookRequest,
   EngineHookResult,
   EngineIdentity,
-  MCPEngineProvider,
-  MCPEngineRegistry,
-  MCPQueryRequest,
+  EngineProvider,
+  EngineRegistry,
   PortableQueryResult,
   ResultRow,
   ResultSchema,
   ResultValue
 }
+import io.sm8.core.engine.{ QueryRequest => CoreQueryRequest }
 import io.sm8.core.model.{
   Dimension,
   Measure,
@@ -52,7 +52,7 @@ import io.sm8.plugins.cache.InMemoryResultCache
 private final class FakeProvider(
     val name: String,
     val stubPqr: PortableQueryResult
-) extends MCPEngineProvider {
+) extends EngineProvider {
 
   override val identity: EngineIdentity =
     EngineIdentity(name = name, nativeVersion = "test", engineAdapterVersion = "1.0")
@@ -63,7 +63,7 @@ private final class FakeProvider(
 
   override def query(
       model: Model,
-      mcpReq: MCPQueryRequest,
+      mcpReq: CoreQueryRequest,
       ctx: EngineContext
   ): Either[EngineError, PortableQueryResult] = {
     callCount.incrementAndGet()
@@ -72,7 +72,7 @@ private final class FakeProvider(
 
   override def explain(
       model: Model,
-      mcpReq: MCPQueryRequest,
+      mcpReq: CoreQueryRequest,
       ctx: EngineContext
   ): Either[EngineError, String] = Right("fake")
 }
@@ -141,9 +141,9 @@ class EngineHookDispatcherSpec extends AnyFunSuite with Matchers {
   private def sampleProvider: FakeProvider =
     new FakeProvider("test-engine", stubPqr)
 
-  private def registryWith(p: FakeProvider): MCPEngineRegistry = {
-    val engines: Map[String, MCPEngineProvider] = Map(p.name -> p)
-    MCPEngineRegistry(engines, p.name)
+  private def registryWith(p: FakeProvider): EngineRegistry = {
+    val engines: Map[String, EngineProvider] = Map(p.name -> p)
+    EngineRegistry(engines, p.name)
   }
 
   test("dispatcher: PreExecute + PostExecute hooks fire on cache-MISS path") {

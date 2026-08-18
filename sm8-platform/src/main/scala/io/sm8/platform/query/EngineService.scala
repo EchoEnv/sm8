@@ -4,16 +4,16 @@
  * Scala 2.13 restructure of the Java `QueryService.runQueryViaEngineRegistry`
  * (semanticdf-platform lines 420-579). PR-C5a ships the BUILD +
  * SELECT segments (lines 425-493): the conversion from the wire
- * DTO to `MCPQueryRequest`, and the engine selection.
+ * DTO to `QueryRequest`, and the engine selection.
  *
  * ==JVM-safety bug fix (the headline change)==
  *
- * The legacy Java code used `MCPEngineProvider[] providerHolder =
- * new MCPEngineProvider[1]` as a mutable cell to escape the
- * `Either[EngineError, MCPEngineProvider]` out of the
+ * The legacy Java code used `EngineProvider[] providerHolder =
+ * new EngineProvider[1]` as a mutable cell to escape the
+ * `Either[EngineError, EngineProvider]` out of the
  * `engineRegistry.select(...)` call:
  *
- *   MCPEngineProvider[] providerHolder = new MCPEngineProvider[1];
+ *   EngineProvider[] providerHolder = new EngineProvider[1];
  *   Either<...> selectResult = engineRegistry.select(name);
  *   if (selectResult.isRight()) {
  *     providerHolder[0] = selectResult.right().get();  // ← escape hatch
@@ -26,7 +26,7 @@
  * the value." The Scala 2.13 equivalent is a direct `for`-
  * comprehension or `match` on the `Either`:
  *
- *   val selectResult: Either[EngineError, MCPEngineProvider] =
+ *   val selectResult: Either[EngineError, EngineProvider] =
  *     registry.select(name)
  *
  * No array, no index, no null-check. The `Either` value flows
@@ -59,11 +59,11 @@ import io.sm8.core.cache._
 import io.sm8.platform.query.cache.CacheBridge
 import io.sm8.core.engine.{
   EngineError,
-  MCPEngineProvider,
-  MCPEngineRegistry,
-  MCPQueryRequest,
+  EngineProvider,
+  EngineRegistry,
   PortableQueryResult
 }
+import io.sm8.core.engine.{ QueryRequest => CoreQueryRequest }
 import io.sm8.core.model.{FilterSpec, Model}
 import io.sm8.core.engine.EngineContext
 import io.sm8.core.engine.{ EngineHookRequest, EngineHookResult }
@@ -71,7 +71,7 @@ import io.sm8.platform.query.hooks.EngineHookDispatcher
  import io.sm8.sdk.{Context, PipelineStage}
 /**
  * Engine-portable path entry point. PR-C5a ships the engine
- * selection + MCPQueryRequest build. The cache + execute segments
+ * selection + QueryRequest build. The cache + execute segments
  * land in PR-C5b (reuses `CachedRowDecoder` + `PortableCellCodec`
  * from previous PRs).
  */
@@ -105,7 +105,7 @@ object EngineService {
   }
 
   /**
-   * Build an `MCPQueryRequest` from the platform's wire
+   * Build a `QueryRequest` from the platform's wire
    * `QueryRequest` (the Scala case class added in this PR).
    *
    * Handles:
@@ -119,7 +119,7 @@ object EngineService {
    * @param request the wire DTO from the platform's REST entry
    * @return        the engine-portable request shape
    */
-  def buildMCPRequest(request: QueryRequest): MCPQueryRequest = {
+  def buildMCPRequest(request: io.sm8.platform.query.QueryRequest): CoreQueryRequest = {
     // The Scala `QueryRequest` (defined in this PR) has Scala
     // `List[String]` fields — no Java→Scala conversion needed.
     // (The legacy Java record's `List<String>` fields required
@@ -132,7 +132,7 @@ object EngineService {
     val where: Option[String] =
       Option(request.where).filter(s => !isBlankLikeJava(s))
     val filters: List[FilterSpec] = Nil
-    MCPQueryRequest(
+    CoreQueryRequest(
       model     = request.modelName,
       dimensions = dimensions,
       measures   = measures,
@@ -168,8 +168,8 @@ object EngineService {
   def selectEngine(
       model: Model,
       request: QueryRequest,
-      registry: MCPEngineRegistry
-  ): Either[EngineError, MCPEngineProvider] = {
+      registry: EngineRegistry
+  ): Either[EngineError, EngineProvider] = {
     // `model` is reserved for future engine-selection logic
     // (e.g. model-specific default engine, model-based capability
     // negotiation). Selection is currently purely registry-driven.
@@ -211,8 +211,8 @@ object EngineService {
    */
   def executeEngine(
       model: Model,
-      mcpReq: MCPQueryRequest,
-      provider: MCPEngineProvider,
+      mcpReq: CoreQueryRequest,
+      provider: EngineProvider,
       ctx: EngineContext = EngineContext.defaultContext
   ): Either[EngineError, PortableQueryResult] = {
     try {
@@ -303,7 +303,7 @@ object EngineService {
    *
    * - All dispatch via sealed-trait match on `HookStage` — no Map
    *   tables, no `Any` casts.
-   * - The typed `EngineHookRequest` carries the `Model` + `MCPQueryRequest`
+   * - The typed `EngineHookRequest` carries the `Model` + `QueryRequest`
    *   inside `context.request`; plugins with `engine.hooks.registerPreHook`
    *   can cast `context.request.asInstanceOf[EngineHookRequest]` to read
    *   typed values (cast at the registered hook boundary — the
@@ -339,13 +339,13 @@ object EngineService {
    *                   execution, or hook-dispatch failure.
    */
   def runQueryWithHooks(
-      request:    QueryRequest,
+      request:    io.sm8.platform.query.QueryRequest,
       model:      Model,
-      registry:   MCPEngineRegistry,
+      registry:   EngineRegistry,
       cache:      ResultCache,
       dispatcher: EngineHookDispatcher
   ): Either[EngineError, QueryResult] = {
-    val mcpReq: MCPQueryRequest = buildMCPRequest(request)
+    val mcpReq: CoreQueryRequest = buildMCPRequest(request)
     val version: Int           = model.version
     val cacheKey: String       = CacheBridge.platformCacheKey(
       engine     = Option(request.engine).filter(s => !isBlankLikeJava(s))

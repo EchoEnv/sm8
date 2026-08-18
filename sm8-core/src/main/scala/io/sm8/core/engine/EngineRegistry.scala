@@ -1,7 +1,7 @@
 package io.sm8.core.engine
 
-/** MCPEngine-portable MCP engine-registry \u2014 Phase 2 contract.
-  * Mirrors the design doc \u00a76.4 "MCPEngineRegistry".
+/** Engine-portable engine-registry — Phase 2 contract.
+  * Mirrors the design doc §6.4 "EngineRegistry".
   *
   * ==Why a registry (not direct provider use)==
   *
@@ -11,7 +11,7 @@ package io.sm8.core.engine
   * (via `request.engine` or the default). The registry centralizes
   * the lookup + availability check.
   *
-  * ==Why `Map[String, MCPEngineProvider]`==
+  * ==Why `Map[String, EngineProvider]`==
   *
   * Wire-stable engine names as map keys. The MCP `query` request
   * carries `engine: String` (the "13th property" per the design).
@@ -25,24 +25,24 @@ package io.sm8.core.engine
   * throws \u2014 the MCP server fails to start with a typed error
   * instead of returning "engine unavailable" for every query.
   *
-  * ==Why `select` returns `Either[EngineError, MCPEngineProvider]`==
+  * ==Why `select` returns `Either[EngineError, EngineProvider]`==
   *
   * Per the design: "EngineUnavailable (wasDefault=true / false)"
   * \u2014 a typed error lets the MCP envelope surface the
   * unavailable-engine case distinctly. `Either` is the
   * engine-portable error shape (no exceptions for control flow). */
-final class MCPEngineRegistry (
-    private val engines: Map[String, MCPEngineProvider],
+final class EngineRegistry (
+    private val engines: Map[String, EngineProvider],
     val default:       String,
 ) extends Serializable {
 
   require(
     engines.contains(default),
-    s"MCPEngineRegistry default '$default' is not in the engines map (${engines.keys.mkString(", ")})",
+    s"EngineRegistry default '$default' is not in the engines map (${engines.keys.mkString(", ")})",
   )
   require(
     engines(default).available,
-    s"MCPEngineRegistry default '$default' is registered but NOT available at startup (per design §4.1: misconfigured boots must fail loud)",
+    s"EngineRegistry default '$default' is registered but NOT available at startup (per design §4.1: misconfigured boots must fail loud)",
   )
 
   /** Select a provider by name. Returns:
@@ -51,7 +51,7 @@ final class MCPEngineRegistry (
     *   - `Left(EngineUnavailable(name, available, wasDefault))`
     *     if the name is unknown OR the provider is currently
     *     unavailable */
-  def select(name: String): Either[EngineError, MCPEngineProvider] = {
+  def select(name: String): Either[EngineError, EngineProvider] = {
     val available = availableProviders
     engines.get(name) match {
       case Some(p) if p.available => Right(p)
@@ -80,7 +80,7 @@ final class MCPEngineRegistry (
   def defaultEngine: String = default
 }
 
-object MCPEngineRegistry {
+object EngineRegistry {
 
   /** Smart constructor with available-only filtering. Per design:
     * "the registry's `select` filters availability".
@@ -91,7 +91,7 @@ object MCPEngineRegistry {
     * @return          a registry; throws if `default` is
     *                 unregistered or unavailable at construction */
   def apply(
-      engines: Map[String, MCPEngineProvider],
+      engines: Map[String, EngineProvider],
       default: String,
-  ): MCPEngineRegistry = new MCPEngineRegistry(engines, default)
+  ): EngineRegistry = new EngineRegistry(engines, default)
 }

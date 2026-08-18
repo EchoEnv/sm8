@@ -32,9 +32,9 @@ import io.sm8.core.engine.{
   EngineContext,
   EngineError,
   EngineIdentity,
-  MCPEngineProvider,
-  MCPEngineRegistry,
-  MCPQueryRequest,
+  EngineProvider,
+  EngineRegistry,
+  QueryRequest => CoreQueryRequest,
   PortableQueryResult,
   ResultRow,
   ResultSchema,
@@ -91,11 +91,11 @@ class EngineServiceRunQueryWithHooksSpec extends AnyFunSuite with Matchers {
         Right(wiringPortable),
       var queryThrowable: RuntimeException = null,
       val callCount: AtomicInteger = new AtomicInteger(0)
-  ) extends MCPEngineProvider {
+  ) extends EngineProvider {
 
     override def query(
         model: Model,
-        request: MCPQueryRequest,
+        request: CoreQueryRequest,
         ctx: EngineContext
     ): Either[EngineError, PortableQueryResult] = {
       callCount.incrementAndGet()
@@ -105,15 +105,15 @@ class EngineServiceRunQueryWithHooksSpec extends AnyFunSuite with Matchers {
 
     override def explain(
         model: Model,
-        request: MCPQueryRequest,
+        request: CoreQueryRequest,
         ctx: EngineContext
     ): Either[EngineError, String] = Right("fake")
   }
 
   private def makeRegistry(
-      providers: Map[String, MCPEngineProvider],
+      providers: Map[String, EngineProvider],
       default: String = "test-engine"
-  ): MCPEngineRegistry = MCPEngineRegistry(providers, default)
+  ): EngineRegistry = EngineRegistry(providers, default)
 
   /**
    * Build a dispatcher with the cache plugin registered. This

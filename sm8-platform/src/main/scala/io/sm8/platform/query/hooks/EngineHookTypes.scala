@@ -3,7 +3,7 @@
  *
  * Bridges the SDK's marker `Request`/`Result` traits (in
  * `io.sm8.sdk`) with the platform's typed engine-portable shapes
- * (`Model`, `MCPQueryRequest`, `PortableQueryResult`).
+ * (`Model`, `QueryRequest`, `PortableQueryResult`).
  *
  * Per [[scala-data-driven-refactor-mindset]] "default to typed
  * carriers": the wrappers are case classes (data only). Plugin
@@ -24,7 +24,7 @@
  */
 package io.sm8.platform.query.hooks
 
-import io.sm8.core.engine.{ MCPQueryRequest, PortableQueryResult }
+import io.sm8.core.engine.{ QueryRequest, PortableQueryResult }
 import io.sm8.core.model.Model
 import io.sm8.sdk.{ Request, Result }
 
@@ -42,7 +42,7 @@ import io.sm8.sdk.{ Request, Result }
  */
 final case class EngineHookRequest(
     model:      Model,
-    mcpRequest: MCPQueryRequest,
+    mcpRequest: QueryRequest,
     cacheKey:   String
 ) extends Request
 

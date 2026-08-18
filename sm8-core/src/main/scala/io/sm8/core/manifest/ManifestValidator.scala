@@ -58,7 +58,7 @@
  *
  * Indirect Spark relation: the validated JSON tree flows to
  * `ModelLoader.fromString(...)` → produces `Model` → consumed by
- * `MCPEngineProvider.query(...)` via the connector layer
+ * `EngineProvider.query(...)` via the connector layer
  * (PRs #38-#42 handle all Spark concerns). The validator is
  * INDIRECTLY upstream of Spark execution but holds NO Spark
  * references — the boundary holds.

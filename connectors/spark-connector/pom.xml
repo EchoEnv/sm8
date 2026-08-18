@@ -17,10 +17,10 @@
 
     Per agile-kindling-beacon plan line 287: "Each becomes a Plugin
     that .use()s itself." This module hosts the Spark impl of
-    `MCPEngineProvider` (the production abstraction per ADR-001
+    `EngineProvider` (the production abstraction per ADR-001
     §P1-3 + ADR-006 Post-#65). The legacy `SparkConnector`
     (Connector-trait skeleton) was deleted in PR-95 (ADR-008-P
-    §AR-P1-1, 2026-08-18) per the Connector → MCPEngineProvider
+    §AR-P1-1, 2026-08-18) per the Connector → EngineProvider
     migration tracked by AR-P1-7.
 
     Per [[karpathy-guidelines-mindset]] "smallest correct core":

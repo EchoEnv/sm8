@@ -8,7 +8,7 @@
  */
 package io.sm8.connectors.spark
 
-import io.sm8.core.engine.MCPEngineProvider
+import io.sm8.core.engine.EngineProvider
 
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
@@ -33,7 +33,7 @@ class SparkEngineProviderRealizeSpec extends AnyFunSuite with Matchers {
   }
 
   test("realize: typed result is a SparkEngineProvider (not a generic cast)") {
-    val realized: Option[MCPEngineProvider] =
+    val realized: Option[EngineProvider] =
       new SparkEngineProviderDescriptor().realize("local[1]")
     realized.get shouldBe a [SparkEngineProvider]
   }

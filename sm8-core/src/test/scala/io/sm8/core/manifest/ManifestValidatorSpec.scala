@@ -15,7 +15,7 @@
  *
  * Per [[scala-spark-batch-bugs-mindset]] mantras: N/A in core.
  * The validator has zero Spark types. The validated JsonNode
- * flows to ModelLoader → MCPEngineProvider → spark-connector
+ * flows to ModelLoader → EngineProvider → spark-connector
  * layer (PRs #38-#42 handle Spark concerns).
  */
 package io.sm8.core.manifest

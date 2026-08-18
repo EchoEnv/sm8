@@ -31,16 +31,16 @@ package io.sm8.sdk
  *
  * @deprecated This trait is the legacy Connector abstraction from the
  * initial vocabulary (pre-PR-O3). The current production abstraction is
- * `MCPEngineProvider` (per ADR-001 §P1-3 + ADR-006 Post-#65). This trait
+ * `EngineProvider` (per ADR-001 §P1-3 + ADR-006 Post-#65). This trait
  * is retained ONLY for the `ConnectorContractSpec` abstract conformance
  * test — production connectors (Spark, Trino, in-memory) implement
- * `MCPEngineProvider` directly. Per ADR-008-P §AR-P1-7, this trait is
+ * `EngineProvider` directly. Per ADR-008-P §AR-P1-7, this trait is
  * deprecated and will be removed in v1.0.0. Plugin authors should
- * implement `MCPEngineProvider` instead; `EngineHookDispatcher`
+ * implement `EngineProvider` instead; `EngineHookDispatcher`
  * wiring is unchanged.
  *
  * Per RFC §3 + §7, `Engine.adapters` remains the SDK surface — but the
- * values registered (today) are `MCPEngineProvider` instances, not
+ * values registered (today) are `EngineProvider` instances, not
  * `Connector` instances. The legacy `Pipeline` (sm8-core/.../Pipeline.scala)
  * still routes `ConnectorRequest` through `connectors.get(...)` for the
  * RFC §6 4-stage pipeline test path used by the 5 plugin test suites;
@@ -55,7 +55,7 @@ package io.sm8.sdk
  *     (RFC adapters.md Rule 3, conformance-enforced);
  *   - never mutate Context (that's a Hook's job).
  */
-@deprecated("Use MCPEngineProvider instead (ADR-008-P §AR-P1-7); this trait is retained for ConnectorContractSpec conformance only and will be removed in v1.0.0", "0.1.0")
+@deprecated("Use EngineProvider instead (ADR-008-P §AR-P1-7); this trait is retained for ConnectorContractSpec conformance only and will be removed in v1.0.0", "0.1.0")
 trait Connector {
 
   /**

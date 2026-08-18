@@ -22,7 +22,7 @@
  */
 package io.sm8.connectors.inmemory
 
-import io.sm8.core.engine.{EngineContext, MCPEngineProvider, MCPQueryRequest}
+import io.sm8.core.engine.{EngineContext, EngineProvider, QueryRequest}
 
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
@@ -31,7 +31,7 @@ class InMemoryEngineReplaySafetySpec extends AnyFunSuite with Matchers {
 
   test("query is deterministic for identical input (Restate-replay-safe)") {
     val provider = new InMemoryEngineProvider()
-    val request = MCPQueryRequest(model = "test", limit = Some(100L))
+    val request = QueryRequest(model = "test", limit = Some(100L))
     val ctx = EngineContext.defaultContext
 
     val a = provider.query(null, request, ctx)
@@ -44,7 +44,7 @@ class InMemoryEngineReplaySafetySpec extends AnyFunSuite with Matchers {
 
   test("query is deterministic across many invocations (100 calls)") {
     val provider = new InMemoryEngineProvider()
-    val request = MCPQueryRequest(model = "test")
+    val request = QueryRequest(model = "test")
     val ctx = EngineContext.defaultContext
 
     val first = provider.query(null, request, ctx)
@@ -55,7 +55,7 @@ class InMemoryEngineReplaySafetySpec extends AnyFunSuite with Matchers {
 
   test("query does NOT mutate the EngineContext (engine is a pure function)") {
     val provider = new InMemoryEngineProvider()
-    val request = MCPQueryRequest(model = "test")
+    val request = QueryRequest(model = "test")
     val original = EngineContext.defaultContext
     val ctx = original.copy()  // defensive copy
 

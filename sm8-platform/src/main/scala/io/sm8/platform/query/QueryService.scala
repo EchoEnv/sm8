@@ -39,7 +39,7 @@
  *
  * Per [[scala-spark-batch-bugs-mindset]] "closures": Restate's
  * journal rehydration requires the handler's captured `Model`,
- * `MCPEngineRegistry`, and `ResultCache` to be `Serializable`.
+ * `EngineRegistry`, and `ResultCache` to be `Serializable`.
  * All are already verified Serializable by
  * `EngineServiceSpec.scala:547` ("runQuery: serializable-safe").
  */
@@ -56,7 +56,7 @@ import dev.restate.sdk.endpoint.definition.{
   ServiceType
 }
 import dev.restate.serde.jackson.JacksonSerdeFactory
-import io.sm8.core.engine.MCPEngineRegistry
+import io.sm8.core.engine.EngineRegistry
 import io.sm8.core.model.Model
 import io.sm8.core.{EngineImpl, HookManagerImpl}
 import io.sm8.platform.query.hooks.EngineHookDispatcher
@@ -68,7 +68,7 @@ import io.sm8.sdk.Plugin
  *
  * Per [[karpathy-guidelines-mindset]]: a singleton `object` (not a
  * class) since the ServiceDefinition is stateless; the
- * per-handler `Model` + `MCPEngineRegistry` + `ResultCache` are
+ * per-handler `Model` + `EngineRegistry` + `ResultCache` are
  */
 object QueryService {
 
@@ -114,7 +114,7 @@ object QueryService {
    */
   def definition(
       model: Model,
-      registry: MCPEngineRegistry,
+      registry: EngineRegistry,
       cache: ResultCache,
       plugins: Seq[Plugin] = Nil
   ): ServiceDefinition = {
@@ -226,7 +226,7 @@ object QueryService {
   private def runQuery(
       request: QueryRequest,
       model: Model,
-      registry: MCPEngineRegistry,
+      registry: EngineRegistry,
       cache: ResultCache,
       dispatcher: EngineHookDispatcher
   ): QueryResult = {

@@ -132,7 +132,7 @@ The example is a **complete end-to-end demo** of the data-quality workflow. The 
 - The **`Q1a (sm8 API)`** block in STEP 5 demonstrates that `provider.query` returns the rows correctly through the engine-portable Protocol — the API round-trips, the grouping is the only followup.
 - The Q3 (30-day readmission) example uses **window/lag in Spark** directly because the final aggregation crosses group boundaries (per-patient max is_readmission, then a final ratio across patients). This is the same hybrid pattern the upstream uses.
 
-**Once the spark-connector's `applyAggregations` is upgraded** to honor `MCPQueryRequest.dimensions` + `measures` end-to-end (a future PR; per ADR-008-P §"What's Next" + ADR-008-L GAP 7), the Q1/Q2 `runQuery(...)` calls can replace the direct-Spark `groupBy().count()/.agg(...)` blocks — the rest of the example needs no change.
+**Once the spark-connector's `applyAggregations` is upgraded** to honor `QueryRequest.dimensions` + `measures` end-to-end (a future PR; per ADR-008-P §"What's Next" + ADR-008-L GAP 7), the Q1/Q2 `runQuery(...)` calls can replace the direct-Spark `groupBy().count()/.agg(...)` blocks — the rest of the example needs no change.
 
 ## What it demonstrates
 
@@ -163,11 +163,11 @@ The example is a **complete end-to-end demo** of the data-quality workflow. The 
   │   - compiles Model → Spark DataFrame                 │  - sm8-core
   │   - runs the query, returns PortableQueryResult       │  - spark
   └────────────────────┬────────────────────────────────┘
-                       │ MCPEngineProvider, PortableQueryResult
+                       │ EngineProvider, PortableQueryResult
   ┌────────────────────▼────────────────────────────────┐
   │ sm8-core   (the FROZEN Core — engine-portable SDK)    │  Core layer
   │   - Model, Dimension, Measure, CalculatedMeasure     │  Spark-free
-  │   - SourceRef, MCPQueryRequest, EngineError ADT      │  Public Maven coord
+  │   - SourceRef, QueryRequest, EngineError ADT      │  Public Maven coord
   │   - 4-stage pipeline contract                         │
   └─────────────────────────────────────────────────────┘
 ```
@@ -177,8 +177,8 @@ This example does **NOT** import `sm8-platform` or `sm8-server` (the transport l
 ## Related
 
 - **[`sm8-core/.../model/Model.scala`](../../sm8-core/src/main/scala/io/sm8/core/model/Model.scala)** — the `Model.of(...)` builder API used in this example
-- **[`spark-connector/.../SparkEngineProvider.scala`](../../connectors/spark-connector/src/main/scala/io/sm8/connectors/spark/SparkEngineProvider.scala)** — the `MCPEngineProvider` implementation invoked in STEP 5
-- **[`sm8-core/.../engine/MCPEngineProvider.scala`](../../sm8-core/src/main/scala/io/sm8/core/engine/MCPEngineProvider.scala)** — the production abstraction (per ADR-001 §P1-3 + ADR-006 Post-#65)
+- **[`spark-connector/.../SparkEngineProvider.scala`](../../connectors/spark-connector/src/main/scala/io/sm8/connectors/spark/SparkEngineProvider.scala)** — the `EngineProvider` implementation invoked in STEP 5
+- **[`sm8-core/.../engine/EngineProvider.scala`](../../sm8-core/src/main/scala/io/sm8/core/engine/EngineProvider.scala)** — the production abstraction (per ADR-001 §P1-3 + ADR-006 Post-#65)
 - **[`docs/adr/0001-0004-engine-portable-architecture.md`](../../docs/adr/0001-0004-engine-portable-architecture.md)** — the architectural foundation
 - **[`docs/adr/0008-p-post-review-followup.md`](../../docs/adr/0008-p-post-review-followup.md)** — the post-review followup plan; §"What's Next" lists this example as the highest-leverage adoption unlock
 - **[`docs/adr/0008-l-querybuilder.md`](../../docs/adr/0008-l-querybuilder.md)** — the QueryBuilder + 8 GAPs appendix (this example exercises the resolved GAPs)

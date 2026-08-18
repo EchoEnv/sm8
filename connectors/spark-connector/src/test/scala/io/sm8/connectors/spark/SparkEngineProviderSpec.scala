@@ -60,9 +60,9 @@ class SparkEngineProviderSpec extends AnyFunSuite with Matchers {
     out
   }
 
-  test("SparkEngineProvider: extends MCPEngineProvider which extends Serializable - captured SparkSession ref (null here) survives ObjectOutputStream round-trip") {
+  test("SparkEngineProvider: extends EngineProvider which extends Serializable - captured SparkSession ref (null here) survives ObjectOutputStream round-trip") {
     // Per scala-spark-batch-bugs-mindset mantra #1: the trait
-    // `MCPEngineProvider extends Serializable` is the contract.
+    // `EngineProvider extends Serializable` is the contract.
     // The provider class itself declares `extends java.io.Serializable`
     // via the trait. The round-trip proves the contract holds.
     val provider = new SparkEngineProvider(null, SparkTypeBridge, "spark-3.5")
@@ -87,7 +87,7 @@ class SparkEngineProviderSpec extends AnyFunSuite with Matchers {
 
   test("SparkEngineProvider: query() with null spark returns Left(ConnectionFailed)") {
     val provider = new SparkEngineProvider(null, SparkTypeBridge, "spark-3.5")
-    val out = provider.query(dummyModel(), io.sm8.core.engine.MCPQueryRequest.empty, EngineContext.defaultContext)
+    val out = provider.query(dummyModel(), io.sm8.core.engine.QueryRequest.empty, EngineContext.defaultContext)
     out.isLeft shouldBe true
     out.left.get shouldBe a [EngineError.ConnectionFailed]
   }
@@ -98,7 +98,7 @@ class SparkEngineProviderSpec extends AnyFunSuite with Matchers {
     // makes SourceResolver fail). The plan tree is empty in that
     // case; the footer names the typed error.
     val provider = new SparkEngineProvider(null, SparkTypeBridge, "spark-3.5")
-    val out = provider.explain(dummyModel(), io.sm8.core.engine.MCPQueryRequest.empty, EngineContext.defaultContext)
+    val out = provider.explain(dummyModel(), io.sm8.core.engine.QueryRequest.empty, EngineContext.defaultContext)
     out.isRight shouldBe true
     val s = out.toOption.get
     // Header line
@@ -117,8 +117,8 @@ class SparkEngineProviderSpec extends AnyFunSuite with Matchers {
     // ByName), the header line MUST carry the model name. The body
     // is the empty plan + the typed-error footer.
     val provider = new SparkEngineProvider(null, SparkTypeBridge, "spark-3.5")
-    val out1 = provider.explain(dummyModel("a"), io.sm8.core.engine.MCPQueryRequest.empty, EngineContext.defaultContext)
-    val out2 = provider.explain(dummyModel("b"), io.sm8.core.engine.MCPQueryRequest.empty, EngineContext.defaultContext)
+    val out1 = provider.explain(dummyModel("a"), io.sm8.core.engine.QueryRequest.empty, EngineContext.defaultContext)
+    val out2 = provider.explain(dummyModel("b"), io.sm8.core.engine.QueryRequest.empty, EngineContext.defaultContext)
     out1.toOption.get should include ("SM8 Plan: test-model")
     out2.toOption.get should include ("SM8 Plan: test-model")
   }
@@ -141,7 +141,7 @@ class SparkEngineProviderSpec extends AnyFunSuite with Matchers {
       val data = spark.createDataFrame(spark.sparkContext.parallelize(rows), schema)
       data.createOrReplaceTempView("people")
       val provider = new SparkEngineProvider(spark, SparkTypeBridge, "spark-3.5")
-      val out = provider.query(dummyModel("people"), io.sm8.core.engine.MCPQueryRequest.empty, EngineContext.defaultContext)
+      val out = provider.query(dummyModel("people"), io.sm8.core.engine.QueryRequest.empty, EngineContext.defaultContext)
       out.isRight shouldBe true
       val result = out.toOption.get
       result.schema.fields.map(_.name).toSet shouldBe Set("name", "age")

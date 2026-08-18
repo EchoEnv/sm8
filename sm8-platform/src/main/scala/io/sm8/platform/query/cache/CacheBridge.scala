@@ -10,8 +10,8 @@
  * Per [[karpathy-guidelines-mindset]] (smallest correct core +
  * Scala 2.13 idiom + match existing style): `object` (not class)
  * with `def`s. No state. No deps beyond JDK's `MessageDigest`.
- * Matches the pattern set by `MCPEngineRegistry` and
- * `MCPEngineProvider` (PR-C0c).
+ * Matches the pattern set by `EngineRegistry` and
+ * `EngineProvider` (PR-C0c).
  *
  * Per [[scala-jvm-safety-mindset]]: deterministic across JVM
  * restarts (SHA-256, not `hashCode` which is JVM-instance-specific).

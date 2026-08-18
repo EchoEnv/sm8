@@ -19,10 +19,10 @@
  */
 package io.sm8.connectors.spark
 
-import io.sm8.core.engine.{EngineIdentity, MCPEngineProvider}
+import io.sm8.core.engine.{EngineIdentity, EngineProvider}
 
 final class SparkEngineProviderDescriptor
-    extends MCPEngineProvider {
+    extends EngineProvider {
 
   override lazy val identity: EngineIdentity =
     EngineIdentity(
@@ -38,7 +38,7 @@ final class SparkEngineProviderDescriptor
     * non-blank Spark-compatible string. Blank input = None
     * (preserves the realize-blank contract).
     */
-  override def realize(url: String): Option[MCPEngineProvider] =
+  override def realize(url: String): Option[EngineProvider] =
     if (url == null || url.trim.isEmpty) None
     else Some(new SparkEngineProvider(
       spark           = org.apache.spark.sql.SparkSession.builder().master(url).getOrCreate(),
@@ -49,7 +49,7 @@ final class SparkEngineProviderDescriptor
 
   override def query(
       model:   io.sm8.core.model.Model,
-      request: io.sm8.core.engine.MCPQueryRequest,
+      request: io.sm8.core.engine.QueryRequest,
       ctx:     io.sm8.core.engine.EngineContext,
   ): Either[io.sm8.core.engine.EngineError, io.sm8.core.engine.PortableQueryResult] =
     Left(io.sm8.core.engine.EngineError.UnsupportedCapability(
@@ -60,7 +60,7 @@ final class SparkEngineProviderDescriptor
 
   override def explain(
       model:   io.sm8.core.model.Model,
-      request: io.sm8.core.engine.MCPQueryRequest,
+      request: io.sm8.core.engine.QueryRequest,
       ctx:     io.sm8.core.engine.EngineContext,
   ): Either[io.sm8.core.engine.EngineError, String] =
     Right(s"spark.explain(${model.name}): no SparkSession (descriptor)")

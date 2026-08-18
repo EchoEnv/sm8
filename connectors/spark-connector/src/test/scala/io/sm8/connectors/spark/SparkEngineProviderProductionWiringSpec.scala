@@ -71,7 +71,7 @@ class SparkEngineProviderProductionWiringSpec extends AnyFunSuite with Matchers 
         measures = List(Measure("total",
           AggregateCall(AggregateFn.Sum, Some(Expr.FieldRef("amount")), "total"))),
       ).toOption.get
-      val out = provider.query(model, io.sm8.core.engine.MCPQueryRequest.empty, EngineContext.defaultContext)
+      val out = provider.query(model, io.sm8.core.engine.QueryRequest.empty, EngineContext.defaultContext)
       out match { case Left(e) => println(s"DEBUG FAIL GAP5: $e"); case _ => };
       out.isRight shouldBe true
       val result = out.toOption.get
@@ -98,7 +98,7 @@ class SparkEngineProviderProductionWiringSpec extends AnyFunSuite with Matchers 
         defaultPolicies = mpd(),
         dimensions = List(Dimension.field("ghost", "ghost_field")),
       ).toOption.get
-      val out = provider.query(model, io.sm8.core.engine.MCPQueryRequest.empty, EngineContext.defaultContext)
+      val out = provider.query(model, io.sm8.core.engine.QueryRequest.empty, EngineContext.defaultContext)
       out.isLeft shouldBe true
       out.left.toOption.get shouldBe a [EngineError.UnsupportedCapability]
     } finally { spark.stop() }
@@ -144,7 +144,7 @@ class SparkEngineProviderProductionWiringSpec extends AnyFunSuite with Matchers 
         calculatedMeasures = List(CalculatedMeasure("pct",
           Expr.Divide(Expr.FieldRef("region"), Expr.MeasureRef("total")))),
       ).toOption.get
-      val out = provider.query(model, io.sm8.core.engine.MCPQueryRequest.empty, EngineContext.defaultContext)
+      val out = provider.query(model, io.sm8.core.engine.QueryRequest.empty, EngineContext.defaultContext)
       out.isRight shouldBe true
       val result = out.toOption.get
       result.schema.fields.map(_.name).toSet should contain ("pct")
@@ -173,7 +173,7 @@ class SparkEngineProviderProductionWiringSpec extends AnyFunSuite with Matchers 
       ).toOption.get
       val ctxWithHint = EngineContext.defaultContext.copy(
         joinHints = JoinHints(preferredStrategy = Some(JoinStrategy.Broadcast)))
-      val out = provider.query(model, io.sm8.core.engine.MCPQueryRequest.empty, ctxWithHint)
+      val out = provider.query(model, io.sm8.core.engine.QueryRequest.empty, ctxWithHint)
       // The right-side model doesn't exist -> fails loud (typed
       // UnsupportedCapability). The hint was carried through ctx.
       // (Future PR: assert the .hint() appears in the resolved plan.)

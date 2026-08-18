@@ -17,7 +17,7 @@
  *
  * Per [[scala-spark-batch-bugs-mindset]] mantras: N/A in core.
  * The loader has zero Spark types. The Model produced here can
- * flow to MCPEngineRegistry → SparkEngineProvider.query() via
+ * flow to EngineRegistry → SparkEngineProvider.query() via
  * the connector layer (PRs #38-#42 handle Spark concerns).
  */
 package io.sm8.core.manifest

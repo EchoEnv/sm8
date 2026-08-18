@@ -5,7 +5,7 @@
  * function (Expr) -> Column with NO captured state. Companion
  * object + sealed-trait dispatch over the closed Expr family
  * from sm8-core. The closure-safety contract from PR #36 (which
- * extends java.io.Serializable on MCPEngineProvider) is preserved
+ * extends java.io.Serializable on EngineProvider) is preserved
  * by the SparkEngineProvider — the compiler itself captures
  * nothing; the SPARK-SPECIFIC Column handle is the one we hand
  * back to the caller.

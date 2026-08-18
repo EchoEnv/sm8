@@ -31,8 +31,8 @@ import io.sm8.core.engine.{
   EngineError,
   EngineHookRequest,
   EngineHookResult,
-  MCPEngineProvider,
-  MCPQueryRequest,
+  EngineProvider,
+  QueryRequest,
   PortableQueryResult,
   ResultRow,
   ResultSchema,
@@ -56,7 +56,7 @@ final class SparkEngineProvider(
     // after. Per ADR §C1: uses the existing `HookRunner` SDK Protocol;
     // no new payload types.
     val hookRunner:       Option[HookRunner] = None
-) extends MCPEngineProvider {
+) extends EngineProvider {
 
 
 
@@ -78,7 +78,7 @@ final class SparkEngineProvider(
     *         URL is blank (per-connector grammar: non-blank
     *         Spark master URL required)
     */
-  override def realize(url: String): Option[MCPEngineProvider] =
+  override def realize(url: String): Option[EngineProvider] =
     if (url == null || url.trim.isEmpty) None
     else Some(new SparkEngineProvider(
       spark           = org.apache.spark.sql.SparkSession.builder().master(url).getOrCreate(),
@@ -167,7 +167,7 @@ final class SparkEngineProvider(
   // `EngineHookDispatcher` via the new constructor parameter.
   override def query(
       model:   Model,
-      request: MCPQueryRequest,
+      request: QueryRequest,
       ctx:     EngineContext,
   ): Either[EngineError, PortableQueryResult] = {
     if (spark == null) {
@@ -412,7 +412,7 @@ final class SparkEngineProvider(
    */
   private[spark] def applyPostCompilePipeline(
       df:                org.apache.spark.sql.DataFrame,
-      request:           MCPQueryRequest,
+      request:           QueryRequest,
       schemaMetadata:    Map[String, String],
   ): Either[EngineError, PortableQueryResult] = {
     val filtered: org.apache.spark.sql.DataFrame =
@@ -476,7 +476,7 @@ final class SparkEngineProvider(
     */
   override def explain(
       model:   Model,
-      request: MCPQueryRequest,
+      request: QueryRequest,
       ctx:     EngineContext,
   ): Either[EngineError, String] = {
     val header =

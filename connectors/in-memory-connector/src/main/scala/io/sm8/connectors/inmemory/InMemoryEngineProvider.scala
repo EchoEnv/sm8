@@ -11,12 +11,12 @@ package io.sm8.connectors.inmemory
 
 import io.sm8.core.engine.{
   EngineContext, EngineError, EngineIdentity,
-  MCPEngineProvider, MCPQueryRequest, PortableQueryResult,
+  EngineProvider, QueryRequest, PortableQueryResult,
   ResultSchema
 }
 import io.sm8.core.model.Model
 
-final class InMemoryEngineProvider() extends MCPEngineProvider {
+final class InMemoryEngineProvider() extends EngineProvider {
 
   override val identity: EngineIdentity =
     EngineIdentity(name = "in-memory", nativeVersion = "embedded", engineAdapterVersion = "0.1.0")
@@ -24,7 +24,7 @@ final class InMemoryEngineProvider() extends MCPEngineProvider {
   override val available: Boolean = true
 
   override def query(
-      model: Model, request: MCPQueryRequest, ctx: EngineContext
+      model: Model, request: QueryRequest, ctx: EngineContext
   ): Either[EngineError, PortableQueryResult] =
     Right(PortableQueryResult(
       schema = ResultSchema(Nil),
@@ -33,7 +33,7 @@ final class InMemoryEngineProvider() extends MCPEngineProvider {
     ))
 
   override def explain(
-      model: Model, request: MCPQueryRequest, ctx: EngineContext
+      model: Model, request: QueryRequest, ctx: EngineContext
   ): Either[EngineError, String] =
     Right(s"in-memory plan for ${model.name}")
 }

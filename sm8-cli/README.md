@@ -183,7 +183,7 @@ The token file is `.trim`-ed on read, so a trailing newline from
 (Available since v0.3.1 — server-side: PR #431, CLI side: PR #432.)
 
 By default the server decides which engine compiles a query (engine-portable
-path when an `MCPEngineRegistry` is configured, legacy `Models` +
+path when an `EngineRegistry` is configured, legacy `Models` +
 `SemanticTable` path otherwise — see `docs/design/multi-engine-design.md` §6.4).
 
 Pass `--engine <name>` on `query` or `explain` to force the engine-portable

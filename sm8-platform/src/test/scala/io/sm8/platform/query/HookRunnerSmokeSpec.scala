@@ -64,7 +64,7 @@ class HookRunnerSmokeSpec extends AnyFunSuite with Matchers {
           ),
           dimensions = Nil, measures = Nil,
         ).toOption.get,
-        mcpRequest = io.sm8.core.engine.MCPQueryRequest(model = "smoke"),
+        mcpRequest = io.sm8.core.engine.QueryRequest(model = "smoke"),
         cacheKey   = "smoke",
       ),
       stage   = PipelineStage.Execute,
