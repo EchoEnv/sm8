@@ -61,30 +61,6 @@ final class SparkEngineProvider(
 
 
   /**
-    * Real-runtime constructor (Phase 4 — Driver-side Spark Connect).
-    *
-    * Builds a SparkSession via
-    * `SparkSession.builder().master(masterUrl).getOrCreate()`. The url
-    * is a plain string — it can be:
-    *   - a classic Spark cluster URL: `spark://host:7077`
-    *   - a local-mode URL: `local[*]` (driver-side only)
-    *   - a Spark Connect URL: `spark-connect://host:port` (Spark 3.4+)
-    *
-    * Per RFC §3: the connector is the ONLY piece that imports
-    * `org.apache.spark.*`. The platform holds only a string.
-    *
-    * Used by Main's reflection: platform finds the discovered stub
-    * (created via the no-arg ctor) and replaces it with the real one
-    * via this ctor.
-    */
-  def this(masterUrl: String) =
-    this(
-      SparkSession.builder().master(masterUrl).getOrCreate(),
-      SparkTypeBridge,
-      "spark-3.5"
-    )
-
-  /**
     * Typed URL realization (PR-B per RFC `adapters.md` Rule 4).
     *
     * Builds a real `SparkEngineProvider` connected to the given
@@ -104,7 +80,12 @@ final class SparkEngineProvider(
     */
   override def realize(url: String): Option[MCPEngineProvider] =
     if (url == null || url.trim.isEmpty) None
-    else Some(new SparkEngineProvider(url))
+    else Some(new SparkEngineProvider(
+      spark           = org.apache.spark.sql.SparkSession.builder().master(url).getOrCreate(),
+      bridge          = SparkTypeBridge,
+      sparkEngineName = sparkEngineName,
+      hookRunner      = None,
+    ))
 
 
   override lazy val identity: io.sm8.core.engine.EngineIdentity =

@@ -90,36 +90,4 @@ class SparkEngineProviderDiscoverySpec extends AnyFunSuite with Matchers {
     back.available shouldBe false
   }
 
-  // -- Real-runtime (String) ctor: used by Main's reflection realize --
-  //
-  // Per RFC §3 + the user's "no spark types in the platform" directive:
-  // this ctor is the ONLY piece that knows about SparkSession. The
-  // platform passes a plain string; we build the session locally.
-  // Spark Connect URLs (`spark-connect://host:port`) and classic
-  // master URLs (`spark://host:7077`) and local-mode (`local[*]`)
-  // all flow through the same `master(url)` builder.
-
-  test("SparkEngineProvider (String) ctor: builds a real SparkSession when master is local") {
-    val p = new SparkEngineProvider("local[1]")
-    p should not be null
-    p.identity.name shouldBe "spark-3.5"
-    p.available shouldBe true
-    p.spark should not be null
-    p.spark.version should not be null
-  }
-
-  test("SparkEngineProvider (String) ctor: full Java-serialization round-trip preserves session") {
-    val p = new SparkEngineProvider("local[1]")
-    val bytes = {
-      val bos = new java.io.ByteArrayOutputStream()
-      val oos = new java.io.ObjectOutputStream(bos)
-      oos.writeObject(p); oos.close(); bos.toByteArray
-    }
-    val back = {
-      val ois = new java.io.ObjectInputStream(new java.io.ByteArrayInputStream(bytes))
-      ois.readObject().asInstanceOf[SparkEngineProvider]
-    }
-    back.identity.name shouldBe "spark-3.5"
-    back.available shouldBe true
-  }
 }
