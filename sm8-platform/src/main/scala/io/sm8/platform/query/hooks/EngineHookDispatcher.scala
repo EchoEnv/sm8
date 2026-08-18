@@ -26,7 +26,7 @@
  * Per [[scala-data-driven-refactor-mindset]] "sealed-trait dispatch":
  * the only branching in this file is the match on `Left`/`Right`
 import io.sm8.core.engine.{ EngineHookRequest, EngineHookResult }
- import io.sm8.sdk.{Context, HookManager, HookStage, PipelineStage, PostHook, PreHook}
+import io.sm8.sdk.{Context, HookManager, HookStage, PipelineStage, PostHook, PreHook}
  * fail-fast. The dispatcher does NOT wrap them — they propagate
  * to the caller's `Either` via the engine-call boundary. Plugin
  * authors who want non-fatal hooks must `try/catch` inside the
@@ -57,7 +57,7 @@ import io.sm8.sdk.{
  *
  * @param hooks the SDK hook manager (sorted by priority on read)
  */
-final class EngineHookDispatcher private (hooks: HookManager) {
+final class EngineHookDispatcher private (hooks: HookManager) extends io.sm8.sdk.HookRunner {
 
   /**
    * Run a request through the PreExecute → execute → PostExecute

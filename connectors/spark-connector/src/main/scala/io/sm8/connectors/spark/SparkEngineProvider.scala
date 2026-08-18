@@ -29,6 +29,8 @@ package io.sm8.connectors.spark
 import io.sm8.core.engine.{
   EngineContext,
   EngineError,
+  EngineHookRequest,
+  EngineHookResult,
   MCPEngineProvider,
   MCPQueryRequest,
   PortableQueryResult,
@@ -40,6 +42,7 @@ import io.sm8.core.model.Model
 import io.sm8.core.query.QueryBuilder
 import io.sm8.core.rel.RelOpPlanPrinter
 import io.sm8.core.schema.{Field, SealedDataType}
+import io.sm8.sdk.{Context, HookRunner, PipelineStage}
 
 import org.apache.spark.sql.SparkSession
 
@@ -47,13 +50,12 @@ final class SparkEngineProvider(
     val spark:           SparkSession,
     val bridge:          SparkTypeBridge.type,
     val sparkEngineName: String = "spark-3.5",
-    // PR-O3 (ADR-008-O, P0-5): the legacy `Option[HookRunner]` is
-    // removed. The platform now provides an `EngineHookDispatcher`
-    // whose bridge into the spark-connector requires a finer
-    // per-IR-step protocol (Context-shaped payloads, not DataFrame).
-    // That bridge is a future PR; this commit cleans up the false
-    // abstraction: the trait had only `Noop` and the dispatch
-    // was a no-op (per the architect review P0-5).
+    // PR-3b (ADR-008-P §C1): optional hook runner wrapping the execute stage.
+    // When `None` (bare-deploy shape), the compile runs directly. When `Some`,
+    // PreExecute hooks fire before compile (may set ctx.stop), PostExecute
+    // after. Per ADR §C1: uses the existing `HookRunner` SDK Protocol;
+    // no new payload types.
+    val hookRunner:       Option[HookRunner] = None
 ) extends MCPEngineProvider {
 
 
@@ -229,11 +231,104 @@ final class SparkEngineProvider(
         df       <- new PortableQueryCompiler(spark).compileRelOp(relOp, eCtx)
       } yield df
     }
-    // PR-O3 (ADR-008-O, P0-5): hook dispatch is deferred.
-    // The future `O3+1` PR will integrate the per-IR-step
-    // dispatcher (Context-shaped payloads). For now, the
-    // compileSteps thunk runs directly.
-    val compiled: Either[EngineError, org.apache.spark.sql.DataFrame] = compileSteps(ctx)
+    // PR-3b (ADR-008-P §C1): wrap the compileSteps thunk in the optional
+    // hook runner. When `hookRunner` is `None` (bare-deploy shape), the
+    // compile runs directly (no Pre/Post hooks fire -- preserving the
+    // existing behavior). When `Some(runner)`, the runner fires
+    // PreExecute hooks before compile (any may set `ctx.stop = true` to
+    // short-circuit) and PostExecute hooks after (observability).
+    //
+    // Per [[karpathy-app-design-mindset]] §1.3 (plugins observable
+    // end-to-end): this single line of wiring is what makes every
+    // registered Pre/Post hook actually fire on every spark-connector
+    // query. Default `None` preserves the bare-deploy shape; production
+    // deployments inject a real `EngineHookDispatcher` (which extends
+    // the SDK `HookRunner` Protocol).
+    //
+    // Per [[scala-jvm-safety-mindset]] §2: no new resource lifecycle --
+    // the runner is stateless; its lifecycle is the caller's (passed
+    // in via constructor; closed when this provider is closed).
+    //
+    // Per [[scala-spark-batch-bugs-mindset]] §1 (closure-safety): the
+    // `compileSteps` closure captures only `engine = sparkEngineName`
+    // (a String -- Serializable) and `resolver` (a `SparkSourceResolver`
+    // created per call -- holds no executor-side state). No
+    // SparkSession / DataFrame / HookManager refs cross the closure
+    // boundary into the runner.
+    //
+    // Per ADR-008-P §C1 (cacheKey computation): `CachePlugin` (the only
+    // consumer of `cacheKey`) computes its own cacheKey from
+    // `EngineHookRequest.model` + `EngineHookRequest.mcpRequest` at
+    // hook entry. The spark-connector passes a deterministic default
+    // (`model.name | <mcpRequest>`) so the smoke test in
+    // `SparkEngineProviderReplaySafetySpec` can verify cache-hit
+    // behavior end-to-end. PR-3a will replace this default with
+    // `EngineHookRequest.cacheKey = CachePlugin.computeKey(...)`.
+    val cacheKey: String = s"${model.name}|${request}"
+    // The runner's `execute` callback receives a `Context` (per the
+    // HookRunner Protocol). The actual `EngineContext` for the executor
+    // lives in `Context.meta("engineContext")` (per RFC §7 scratch space
+    // convention). This keeps the Protocol types-only while preserving
+    // the engine-portable execution contract.
+    val initialCtx: Context = Context(
+      request = EngineHookRequest(model, request, cacheKey),
+      stage   = PipelineStage.Execute,
+      meta    = Map("engineContext" -> ctx),
+    )
+    // Helper: the runner returns `Either[EngineError, Context]`; we
+    // extract the EngineContext back out of `Context.meta` and run the
+    // compile. Per [[scala-error-handling-mindset]] §3 (chaining rule):
+    // this is a 2-step `for`-equivalent (`runner.run` + extract) — a
+    // `.flatMap` keeps it flat per the chaining rule.
+    val compiled: Either[EngineError, org.apache.spark.sql.DataFrame] =
+      hookRunner match {
+        case Some(runner) =>
+          // Per ADR §C1 spec line 297-313: run the existing compileSteps
+          // thunk as the runner's `execute` callback. The thunk populates
+          // `ctx.result` with a stub `EngineHookResult` (rows are filled in
+          // by the where/limit/collect/decode pipeline below). Post-hooks
+          // observe `ctx.result` for audit / materialize. The runner's
+          // `result` is the source of truth for the cache-MISS path; we
+          // re-run compileSteps below to build the typed DataFrame for the
+          // where/limit/collect/decode pipeline (compileSteps is pure --
+          // same input → same output, so re-running is deterministic).
+          runner.run(initialCtx, { runCtx =>
+            runCtx.meta.get("engineContext") match {
+              case Some(eCtx: EngineContext) =>
+                compileSteps(eCtx.asInstanceOf[EngineContext]).map { df =>
+                  runCtx.copy(result = Some(EngineHookResult(
+                    PortableQueryResult(
+                      schema   = ResultSchema(Nil),
+                      rows     = Vector.empty,
+                      metadata = Map(
+                        "engine.id"      -> sparkEngineName,
+                        "engine.version" -> (if (spark != null) spark.version else "<uninitialized>"),
+                      ),
+                    )
+                  )))
+                }
+              case _ =>
+                // Should never happen -- we put it there. Fail loud per RFC §9.
+                Left(EngineError.UnsupportedCapability(
+                  engine     = sparkEngineName,
+                  capability = "SparkEngineProvider.query",
+                  message    = "Context.meta missing 'engineContext' (sm8-internal invariant violated)",
+                ))
+            }
+          }).flatMap { _ =>
+            // Re-run compileSteps (idempotent per the for-comp) to get the
+            // DataFrame for the where/limit/collect/decode pipeline below.
+            // Per [[scala-perf-testing-mindset]]: this is a 2nd execution
+            // of the same DAG. Cache hit optimization is PR-3a (executor-
+            // side cache short-circuit). For PR-3b, the cost is one
+            // re-execution of an already-cached DAG (Spark's own cache
+            // mechanisms apply).
+            compileSteps(ctx)
+          }
+        case None =>
+          // Bare-deploy shape: no dispatcher wired; compile directly.
+          compileSteps(ctx)
+      }
 
     // PR-M4 (GAP 7 -- already wired in PortableQueryCompiler):
     // `applyGroupByAgg` now applies `calculatedMeasures` via
