@@ -117,6 +117,20 @@ private final class CacheReadPreHook(
 }
 
 /** PostExecute write-through. */
+/**
+ * PostExecute write-through. Per [[io.sm8.sdk.PostHook]] `runsOnStop`
+ * (PR-9, ADR-008-P §T1-D2): `false` — this is a Mutator. On a cache
+ * HIT, the `cache-read` Pre-hook has already set `c.stop = true` and
+ * the result is the same `PortableQueryResult` that's already in the
+ * cache. Re-running the write-through would (a) duplicate the write,
+ * (b) potentially re-encode the row, and (c) mask a logic error in
+ * the cache layer (the pre-read should have returned the post-write).
+ * The dispatcher short-circuits this hook when `c.stop` is true.
+ *
+ * Per [[scala-spark-batch-bugs-mindset]] §1 (closure-safety):
+ * `with java.io.Serializable` — captured `cache` (ResultCache, extends
+ * Serializable) and `counter` (AtomicInteger, Serializable).
+ */
 private final class CacheWritePostHook(
     cache:   ResultCache,
     counter: AtomicInteger
@@ -125,6 +139,9 @@ private final class CacheWritePostHook(
   override val name: String     = "cache-write"
   override val priority: Int    = 60
   override def stage: HookStage = HookStage.PostExecute
+
+  /** Mutator: skip on `c.stop` (cache HIT). Per PR-9 (ADR-008-P §T1-D2). */
+  override def runsOnStop: Boolean = false
 
   override def run(context: Context): Context = {
     counter.incrementAndGet()

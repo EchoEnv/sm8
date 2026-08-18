@@ -112,12 +112,28 @@ final class EngineHookDispatcher private (hooks: HookManager) extends io.sm8.sdk
     }
   }
 
-  /** Fire every Post-hook registered for `stage` in priority order. */
+  /**
+   * Fire every Post-hook registered for `stage` in priority order.
+   *
+   * Per RFC `hooks.md`: Post-hook runnability on the short-circuit path
+   * is type-dependent. Observer / side-effect hooks (audit, metrics,
+   * cache-read acknowledgment) MUST fire even after `c.stop = true`.
+   * Mutator hooks (cache-write, row-cap, schema rename) MUST skip when
+   * `c.stop` — re-running them on the cached/HIT path would either
+   * duplicate writes or silently mutate the stored Result.
+   *
+   * Per PR-9 (ADR-008-P §T1-D2 + §"What's Next"): the discriminator
+   * is `PostHook.runsOnStop` (default `true` = Observer; override
+   * `false` for Mutator). PR-7 (AR-P1-7) marked the Connector trait
+   * deprecated; this flag finishes the symmetrical classification
+   * for post-hook intent (RFC `hooks.md` enumerates 5 types; 3 of
+   * them post-fire).
+   */
   private def firePost(stage: PipelineStage, ctx: Context): Context = {
     val hookStage: HookStage = postStageFor(stage)
     val post: Seq[(PostHook, Int)] = hooks.postHooksFor(hookStage)
     post.foldLeft(ctx) { (c, hp) =>
-      if (c.stop) c
+      if (c.stop && !hp._1.runsOnStop) c
       else hp._1.run(c)
     }
   }

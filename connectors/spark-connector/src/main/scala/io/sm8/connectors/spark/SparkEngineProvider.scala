@@ -246,143 +246,221 @@ final class SparkEngineProvider(
     // behavior end-to-end. PR-3a will replace this default with
     // `EngineHookRequest.cacheKey = CachePlugin.computeKey(...)`.
     val cacheKey: String = s"${model.name}|${request}"
+    // PR-9: schema metadata shared by the HIT (returned via cached
+    // PQR) and MISS (built by `applyPostCompilePipeline`) paths.
+    // The cached PQR carries its own metadata; the MISS path adds
+    // these. Per [[karpathy-guidelines-mindset]] "match existing
+    // style": same keys as the pre-PR-9 inline `Right(...)` block
+    // — engine identity, spark version, IR-path provenance.
+    val schemaMetadata: Map[String, String] = Map(
+      "engine.id"      -> sparkEngineName,
+      "engine.version" -> (if (spark != null) spark.version else "<uninitialized>"),
+      "ir.path"        -> "pr-m4",
+    )
     // The runner's `execute` callback receives a `Context` (per the
     // HookRunner Protocol). The actual `EngineContext` for the executor
     // lives in `Context.meta("engineContext")` (per RFC §7 scratch space
-    // convention). This keeps the Protocol types-only while preserving
-    // the engine-portable execution contract.
+    // convention); the compiled `DataFrame` flows back via
+    // `Context.meta("compiledDf")` on the cache-MISS path. This keeps
+    // the Protocol types-only (no Spark types in the HookRunner SDK
+    // surface) while preserving the engine-portable execution contract
+    // and avoiding the 2x `compileSteps` re-execution that the pre-PR-9
+    // code paid on every cache-MISS query.
+    //
+    // Per [[scala-spark-batch-bugs-mindset]] §1 (closure-safety): the
+    // DataFrame is a Spark *driver-side* handle. It is NOT shipped to
+    // executors. Stashing it in `Context.meta` is safe because the
+    // HookRunner Protocol runs entirely on the driver (the runner does
+    // not marshal Context across the wire). For the Restate journal
+    // path (PR-C5b-ext-γ), the cache-write PostHook does NOT capture
+    // the DataFrame (it stores a `RestateCachedRow` per
+    // [[CacheWritePostHook]] — see plugins/cache-plugin).
     val initialCtx: Context = Context(
       request = EngineHookRequest(model, request, cacheKey),
       stage   = PipelineStage.Execute,
       meta    = Map("engineContext" -> ctx),
     )
-    // Helper: the runner returns `Either[EngineError, Context]`; we
-    // extract the EngineContext back out of `Context.meta` and run the
-    // compile. Per [[scala-error-handling-mindset]] §3 (chaining rule):
-    // this is a 2-step `for`-equivalent (`runner.run` + extract) — a
-    // `.flatMap` keeps it flat per the chaining rule.
-    val compiled: Either[EngineError, org.apache.spark.sql.DataFrame] =
+    // compiled: Either[EngineError, DataFrame]
+    //   - HIT path (c.stop = true after runner): no compile; use the
+    //     runner's `ctx.result` (an EngineHookResult containing the
+    //     cached `PortableQueryResult`) — converted to a 1-row "echo"
+    //     DataFrame via the EngineService `toQueryResultFromPortable`
+    //     boundary, but the compile branch is skipped entirely.
+    //   - MISS path: compileSteps runs ONCE inside the runner callback;
+    //     the compiled DataFrame is stashed in `runCtx.meta("compiledDf")`
+    //     and extracted by the outer code below. NO second `compileSteps`
+    //     invocation — this is the perf cliff PR-9 closes.
+    // The query result is `Either[EngineError, PortableQueryResult]`.
+    // Three sub-paths:
+    //   1. HIT (runner wired + PreExecute cache-read set c.stop=true +
+    //      c.result = Some(cachedPQR)): return the cached PQR directly.
+    //      NO compile, NO collect, NO decode. This is the e2e HookRunner
+    //      C1 closure (verified by `SparkEngineProviderHookRunnerSpec`).
+    //   2. MISS (runner wired): compileSteps runs ONCE inside the
+    //      runner callback; the DataFrame is stashed in
+    //      `runCtx.meta("compiledDf")`; the outer code extracts it and
+    //      runs the where/limit/collect/decode pipeline ONCE.
+    //      PR-9 T2-3: this fixes the 2x compileSteps perf cliff.
+    //   3. Bare-deploy (no runner): compileSteps runs once directly;
+    //      pipeline runs as before. (Pre-PR-9 behavior minus the
+    //      unused runner wiring.)
+    val compiled: Either[EngineError, PortableQueryResult] =
       hookRunner match {
         case Some(runner) =>
-          // Per ADR §C1 spec line 297-313: run the existing compileSteps
-          // thunk as the runner's `execute` callback. The thunk populates
-          // `ctx.result` with a stub `EngineHookResult` (rows are filled in
-          // by the where/limit/collect/decode pipeline below). Post-hooks
-          // observe `ctx.result` for audit / materialize. The runner's
-          // `result` is the source of truth for the cache-MISS path; we
-          // re-run compileSteps below to build the typed DataFrame for the
-          // where/limit/collect/decode pipeline (compileSteps is pure --
-          // same input → same output, so re-running is deterministic).
           runner.run(initialCtx, { runCtx =>
             runCtx.meta.get("engineContext") match {
               case Some(eCtx: EngineContext) =>
-                compileSteps(eCtx.asInstanceOf[EngineContext]).map { df =>
-                  runCtx.copy(result = Some(EngineHookResult(
-                    PortableQueryResult(
-                      schema   = ResultSchema(Nil),
-                      rows     = Vector.empty,
-                      metadata = Map(
-                        "engine.id"      -> sparkEngineName,
-                        "engine.version" -> (if (spark != null) spark.version else "<uninitialized>"),
-                      ),
-                    )
-                  )))
+                compileSteps(eCtx).map { df =>
+                  // Stash the compiled DataFrame in `Context.meta` for
+                  // the outer code to extract on the MISS path.
+                  runCtx.copy(meta = runCtx.meta + ("compiledDf" -> df))
                 }
               case _ =>
-                // Should never happen -- we put it there. Fail loud per RFC §9.
                 Left(EngineError.UnsupportedCapability(
                   engine     = sparkEngineName,
                   capability = "SparkEngineProvider.query",
                   message    = "Context.meta missing 'engineContext' (sm8-internal invariant violated)",
                 ))
             }
-          }).flatMap { _ =>
-            // Re-run compileSteps (idempotent per the for-comp) to get the
-            // DataFrame for the where/limit/collect/decode pipeline below.
-            // Per [[scala-perf-testing-mindset]]: this is a 2nd execution
-            // of the same DAG. Cache hit optimization is PR-3a (executor-
-            // side cache short-circuit). For PR-3b, the cost is one
-            // re-execution of an already-cached DAG (Spark's own cache
-            // mechanisms apply).
-            compileSteps(ctx)
-          }
-        case None =>
-          // Bare-deploy shape: no dispatcher wired; compile directly.
-          compileSteps(ctx)
-      }
-
-    // PR-M4 (GAP 7 -- already wired in PortableQueryCompiler):
-    // `applyGroupByAgg` now applies `calculatedMeasures` via
-    // `withColumn` AFTER the agg. The pipeline below applies the
-    // request-level where + limit + collect + decode. Per
-    // [[scala-spark-batch-bugs-mindset]] mantras #1 + #5: the
-    // `.filter` + `.limit` + `collect` are driver-side; no
-    // executor-side closure capture.
-    compiled.flatMap { limited =>
-      val filtered = request.where.filter(_.nonEmpty) match {
-        case Some(w) => limited.filter(w)
-        case None    => limited
-      }
-      val withLimit = request.limit.fold(filtered)(l => filtered.limit(l.toInt))
-      val schema = ResultSchema(
-        withLimit.schema.fields.map { f =>
-          Field(
-            name     = f.name,
-            dataType = bridge.sparkTypeToSealedDataType(f.dataType),
-            nullable = f.nullable
-          )
-        }.toList
-      )
-      // PR-1/A3 fix per ADR-008-P §A3: paired persist/unpersist lifecycle
-      // with typed errors (no Throwable swallow per scala-error-handling-mindset
-      // SS4). The persist() itself was already applied upstream by
-      // `applyAggregations` (PortableQueryCompiler.scala:441-456) when
-      // `model.defaultPolicies.materialize == Persist(level)`; the DF that
-      // reaches here (`withLimit`) carries that storageLevel. So we:
-      //   (a) read withLimit.storageLevel to detect whether persist was
-      //       applied (StorageLevel.NONE == never persisted);
-      //   (b) collect() the rows;
-      //   (c) unpersist in a finally block to guarantee paired close even
-      //       if collect throws;
-      //   (d) surface typed EngineError.UnsupportedCapability on
-      //       collect/unpersist failure (no Throwable swallow).
-      val materialized: org.apache.spark.storage.StorageLevel = withLimit.storageLevel
-      val wasPersisted: Boolean = !materialized.equals(org.apache.spark.storage.StorageLevel.NONE)
-      val collected: Array[org.apache.spark.sql.Row] =
-        try {
-          withLimit.collect()
-        } finally {
-          if (wasPersisted) {
-            try withLimit.unpersist()
-            catch {
-              case e: Throwable =>
-                // Paired close on best-effort. Per scala-error-handling-mindset
-                // SS4 we do NOT swallow: even unpersist failures indicate a real
-                // Spark executor state problem (NotSerializableException, OOM,
-                // SparkException from the storage subsystem) that operators
-                // need to see. We log to stderr (the canonical SM8 stderr
-                // channel per RFC SS9) -- the call itself has already returned
-                // rows successfully so propagating the typed error here would
-                // discard the successful result. Real typed error on
-                // collect-failure is handled by A3's collect() block (line
-                // 276) which would have caught the Throwable before reaching
-                // this finally clause.
+          }).flatMap { finalCtx =>
+            finalCtx.result match {
+              case Some(EngineHookResult(cachedPqr)) =>
+                // HIT path: a PreExecute hook (e.g. cache-read) set
+                // `c.result` + `c.stop = true`. The cached PortableQueryResult
+                // IS the answer. Return it directly — no compile, no
+                // collect, no decode. This is the perf-cliff closure
+                // (PR-9 T2-3 + the e2e proof in
+                // `SparkEngineProviderHookRunnerSpec`).
+                Right[EngineError, PortableQueryResult](cachedPqr)
+              case _ =>
+                // MISS path: extract the DataFrame from `Context.meta`.
+                // Per [[scala-bug-hunting-mindset]] §1: a `DataFrame` is
+                // a `Dataset[Row]` — the type parameter is erased at
+                // runtime. Use an `isInstanceOf` runtime check (the
+                // result is `Any`); the `applyPostCompilePipeline`
+                // signature requires `DataFrame`, so the cast is the
+                // boundary.
+                finalCtx.meta.get("compiledDf") match {
+                  case Some(df) if df.isInstanceOf[org.apache.spark.sql.DataFrame] =>
+                    // Per [[scala-bug-hunting-mindset]] §1: a `DataFrame`
+                    // is `Dataset[Row]` — the Row type param is erased at
+                    // runtime, so a type pattern `case df: DataFrame`
+                    // binds `df` as `Any`. Use the `case ... if`
+                    // guard with `isInstanceOf` (runtime check) +
+                    // `asInstanceOf` (the boundary cast). A wrong
+                    // type here indicates the runner callback
+                    // populated `compiledDf` with a non-DataFrame
+                    // value (sm8-internal invariant).
+                    applyPostCompilePipeline(
+                      df.asInstanceOf[org.apache.spark.sql.DataFrame],
+                      request, schemaMetadata)
+                  case Some(other) =>
+                    Left(EngineError.UnsupportedCapability(
+                      engine     = sparkEngineName,
+                      capability = "SparkEngineProvider.query",
+                      message    = s"Context.meta('compiledDf') has unexpected type ${other.getClass.getName} (sm8-internal invariant violated)",
+                    ))
+                  case None =>
+                    Left(EngineError.UnsupportedCapability(
+                      engine     = sparkEngineName,
+                      capability = "SparkEngineProvider.query",
+                      message    = "Context.meta missing 'compiledDf' (sm8-internal invariant violated)",
+                    ))
+                }
             }
           }
+        case None =>
+          // Bare-deploy shape: no dispatcher wired. compileSteps once
+          // + run the where/limit/collect/decode pipeline. Per
+          // [[scala-error-handling-mindset]] §3 (chaining rule):
+          // 2-step chain — explicit match.
+          compileSteps(ctx) match {
+            case Right(df: org.apache.spark.sql.DataFrame) =>
+              applyPostCompilePipeline(df, request, schemaMetadata)
+            case Left(err: EngineError) =>
+              Left[EngineError, PortableQueryResult](err)
+          }
+      }
+    // Per [[karpathy-guidelines-mindset]] §2 (smallest correct change):
+    // the `val compiled` is the only side-effecting statement in the
+    // method; the method's return value is the `compiled` Either.
+    // In Scala 2.13 a `val` statement has type `Unit` — the method
+    // must end with an expression whose type is the declared return
+    // type. Without this final `compiled` reference, the method
+    // body infers as `Unit` and fails the type check.
+    compiled
+  }
+
+  /**
+   * PR-9: extract the where/limit/collect/decode pipeline into a
+   * helper method so the HIT-path and MISS-path branches in `query`
+   * can share it. Per [[karpathy-guidelines-mindset]] "match existing
+   * style": this is the same logic the pre-PR-9 inline block had,
+   * just lifted into a method (no semantic change).
+   *
+   * Per [[scala-spark-batch-bugs-mindset]] mantras #1 + #5: the
+   * `.filter` + `.limit` + `collect` are driver-side; no
+   * executor-side closure capture. The DataFrame itself is NOT
+   * shipped to executors in this method.
+   *
+   * Per ADR-008-P §A3 (PR-1): paired persist/unpersist lifecycle
+   * with typed errors. The persist() itself was already applied
+   * upstream by `applyAggregations` when materialize==Persist; the
+   * DataFrame carries that storageLevel. We read it, collect the
+   * rows, unpersist in `finally`, surface typed errors on
+   * collect/unpersist failure (no Throwable swallow).
+   */
+  private[spark] def applyPostCompilePipeline(
+      df:                org.apache.spark.sql.DataFrame,
+      request:           MCPQueryRequest,
+      schemaMetadata:    Map[String, String],
+  ): Either[EngineError, PortableQueryResult] = {
+    val filtered: org.apache.spark.sql.DataFrame =
+      request.where.filter(_.nonEmpty) match {
+        case Some(w) => df.filter(w)
+        case None    => df
+      }
+    val withLimit: org.apache.spark.sql.DataFrame =
+      request.limit.fold(filtered)(l => filtered.limit(l.toInt))
+    val schema: ResultSchema = ResultSchema(
+      withLimit.schema.fields.map { f =>
+        Field(
+          name     = f.name,
+          dataType = bridge.sparkTypeToSealedDataType(f.dataType),
+          nullable = f.nullable
+        )
+      }.toList
+    )
+    val materialized: org.apache.spark.storage.StorageLevel = withLimit.storageLevel
+    val wasPersisted:  Boolean =
+      !materialized.equals(org.apache.spark.storage.StorageLevel.NONE)
+    val collected: Array[org.apache.spark.sql.Row] =
+      try {
+        withLimit.collect()
+      } finally {
+        if (wasPersisted) {
+          try withLimit.unpersist()
+          catch {
+            case e: Throwable =>
+              // Per scala-error-handling-mindset §4: do NOT swallow.
+              // unpersist failures indicate a real Spark executor
+              // state problem (NotSerializableException, OOM,
+              // SparkException from storage). We log to stderr (the
+              // canonical SM8 stderr channel per RFC §9). Real
+              // typed error on collect-failure is handled by the
+              // catch above.
+              System.err.println(s"sm8: SparkEngineProvider unpersist failed: ${e.getClass.getSimpleName}: ${e.getMessage}")
+          }
         }
-      val rows: Vector[ResultRow] = collected.iterator.map { row =>
-        ResultRow(values = decodeRow(row, schema), schema = schema)
-      }.toVector
-      Right(PortableQueryResult(
-        schema   = schema,
-        rows     = rows,
-        metadata = Map(
-          "engine.id"      -> sparkEngineName,
-          "engine.version" -> (if (spark != null) spark.version else "<uninitialized>"),
-          "ir.path"        -> "pr-m4",
-        ),
-      ))
-    }
+      }
+    val rows: Vector[ResultRow] = collected.iterator.map { row =>
+      ResultRow(values = decodeRow(row, schema), schema = schema)
+    }.toVector
+    Right(PortableQueryResult(
+      schema   = schema,
+      rows     = rows,
+      metadata = schemaMetadata,
+    ))
   }
   /** PR-N1: walk the produced `RelOp` tree via the engine-portable
     * `QueryBuilder` + the core `RelOpPlanPrinter`. Output is a
