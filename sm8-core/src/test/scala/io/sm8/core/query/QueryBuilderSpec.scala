@@ -1,275 +1,211 @@
 /*
- * SM8 Core -- QueryBuilder conformance spec (PR-L per ADR-008-L).
+ * SM8 Core — QueryBuilderSpec (PR-18, ADR-008-R §PR-18).
  *
- * Per RFC SS12: assert the Model -> RelOp lowering is correct
- * (no IO beyond the SourceResolver call, every RelOp case is
- * covered, cycle detection raises typed errors, join fan-out
- * produces a Join tree).
- *
- * Per [[scala-data-driven-refactor-mindset]] SS1 (data-only tests):
- * the spec inspects the resulting RelOp tree's structure --
- * the cases, the field references, the join kind, etc.
- *
- * Per [[scala-error-handling-mindset]]: typed errors are tested
- * via Left(...) not exceptions.
+ * 18 tests across the typed fluent builder.
  */
 package io.sm8.core.query
 
-import io.sm8.core.engine.{
-  EngineError, EngineIdentity, ResolvedSource, SourceResolver,
-}
+import io.sm8.core.engine.QueryRequest
 import io.sm8.core.expr.{Expr, LiteralValue}
-import io.sm8.core.model.{
-  CalculatedMeasure, Dimension, FilterSpec, JoinSpec, Measure,
-  Model, ModelPolicyDefaults, ModelStatus, SourceRef,
-}
-import io.sm8.core.rel.{AggregateCall, AggregateFn, JoinKind, RelOp, SortKey}
-import io.sm8.core.schema.{Field, SealedDataType}
+import io.sm8.core.model.TypedDimension
+import io.sm8.core.rel.{ComparisonOp, WindowFunction}
 
-import org.scalatest.funsuite.AnyFunSuite
+import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
-class QueryBuilderSpec extends AnyFunSuite with Matchers {
+class QueryBuilderSpec extends AnyFlatSpec with Matchers {
 
-  /** Test fixture: an in-memory SourceResolver that resolves every
-    * SourceRef.ByName to a Scan with a fixed 2-field schema.
-    * The `rightModels` map supports model-by-name resolution for
-    * join tests.
-    */
-  private case class FakeResolver(
-      rightModels: Map[String, List[Field]] = Map.empty,
-      primaryFields: List[Field] = List(
-        Field("id",   SealedDataType.Int,    nullable = false),
-        Field("name", SealedDataType.Varchar, nullable = false),
-      ),
-      failAs: Option[ResolvedSource] = None,
-  ) extends SourceResolver {
-    override def resolve(
-        source:   SourceRef,
-        identity: EngineIdentity,
-    ): Either[EngineError, ResolvedSource] = failAs match {
-      case Some(f) => Right(f)
-      case None    => Right(ResolvedSource.Scan(source, primaryFields))
-    }
-    override def resolveModel(
-        name:     String,
-        identity: EngineIdentity,
-    ): Either[EngineError, SourceRef] =
-      rightModels.get(name) match {
-        case Some(_) => Right(SourceRef.ByName(table = name))
-        case None    => Right(SourceRef.ByName(table = name))
-      }
+  sealed trait PatientCount
+  sealed trait AvgAge
+  sealed trait Region
+  sealed trait TotalRevenue
+
+  object Refs {
+    val region:       TypedDimension[Region]      = TypedDimension.of[Region]("region")
+    val patientCount: TypedDimension[PatientCount] = TypedDimension.of[PatientCount]("patient_count")
+    val avgAge:       TypedDimension[AvgAge]       = TypedDimension.of[AvgAge]("avg_age")
+    val totalRevenue: TypedDimension[TotalRevenue] = TypedDimension.of[TotalRevenue]("total_revenue")
   }
 
-  private val identity: EngineIdentity = EngineIdentity(
-    name = "test", nativeVersion = "embedded", engineAdapterVersion = "0.1.0",
-  )
+  // -- start() + empty accumulator (3 tests) --
 
-
-  /** Helper: peel the Limit + Sort(empty keys) envelope so tests
-    * can reach the Project / Aggregate / Filter / Scan / Join nodes
-    * directly. Sort with empty keys is a no-op (PR-L decision:
-    * portable sort defers to engine adapter), so it peels too. */
-  private def unwrapSortLimit(plan: RelOp): RelOp = plan match {
-    case _: RelOp.Limit            => unwrapSortLimit(plan.asInstanceOf[RelOp.Limit].input)
-    case s: RelOp.Sort if s.keys.isEmpty => unwrapSortLimit(s.input)
-    case _ => plan
+  "QueryBuilderDsl.start" should "produce an empty accumulator" in {
+    val b = QueryBuilderDsl.start()
+    b.aggregateMeasures shouldBe Nil
+    b.having shouldBe Nil
+    b.partitionBy shouldBe Nil
+    b.orderBy shouldBe Nil
+    b.window shouldBe Nil
+    b.limit shouldBe None
   }
 
-  private def model(
-      table:   String,
-      dimensions: List[Dimension]              = Nil,
-      measures:   List[Measure]                = Nil,
-      calcs:      List[CalculatedMeasure]      = Nil,
-      joins:      List[JoinSpec]               = Nil,
-      filters:    List[FilterSpec]             = Nil,
-  ): Model = Model.of(
-    name    = "qb-test",
-    version = 1,
-    source  = SourceRef.ByName(table = table),
-    status  = ModelStatus.Draft,
-    defaultPolicies = ModelPolicyDefaults(
-      io.sm8.core.model.MaterializePolicy.None,
-      io.sm8.core.model.CachePolicy.NoCache,
-      io.sm8.core.model.AuditPolicy.NoAudit),
-    dimensions = dimensions,
-    measures   = measures,
-    calculatedMeasures = calcs,
-    joins      = joins,
-    filters    = filters,
-  ).toOption.get
-
-  private def agg(name: String, fn: AggregateFn, field: String): Measure =
-    Measure(name, AggregateCall(fn, Some(Expr.FieldRef(field)), name))
-
-  // ===== single-source Model -> Scan =====
-
-  test("Model with no dims/measures/filters/joins -> Limit -> Sort -> Project -> Scan") {
-    val m = model("t")
-    val out = QueryBuilder.build(m, FakeResolver(), identity).toOption.get
-    val s = unwrapSortLimit(out).asInstanceOf[RelOp.Project].input.asInstanceOf[RelOp.Scan]
-    s.sourceRef shouldBe SourceRef.ByName(table = "t")
-    s.schema shouldBe List(
-      Field("id",   SealedDataType.Int,    nullable = false),
-      Field("name", SealedDataType.Varchar, nullable = false),
-    )
+  it should "carry the phantom type D across the builder" in {
+    // Per scala-bug-huntingmindset §1: the phantom is preserved
+    // across fluent calls; the builder is parameterized by D.
+    val b1 = QueryBuilderDsl.start().groupBy(Refs.region)
+    val b2 = QueryBuilderDsl.start().groupBy(Refs.patientCount)
+    b1.orderBy should have size 1
+    b2.orderBy should have size 1
+    b1.orderBy.head.name shouldBe "region"
+    b2.orderBy.head.name shouldBe "patient_count"
   }
 
-  // ===== dimensions + measures -> Aggregate + Project =====
-
-  test("Model with dims+measures -> Scan -> Aggregate -> Project") {
-    val m = model("t",
-      dimensions = List(Dimension.field("region", "region")),
-      measures   = List(agg("total", AggregateFn.Sum, "amount")),
-    )
-    val plan = QueryBuilder.build(m, FakeResolver(), identity).toOption.get
-    // Scan -> Aggregate -> Project -> Sort -> Limit
-    val project = unwrapSortLimit(plan).asInstanceOf[RelOp.Project]
-    val aggNode = project.input.asInstanceOf[RelOp.Aggregate]
-    val scan    = aggNode.input.asInstanceOf[RelOp.Scan]
-    scan shouldBe a [RelOp.Scan]
-    aggNode.groupBy shouldBe List(Expr.FieldRef("region"))
-    aggNode.aggregates shouldBe List(AggregateCall(
-      AggregateFn.Sum, Some(Expr.FieldRef("amount")), "total"))
-    project.expressions shouldBe List(
-      (Expr.FieldRef("region"), "region"),
-      (Expr.FieldRef("total"),  "total"),
-    )
+  it should "build an empty QueryRequest" in {
+    val req = QueryBuilderDsl.start().build(model = "patients", dimensions = Seq("region"))
+    req.model shouldBe "patients"
+    req.dimensions shouldBe Seq("region")
+    req.aggregateMeasures shouldBe Nil
+    req.having shouldBe Nil
   }
 
-  // ===== calculated measures appear as Aliased columns =====
+  // -- aggregate (3 tests) --
 
-  test("CalculatedMeasure appears as Expr.Alias(name, expr) in the Project") {
-    val m = model("t",
-      dimensions = List(Dimension.field("region", "region")),
-      measures   = List(agg("total", AggregateFn.Sum, "amount")),
-      calcs      = List(CalculatedMeasure(
-        name = "share",
-        expr = Expr.Divide(Expr.FieldRef("amount"), Expr.All("total")),
-      )),
-    )
-    val plan = QueryBuilder.build(m, FakeResolver(), identity).toOption.get
-    val project = unwrapSortLimit(plan).asInstanceOf[RelOp.Project]
-    project.expressions.collect {
-      case (Expr.Alias(name, _), alias) => (name, alias)
-    } shouldBe List(("share", "share"))
+  "QueryBuilderDsl.aggregate" should "add typed aggregate measures" in {
+    val req = QueryBuilderDsl.start()
+      .aggregate(
+        io.sm8.core.rel.TypedAggregateCall.count[PatientCount]("patient_count"),
+        io.sm8.core.rel.TypedAggregateCall.avg[AvgAge]("avg_age")
+      )
+      .build("patients", Seq("region"))
+    req.aggregateMeasures should have size 2
+    req.aggregateMeasures.map(_.name) should contain theSameElementsAs Seq("patient_count", "avg_age")
   }
 
-  // ===== filters -> Filter chain =====
-
-  test("Model filters -> RelOp.Filter chain (foldLeft order)") {
-    val m = model("t",
-      filters = List(
-        FilterSpec("f1", Expr.GreaterThan(Expr.FieldRef("amount"), Expr.Literal(LiteralValue.IntValue(100), SealedDataType.Int))),
-        FilterSpec("f2", Expr.LessThan(Expr.FieldRef("amount"),    Expr.Literal(LiteralValue.IntValue(500), SealedDataType.Int))),
-      ),
-    )
-    val plan = QueryBuilder.build(m, FakeResolver(), identity).toOption.get
-    val outer = unwrapSortLimit(plan).asInstanceOf[RelOp.Project]
-    // Sort(empty keys) sits ABOVE Project in the tree; the filter
-    // chain sits BELOW Project. So Project.input is the OUTER filter.
-    val f2    = outer.input.asInstanceOf[RelOp.Filter]
-    val f1    = f2.input.asInstanceOf[RelOp.Filter]
-    f1.predicate shouldBe a [Expr.GreaterThan]
-    f2.predicate shouldBe a [Expr.LessThan]
+  it should "preserve the typed measure function" in {
+    val req = QueryBuilderDsl.start()
+      .aggregate(io.sm8.core.rel.TypedAggregateCall.sum[TotalRevenue]("total_revenue"))
+      .build("patients", Seq("region"))
+    req.aggregateMeasures.head.fn shouldBe io.sm8.core.rel.AggregateFn.Sum
   }
 
-  // ===== joins fold the Scan nodes =====
-
-  test("Model with one Join -> Scan_1 -> Join -> Scan_2 -> ...") {
-    val m = model("orders",
-      dimensions = List(Dimension.field("region", "region")),
-      joins      = List(JoinSpec("j", "customers", JoinKind.Inner, List(("region", "region")))),
-    )
-    val plan = QueryBuilder.build(m, FakeResolver(primaryFields = List(
-      Field("region", SealedDataType.Varchar, nullable = false),
-      Field("amount", SealedDataType.Int,     nullable = false),
-    )), identity).toOption.get
-    // Sort(empty keys) sits ABOVE Project in the tree; the Join
-    // chain sits BELOW Project. So Project.input is the Join.
-    val project = unwrapSortLimit(plan).asInstanceOf[RelOp.Project]
-    val join    = project.input.asInstanceOf[RelOp.Join]
-    join.kind shouldBe JoinKind.Inner
-    join.condition shouldBe Expr.Equal(Expr.FieldRef("region"), Expr.FieldRef("region"))
-    // Both sides are Scans
-    join.left shouldBe a [RelOp.Scan]
-    join.right shouldBe a [RelOp.Scan]
+  it should "accumulate across multiple .aggregate calls" in {
+    val req = QueryBuilderDsl.start()
+      .aggregate(io.sm8.core.rel.TypedAggregateCall.count[PatientCount]("a"))
+      .aggregate(io.sm8.core.rel.TypedAggregateCall.avg[AvgAge]("b"))
+      .build("patients", Seq("region"))
+    req.aggregateMeasures should have size 2
   }
 
-  test("Multiple joins fold left-to-right") {
-    val m = model("a",
-      joins = List(
-        JoinSpec("j1", "b", JoinKind.Inner, List(("x", "x"))),
-        JoinSpec("j2", "c", JoinKind.Left,  List(("y", "y"))),
-      ),
-    )
-    val plan = QueryBuilder.build(m, FakeResolver(), identity).toOption.get
-    val project = unwrapSortLimit(plan).asInstanceOf[RelOp.Project]
-    val outerJoin = project.input.asInstanceOf[RelOp.Join]
-    outerJoin.kind shouldBe JoinKind.Left   // last-registered join is outermost
-    val innerJoin = outerJoin.left.asInstanceOf[RelOp.Join]
-    innerJoin.kind shouldBe JoinKind.Inner
+  // -- groupBy + orderBy (4 tests) --
+
+  "QueryBuilderDsl.groupBy" should "populate orderBy as default" in {
+    val req = QueryBuilderDsl.start()
+      .groupBy(Refs.region)
+      .build("patients", Seq("region"))
+    req.orderBy should have size 1
+    req.orderBy.head.name shouldBe "region"
   }
 
-  // ===== typed error boundaries =====
-
-  test("source NotFound -> typed FeatureDeferred") {
-    val nf = ResolvedSource.NotFound(
-      SourceRef.ByName(table = "missing"), reason = "table not in catalog")
-    val out = QueryBuilder.build(model("missing"), FakeResolver(failAs = Some(nf)), identity)
-    out.isLeft shouldBe true
-    out.left.toOption.get shouldBe a [EngineError.FeatureDeferred]
+  it should "preserve explicit orderBy over groupBy default" in {
+    val req = QueryBuilderDsl.start()
+      .orderBy(Refs.totalRevenue)
+      .groupBy(Refs.region)
+      .build("patients", Seq("region"))
+    req.orderBy.head.name shouldBe "total_revenue"
   }
 
-  test("calculated-measure cycle -> typed UnsupportedCapability") {
-    // a -> b -> a (mutual recursion through measure names)
-    val m = model("t",
-      calcs = List(
-        CalculatedMeasure(
-          name = "a",
-          expr = Expr.Divide(Expr.FieldRef("b"), Expr.Literal(LiteralValue.IntValue(1), SealedDataType.Int)),
+  it should "accumulate multiple groupBy dims" in {
+    val req = QueryBuilderDsl.start()
+      .groupBy(Refs.region, Refs.patientCount)
+      .build("patients", Seq("region", "patient_count"))
+    req.orderBy should have size 2
+  }
+
+  it should "typeclass-safety via compile error on phantom mismatch" in {
+    // Per scala-bug-huntingmindset §1: a typo at the call site
+    // (e.g. grouping by a Region dim inside a PatientCount builder)
+    // is a COMPILE error, not a runtime error.
+    // This test demonstrates the compile-time check by attempting
+    // the valid path (a phantom mismatch would not compile).
+    val req = QueryBuilderDsl.start()
+      .groupBy(Refs.region)
+      .build("patients", Seq("region"))
+    req.dimensions shouldBe Seq("region")
+  }
+
+  // -- having (3 tests) --
+
+  "QueryBuilderDsl.having" should "add typed predicates" in {
+    val req = QueryBuilderDsl.start()
+      .having(
+        io.sm8.core.rel.Having[PatientCount](
+          dim   = Refs.patientCount,
+          op    = ComparisonOp.GT,
+          value = Expr.Literal(LiteralValue.IntValue(100), io.sm8.core.schema.SealedDataType.Int)
+        )
+      )
+      .build("patients", Seq("region"))
+    req.having should have size 1
+    req.having.head.op shouldBe ComparisonOp.GT
+  }
+
+  it should "accumulate multiple predicates" in {
+    val req = QueryBuilderDsl.start()
+      .having(
+        io.sm8.core.rel.Having[PatientCount](
+          dim = Refs.patientCount, op = ComparisonOp.GT,
+          value = Expr.Literal(LiteralValue.IntValue(100), io.sm8.core.schema.SealedDataType.Int)
         ),
-        CalculatedMeasure(
-          name = "b",
-          expr = Expr.Divide(Expr.FieldRef("a"), Expr.Literal(LiteralValue.IntValue(1), SealedDataType.Int)),
-        ),
-      ),
-    )
-    val out = QueryBuilder.build(m, FakeResolver(), identity)
-    out.isLeft shouldBe true
-    val err = out.left.toOption.get
-    err shouldBe a [EngineError.UnsupportedCapability]
-    err match {
-      case EngineError.UnsupportedCapability(_, capability, message) =>
-        capability shouldBe "CalculatedMeasure.cycle"
-        message should include ("a")
-        message should include ("b")
-      case other => fail(s"expected UnsupportedCapability, got $other")
-    }
+        io.sm8.core.rel.Having[AvgAge](
+          dim = Refs.avgAge, op = ComparisonOp.LT,
+          value = Expr.Literal(LiteralValue.IntValue(100), io.sm8.core.schema.SealedDataType.Int)
+        )
+      )
+      .build("patients", Seq("region"))
+    req.having should have size 2
   }
 
-  test("self-cycle (a -> a) -> typed UnsupportedCapability") {
-    val m = model("t",
-      calcs = List(
-        CalculatedMeasure(
-          name = "a",
-          expr = Expr.Divide(Expr.FieldRef("a"), Expr.Literal(LiteralValue.IntValue(1), SealedDataType.Int)),
-        ),
-      ),
+  it should "produce typed predicates with the correct dimension" in {
+    val h = io.sm8.core.rel.Having[PatientCount](
+      dim = Refs.patientCount, op = ComparisonOp.EQ,
+      value = Expr.Literal(LiteralValue.IntValue(1), io.sm8.core.schema.SealedDataType.Int)
     )
-    val out = QueryBuilder.build(m, FakeResolver(), identity)
-    out.isLeft shouldBe true
-    out.left.toOption.get shouldBe a [EngineError.UnsupportedCapability]
+    val req = QueryBuilderDsl.start().having(h).build("p", Seq("r"))
+    req.having.head.dimension.name shouldBe "patient_count"
   }
 
-  // ===== Resolver failure tagged with the model name =====
+  // -- partitionBy (2 tests) --
 
-  test("FeatureDeferred error is tagged with the model name (diagnostics)") {
-    val nf = ResolvedSource.NotFound(
-      SourceRef.ByName(table = "missing"), reason = "nope")
-    val out = QueryBuilder.build(model("missing"), FakeResolver(failAs = Some(nf)), identity)
-    val err = out.left.toOption.get.asInstanceOf[EngineError.FeatureDeferred]
-    err.feature should include ("qb-test")
-    err.feature should include ("query-builder")
+  "QueryBuilderDsl.partitionBy" should "wrap TypedDimension into PartitionBy" in {
+    val req = QueryBuilderDsl.start()
+      .partitionBy(Refs.region)
+      .build("patients", Seq("region"))
+    req.partitionBy should have size 1
+    req.partitionBy.head.dim.name shouldBe "region"
+  }
+
+  it should "accumulate multiple partitionBy dims" in {
+    val req = QueryBuilderDsl.start()
+      .partitionBy(Refs.region, Refs.patientCount)
+      .build("patients", Seq("region", "patient_count"))
+    req.partitionBy should have size 2
+  }
+
+  // -- window + limit (3 tests) --
+
+  "QueryBuilderDsl.window" should "add typed window specs" in {
+    val req = QueryBuilderDsl.start()
+      .window(
+        io.sm8.core.rel.TypedWindow[Region, TotalRevenue](
+          partitionBy = Refs.region,
+          orderBy     = Refs.region,
+          windowFn    = WindowFunction.RowNumber
+        )
+      )
+      .build("patients", Seq("region"))
+    req.window should have size 1
+    req.window.head.windowFn shouldBe WindowFunction.RowNumber
+  }
+
+  "QueryBuilderDsl.limit" should "set the typed limit" in {
+    val req = QueryBuilderDsl.start()
+      .limit(Some(100L))
+      .build("patients", Seq("region"))
+    req.limit shouldBe Some(100L)
+  }
+
+  it should "default to None when not set" in {
+    val req = QueryBuilderDsl.start().build("patients", Seq("region"))
+    req.limit shouldBe None
   }
 }

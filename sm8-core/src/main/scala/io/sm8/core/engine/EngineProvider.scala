@@ -177,6 +177,26 @@ final case class QueryRequest(
       * unsupported filter shapes surface as typed
       * EngineError.UnsupportedCapability. */
     filters:    List[io.sm8.core.model.FilterSpec] = Nil,
+    /** PR-18 (ADR-008-R §PR-18): typed aggregate measures. The
+      * phantom `[Nothing]` is the "top" phantom (per the typed
+      * at the consumer's `object Refs { ... }` site. The phantom
+      * `Nothing` is `extends Nothing` (the bottom type) so any
+      * typed measure `TypedAggregateCall[M]` is a subtype of
+      * `TypedAggregateCall[Nothing]` — variance-safe per
+      * scala-bug-huntingmindset §1.
+      *
+      * Per karpathy-guidelines §3 (surgical): default = Nil (no
+      * behavior change for existing 19 callers). */
+    aggregateMeasures: Seq[io.sm8.core.rel.TypedAggregateCall[Nothing]] = Nil,
+    /** PR-18: typed having predicates (per ADR-008-R). */
+    having:        Seq[io.sm8.core.rel.Having[Nothing]]              = Nil,
+    /** PR-18: typed partition hints (best-effort; AQE may override
+      * per scala-spark-batch-bugs §2). */
+    partitionBy:   Seq[io.sm8.core.rel.PartitionBy[Nothing]]        = Nil,
+    /** PR-18: typed window specs (rank-only minimal; ADR-008-R). */
+    window:        Seq[io.sm8.core.rel.TypedWindow[Nothing, Nothing]] = Nil,
+    /** PR-18: typed order-by columns (used by window + sort). */
+    orderBy:       Seq[io.sm8.core.model.TypedDimension[Nothing]]     = Nil,
 ) extends Product with Serializable
 
 object QueryRequest {
