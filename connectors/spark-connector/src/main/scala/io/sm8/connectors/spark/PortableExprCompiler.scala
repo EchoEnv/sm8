@@ -263,5 +263,28 @@ object PortableExprCompiler extends java.io.Serializable {
                      "supported (array literals are JSON-serialized; future PR can " +
                      "land native Spark array support).",
       ))
+    // PR-2/B1 (ADR-008-P §B1 sub-step 2): extend the literalToColumn
+    // match with the remaining 2 unwired LiteralValue cases
+    // (MapValue + StructValue). Both return typed Left(UnsupportedCapability)
+    // matching the existing LiteralValue.ArrayValue shape above -- per
+    // PR-O1c the EngineError ADT is REUSED (no new case added). The
+    // post-fix LiteralValue wiring count is 16 of 16 (NullValue + 11
+    // primitive + BinaryValue + ArrayValue + MapValue + StructValue).
+    case LiteralValue.MapValue(_) =>
+      Left(EngineError.UnsupportedCapability(
+        engine     = "spark-3.5",
+        capability = "LiteralValue.MapValue",
+        message    = "PortableExprCompiler.toColumn: LiteralValue.MapValue is not " +
+                     "supported (map literals are JSON-serialized; future PR can " +
+                     "land native Spark map support).",
+      ))
+    case LiteralValue.StructValue(_) =>
+      Left(EngineError.UnsupportedCapability(
+        engine     = "spark-3.5",
+        capability = "LiteralValue.StructValue",
+        message    = "PortableExprCompiler.toColumn: LiteralValue.StructValue is not " +
+                     "supported (struct literals are JSON-serialized; future PR can " +
+                     "land native Spark struct support).",
+      ))
   }
 }

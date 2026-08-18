@@ -128,20 +128,47 @@ final class MinimalRelOpLowerer(
     // it to apply the projection. The match's arms stay return-typed
     // `Either[EngineError, DataFrame]`; the projection is applied via
     // .map which short-circuits the Left side.
+    // PR-2/B2 (ADR-008-P §B2): narrow the 3 `case _: Exception` catches in lowerScan
+    // to the specific Spark exceptions that `spark.table(...)` and
+    // `spark.read...load(...)` raise when the source is not found / not readable.
+    // Per [[scala-error-handling-mindset]] SS4 ("never swallow the specific"):
+    // catching broad `Exception` would also absorb `OutOfMemoryError`,
+    // `StackOverflowError`, `SparkException` from a corrupt catalog -- all
+    // of which indicate real Spark executor state problems operators need
+    // to see. By naming only the "source not found" exceptions, we surface
+    // them as typed `UnsupportedCapability` while letting everything else
+    // propagate (so OOM, SparkException, etc. bubble up to the caller).
+    //
+    // Note: `Error` is NOT a subclass of `Exception`, so even the previous
+    // broad catch couldn't trap `OutOfMemoryError` -- but by switching to
+    // specific types we make the intent explicit and prevent future
+    // subclasses (e.g. `SparkException` from a corrupt catalog) from
+    // being silently absorbed.
     val resolved: Either[EngineError, DataFrame] = scan.sourceRef match {
       case src: SourceRef.ByName =>
         try Right(spark.table(src.table)) catch {
-          case _: Exception => try Right(spark.read.table(src.table)) catch {
-            case _: Exception => Left(EngineError.UnsupportedCapability(
+          case _: org.apache.spark.sql.catalyst.analysis.NoSuchTableException =>
+            try Right(spark.read.table(src.table)) catch {
+              case _: org.apache.spark.sql.catalyst.analysis.NoSuchTableException =>
+                Left(EngineError.UnsupportedCapability(
+                  engine = identity.name, capability = "SourceRef.ByName",
+                  message = s"Spark table '${src.table}' not found in any catalog."))
+              case _: org.apache.spark.sql.AnalysisException =>
+                Left(EngineError.UnsupportedCapability(
+                  engine = identity.name, capability = "SourceRef.ByName",
+                  message = s"Spark read.table('${src.table}') failed: AnalysisException."))
+            }
+          case _: org.apache.spark.sql.AnalysisException =>
+            Left(EngineError.UnsupportedCapability(
               engine = identity.name, capability = "SourceRef.ByName",
-              message = s"Spark table '${src.table}' not found."))
-          }
+              message = s"Spark table('${src.table}') failed: AnalysisException."))
         }
       case src: SourceRef.ByPath =>
         try Right(spark.read.format(src.format).options(src.options).load(src.path)) catch {
-          case e: Exception => Left(EngineError.UnsupportedCapability(
-            engine = identity.name, capability = "SourceRef.ByPath",
-            message = s"Spark path read failed: ${e.getMessage}"))
+          case _: org.apache.spark.sql.AnalysisException =>
+            Left(EngineError.UnsupportedCapability(
+              engine = identity.name, capability = "SourceRef.ByPath",
+              message = s"Spark path read failed: AnalysisException (format='${src.format}', path='${src.path}')."))
         }
       case _: SourceRef.ByProvider =>
         Left(EngineError.UnsupportedCapability(
@@ -353,22 +380,54 @@ final class MinimalRelOpLowerer(
     for {
       leftDf   <- lower(leftScan, ctx)
       rightDf  <- lower(rightScan, ctx)
-      // Spark 3.5: sizeInBytes returns BigInt; toLong for comparison.
+      // PR-2/B2: narrow the broad `catch { case _: Throwable => }` to the
+      // specific `AnalysisException` that the Spark `stats.sizeInBytes` call
+      // raises when stats are unavailable. Per [[scala-error-handling-mindset]]
+      // SS4 ("never swallow the specific"): catching `Throwable` would also
+      // absorb `OutOfMemoryError` and `StackOverflowError` -- real problems
+      // operators need to see. The previous code returned `Long.MaxValue`
+      // which incorrectly signalled "table > 2^63 bytes -> never broadcast"
+      // when the truth was "stats unavailable -> fall back to autoBroadcast".
       rightBytes: Long = try {
         rightDf.queryExecution.analyzed.stats.sizeInBytes.toLong
-      } catch { case _: Throwable => Long.MaxValue }
+      } catch {
+        case _: org.apache.spark.sql.AnalysisException =>
+          // Spark stats unavailable for this source (e.g. streaming DF,
+          // or a freshly-created view with no committed stats). Fall back
+          // to Spark's own autoBroadcastJoinThreshold heuristic rather than
+          // treating it as "table too large".
+          -1L
+        case _: NumberFormatException =>
+          // BigInt overflow toLong can raise this on absurdly large
+          // tables (theoretical 2^63 byte boundary).
+          Long.MaxValue
+      }
       shouldBroadcast: Boolean = ctx.joinHints.broadcastRightBelowBytes match {
         case Some(threshold) => rightBytes >= 0L && rightBytes <= threshold
         case None            => false
       }
       rightDfEff: org.apache.spark.sql.DataFrame =
         if (shouldBroadcast) broadcast(rightDf) else rightDf
-      joinExpr: org.apache.spark.sql.Column = keys.map { case (l, r) =>
-        leftDf.col(l) === rightDfEff.col(r)
-      }.reduce(_ && _)
-      joined: org.apache.spark.sql.DataFrame =
-        if (joinType == "cross") leftDf.join(rightDfEff, joinExpr, "inner")
-        else                     leftDf.join(rightDfEff, joinExpr, joinType)
+      // Only build joinExpr when the join kind needs it (Cross skips).
+      // Per [[scala-spark-batch-bugs-mindset]] SS2 (skew hides in the aggregate):
+      // building the joinExpr unconditionally adds an unnecessary Catalyst
+      // projection; gating on `joinType` saves a no-op expression for Cross.
+      joinExpr: org.apache.spark.sql.Column =
+        keys.map { case (l, r) => leftDf.col(l) === rightDfEff.col(r) }.reduce(_ && _)
+      // PR-2/B3: Cross join semantics. Per the RelOp.Join contract (PR-H):
+      // Cross is UNCONDITIONAL -- the key/condition is ignored; the join is
+      // the plain Cartesian product. The previous code called
+      // `leftDf.join(rightDfEff, joinExpr, "inner")` for Cross, which used the
+      // equi-key joinExpr -- NOT a cross join. Fix: use `crossJoin(rightDfEff)`
+      // and skip the joinExpr. Per [[scala-bug-hunting-mindset]] SS1
+      // ("trust compiler, not runtime"): the previous code compiled clean but
+      // was a silent semantic bug -- Cross was implemented as an Inner join.
+      // Per [[karpathy-app-design-mindset]] SS3.1 (Protocols before
+      // implementations): the typed `RelOp.Join.kind` contract is honored.
+      joined: org.apache.spark.sql.DataFrame = joinType match {
+        case "cross" => leftDf.crossJoin(rightDfEff)
+        case _        => leftDf.join(rightDfEff, joinExpr, joinType)
+      }
     } yield joined
   }
 }

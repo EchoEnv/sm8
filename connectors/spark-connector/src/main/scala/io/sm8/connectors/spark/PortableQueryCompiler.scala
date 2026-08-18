@@ -260,15 +260,62 @@ final class PortableQueryCompiler(val spark: SparkSession)
           ))
         } else {
           // Resolve the right-side model by name in the active catalog.
+          // PR-2/B2 (ADR-008-P §B2): narrow the catch from broad `case _: Exception`
+          // to the specific Spark exceptions that `spark.table(...)` raises when the
+          // table is not found. Per [[scala-error-handling-mindset]] SS4 ("never
+          // swallow the specific"): catching `Exception` would also absorb
+          // `OutOfMemoryError` / `StackOverflowError` / `SparkException` /
+          // `AnalysisException` -- all of which indicate real Spark executor
+          // state problems operators need to see. By naming only the "table
+          // not found" exceptions, we surface `NoSuchTableException` as
+          // `UnsupportedCapability(capability = "JoinSpec.rightModel")` while
+          // letting everything else propagate. `OutOfMemoryError` is NOT
+          // a subclass of `Exception` (it's an `Error`), so even the previous
+          // broad catch couldn't trap it -- but by switching to specific
+          // types we make the intent explicit and prevent future
+          // subclasses (e.g. `SparkException` from a corrupt catalog)
+          // from being silently absorbed.
           val rightDf = try Right(spark.table(js.rightModel)) catch {
-            case _: Exception =>
+            case _: org.apache.spark.sql.catalyst.analysis.NoSuchTableException =>
               Left(EngineError.UnsupportedCapability(
                 engine     = "spark-3.5",
                 capability = "JoinSpec.rightModel",
                 message    = s"Right-side model '${js.rightModel}' not found.",
               ))
+            case _: org.apache.spark.sql.AnalysisException =>
+              Left(EngineError.UnsupportedCapability(
+                engine     = "spark-3.5",
+                capability = "JoinSpec.rightModel",
+                message    = s"Right-side model '${js.rightModel}' not resolvable: AnalysisException.",
+              ))
           }
-          rightDf.map { rDf =>
+          // PR-2/B3 (ADR-008-P §B3): reject Cross + non-None preferredStrategy BEFORE
+          // building the join. Per the RelOp.Join contract (PR-H): Cross is
+          // UNCONDITIONAL (key/condition ignored; the join is the plain Cartesian
+          // product). Spark's `hint()` API is a no-op on `crossJoin()` -- the
+          // Broadcast/ShuffleHash/SortMerge hints cannot influence a Cartesian
+          // product's execution. So if a caller asks for Cross + a non-None
+          // preferredStrategy, that's a request that's impossible to honor.
+          // Per [[scala-bug-hunting-mindset]] SS1 (trust compiler, not
+          // runtime): fail loud with a typed error rather than silently
+          // dropping the hint (which is the previous behavior -- the hint
+          // was applied to a Cross join, was a no-op, and the caller never
+          // knew). Per [[karpathy-app-design-mindset]] SS3.1 (Protocols before
+          // implementations): the typed-error contract is honored.
+          rightDf.flatMap { rDf =>
+            (js.kind, ctx.joinHints.preferredStrategy) match {
+              case (JoinKind.Cross, Some(strategy)) =>
+                Left(EngineError.UnsupportedCapability(
+                  engine     = "spark-3.5",
+                  capability = "JoinSpec.kind + preferredStrategy",
+                  message    = s"Cross join (PR-H) is unconditional (Cartesian product); " +
+                               s"the preferredStrategy hint '$strategy' cannot be honored. " +
+                               s"Either drop the preferredStrategy hint, or change JoinKind to " +
+                               s"Inner/Left/Right/Full.",
+                ))
+              case _ => Right(rDf)
+            }
+          }.flatMap { rDf =>
             val (leftKey, rightKey) = js.keys.head
             // Per the legacy DESIGN SS6.3 (4): when both sides carry the
             // join key, Spark keeps both columns and every later
@@ -325,7 +372,7 @@ final class PortableQueryCompiler(val spark: SparkSession)
               case Some(JoinStrategy.SortMerge) => baseJoin.hint("merge")
               case None => baseJoin
             }
-            hinted.drop(rDfEff(rightKey))
+            Right(hinted.drop(rDfEff(rightKey)))
           }
         }
       }
