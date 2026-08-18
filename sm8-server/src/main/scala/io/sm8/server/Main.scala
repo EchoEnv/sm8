@@ -176,37 +176,46 @@ object Main {
 
   /** Wire model + registry + transport WITHOUT starting the server.
     * Pure construction — unit-testable without binding a socket. */
-  /**
-    * Realize a discovered provider against a connector URL via
-    * the typed `EngineProvider.realize(url)` contract.
+  /** Realize a discovered provider against a connector URL. Legacy
+    * 2-arg signature preserved for backward compat with MainSpec.
     *
-    * Per RFC SS3 + ADR-006 (Post-#65 Refinement) + the user
-    * "no spark types in the platform" directive: the platform
-    * holds ONLY a string. For each discovered provider, the
-    * `realize(url: String): Option[EngineProvider]` is
-    * invoked; `Some(realized)` replaces the stub with the
-    * configured instance, `None` keeps the stub. This replaced
-    * the deprecated `(String) ctor` reflection pattern (PR-B).
-    *
-    * The platform never imports the connector class directly;
-    * every connector decides its realization contract via the
-    * `EngineProvider.realize` override in core.
+    * Per RFC §3 + ADR-006: the deployment holds only the URL string.
+    * For each discovered provider, `realize(url)` is invoked;
+    * `Some(p)` replaces the stub, `None` keeps the stub as-is.
+    * Available providers are kept as-is (already realized).
     */
   def realize(
       providers:    List[EngineProvider],
       connectorUrl: Option[String]
-  ): List[EngineProvider] = connectorUrl match {
-    case None => providers
-    case Some(url) =>
-      // PR-B per RFC `adapters.md` Rule 4: the TYPED realize(url)
-      // contract replaces the (String)-ctor reflection. The
-      // connector owns its URL grammar; the deployment does NOT
-      // validate. Providers that don't support URL realization
-      // (default: None) are kept as-is.
-      providers.map { p =>
-        if (p.available) p
-        else p.realize(url).getOrElse(p)
-      }
+  ): List[EngineProvider] = providers.map { p =>
+    if (p.available) p
+    else connectorUrl match {
+      case Some(url) => p.realize(url).getOrElse(p)
+      case None      => p
+    }
+  }
+
+  /** PR-15 typed-error realize. Returns `List[Either[EngineError,
+    * EngineProvider]]` per provider.
+    *
+    * Per [[scala-error-handlingmindset]] §1 + ADR-008-Q §C1: every
+    * provider gets a typed result. Per [[karpathy-guidelinesmindset]]
+    * §3 (surgical): NEW method; legacy `realize(...)` is unchanged.
+    */
+  def realize(
+      classLoader: ClassLoader,
+      providers:   List[EngineProvider],
+      engineName:  String,
+      rawUrl:      Option[String]
+  ): List[Either[EngineError, EngineProvider]] = rawUrl match {
+    case None        => providers.map(Right(_))
+    case Some(_) if engineName.isEmpty =>
+      providers.map(p => if (p.available) Right(p) else Left(EngineError.ConnectionFailed(
+        engine = p.identity.name,
+        reason = "URL provided without --engine",
+        message = s"sm8: engine '${p.identity.name}': --connector-url requires --engine <name>"
+      )))
+    case Some(url)   => EngineLoader.discoverAndRealize(classLoader, engineName, Some(url))
   }
 
   def wire(
