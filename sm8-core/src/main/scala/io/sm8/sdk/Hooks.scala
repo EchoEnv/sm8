@@ -27,6 +27,8 @@
  */
 package io.sm8.sdk
 
+import io.sm8.core.engine.EngineError
+
 /**
  * A function bound to `pre:<stage>`. Runs in priority order (lower first;
  * ties broken by registration order — RFC §8).
@@ -165,4 +167,64 @@ object HookStage {
     case PreFormat   => "pre:format"
     case PostFormat  => "post:format"
   }
+}
+/**
+ * Per-PR-3b (ADR-008-P §C1): the per-stage hook runner protocol.
+ *
+ * The Core's 4-stage pipeline (parse -> resolve -> execute -> format, per
+ * RFC §5) fires two hook attachment points per stage (pre/post) = 8 hook
+ * points total (the HookStage ADT). The runner's contract is "wraps one
+ * stage's compile + fire pre-hooks before, fire post-hooks after,
+ * short-circuit if any pre-hook sets stop". The spark-connector
+ * SparkEngineProvider.query consumes this Protocol via an Option[HookRunner]
+ * constructor parameter (default None = no plugin hooks fire, per the
+ * bare-deploy shape).
+ *
+ * Per [[karpathy-app-design-mindset]] §3.1 (Protocols before implementations):
+ * this trait is TYPES-ONLY (no behavior, no method bodies). The concrete
+ * implementation lives in the platform layer
+ * (sm8-platform/.../EngineHookDispatcher extends HookRunner) so the
+ * spark-connector depends on the SDK surface, not on the platform layer
+ * (preserving RFC §3 layer ownership: connectors do not import the
+ * transport library).
+ *
+ * Per [[scala-error-handling-mindset]] §1: this is a public boundary
+ * (cross-module -- SDK type consumed by every engine adapter). It MUST
+ * return Either[EngineError, Context] so a hook failure surfaces as a
+ * typed error rather than a thrown exception that escapes the function.
+ *
+ * Per [[karpathy-guidelines-mindset]]: minimal Protocol -- one method,
+ * two parameters. The runner is stateless; the execute thunk is
+ * supplied by the engine adapter that owns the stage (the spark-connector
+ * owns the execute stage; the platform doesn't know about DataFrames).
+ *
+ * Typical call site (spark-connector SparkEngineProvider.query):
+ * {{{
+ *   val initialCtx = Context(request = EngineHookRequest(model, request, cacheKey))
+ *   dispatcher.run(initialCtx, { ctx =>
+ *     compileSteps(ctx).map { df => ctx.copy(result = Some(EngineHookResult(pqr))) }
+ *   })
+ * }}}
+ */
+trait HookRunner {
+  /** Run the pre-hooks + execute-thunk + post-hooks for one stage.
+   *
+   * Pre-hooks fire in priority order; if any pre-hook sets ctx.stop = true,
+   * the execute-thunk is skipped and the short-circuit path runs the
+   * post-hooks (observability).
+   *
+   * @param initial the starting Context (must carry request =
+   *                 EngineHookRequest so pre-hooks can read request.model /
+   *                 request.mcpRequest / request.cacheKey).
+   * @param execute the stage's compile-thunk. Returns
+   *                 Right(ctx with result populated) on success,
+   *                 Left(EngineError) on failure. The runner fires
+   *                 post-hooks only on Right.
+   * @return        the final Context (post-hooks mutated it) on success;
+   *                the original typed error on failure.
+   */
+  def run(
+      initial: Context,
+      execute: Context => Either[EngineError, Context]
+  ): Either[EngineError, Context]
 }
