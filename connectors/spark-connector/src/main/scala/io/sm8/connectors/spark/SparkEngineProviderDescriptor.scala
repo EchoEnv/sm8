@@ -16,13 +16,18 @@
  *
  * Per [[scala-jvm-safety-mindset]]: zero `null` sentinel anywhere;
  * Serializable contract is upheld trivially (no fields).
+ *
+ * PR-15 (ADR-008-Q §C2): the descriptor now extends `TypedRealizationProvider`
+ * (subtrait of `EngineProvider`) to provide typed-error realization.
+ * The `realizeTyped` override wraps `SparkSession.builder().getOrCreate()`
+ * exceptions into typed `ConnectionFailed` errors instead of silent `None`.
  */
 package io.sm8.connectors.spark
 
-import io.sm8.core.engine.{EngineIdentity, EngineProvider}
+import io.sm8.core.engine.{EngineError, EngineIdentity, EngineProvider, EngineUrl, TypedRealizationProvider}
 
 final class SparkEngineProviderDescriptor
-    extends EngineProvider {
+    extends TypedRealizationProvider {
 
   override lazy val identity: EngineIdentity =
     EngineIdentity(
@@ -33,19 +38,48 @@ final class SparkEngineProviderDescriptor
 
   override val available: Boolean = false
 
-  /** PR-O4g: validate the URL before realizing. Per the connector
-    * grammar (per-connector string contract): the URL must be a
-    * non-blank Spark-compatible string. Blank input = None
-    * (preserves the realize-blank contract).
+  /** PR-O4g (legacy): validate the URL before realizing. Returns
+    * `None` on blank OR on `SparkSession.builder().getOrCreate()`
+    * failure (silent). Use `realizeTyped` for typed-error realization.
     */
   override def realize(url: String): Option[EngineProvider] =
     if (url == null || url.trim.isEmpty) None
-    else Some(new SparkEngineProvider(
+    else try Some(new SparkEngineProvider(
       spark           = org.apache.spark.sql.SparkSession.builder().master(url).getOrCreate(),
       bridge          = SparkTypeBridge,
       sparkEngineName = "spark-3.5",
       hookRunner      = None,
-    ))
+    )) catch {
+      case _: Throwable => None
+    }
+
+  /** PR-15 (ADR-008-Q §C2): typed realization. Wraps
+    * `SparkSession.builder().getOrCreate()` exceptions into typed
+    * `ConnectionFailed` errors instead of silent `None`.
+    */
+  override def realizeTyped(parsedUrl: EngineUrl): Either[EngineError, EngineProvider] =
+    parsedUrl match {
+      case spark: EngineUrl.Spark =>
+        try Right(new SparkEngineProvider(
+          spark           = org.apache.spark.sql.SparkSession.builder().master(spark.master).getOrCreate(),
+          bridge          = SparkTypeBridge,
+          sparkEngineName = "spark-3.5",
+          hookRunner      = None,
+        )) catch {
+          case e: Throwable =>
+            Left(EngineError.ConnectionFailed(
+              engine = "spark",
+              reason = "SparkSession.builder().getOrCreate() failed",
+              message = s"sm8: Spark connector: ${e.getClass.getSimpleName}: ${e.getMessage}"
+            ))
+        }
+      case other =>
+        Left(EngineError.ConnectionFailed(
+          engine = "spark",
+          reason = "unexpected EngineUrl case for spark descriptor",
+          message = s"sm8: Spark descriptor received non-Spark EngineUrl: ${other.getClass.getSimpleName}"
+        ))
+    }
 
   override def query(
       model:   io.sm8.core.model.Model,
