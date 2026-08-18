@@ -1,5 +1,6 @@
 package com.example.hospital
 
+import io.sm8.core.model.{TypedDimension, TypedMeasure}
 import io.sm8.core.engine.{
   EngineContext, EngineError, EngineProvider, QueryRequest, PortableQueryResult,
   ResultValue
@@ -153,6 +154,33 @@ object Main {
     Logger.info(s"  cleansed patients:   ${cleansed.count()} rows (after dedup)")
     cleansed
   }
+
+/**
+ * Phantom-typed witnesses (PR-16, ADR-008-Q §PR-16). Per
+ * `karpathy-app-design-mindset` §3.1 (Protocols before implementations):
+ * the witnesses live at object level (singleton, Serializable) —
+ * safe for Spark closure serialization per `scala-spark-batch-bugs-mindset` §1.
+ *
+ * Per ADR-008-Q §C3 (wire-shape decision): the phantom witness
+ * `.name` extractor is the bridge to the wire DTO
+ * `QueryRequest.dimensions: Seq[String]`. A typo at the call site
+ * (e.g. `Refs.gende` instead of `Refs.gender`) is a COMPILE error
+ * per `scala-bug-hunting-mindset` §1.
+ */
+object Refs {
+  sealed trait PatientId
+  sealed trait Gender
+  sealed trait Insurance
+  sealed trait PatientCount
+  sealed trait AverageAge
+
+  val gender:       TypedDimension[Gender]    = TypedDimension.of[Gender]("gender")
+  val patientId:    TypedDimension[PatientId] = TypedDimension.of[PatientId]("patient_id")
+  val insurance:    TypedDimension[Insurance] = TypedDimension.of[Insurance]("insurance")
+  val patientCount: TypedMeasure[PatientCount] = TypedMeasure.count[PatientCount]("patient_count")
+  val averageAge:   TypedMeasure[AverageAge]   = TypedMeasure.avg[AverageAge]("average_age")
+}
+
 
   private def ingestAndCleansEncounters(spark: SparkSession): DataFrame = {
     val raw = readCsv(spark, "encounters_raw.csv")
@@ -425,8 +453,8 @@ object Main {
         patientsModel,
         QueryRequest(
           model      = "patients",
-          dimensions = Seq("gender"),
-          measures   = Seq("patient_count"),
+          dimensions = Seq(Refs.gender.name),
+          measures   = Seq(Refs.patientCount.name),
         ),
       )
 
