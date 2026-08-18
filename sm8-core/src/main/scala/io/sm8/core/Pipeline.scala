@@ -204,13 +204,19 @@ final class Pipeline(
 
   /**
    * Fire post-hooks for `stage` in priority order. Same semantics
-   * as `runPreHooks`.
+   * as `runPreHooks` EXCEPT: respects `PostHook.runsOnStop` to honor
+   * the RFC `hooks.md` Observer / Mutator classification. Per
+   * PR-9 (ADR-008-P §T1-D2): when a Pre-hook set `c.stop = true`
+   * (cache HIT path), Observer hooks (default `runsOnStop = true`)
+   * still fire (audit, metrics); Mutator hooks (`runsOnStop = false`)
+   * skip (cache write — the cache already has the result; row-cap —
+   * the result is already capped by the cache store).
    */
   private def runPostHooks(stage: Stage, ctx: Context): Context = {
     val hookStage = postStageFor(stage)
     val post = env.hooks.postHooksFor(hookStage)
     post.foldLeft(ctx) { (c, hookWithPriority) =>
-      if (c.stop) c
+      if (c.stop && !hookWithPriority._1.runsOnStop) c
       else hookWithPriority._1.run(c)
     }
   }

@@ -77,10 +77,29 @@ trait PreHook {
  * multiplicity: both PreHook and PostHook are accumulate (all registered
  * instances run, in priority order).
  *
- * Use cases (per RFC hooks.md):
+ * Use cases (per RFC `hooks.md` 5 behavioral types):
  *   - mutator        (post:execute, post:format — rename fields, unit conversion)
  *   - observer       (any pre/post — logging, metrics, audit)
  *   - enricher       (post:parse, post:resolve)
+ *
+ * Per RFC `hooks.md` Rule: "Short-circuit / cache | Checks for a
+ * precomputed answer, sets `context.result` and `context.stop = true` to
+ * skip remaining stages". Observers MUST see the cache-HIT path so audit
+ * trails + metrics reflect real workload. Mutators MUST NOT fire on
+ * cache-HIT (re-mutating the result that the cache already stored is
+ * both wasted work AND a no-op at best, wrong at worst).
+ *
+ * The default `runsOnStop = true` matches Observer semantics (always
+ * fire). Plugins that want Mutator semantics (skip on `c.stop`) override
+ * to `false` — see [[CacheWritePostHook]] in the cache plugin.
+ *
+ * Per [[karpathy-guidelines-mindset]] "match existing style": this is a
+ * default method (not a separate trait). One mechanism, two intents —
+ * per the RFC's "classification of intent, not a separate mechanism"
+ * convention. Per [[scala-bug-hunting-mindset]] §4 "the boundary is
+ * where it breaks": the short-circuit flag at the dispatcher boundary
+ * is the fault line; this flag lets the dispatcher honor both
+ * intents without splitting the trait.
  */
 trait PostHook {
 
@@ -98,6 +117,19 @@ trait PostHook {
 
   /** Run the hook. Receives Context, returns Context (possibly mutated). */
   def run(context: Context): Context
+
+  /**
+   * Whether this hook runs after a preceding hook (Pre-hook) set
+   * `context.stop = true`. Default `true` = Observer semantics (always
+   * fire — audit, metrics). Override to `false` for Mutator semantics
+   * (skip on stop — cache write, row cap, schema mutation).
+   *
+   * The dispatcher short-circuits post-hooks with `runsOnStop = false`
+   * when `c.stop` is true, preserving the cache-HIT invariant: the
+   * `Result` already set by a Pre-hook (e.g. the cache read hook) is
+   * the final result, no further mutation allowed.
+   */
+  def runsOnStop: Boolean = true
 }
 
 /**
