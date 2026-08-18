@@ -1,7 +1,7 @@
 package com.example.hospital
 
 import io.sm8.core.engine.{
-  EngineContext, EngineError, MCPEngineProvider, MCPQueryRequest, PortableQueryResult,
+  EngineContext, EngineError, EngineProvider, QueryRequest, PortableQueryResult,
   ResultValue
 }
 import io.sm8.core.expr.{Expr, LiteralValue}
@@ -289,9 +289,9 @@ object Main {
     */
   private def runQuery(
       label: String,
-      provider: MCPEngineProvider,
+      provider: EngineProvider,
       model: Model,
-      request: MCPQueryRequest,
+      request: QueryRequest,
   ): Unit = {
     Logger.info(s"--- $label ---")
     provider.query(model, request, EngineContext.defaultContext) match {
@@ -363,7 +363,7 @@ object Main {
       Logger.info("STEP 5: Queries on the cleansed data")
       Logger.info("=" * 70)
       val descriptor = new io.sm8.connectors.spark.SparkEngineProviderDescriptor
-      val realizedProvider: MCPEngineProvider = descriptor.realize("local[*]") match {
+      val realizedProvider: EngineProvider = descriptor.realize("local[*]") match {
         case Some(p) => p
         case None => throw new IllegalStateException(
           "sm8: SparkEngineProviderDescriptor.realize(local[*]) returned None"
@@ -377,7 +377,7 @@ object Main {
       // does NOT yet group in-memory tables by dimension+measure
       // (this is a known post-v0.1.0 followup). We use direct Spark
       // here for the grouped query — the same hybrid pattern the
-      // upstream uses for Q3. The `MCPQueryRequest` is built and
+      // upstream uses for Q3. The `QueryRequest` is built and
       // passed to `provider.query` for demonstration of the API.
       Logger.info("--- Q1a: Patient demographics by gender (direct Spark) ---")
       val byGender = cleansedPatients
@@ -423,7 +423,7 @@ object Main {
         "Q1a (sm8 API): provider.query(patients, dim=gender, meas=patient_count) — un-grouped rows (see ADR-008-L GAPs for the grouping followup)",
         provider,
         patientsModel,
-        MCPQueryRequest(
+        QueryRequest(
           model      = "patients",
           dimensions = Seq("gender"),
           measures   = Seq("patient_count"),

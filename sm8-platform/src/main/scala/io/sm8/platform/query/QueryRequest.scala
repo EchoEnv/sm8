@@ -32,7 +32,7 @@ package io.sm8.platform.query
 /**
  * Engine-portable wire DTO for the platform's query entry point.
  *
- * Consumers (sm8-core's `MCPQueryRequest` builder, the Restate
+ * Consumers (sm8-core's `QueryRequest` builder, the Restate
  * handler layer) adapt to this shape. The `engine` field is
  * optional (empty string = use registry default).
  *

@@ -49,7 +49,7 @@
  *
  * Indirect Spark relation: the produced Model flows through
  * `EngineService.runQueryWithHooks(model, ...)` →
- * `MCPEngineRegistry.select(...)` → resolves to
+ * `EngineRegistry.select(...)` → resolves to
  * `SparkEngineProvider.query(...)` (per PRs #38-#42). The
  * spark-connector layer handles all Spark concerns. This adapter
  * holds NO Spark references.

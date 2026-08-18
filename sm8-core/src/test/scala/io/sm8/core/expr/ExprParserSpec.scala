@@ -15,7 +15,7 @@
  *
  * Per [[scala-spark-batch-bugs-mindset]] mantras: N/A in core.
  * The parser has zero Spark types. The Expr produced here can
- * flow to MCPEngineRegistry → SparkEngineProvider.query() via the
+ * flow to EngineRegistry → SparkEngineProvider.query() via the
  * connector layer (PRs #38-#42 handle Spark concerns).
  *
  * Per [[scala-jvm-safety-mindset]]: the parser has no mutable

@@ -10,7 +10,7 @@
 
     Per ADR-006 Post-#65 Refinement (2026-08-15):
     - Owns CLI parsing (entry-point args)
-    - Owns ServiceLoader-based MCPEngineProvider discovery
+    - Owns ServiceLoader-based EngineProvider discovery
     - Owns the typed (String) ctor realization (the connector
       owns the actual `SparkSession.builder(url).getOrCreate()`)
     - Owns JVM lifecycle hooks (shutdown, port release)

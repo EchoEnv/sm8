@@ -30,7 +30,7 @@
  */
 package io.sm8.connectors.spark
 
-import io.sm8.core.engine.{EngineContext, MCPQueryRequest}
+import io.sm8.core.engine.{EngineContext, QueryRequest}
 import io.sm8.core.model.{Model, ModelPolicyDefaults, ModelStatus, SourceRef}
 import org.apache.spark.sql.{Row, SparkSession}
 import org.apache.spark.sql.types.{IntegerType, StringType, StructField, StructType}
@@ -87,7 +87,7 @@ class SparkEngineProviderReplaySafetySpec extends AnyFunSuite with Matchers {
       rows.createOrReplaceTempView("replay_people")
 
       val provider = new SparkEngineProvider(spark, SparkTypeBridge, "spark-3.5")
-      val request = MCPQueryRequest(model = "replay-safety", limit = Some(100L))
+      val request = QueryRequest(model = "replay-safety", limit = Some(100L))
       val ctx = EngineContext.defaultContext
 
       val a = provider.query(makeModel("replay_people"), request, ctx)
@@ -117,7 +117,7 @@ class SparkEngineProviderReplaySafetySpec extends AnyFunSuite with Matchers {
       rows.createOrReplaceTempView("replay_ints")
 
       val provider = new SparkEngineProvider(spark, SparkTypeBridge, "spark-3.5")
-      val request = MCPQueryRequest(model = "replay-safety", limit = Some(100L))
+      val request = QueryRequest(model = "replay-safety", limit = Some(100L))
       val ctx = EngineContext.defaultContext
 
       val first = provider.query(makeModel("replay_ints"), request, ctx)
@@ -152,7 +152,7 @@ class SparkEngineProviderReplaySafetySpec extends AnyFunSuite with Matchers {
       // (JVM static-field serialization for the singleton case).
       // Query against the restored provider must yield the same
       // result as the original — same input → same output.
-      val request = MCPQueryRequest(model = "replay-safety", limit = Some(1L))
+      val request = QueryRequest(model = "replay-safety", limit = Some(1L))
       val ctx = EngineContext.defaultContext
       // The restored provider's sparkSession ref may not be alive
       // (per PR-E reasoning: Spark serializes the session ID, not

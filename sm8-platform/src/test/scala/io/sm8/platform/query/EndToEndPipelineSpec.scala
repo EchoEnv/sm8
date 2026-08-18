@@ -47,7 +47,7 @@
  * ==Per [[scala-spark-batch-bugs-mindset]] (per user directive):==
  *
  * - mantras #1, #5: no Spark types captured, no executor-side
- *   closure. The test does NOT call `MCPEngineProvider.query` (which
+ *   closure. The test does NOT call `EngineProvider.query` (which
  *   is Spark-coupled). It exercises the chain UP TO the `Model`
  *   boundary only.
  * - mantra #2 (data skew): N/A — no actual query execution.
@@ -61,7 +61,7 @@
  *
  * Indirect Spark relation: the produced `Model` is INDIRECTLY
  * upstream of Spark execution (it would flow to
- * `MCPEngineProvider.query` in production), but the test STOPS at
+ * `EngineProvider.query` in production), but the test STOPS at
  * the typed-IR boundary. Per the test, no Spark types are
  * involved; the boundary holds.
  *
@@ -291,7 +291,7 @@ class EndToEndPipelineSpec extends AnyFunSuite with Matchers {
   //    ObjectOutputStream → ObjectInputStream. Per
   //    [[scala-spark-batch-bugs-mindset]] mantra #5 (driver-side
   //    boundary): the AST is the wire shape that crosses into
-  //    `MCPEngineProvider.query`; serializability is the contract.
+  //    `EngineProvider.query`; serializability is the contract.
 
   test("End-to-end: produced Model survives ObjectOutputStream round-trip (Serializable contract)") {
     val built = PlatformModelLoader.fromString(sampleManifest).toOption.get

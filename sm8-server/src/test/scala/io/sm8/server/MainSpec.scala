@@ -103,7 +103,7 @@ class MainSpec extends AnyFunSuite with Matchers {
 
   test("wire: empty provider list fails loud with a typed message") {
     Main.wire(sampleModel(), providers = Nil, engineName = None) match {
-      case Left(msg) => msg should include ("no MCPEngineProvider")
+      case Left(msg) => msg should include ("no EngineProvider")
       case Right(_)  => fail("expected boot failure for empty providers")
     }
   }
@@ -139,7 +139,7 @@ class MainSpec extends AnyFunSuite with Matchers {
         }
         val back = {
           val ois = new ObjectInputStream(new ByteArrayInputStream(bytes))
-          ois.readObject().asInstanceOf[io.sm8.core.engine.MCPEngineRegistry]
+          ois.readObject().asInstanceOf[io.sm8.core.engine.EngineRegistry]
         }
         back.defaultEngine shouldBe registry.defaultEngine
         back.availableProviders shouldBe registry.availableProviders
@@ -184,14 +184,14 @@ class MainSpec extends AnyFunSuite with Matchers {
     }
   }
 
-  test("PR-O4a: MCPEngineProvider.close() default impl is a no-op") {
-    val stub: io.sm8.core.engine.MCPEngineProvider = new io.sm8.core.engine.MCPEngineProvider {
+  test("PR-O4a: EngineProvider.close() default impl is a no-op") {
+    val stub: io.sm8.core.engine.EngineProvider = new io.sm8.core.engine.EngineProvider {
       override def identity = io.sm8.core.engine.EngineIdentity("stub", "0", "0")
       override def available = true
-      override def query(m: Model, r: io.sm8.core.engine.MCPQueryRequest, c: io.sm8.core.engine.EngineContext) =
+      override def query(m: Model, r: io.sm8.core.engine.QueryRequest, c: io.sm8.core.engine.EngineContext) =
         Right(io.sm8.core.engine.PortableQueryResult(
           io.sm8.core.engine.ResultSchema(Nil), Vector.empty, Map.empty))
-      override def explain(m: Model, r: io.sm8.core.engine.MCPQueryRequest, c: io.sm8.core.engine.EngineContext) =
+      override def explain(m: Model, r: io.sm8.core.engine.QueryRequest, c: io.sm8.core.engine.EngineContext) =
         Right("stub-explain")
     }
     noException should be thrownBy stub.close()

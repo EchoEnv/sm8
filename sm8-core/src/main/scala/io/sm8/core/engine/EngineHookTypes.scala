@@ -5,7 +5,7 @@ import io.sm8.sdk.{ Request, Result }
 
 final case class EngineHookRequest(
     model:      Model,
-    mcpRequest: MCPQueryRequest,
+    mcpRequest: QueryRequest,
     cacheKey:   String
 ) extends Request
 

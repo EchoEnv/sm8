@@ -23,7 +23,7 @@
  * no state captured — pure function. The return type
  * `io.sm8.core.schema.SealedDataType` extends `Product with
  * Serializable` (PR-C0). The function itself is `extends
- * java.io.Serializable` so the surrounding `MCPEngineProvider`
+ * java.io.Serializable` so the surrounding `EngineProvider`
  * trait (also Serializable per the engine-portable contract) round-
  * trips through `ObjectOutputStream`.
  *

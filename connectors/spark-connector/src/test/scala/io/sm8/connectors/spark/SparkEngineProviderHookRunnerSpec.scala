@@ -39,7 +39,7 @@ import java.util.concurrent.atomic.AtomicInteger
 
 import io.sm8.core.engine.{
   EngineContext, EngineError, EngineHookRequest, EngineHookResult,
-  MCPQueryRequest, PortableQueryResult
+  QueryRequest, PortableQueryResult
 }
 import io.sm8.core.model.{
   Dimension, Measure, Model, ModelPolicyDefaults, ModelStatus, SourceRef
@@ -209,7 +209,7 @@ class SparkEngineProviderHookRunnerSpec extends AnyFunSuite with Matchers {
         hookRunner      = Some(runner),
       )
       val model = buildModel()
-      val request = MCPQueryRequest.empty
+      val request = QueryRequest.empty
 
       // First query: cache MISS (cache is empty). PreExecute fires, MISS,
       // no short-circuit; engine compiles + runs; PostExecute fires.
@@ -281,7 +281,7 @@ class SparkEngineProviderHookRunnerSpec extends AnyFunSuite with Matchers {
       val provider = new SparkEngineProvider(spark, SparkTypeBridge, "sm8-pr-9",
         hookRunner = Some(runner))
       val model    = buildModel()
-      val request  = MCPQueryRequest.empty
+      val request  = QueryRequest.empty
       val out      = provider.query(model, request, EngineContext.defaultContext)
       out.isRight shouldBe true
       out.toOption.get.rows.size shouldBe 2

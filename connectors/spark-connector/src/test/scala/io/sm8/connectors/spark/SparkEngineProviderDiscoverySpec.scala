@@ -3,7 +3,7 @@
  *
  * Verifies that Main.discoverProviders (and any Java ServiceLoader-
  * based wiring) finds the SparkEngineProvider through the standard
- * `META-INF/services/io.sm8.core.engine.MCPEngineProvider` declaration.
+ * `META-INF/services/io.sm8.core.engine.EngineProvider` declaration.
  * This is the missing link that makes `Main --model m.yaml` actually
  * runnable against Spark without requiring the deployment to hardcode
  * the provider class.
@@ -28,7 +28,7 @@
  */
 package io.sm8.connectors.spark
 
-import io.sm8.core.engine.MCPEngineProvider
+import io.sm8.core.engine.EngineProvider
 
 import java.util.ServiceLoader
 
@@ -41,10 +41,10 @@ class SparkEngineProviderDiscoverySpec extends AnyFunSuite with Matchers {
 
   // -- Portal: ServiceLoader discovery --
 
-  test("Portal: META-INF/services/io.sm8.core.engine.MCPEngineProvider declares SparkEngineProvider") {
+  test("Portal: META-INF/services/io.sm8.core.engine.EngineProvider declares SparkEngineProvider") {
     val lines = scala.collection.mutable.Set[String]()
     val classLoader = classOf[SparkEngineProvider].getClassLoader
-    val urls = classLoader.getResources("META-INF/services/io.sm8.core.engine.MCPEngineProvider")
+    val urls = classLoader.getResources("META-INF/services/io.sm8.core.engine.EngineProvider")
     urls.asScala.foreach { u =>
       scala.io.Source.fromURL(u).getLines().foreach(lines += _)
     }
@@ -53,7 +53,7 @@ class SparkEngineProviderDiscoverySpec extends AnyFunSuite with Matchers {
 
   test("Portal: ServiceLoader discovers SparkEngineProvider from the classpath") {
     val providers = ServiceLoader
-      .load(classOf[MCPEngineProvider], classOf[SparkEngineProvider].getClassLoader)
+      .load(classOf[EngineProvider], classOf[SparkEngineProvider].getClassLoader)
       .iterator()
       .asScala
       .toList

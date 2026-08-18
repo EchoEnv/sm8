@@ -11,7 +11,7 @@
  * existing style): `trait` (NOT `sealed` — third-party cache impls
  * like Caffeine / Redis / DB-backed live outside `sm8-platform`)
  * + companion with `NoOp` default. NOT Scala 3 `enum`. Matches the
- * pattern set by `MCPEngineProvider` / `MCPEngineRegistry` (PR-C0c,
+ * pattern set by `EngineProvider` / `EngineRegistry` (PR-C0c,
  * PR-C6) which use the same `trait extends Serializable` + open
  * extension-point rationale.
  *
@@ -34,7 +34,7 @@
  * Per [[scala-jvm-safety-mindset]]: `extends Serializable` so
  * `Restate.run` (PR-C5b-ext-γ) can safely capture the cache in its
  * closure. Same `Product with Serializable` contract as
- * `MCPEngineProvider` (PR-C6) and `MCPEngineRegistry` (PR-C6).
+ * `EngineProvider` (PR-C6) and `EngineRegistry` (PR-C6).
  */
 package io.sm8.core.cache
 

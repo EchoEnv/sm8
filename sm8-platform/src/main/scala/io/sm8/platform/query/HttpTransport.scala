@@ -14,7 +14,7 @@
  * ==Per `semantic-layer-engine-architecture.md` §3 Core Boundary==
  *
  * - HTTP transport is in `sm8-platform` (NOT core).
- * - Composes typed `MCPEngineRegistry` + `Model`. Both are
+ * - Composes typed `EngineRegistry` + `Model`. Both are
  *   case-class-derived and `Serializable`.
  * - Does NOT contain Spark or any data-source knowledge. The
  *   Spark path lives in `connectors/spark-connector/`.
@@ -30,7 +30,7 @@
  * - mantra #1 (closure-safety): all captured types are typed
  *   case-class-derived and `Serializable`. Verified upstream.
  * - mantra #5 (driver/executor): the HTTP server runs in the driver
- *   process. The captured `MCPEngineRegistry` selects an engine
+ *   process. The captured `EngineRegistry` selects an engine
  *   (e.g. `SparkEngineProvider`) which compiles + collects in the
  *   driver. **No executor-side resources leak through the HTTP
  *   server.**
@@ -62,7 +62,7 @@ import dev.restate.sdk.endpoint.Endpoint
 import dev.restate.sdk.http.vertx.RestateHttpServer
 
 import io.sm8.core.cache.ResultCache
-import io.sm8.core.engine.MCPEngineRegistry
+import io.sm8.core.engine.EngineRegistry
 import io.sm8.core.model.Model
 
 import io.vertx.core.http.HttpServer
@@ -82,7 +82,7 @@ import io.vertx.core.http.HttpServer
  */
 final class HttpTransport(
     val model:    Model,
-    val registry: MCPEngineRegistry,
+    val registry: EngineRegistry,
     val cache:    ResultCache
 ) {
 
@@ -152,6 +152,6 @@ object HttpTransport {
   /** Factory for the canonical wiring. Per [[karphyaguidsmindset]]
     * "smallest correct core": 3-arg ctor is the minimal contract —
     * the caller (deployment module) wires the cache. */
-  def apply(model: Model, registry: MCPEngineRegistry, cache: ResultCache): HttpTransport =
+  def apply(model: Model, registry: EngineRegistry, cache: ResultCache): HttpTransport =
     new HttpTransport(model, registry, cache)
 }

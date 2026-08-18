@@ -423,7 +423,7 @@ class CliIntegrationSpec
   //
   // Exposes the MCP server's engine-routing field (added server-side in
   // PR #431). The CLI omits the field when not passed (backward compat);
-  // when present, server routes through MCPEngineRegistry if configured.
+  // when present, server routes through EngineRegistry if configured.
   describe("`--engine` flag on query/explain") {
 
     it("query: --engine spark sends \"engine\":\"spark\" in the request body") {

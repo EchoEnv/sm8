@@ -25,7 +25,7 @@ package io.sm8.connectors.spark
 
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream, ObjectInputStream, ObjectOutputStream}
 
-import io.sm8.core.engine.{EngineContext, MCPQueryRequest}
+import io.sm8.core.engine.{EngineContext, QueryRequest}
 import io.sm8.core.model.{Model, ModelPolicyDefaults, ModelStatus, SourceRef}
 
 import org.apache.spark.sql.SparkSession
@@ -148,7 +148,7 @@ class SparkConnectorBigDataScaleSpec extends AnyFunSuite with Matchers {
       val startNs = System.nanoTime()
       val out = provider.query(
         makeModel(SourceRef.ByName(table = "hot_decode")),
-        MCPQueryRequest.empty,
+        QueryRequest.empty,
         EngineContext.defaultContext,
       )
       val elapsedMs = (System.nanoTime() - startNs) / 1000000

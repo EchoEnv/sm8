@@ -10,7 +10,7 @@
  *
  * Per [[scala-spark-batch-bugs-mindset]] mantra #1 (closure-safety):
  * the companion object is `extends java.io.Serializable` so the
- * `MCPEngineProvider` that captures it round-trips through
+ * `EngineProvider` that captures it round-trips through
  * `ObjectOutputStream`. The round-trip test at the bottom proves
  * this at runtime.
  *
@@ -146,7 +146,7 @@ class SparkTypeBridgeSpec extends AnyFunSuite with Matchers {
     }
 
     // The companion itself (the bridge object) round-trips too —
-    // it's the thing the `MCPEngineProvider` captures.
+    // it's the thing the `EngineProvider` captures.
     val bridgeRestored = roundTripViaJavaSerialization(SparkTypeBridge)
     bridgeRestored shouldBe SparkTypeBridge
   }

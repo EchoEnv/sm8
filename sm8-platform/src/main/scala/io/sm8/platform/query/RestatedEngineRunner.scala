@@ -60,7 +60,7 @@
  * ==Serializable hygiene (PR-C6 + PR-C5b-ext-β verified)==
  *
  * The 9 thread-through types in `EngineService.runQuery`
- * (`Model`, `MCPQueryRequest`, `MCPEngineRegistry`, `MCPEngineProvider`,
+ * (`Model`, `QueryRequest`, `EngineRegistry`, `EngineProvider`,
  * `EngineContext`, `QueryResult`, `QueryRequest`, `ResultCache`,
  * `RestateCachedRow`) are all proven `Serializable` by
  * `EngineServiceSpec.scala:547` ("runQuery: serializable-safe

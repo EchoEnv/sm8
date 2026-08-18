@@ -50,7 +50,7 @@ final case class Model private (
 // requires were unreachable duplication. The placeholder
 // `def query(...): Unit = ()` no-op (a behavior stub on a pure
 // data type) is likewise removed: query execution lives in the
-// engine adapters (MCPEngineProvider), never on the data.
+// engine adapters (EngineProvider), never on the data.
 
 /** Model lifecycle status. Sealed per [[scala-data-driven-refactor-mindset]]. */
 sealed trait ModelStatus

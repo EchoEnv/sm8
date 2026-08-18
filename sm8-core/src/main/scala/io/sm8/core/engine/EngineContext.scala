@@ -2,8 +2,8 @@ package io.sm8.core.engine
 
 import scala.concurrent.duration.Duration
 
-/** MCPEngine-portable typed policies for query execution —
-  * Phase 2 contract. Mirrors the design doc §4 "MCPEngine contract".
+/** Engine-portable typed policies for query execution —
+  * Phase 2 contract. Mirrors the design doc §4 "Engine contract".
   *
   * The `EngineContext` carries the typed policies the caller asks the
   * engine to apply for a single query: materialize (persist
@@ -41,9 +41,9 @@ import scala.concurrent.duration.Duration
   *
   * Phase 2 follow-up PRs will add:
   *   - `PortableModel` (the full portable model type) to replace the
-  *     `Any` placeholder in `MCPEngine.compile(model: Any, ...)`
+  *     `Any` placeholder in `Engine.compile(model: Any, ...)`
   *   - `PortableExpr` / `RelOp` (the portable IR) to replace the
-  *     `Any` placeholder in `MCPEngine.execute(plan: Any, ...)`
+  *     `Any` placeholder in `Engine.execute(plan: Any, ...)`
   */
 final case class EngineContext(
     materializePolicy: MaterializePolicy,
@@ -73,7 +73,7 @@ object EngineContext {
 
 // -- MaterializePolicy: whether to persist intermediate results ---
 
-/** MCPEngine-portable policy for materializing intermediate query results.
+/** Engine-portable policy for materializing intermediate query results.
   *
   * Different engines support different persistence modes (Spark
   * `MEMORY_ONLY` / `MEMORY_AND_DISK` / etc.; Trino in-memory caching;
@@ -90,19 +90,19 @@ object MaterializePolicy {
     * in-memory cache form. */
   case object MemoryOnly extends MaterializePolicy
 
-  /** Materialize in memory, spill to disk on overflow. MCPEngine adapter
+  /** Materialize in memory, spill to disk on overflow. Engine adapter
     * may reject if its engine doesn't support disk-spill (e.g. Trino
     * historically had limited disk-spill). */
   case object MemoryAndDisk extends MaterializePolicy
 
-  /** MCPEngine-defined default. Adapter picks the most appropriate form
+  /** Engine-defined default. Adapter picks the most appropriate form
     * for its engine. */
   case object EngineDefault extends MaterializePolicy
 }
 
 // -- CachePolicy: result-cache mode ---
 
-/** MCPEngine-portable result-cache policy. */
+/** Engine-portable result-cache policy. */
 sealed trait CachePolicy extends Product with Serializable
 
 object CachePolicy {
@@ -124,7 +124,7 @@ object CachePolicy {
 
 // -- AuditPolicy: where audit events go ---
 
-/** MCPEngine-portable audit-event destination policy. */
+/** Engine-portable audit-event destination policy. */
 sealed trait AuditPolicy extends Product with Serializable
 
 object AuditPolicy {
@@ -139,7 +139,7 @@ object AuditPolicy {
 
 // -- JoinHints: per-query optimization hints ---
 
-/** MCPEngine-portable join-hint ADT. Pure data — case class with
+/** Engine-portable join-hint ADT. Pure data — case class with
   * optional fields. The engine adapter maps each Option to its
   * engine's native form (e.g. `broadcastRightBelowBytes` → Spark's
   * `autoBroadcastJoinThreshold`).
@@ -152,7 +152,7 @@ final case class JoinHints(
     preferredStrategy:        Option[JoinStrategy] = None,
 ) extends Product with Serializable
 
-/** MCPEngine-portable join strategy preference. The engine picks the
+/** Engine-portable join strategy preference. The engine picks the
   * best match (or rejects if the strategy is unsupported). */
 sealed trait JoinStrategy extends Product with Serializable
 
@@ -171,7 +171,7 @@ object JoinStrategy {
 
 // -- CancellationCapability: how the engine should be cancelled ---
 
-/** MCPEngine-portable cancellation-mechanism ADT. The caller picks
+/** Engine-portable cancellation-mechanism ADT. The caller picks
   * one; the engine adapter uses it if it supports the requested
   * mechanism, or returns `EngineError.CancellationFailed` if not. */
 sealed trait CancellationCapability extends Product with Serializable
@@ -191,7 +191,7 @@ object CancellationCapability {
     * this for `io.trino.client.StatementClient.cancel()`. */
   final case class RemoteStatement(requestId: String) extends CancellationCapability
 
-  /** MCPEngine doesn't support cancellation for this request. The
+  /** Engine doesn't support cancellation for this request. The
     * caller is expected to bound the query with a finite timeout. */
   case object Unsupported extends CancellationCapability
 }

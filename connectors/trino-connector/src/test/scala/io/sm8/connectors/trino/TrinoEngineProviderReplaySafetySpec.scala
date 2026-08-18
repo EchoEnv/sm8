@@ -14,7 +14,7 @@
  */
 package io.sm8.connectors.trino
 
-import io.sm8.core.engine.{EngineContext, MCPQueryRequest}
+import io.sm8.core.engine.{EngineContext, QueryRequest}
 
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
@@ -23,7 +23,7 @@ class TrinoEngineProviderReplaySafetySpec extends AnyFunSuite with Matchers {
 
   test("FeatureDeferred is deterministic by construction (Restate-replay-safe)") {
     val provider = new TrinoEngineProvider()
-    val request = MCPQueryRequest(model = "test", limit = Some(100L))
+    val request = QueryRequest(model = "test", limit = Some(100L))
     val ctx = EngineContext.defaultContext
 
     val a = provider.query(null, request, ctx)
@@ -38,7 +38,7 @@ class TrinoEngineProviderReplaySafetySpec extends AnyFunSuite with Matchers {
 
   test("determinism holds across many invocations (100 calls)") {
     val provider = new TrinoEngineProvider()
-    val request = MCPQueryRequest(model = "test")
+    val request = QueryRequest(model = "test")
     val ctx = EngineContext.defaultContext
 
     val first = provider.query(null, request, ctx)
@@ -65,7 +65,7 @@ class TrinoEngineProviderReplaySafetySpec extends AnyFunSuite with Matchers {
     ).toOption.get
 
     val provider = new TrinoEngineProvider()
-    val request = MCPQueryRequest(model = "test")
+    val request = QueryRequest(model = "test")
 
     val a = provider.explain(model, request, null)
     val b = provider.explain(model, request, null)

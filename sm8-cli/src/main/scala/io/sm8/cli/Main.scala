@@ -399,7 +399,7 @@ object Main {
        * landed in PR #431). The server interprets this:
        *   - absent   -> server decides routing (default, backward compat)
        *   - empty    -> legacy `Models` + `SemanticTable` path
-       *   - non-empty -> route through the `MCPEngineRegistry`
+       *   - non-empty -> route through the `EngineRegistry`
        *
        * The CLI omits the field when empty (per karpathy §2: minimum code).
        * If a user passes `--engine ""` literally, they get the same
@@ -473,7 +473,7 @@ object Main {
         case "--limit" :: Nil => Left(CliParseError.MissingFlagValue(flag = "--limit"))
         // PR #432 (v0.3.1 Step 2): expose the MCP server's engine-routing
         // field on the CLI. Omitted by default (server decides routing per
-        // PR #431); when present, server routes through MCPEngineRegistry
+        // PR #431); when present, server routes through EngineRegistry
         // if configured.
         case ("--engine") :: v :: rest => loop(rest, model, dims, measures, order, limit, engine = v)
         case ("--engine") :: Nil => Left(CliParseError.MissingFlagValue(flag = "--engine"))

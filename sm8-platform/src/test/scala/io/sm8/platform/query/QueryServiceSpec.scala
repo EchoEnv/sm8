@@ -13,9 +13,9 @@ import io.sm8.core.engine.{
   EngineContext,
   EngineError,
   EngineIdentity,
-  MCPEngineProvider,
-  MCPEngineRegistry,
-  MCPQueryRequest,
+  EngineProvider,
+  EngineRegistry,
+  QueryRequest => CoreQueryRequest,
   PortableQueryResult,
   ResultRow,
   ResultSchema,
@@ -81,29 +81,29 @@ class QueryServiceSpec extends AnyFunSuite with Matchers {
     filters = Nil
   )
 
-  /** A minimal MCPEngineProvider stub. */
+  /** A minimal EngineProvider stub. */
   private final class StubProvider(
       override val identity: EngineIdentity,
       override val available: Boolean,
       var queryResult: Either[EngineError, PortableQueryResult] =
         Right(PortableQueryResult(schema = ResultSchema(Nil), rows = Vector.empty))
-  ) extends MCPEngineProvider with java.io.Serializable {
+  ) extends EngineProvider with java.io.Serializable {
     override def query(
         model: Model,
-        request: MCPQueryRequest,
+        request: CoreQueryRequest,
         ctx: EngineContext
     ): Either[EngineError, PortableQueryResult] = queryResult
     override def explain(
         model: Model,
-        request: MCPQueryRequest,
+        request: CoreQueryRequest,
         ctx: EngineContext
     ): Either[EngineError, String] = ???
   }
 
   private def makeRegistry(
-      providers: Map[String, MCPEngineProvider],
+      providers: Map[String, EngineProvider],
       default: String = "spark"
-  ): MCPEngineRegistry = MCPEngineRegistry(providers, default)
+  ): EngineRegistry = EngineRegistry(providers, default)
 
   private val twoRowsPortable: PortableQueryResult = PortableQueryResult(
     rows = Vector(
@@ -223,7 +223,7 @@ class QueryServiceSpec extends AnyFunSuite with Matchers {
    */
   private def invoke(
       model: Model,
-      registry: MCPEngineRegistry,
+      registry: EngineRegistry,
       cache: ResultCache,
       request: QueryRequest
   ): QueryResult = {

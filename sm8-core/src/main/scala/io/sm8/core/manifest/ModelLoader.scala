@@ -112,7 +112,7 @@ import scala.util.control.NonFatal
  * }}}
  *
  * The `predicate` field for filters is a raw SQL string in this PR
- * (matches `MCPQueryRequest.where: Option[String]`). When the typed
+ * (matches `QueryRequest.where: Option[String]`). When the typed
  * `FilterSpec.predicate: Expr` parser ships, this loader upgrades.
  */
 object ModelLoader {
