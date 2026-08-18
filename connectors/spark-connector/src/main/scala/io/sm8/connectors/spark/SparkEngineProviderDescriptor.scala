@@ -40,7 +40,12 @@ final class SparkEngineProviderDescriptor
     */
   override def realize(url: String): Option[MCPEngineProvider] =
     if (url == null || url.trim.isEmpty) None
-    else Some(new SparkEngineProvider(url))
+    else Some(new SparkEngineProvider(
+      spark           = org.apache.spark.sql.SparkSession.builder().master(url).getOrCreate(),
+      bridge          = SparkTypeBridge,
+      sparkEngineName = "spark-3.5",
+      hookRunner      = None,
+    ))
 
   override def query(
       model:   io.sm8.core.model.Model,

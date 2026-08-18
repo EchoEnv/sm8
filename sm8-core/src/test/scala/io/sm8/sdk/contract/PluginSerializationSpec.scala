@@ -120,4 +120,30 @@ class PluginSerializationSpec extends AnyFunSuite with Matchers {
     restored.name shouldBe "counter-hook"
     restored.priority shouldBe 100
   }
+
+  // PR-7 (ADR-008-P §AR-P1-6): every captured `closedOverVars` entry
+  // must be a reference to a `Serializable` field. Reflection check on
+  // the concrete Plugin instance's class fields.
+  test("Plugin.closedOverVars: every captured field is Serializable (closure-safe)") {
+    // Per [[scala-spark-batch-bugs-mindset]] §1 (closure-safety): if a
+    // Spark UDF or executor-side code captures a non-Serializable
+    // reference, the task fails at executor startup with
+    // NotSerializableException. This test guards the contract.
+    val p = new PluginWithCounters("audit-1")
+    val cls = p.getClass
+    p.closedOverVars.foreach { fieldName =>
+      val f = cls.getDeclaredField(fieldName)
+      f.setAccessible(true)
+      val value = f.get(p)
+      // Per ADR-008-P §AR-P1-6: assert value is `Serializable` (the
+      // captured runtime reference must be Serializable). For primitives,
+      // boxing classes are Serializable (Integer, AtomicInteger).
+      value match {
+        case s: java.io.Serializable => succeed // OK
+        case null                    => succeed // null is safe (no capture)
+        case other =>
+          fail(s"Plugin.closedOverVars entry '$fieldName' (${other.getClass.getName}) is NOT Serializable -- would fail Spark closure-safety at executor startup")
+      }
+    }
+  }
 }

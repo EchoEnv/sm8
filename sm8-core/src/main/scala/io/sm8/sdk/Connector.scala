@@ -29,6 +29,16 @@ package io.sm8.sdk
 /**
  * A Connector connects the engine to one external data source.
  *
+ * @deprecated This trait is the legacy Connector abstraction from the
+ * initial vocabulary (pre-PR-O3). The current production abstraction is
+ * `MCPEngineProvider` (per ADR-001 §P1-3 + ADR-006 Post-#65). The
+ * spark-connector still uses `Connector` for its `SparkConnector`
+ * skeleton (PR-A), but the real production wiring goes through
+ * `MCPEngineProvider`. Per ADR-008-P §AR-P1-7, this trait is
+ * deprecated and will be removed in v1.0.0. Plugin authors should
+ * implement `MCPEngineProvider` instead; `EngineHookDispatcher`
+ * wiring is unchanged.
+ *
  * Connector authors should:
  *   - never import another Connector (RFC adapters.md Rule — only Plugin
  *     can register a Connector);
@@ -37,6 +47,7 @@ package io.sm8.sdk
  *     (RFC adapters.md Rule 3, conformance-enforced);
  *   - never mutate Context (that's a Hook's job).
  */
+@deprecated("Use MCPEngineProvider instead (ADR-008-P §AR-P1-7); this trait is retained for SparkConnector (PR-A) only and will be removed in v1.0.0", "0.1.0")
 trait Connector {
 
   /**
