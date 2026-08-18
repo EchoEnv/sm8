@@ -1,0 +1,13 @@
+encounter_id,patient_id,admission_date,discharge_date,department,primary_diagnosis,discharge_status
+E001,P001,2024-01-15,2024-01-22,Cardiology,I10,home
+E002,P002,2024-01-18,2024-01-20,Cardiology,I10,home
+E003,P001,2024-03-01,2024-03-04,Cardiology,I10,home
+E004,P005,2024-02-10,2024-02-12,Obstetrics,Z34,home
+E005,P007,2024-02-20,2024-02-25,Pediatrics,J45,home
+E006,P008,2024-03-05,2024-03-08,Cardiology,I10,transferred
+E007,P001,2024-04-15,2024-04-18,Cardiology,I10,home
+E008,P009,2024-03-20,2024-03-22,Cardiology,I10,home
+E009,P010,2024-03-25,2024-03-30,Oncology,C50,home
+E010,P006,2024-04-01,2024-04-05,Emergency,R10,home
+E011,P001,2024-06-01,2024-06-03,Cardiology,I10,home
+E012,P007,2024-03-15,2024-03-17,Pediatrics,J45,home

@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+      SM8 hospital-cleaning example (PR-11).
+
+      Demonstrates the full data-quality workflow on top of sm8:
+      raw CSV ingest → quality report → cleanse → build semantic
+      models → run 3 production-realistic queries (demographics,
+      ALOS by department, 30-day readmission rate).
+
+      Mirrors the upstream semanticdf /examples/hospital/ template
+      but uses the sm8 SDK directly (not the upstream's YamlLoader
+      + SemanticDimension/SemanticMeasure typed API). The model
+      definition is built via `Model.of(...)` in Scala — see
+      Main.scala. The model YAMLs in models/ document the target
+      shape for the future sm8 ModelLoader YAML subset extension.
+
+      Per RFC §3 layer ownership: this example is a CONSUMER of
+      sm8-core + spark-connector. It does NOT import sm8-platform
+      or sm8-server (the transport libs). It does NOT modify the
+      sm8 reactor (no sm8-core source changes; no parent pom
+      module addition).
+
+      Standalone Maven project — `mvn install` the parent
+      sm8 (0.1.0-SNAPSHOT) first, then run this example.
+    -->
+
+    <groupId>io.sm8</groupId>
+    <artifactId>sm8-hospital-cleaning_2.13</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <packaging>jar</packaging>
+
+    <name>SM8 Hospital Cleaning Example</name>
+    <description>Hospital data management + cleansing on top of sm8 — patient demographics, ALOS, 30-day readmission rate. Standalone consumer example (port of upstream semanticdf/examples/hospital/ adapted to the sm8 SDK).</description>
+
+    <properties>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <scala.version>2.13.18</scala.version>
+        <scala.binary.version>2.13</scala.binary.version>
+        <spark.version>3.5.8</spark.version>
+        <sm8.version>0.1.0-SNAPSHOT</sm8.version>
+
+        <!--
+          JVM flags for the forked Scala app JVM. Without these,
+          Spark on JDK 17 fails with sun.nio.ch.DirectBuffer access.
+          Same flag set as sm8-core/pom.xml + spark-connector/pom.xml.
+        -->
+        <spark.run.jvmArgs>--add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED</spark.run.jvmArgs>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>io.sm8</groupId>
+            <artifactId>sm8-core_2.13</artifactId>
+            <version>${sm8.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.sm8</groupId>
+            <artifactId>spark-connector_2.13</artifactId>
+            <version>${sm8.version}</version>
+        </dependency>
+
+        <!-- Spark 3.5.x — matches the locked tech stack. -->
+        <dependency>
+            <groupId>org.apache.spark</groupId>
+            <artifactId>spark-sql_${scala.binary.version}</artifactId>
+            <version>${spark.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.scala-lang</groupId>
+            <artifactId>scala-library</artifactId>
+            <version>${scala.version}</version>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <sourceDirectory>src/main/scala</sourceDirectory>
+        <plugins>
+            <plugin>
+                <groupId>net.alchim31.maven</groupId>
+                <artifactId>scala-maven-plugin</artifactId>
+                <version>4.9.2</version>
+                <executions>
+                    <execution><goals><goal>compile</goal><goal>run</goal></goals></execution>
+                </executions>
+                <configuration>
+                    <scalaVersion>${scala.version}</scalaVersion>
+                    <args><arg>-deprecation</arg></args>
+                    <jvmArgs>
+                        <arg>--add-opens=java.base/java.lang=ALL-UNNAMED</arg>
+                        <arg>--add-opens=java.base/java.lang.invoke=ALL-UNNAMED</arg>
+                        <arg>--add-opens=java.base/java.lang.reflect=ALL-UNNAMED</arg>
+                        <arg>--add-opens=java.base/java.io=ALL-UNNAMED</arg>
+                        <arg>--add-opens=java.base/java.net=ALL-UNNAMED</arg>
+                        <arg>--add-opens=java.base/java.nio=ALL-UNNAMED</arg>
+                        <arg>--add-opens=java.base/java.util=ALL-UNNAMED</arg>
+                        <arg>--add-opens=java.base/java.util.concurrent=ALL-UNNAMED</arg>
+                        <arg>--add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED</arg>
+                        <arg>--add-opens=java.base/sun.nio.ch=ALL-UNNAMED</arg>
+                        <arg>--add-opens=java.base/sun.nio.cs=ALL-UNNAMED</arg>
+                        <arg>--add-opens=java.base/sun.security.action=ALL-UNNAMED</arg>
+                        <arg>--add-opens=java.base/sun.util.calendar=ALL-UNNAMED</arg>
+                    </jvmArgs>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

@@ -1,0 +1,54 @@
+# sm8 model: patients (cleansed)
+#
+# Schema:
+#   patient_id, mrn, first_name, last_name, date_of_birth, gender, city, insurance
+#
+# Note: this is the CLEANSED version of patients_raw.csv. The raw version
+# had duplicate MRNs, duplicate patients with case differences, and a
+# missing MRN. See Main.scala for the cleansing steps.
+#
+# This YAML mirrors the upstream semanticdf shape. The sm8 ModelLoader
+# currently supports a minimal subset (name, version, source, status,
+# defaultPolicies, dimensions, measures, calculatedMeasures). The
+# transforms / is_time_dimension / smallest_time_grain fields below
+# are documented for the future loader (see ADR-008-P §AR-P1-3
+# post-v0.1.0 followup). For this example we build the equivalent
+# `Model` in Scala via `Model.of(...)` (see Main.scala).
+
+patients:
+    status: published
+    table: patients_clean_csv
+    description: "Cleansed patient master data"
+
+    dimensions:
+        patient_id:
+            expr: patient_id
+            description: "Patient ID (primary key)"
+        mrn:
+            expr: mrn
+            description: "Medical Record Number"
+        first_name:
+            expr: first_name
+            description: "Patient first name (normalized to Title Case)"
+        last_name:
+            expr: last_name
+            description: "Patient last name (normalized to Title Case)"
+        date_of_birth:
+            expr: date_of_birth
+            description: "Date of birth"
+            is_time_dimension: true
+            smallest_time_grain: day
+        gender:
+            expr: gender
+            description: "Patient gender (M or F)"
+        city:
+            expr: city
+            description: "Patient city"
+        insurance:
+            expr: insurance
+            description: "Patient insurance carrier"
+
+    measures:
+        patient_count:
+            expr: "count(1)"
+            description: "Number of unique patients in the group"
