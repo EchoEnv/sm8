@@ -54,7 +54,7 @@ class TrinoEngineProviderReplaySafetySpec extends AnyFunSuite with Matchers {
     val model = Model.of(
       name    = "test",
       version = 1,
-      source  = SourceRef.ByName("n", "t"),
+      source  = SourceRef.ByName(table = "t"),
       status  = ModelStatus.Draft,
       defaultPolicies = ModelPolicyDefaults(
         io.sm8.core.model.MaterializePolicy.None,
