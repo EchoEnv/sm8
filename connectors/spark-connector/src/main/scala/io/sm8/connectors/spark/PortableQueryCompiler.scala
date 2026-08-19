@@ -175,6 +175,46 @@ final class PortableQueryCompiler(val spark: SparkSession)
   ): Either[EngineError, DataFrame] =
     minimalRelOpLowerer.lower(relOp, ctx, preFilteredDf)
 
+  // PR-32 (ADR-008-R SSR3 broader fix; the PR-27 / PR-31 work-around
+  // is lifted into the canonical entry point): overload of
+  // `compileRelOp` that accepts a `Model` + the resolved source
+  // schema. The validator (`ModelValidator.validateAgainstSchema`)
+  // runs FIRST, surfacing any schema-mismatch as a typed `Left`
+  // before the lowerer sees the relOp. This means ANY direct caller
+  // of `compileRelOp` benefits from the validation -- not just
+  // callers that go through `SparkEngineProvider.compileModelToDataFrame`.
+  //
+  // Per [[karpathy-impact-analysis-mindset]] SS2 (binary
+  // compatibility): this is an ADDITIVE overload. The existing
+  // `compileRelOp(relOp, ctx)` and `compileRelOp(relOp, ctx,
+  // preFilteredDf)` signatures are preserved.
+  //
+  // Per [[karpathy-data-driven-refactor-mindset]] SS2 (smart
+  // constructor for validity-at-boundary): the validator is the
+  // single source of truth for schema-mismatch detection. By
+  // moving it into the canonical entry point, we eliminate the
+  // earlier work-around in `compileModelToDataFrame` (the
+  // PR-27 helper that called the validator BEFORE compileRelOp).
+  //
+  // Per [[karpathy-bug-hunting-mindset]] SS1 (trust compiler):
+  // the `Either[ModelValidationError, Unit]` return type forces the
+  // caller to handle the validation result at compile time (no
+  // silent null / no try-catch / no runtime `UNRESOLVED_COLUMN`).
+  def compileRelOp(
+      model:         io.sm8.core.model.Model,
+      relOp:         io.sm8.core.rel.RelOp,
+      ctx:           EngineContext,
+      scan:          io.sm8.core.engine.ResolvedSource.Scan,
+      preFilteredDf: Option[org.apache.spark.sql.DataFrame],
+  ): Either[EngineError, DataFrame] =
+    io.sm8.core.model.ModelValidator
+      .validateAgainstSchema(model, scan)
+      .left.map(e => EngineError.UnsupportedCapability(
+        engine     = "spark-connector",
+        capability = "ModelValidator.validateAgainstSchema",
+        message    = e.message))
+      .flatMap(_ => compileRelOp(relOp, ctx, preFilteredDf))
+
   /** Aggregate -> DataFrame: for the GAP-5 minimum, we use the
     * `compileRelOpAggregateSubtree` helper that recursively walks
     * the relOp's child and uses the child's resulting DataFrame

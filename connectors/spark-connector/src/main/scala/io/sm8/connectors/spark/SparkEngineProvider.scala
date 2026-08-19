@@ -566,7 +566,9 @@ final class SparkEngineProvider(
     for {
       // PR-31: use resolveWithPushdown to get (ResolvedSource,
       // pre-filtered DataFrame). The pre-filtered DF is used in
-      // compileRelOp; the ResolvedSource is used by ModelValidator.
+      // compileRelOp; the ResolvedSource is used by the canonical
+      // compileRelOp overload (PR-32 -- validates against the
+      // schema then lowers).
       pushdownResult <- resolver.resolveWithPushdown(model.source, request.whereFilters, identity)
       (resolved, preFilteredDf) = pushdownResult
       scan     <- resolved match {
@@ -575,15 +577,22 @@ final class SparkEngineProvider(
         case _ => Left(EngineError.UnsupportedCapability(
                   engine = sparkEngineName,
                   capability = "SourceResolver.resolveWithPushdown",
-                  message = s"non-Scan resolution (deferred to PR-M4 full RelOp path)"))
+                  // Per PR-32 data-engineer NIT fix: the message
+                  // no longer references the stale PR-M4 framing.
+                  // The current behaviour is fully PR-M4 / PR-M5
+                  // (full RelOp -> DataFrame lowering via
+                  // MinimalRelOpLowerer); a non-Scan resolution
+                  // surfaces as a typed `UnsupportedCapability`.
+                  message = s"non-Scan resolution for source $model.source: ${resolved.getClass.getSimpleName}"))
       }
-      _        <- io.sm8.core.model.ModelValidator.validateAgainstSchema(model, scan)
-                  .left.map(e => EngineError.UnsupportedCapability(
-                    engine = sparkEngineName,
-                    capability = "ModelValidator.validateAgainstSchema",
-                    message = e.message))
       relOp    <- QueryBuilder.build(model, resolver, identity)
-      df0      <- new PortableQueryCompiler(spark).compileRelOp(relOp, ctx, Some(preFilteredDf))
+      // PR-32: the canonical `compileRelOp(model, relOp, ctx, scan, preFilteredDf)`
+      // overload validates the model against the resolved source's
+      // schema BEFORE lowering. This replaces the manual
+      // `ModelValidator.validateAgainstSchema` call that was here
+      // in PR-27 -- the validator is now baked into the canonical
+      // entry point (per RFC SS3 layer ownership).
+      df0      <- new PortableQueryCompiler(spark).compileRelOp(model, relOp, ctx, scan, Some(preFilteredDf))
       df       <- TypedQueryCompiler(spark).apply(df0, request, ctx)
     } yield df
   }
