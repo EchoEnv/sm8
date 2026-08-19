@@ -209,6 +209,7 @@ final case class QueryRequest(
       *
       * Per karpathy-guidelines §3 (surgical): default = Nil. */
     whereFilters:      Seq[io.sm8.core.rel.TypedPredicate[Nothing]]    = Nil,
+    sortDirections:   Seq[io.sm8.core.rel.SortDirection]              = Nil,
  ) extends Product with Serializable
 
 object QueryRequest {
