@@ -209,7 +209,16 @@ final class SparkEngineProvider(
                       capability = "ModelValidator.validateAgainstSchema",
                       message = e.message))
         relOp    <- QueryBuilder.build(model, resolver, identity)
-        df       <- new PortableQueryCompiler(spark).compileRelOp(relOp, eCtx)
+        df0      <- new PortableQueryCompiler(spark).compileRelOp(relOp, eCtx)
+        // PR-19 (ADR-008-R §PR-19): apply the TYPED QueryRequest
+        // fields (additive in PR-18: aggregateMeasures / having /
+        // partitionBy / window / orderBy). When all fields are Nil
+        // (the legacy 19 callers), the input is returned unchanged
+        // -- zero behavior change.
+        //
+        // Per [[karpathy-guidelines-mindset]] SS3 (surgical): this
+        // is a single for-comp line, additive, no existing path
+        df       <- TypedQueryCompiler(spark).apply(df0, request, eCtx)
       } yield df
     }
     // PR-3b (ADR-008-P §C1): wrap the compileSteps thunk in the optional
