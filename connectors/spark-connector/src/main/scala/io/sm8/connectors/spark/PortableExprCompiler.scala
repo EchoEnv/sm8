@@ -42,10 +42,9 @@ package io.sm8.connectors.spark
 
 import io.sm8.core.engine.{EngineError, EngineIdentity}
 import io.sm8.core.expr.{Expr, LiteralValue}
-
+import io.sm8.core.predicate.{Predicate => FilterPredicate}
 import org.apache.spark.sql.Column
 import org.apache.spark.sql.functions.{col, lit, not => sparkNot, when}
-
 /**
  * Engine-specific Spark compiler for portable [[Expr]] -> Spark
  * [[Column]]. Pure function (Expr) -> Column with no state, no
@@ -286,5 +285,62 @@ object PortableExprCompiler extends java.io.Serializable {
                      "supported (struct literals are JSON-serialized; future PR can " +
                      "land native Spark struct support).",
       ))
+  }
+  /**
+   * PR-22 (ADR-008-R §PR-22): translate the portable Predicate
+   * filter-language AST (sm8-core/predicate/Predicate.scala) to a
+   * Spark Column. The 6-case Predicate ADT is exhaustively matched
+   * (per scala-bug-hunting-mindset SS3 + scala-data-driven-refactor-
+   * mindset SS3 -- sealed over Map).
+   *
+   * Per scala-spark-batch-bugs-mindset SS1 (closure-safety -- the
+   * user's explicit concern): this method is a pure function
+   * (Predicate) -> Either[EngineError, Column]. NO closures cross
+   * to executors. The resulting Column is consumed at driver-side
+   * via df.filter(column).
+   *
+   * Per scala-perf-testing-mindset SS3 (allocation is the tax):
+   * zero per-row allocation. The Column is built once per predicate
+   * + reused across all rows in the partition.
+   */
+  def predicateToColumn(p: FilterPredicate): Either[EngineError, Column] = p match {
+    case FilterPredicate.Compare(field, op, value) =>
+      val left = col(field)
+      val right = lit(value)
+      Right(op match {
+        case io.sm8.core.predicate.CompareOp.Eq => left === right
+        case io.sm8.core.predicate.CompareOp.Ne => left =!= right
+        case io.sm8.core.predicate.CompareOp.Lt => left <  right
+        case io.sm8.core.predicate.CompareOp.Le => left <= right
+        case io.sm8.core.predicate.CompareOp.Gt => left >  right
+        case io.sm8.core.predicate.CompareOp.Ge => left >= right
+      })
+    case FilterPredicate.In(field, values, negate) =>
+      val left = col(field)
+      val chained: Column = values.toIndexedSeq match {
+        case Seq()    => lit(false)
+        case Seq(head) => left === lit(head)
+        case seq       => seq.tail.foldLeft[Column](left === lit(seq.head)) {
+          (acc, v) => acc || (left === lit(v))
+        }
+      }
+      Right(if (negate) !chained else chained)
+    case FilterPredicate.IsNull(field, negate) =>
+      val c = col(field)
+      Right(if (negate) c.isNotNull else c.isNull)
+    case FilterPredicate.And(children) =>
+      if (children.isEmpty) Right(lit(true))
+      else children.map(predicateToColumn).reduceLeft((accE, cE) => for {
+        a  <- accE
+        c  <- cE
+      } yield a && c)
+    case FilterPredicate.Or(children) =>
+      if (children.isEmpty) Right(lit(false))
+      else children.map(predicateToColumn).reduceLeft((accE, cE) => for {
+        a  <- accE
+        c  <- cE
+      } yield a || c)
+    case FilterPredicate.Not(pred) =>
+      predicateToColumn(pred).map(c => !c)
   }
 }

@@ -127,14 +127,18 @@ final class TypedQueryCompiler private (private val spark: org.apache.spark.sql.
       // Single foldLeft pipeline per [[scala-perf-testing-mindset]]
       // SS3 (one DataFrame transform per step; no intermediate
       // allocations from chained .filter().filter()...).
+      // Per ADR-008-R SS"PR-22" + [[scala-spark-batch-bugs-mindset]] SS1:
+      // the typed `whereFilters` are applied FIRST (before
+      // aggregateMeasures / window). This matches the existing
+      // `PortableQueryCompiler.applyFilters` order (per PR-L).
       val orderedSteps: List[Either[EngineError, DataFrame => DataFrame]] = List(
+        wrap(whereFiltersOp(request), "whereFilters"),
         wrap(orderByOp(request), "orderBy"),
         wrap(partitionByOp(df, request), "partitionBy"),
         wrap(havingOp(request), "having"),
         wrap(aggregateOp(request), "aggregateMeasures"),
         wrap(windowOp(df, request), "window")
       )
-
       // Reduce: fold the typed-witness transforms over the df.
       // Each step is either an error (short-circuit) or a transform fn.
       orderedSteps.foldLeft[Either[EngineError, DataFrame]](Right(df)) {
@@ -154,9 +158,38 @@ final class TypedQueryCompiler private (private val spark: org.apache.spark.sql.
     request.having.isEmpty &&
     request.partitionBy.isEmpty &&
     request.window.isEmpty &&
-    request.orderBy.isEmpty
-
+    request.orderBy.isEmpty &&
   // === Per-step helpers (each is a typed Either + descriptive error) ===
+    request.whereFilters.isEmpty
+  /** whereFilters: typed `df.filter(predicate)` for each TypedPredicate.
+    * Per ADR-008-R SS"PR-22" + [[scala-spark-batch-bugs-mindset]] SS1:
+    * the typed predicate is applied FIRST (before aggregateMeasures /
+    * window) -- matches `PortableQueryCompiler.applyFilters` order.
+    *
+    * Per [[scala-bug-hunting-mindset]] SS3 (every match must be
+    * exhaustive): the underlying `Predicate` ADT (6 cases --
+    * Compare/In/IsNull/And/Or/Not) is exhaustively matched by
+    * `PortableExprCompiler.predicateToColumn` (compiler-checked).
+    *
+    * Per [[scala-spark-batch-bugs-mindset]] SS1 (closure-safety --
+    * the user's explicit concern): `df.filter(column)` is a
+    * driver-side transformation; no executor-side closure capture.
+    * The `predicateToColumn` helper is a pure function (no captured
+    * state). */
+  private def whereFiltersOp(request: QueryRequest): Either[EngineError, DataFrame => DataFrame] =
+    if (request.whereFilters.isEmpty) Right(identity)
+    else {
+      val filters: Either[EngineError, List[DataFrame => DataFrame]] =
+        request.whereFilters.foldLeft[Either[EngineError, List[DataFrame => DataFrame]]](Right(Nil)) {
+          (accE, typedPred) => for {
+            acc    <- accE
+            column <- PortableExprCompiler.predicateToColumn(typedPred.predicate)
+          } yield acc :+ (df => df.filter(column))
+        }
+      filters.map { fns =>
+        df => fns.foldLeft(df)((d, fn) => fn(d))
+      }
+    }
 
   /** orderBy: `df.orderBy(col1.asc, col2.desc, ...)` — preserves
     * the typed-witness ordering. Returns a transform fn that
@@ -164,13 +197,9 @@ final class TypedQueryCompiler private (private val spark: org.apache.spark.sql.
   private def orderByOp(request: QueryRequest): Either[EngineError, DataFrame => DataFrame] =
     if (request.orderBy.isEmpty) Right(identity)
     else {
-      // The `orderBy` accumulator is `Seq[TypedDimension[Nothing]]`
-      // (per QueryBuilderDsl). Pull the names out (the wire DTO
-      // is the source of truth for column identity).
       val cols: Seq[String] = request.orderBy.map(_.name).toIndexedSeq
       Right(df => df.orderBy(cols.map(c => df.col(c)): _*))
     }
-
   /** partitionBy: best-effort hint per ADR-008-R + ADR-008-L GAP 8.
     * Per [[scala-spark-batch-bugs-mindset]] SS2 (skew hides in
     * the aggregate): the hint may be overridden by AQE. We LOG the

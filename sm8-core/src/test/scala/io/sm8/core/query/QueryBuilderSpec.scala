@@ -8,7 +8,8 @@ package io.sm8.core.query
 import io.sm8.core.engine.QueryRequest
 import io.sm8.core.expr.{Expr, LiteralValue}
 import io.sm8.core.model.TypedDimension
-import io.sm8.core.rel.{ComparisonOp, WindowFunction}
+import io.sm8.core.predicate.{CompareOp, Predicate}
+import io.sm8.core.rel.{ComparisonOp, TypedPredicate, WindowFunction}
 
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -25,6 +26,7 @@ class QueryBuilderSpec extends AnyFlatSpec with Matchers {
     val patientCount: TypedDimension[PatientCount] = TypedDimension.of[PatientCount]("patient_count")
     val avgAge:       TypedDimension[AvgAge]       = TypedDimension.of[AvgAge]("avg_age")
     val totalRevenue: TypedDimension[TotalRevenue] = TypedDimension.of[TotalRevenue]("total_revenue")
+    val amount: TypedDimension[TotalRevenue] = TypedDimension.of[TotalRevenue]("amount")
   }
 
   // -- start() + empty accumulator (3 tests) --
@@ -207,5 +209,58 @@ class QueryBuilderSpec extends AnyFlatSpec with Matchers {
   it should "default to None when not set" in {
     val req = QueryBuilderDsl.start().build("patients", Seq("region"))
     req.limit shouldBe None
+  }
+
+  "QueryBuilderDsl.filter" should "add typed predicates via the typed overload" in {
+    // Per PR-21 (ADR-008-R): the typed filter() overload consumes
+    // typed TypedPredicate[_] witnesses. The phantom [D] is captured
+    // at the witness construction site (object level).
+    val p1 = TypedPredicate.eq[Region]("region", "east")
+    val p2 = TypedPredicate.gt[TotalRevenue]("amount", 100.0)
+    val req = QueryBuilderDsl.start()
+      .filter(p1, p2)
+      .build("patients", Seq("region"))
+    req.whereFilters.size shouldBe 2
+    req.whereFilters(0).name shouldBe "region=east"
+    req.whereFilters(1).name shouldBe "amount>100.0"
+  }
+
+  it should "alias as where() per karpathy-app-designmindset §1.3 (mirror QueryRequest shape)" in {
+    val p = TypedPredicate.eq[Region]("region", "east")
+    val req = QueryBuilderDsl.start()
+      .where(p)
+      .build("patients", Seq("region"))
+    req.whereFilters.size shouldBe 1
+    req.whereFilters(0).name shouldBe "region=east"
+  }
+
+  it should "build TypedPredicate AST nodes from string overload (filterNames)" in {
+    // Per karpathy-guidelinesmindset §2 (simplicity): the string
+    // overload is a convenience for quick YAML-style filtering;
+    // it builds Predicate.Compare(field, =, value) AST nodes.
+    val req = QueryBuilderDsl.start()
+      .filterNames(("region", CompareOp.Eq, "east"), ("amount", CompareOp.Gt, 100.0))
+      .build("patients", Seq("region"))
+    req.whereFilters.size shouldBe 2
+    req.whereFilters(0).predicate shouldBe Predicate.Compare("region", CompareOp.Eq, "east")
+    req.whereFilters(1).predicate shouldBe Predicate.Compare("amount", CompareOp.Gt, 100.0)
+  }
+
+  it should "preserve phantom via asInstanceOf at the variance boundary" in {
+    // Per PR-18 documented pattern: TypedPredicate[D] is coerced
+    // to TypedPredicate[Nothing] via explicit asInstanceOf at the
+    // accumulator field boundary. The phantom [D] is preserved at
+    // construction (object level).
+    val p: TypedPredicate[Region] = TypedPredicate.eq[Region]("region", "east")
+    val coerced: TypedPredicate[Nothing] = p.asInstanceOf[TypedPredicate[Nothing]]
+    val req = QueryBuilderDsl.start()
+      .filter(coerced)
+      .build("patients", Seq("region"))
+    req.whereFilters(0).predicate shouldBe Predicate.Compare("region", CompareOp.Eq, "east")
+  }
+
+  it should "default to Nil when not set" in {
+    val req = QueryBuilderDsl.start().build("patients", Seq("region"))
+    req.whereFilters shouldBe Nil
   }
 }
