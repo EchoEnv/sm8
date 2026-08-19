@@ -492,10 +492,81 @@ final class SparkEngineProvider(
       s"=== SM8 Plan: ${model.name} | engine=${sparkEngineName} version=${identity.nativeVersion} ==="
     QueryBuilder.build(model, resolver, identity) match {
       case Right(relOp) =>
-        Right(header + "\n" + RelOpPlanPrinter.print(relOp))
+        // SM8 semantic plan (always printed when the IR builds).
+        val sm8Section = header + "\n" + RelOpPlanPrinter.print(relOp)
+        // Spark physical plan (extended) -- printed only when a live
+        // SparkSession is available AND the smoke-compile succeeds.
+        // Per [[scala-spark-batch-bugs-mindset]] SS1: df.explain is a
+        // pure driver-side Catalyst operation (no executor closures).
+        spark match {
+          case null =>
+            // No Spark session -- SM8 semantic only.
+            Right(sm8Section)
+          case _ =>
+            // Per PR-27: the smoke-compile uses the SAME
+            // `compileModelToDataFrame` helper as `query()` --
+            // including `ModelValidator.validateAgainstSchema`. This
+            // fixes the UNRESOLVED_COLUMN bug discovered in the
+            // diagnostic spec (the relOp's columns were not
+            // validated against the resolved source's actual schema).
+            compileModelToDataFrame(model, request, ctx) match {
+              case Right(df) =>
+                val sparkPlan = df.queryExecution.explainString(
+                  org.apache.spark.sql.execution.ExplainMode.fromString("extended"))
+                Right(sm8Section + "\n== Spark Physical Plan (via df.explain(true)) ==\n" + sparkPlan)
+              case Left(err) =>
+                // Per [[scala-error-handlingmindset]] SS1: typed errors
+                // surface as a footer (never a silent drop).
+                Right(sm8Section + "\n<<smoke compile failed: " + err.getClass.getSimpleName + ": " + err.toString + ">>")
+            }
+        }
       case Left(err) =>
         Right(header + "\n" + s"<<build failed: ${err.getClass.getSimpleName}: ${err.toString}>>")
     }
+  }
+
+  /** PR-27 (ADR-008-R SSexplain): the shared compile-pipeline helper
+    * used by BOTH `query()` (existing) and `explain()` (PR-27).
+    *
+    * Per [[karpathy-app-designmindset]] SS3.1 (Protocols before
+    * Implementations) + DRY: one source of truth for the compile
+    * pipeline at the connector layer.
+    *
+    * Per [[karpathy-bug-huntingmindset]] SS1 (trust the compiler):
+    * the smoke-compile MUST call `ModelValidator.validateAgainstSchema`
+    * BEFORE `compileRelOp` -- otherwise the relOp's columns are
+    * not validated against the resolved source's actual schema
+    * (UNRESOLVED_COLUMN errors at compile time, not at model load
+    * time). This is the same pipeline that `query()` uses.
+    *
+    * Per [[scala-error-handlingmindset]] SS1 (typed errors, not
+    * silent): every step surfaces as `Left(EngineError.*)`.
+    */
+  private def compileModelToDataFrame(
+      model:   Model,
+      request: QueryRequest,
+      ctx:     EngineContext,
+  ): Either[EngineError, org.apache.spark.sql.DataFrame] = {
+    val resolver = new SparkSourceResolver(spark)
+    for {
+      resolved <- resolver.resolve(model.source, identity)
+      scan     <- resolved match {
+        case s: io.sm8.core.engine.ResolvedSource.Scan =>
+          Right[EngineError, io.sm8.core.engine.ResolvedSource.Scan](s)
+        case _ => Left(EngineError.UnsupportedCapability(
+                  engine = sparkEngineName,
+                  capability = "SourceResolver.resolve",
+                  message = s"non-Scan resolution (deferred to PR-M4 full RelOp path)"))
+      }
+      _        <- io.sm8.core.model.ModelValidator.validateAgainstSchema(model, scan)
+                  .left.map(e => EngineError.UnsupportedCapability(
+                    engine = sparkEngineName,
+                    capability = "ModelValidator.validateAgainstSchema",
+                    message = e.message))
+      relOp    <- QueryBuilder.build(model, resolver, identity)
+      df0      <- new PortableQueryCompiler(spark).compileRelOp(relOp, ctx)
+      df       <- TypedQueryCompiler(spark).apply(df0, request, ctx)
+    } yield df
   }
 
   // PR-N1: the resolver used by `explain` to produce the IR tree.
