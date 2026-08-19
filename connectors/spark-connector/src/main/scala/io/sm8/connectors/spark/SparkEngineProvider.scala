@@ -548,14 +548,33 @@ final class SparkEngineProvider(
       ctx:     EngineContext,
   ): Either[EngineError, org.apache.spark.sql.DataFrame] = {
     val resolver = new SparkSourceResolver(spark)
+    // PR-31 (ADR-008-R SSfilterPushdown wire-up, deferred from PR-28):
+    // use `resolveWithPushdown` to push the typed whereFilters down to
+    // the source. Per [[scala-spark-batch-bugs-mindset]] SS1
+    // (closure-safety): the source-level filter is built driver-side
+    // via `predicateToColumn`; no executor-side closure capture.
+    //
+    // Per [[karpathy-impact-analysis-mindset]] SS3 (zero behavior
+    // change for empty filters): when `request.whereFilters` is Nil,
+    // `resolveWithPushdown` falls back to `resolve` + `readSourceDF`
+    // (the existing path -- unchanged for 19 callers).
+    //
+    // The pre-filtered DF flows through `compileRelOp` via the new
+    // overload added in PR-31, which forwards it to the Scan lower.
+    // The `ResolvedSource` is preserved as the wire DTO for the
+    // ModelValidator step (which needs the schema, not the DF).
     for {
-      resolved <- resolver.resolve(model.source, identity)
+      // PR-31: use resolveWithPushdown to get (ResolvedSource,
+      // pre-filtered DataFrame). The pre-filtered DF is used in
+      // compileRelOp; the ResolvedSource is used by ModelValidator.
+      pushdownResult <- resolver.resolveWithPushdown(model.source, request.whereFilters, identity)
+      (resolved, preFilteredDf) = pushdownResult
       scan     <- resolved match {
         case s: io.sm8.core.engine.ResolvedSource.Scan =>
           Right[EngineError, io.sm8.core.engine.ResolvedSource.Scan](s)
         case _ => Left(EngineError.UnsupportedCapability(
                   engine = sparkEngineName,
-                  capability = "SourceResolver.resolve",
+                  capability = "SourceResolver.resolveWithPushdown",
                   message = s"non-Scan resolution (deferred to PR-M4 full RelOp path)"))
       }
       _        <- io.sm8.core.model.ModelValidator.validateAgainstSchema(model, scan)
@@ -564,7 +583,7 @@ final class SparkEngineProvider(
                     capability = "ModelValidator.validateAgainstSchema",
                     message = e.message))
       relOp    <- QueryBuilder.build(model, resolver, identity)
-      df0      <- new PortableQueryCompiler(spark).compileRelOp(relOp, ctx)
+      df0      <- new PortableQueryCompiler(spark).compileRelOp(relOp, ctx, Some(preFilteredDf))
       df       <- TypedQueryCompiler(spark).apply(df0, request, ctx)
     } yield df
   }

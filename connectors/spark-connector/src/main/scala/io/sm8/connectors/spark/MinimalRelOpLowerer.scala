@@ -102,6 +102,33 @@ final class MinimalRelOpLowerer(
       case l:   RelOp.Limit     => lowerLimit(l, ctx)
     }
 
+  // PR-31 (ADR-008-R SSfilterPushdown wire-up, deferred from PR-28):
+  // overload of `lower` that accepts a pre-filtered source DataFrame
+  // from `SparkSourceResolver.resolveWithPushdown`. When the RelOp
+  // tree starts with `RelOp.Scan`, the pre-filtered DF is used
+  // INSTEAD of calling `spark.table(...) / spark.read...load(...)`
+  // again -- the source-resolution has already been performed by
+  // the resolver, AND the predicate has been pushed at the source.
+  //
+  // Per [[karpathy-impact-analysis-mindset]] SS2 (binary
+  // compatibility): this is an ADDITIVE overload. The existing
+  // `lower(relOp, ctx)` signature is preserved -- callers that
+  // don't use `resolveWithPushdown` are unaffected.
+  def lower(
+      relOp:         RelOp,
+      ctx:           EngineContext,
+      preFilteredDf: Option[org.apache.spark.sql.DataFrame],
+  ): Either[EngineError, DataFrame] =
+    relOp match {
+      case scan: RelOp.Scan     => lowerScan(scan, preFilteredDf)
+      case f:   RelOp.Filter    => lowerFilter(f, ctx, preFilteredDf)
+      case p:   RelOp.Project   => lowerProject(p, ctx, preFilteredDf)
+      case a:   RelOp.Aggregate => lowerAggregate(a, ctx, preFilteredDf)
+      case j:   RelOp.Join      => lowerJoin(j, ctx, preFilteredDf)
+      case s:   RelOp.Sort      => lowerSort(s, ctx, preFilteredDf)
+      case l:   RelOp.Limit     => lowerLimit(l, ctx, preFilteredDf)
+    }
+
   // === per-node lowering methods (called recursively) ===
 
   /** Scan -> DataFrame: read the source via spark.table / spark.read.
@@ -110,7 +137,24 @@ final class MinimalRelOpLowerer(
     * The schema comes from the ACTUAL `df.schema` -- per
     * scala-spark-batch-bugs-mindset mantra #3 (schema-drift verify
     * at the boundary). No caller-supplied "expected" schema. */
-  def lowerScan(scan: RelOp.Scan): Either[EngineError, DataFrame] = {
+  def lowerScan(scan: RelOp.Scan): Either[EngineError, DataFrame] =
+    lowerScan(scan, None)
+
+  // PR-31 (ADR-008-R SSfilterPushdown wire-up, deferred from PR-28):
+  // overload of `lowerScan` that accepts a pre-filtered DataFrame.
+  // When defined, the pre-filtered DF is used DIRECTLY (skipping the
+  // `spark.table / spark.read` call) -- closing the deferred
+  // wire-up from PR-28's `resolveWithPushdown` (per senior
+  // R-recommendation SS7.1 #2).
+  //
+  // Per [[scala-impact-analysis-mindset]] SS3 (zero behavior change
+  // for callers that don't opt in): when `preFilteredDf` is None,
+  // this is a no-op passthrough to the existing spark.table /
+  // spark.read path.
+  def lowerScan(
+      scan:          RelOp.Scan,
+      preFilteredDf: Option[org.apache.spark.sql.DataFrame],
+  ): Either[EngineError, DataFrame] = {
     // PR-O1e (ADR-008-O, P0-3): column pruning via scan.projection.
     // Per [[scala-spark-batch-bugs-mindset]] mantra #6
     // (partition-pruning + projection-pushdown): without this,
@@ -144,7 +188,21 @@ final class MinimalRelOpLowerer(
     // specific types we make the intent explicit and prevent future
     // subclasses (e.g. `SparkException` from a corrupt catalog) from
     // being silently absorbed.
-    val resolved: Either[EngineError, DataFrame] = scan.sourceRef match {
+    val resolved: Either[EngineError, DataFrame] = preFilteredDf match {
+      case Some(df) =>
+        // PR-31 wire-up: use the pre-filtered DataFrame directly.
+        // The source-resolution + source-level filter have already
+        // been applied by `SparkSourceResolver.resolveWithPushdown`.
+        // We do NOT re-read the source -- that would defeat the
+        // pushdown (per scala-spark-batch-bugs-mindset mantra #6:
+        // partition-pruning + projection-pushdown).
+        Right(df)
+      case None =>
+        // No pre-filtered DF -- fall back to the original path
+        // (spark.table / spark.read / spark.read.format...).
+        // Per scala-impact-analysis-mindset SS3: zero behavior
+        // change for callers that don't use resolveWithPushdown.
+        scan.sourceRef match {
       case src: SourceRef.ByName =>
         try Right(spark.table(src.table)) catch {
           case _: org.apache.spark.sql.catalyst.analysis.NoSuchTableException =>
@@ -174,6 +232,7 @@ final class MinimalRelOpLowerer(
         Left(EngineError.UnsupportedCapability(
           engine = identity.name, capability = "SourceRef.ByProvider",
           message = "SourceRef.ByProvider requires a registered ProviderRef closure."))
+        }
     }
     // PR-O1c (ADR-008-O, P0-2): toColumn returns
     // Either[EngineError, Column]; the projection compiles via
@@ -187,8 +246,17 @@ final class MinimalRelOpLowerer(
 
   /** Filter -> DataFrame: walk the child, then df.filter(expr). */
   def lowerFilter(f: RelOp.Filter, ctx: EngineContext): Either[EngineError, DataFrame] =
+    lowerFilter(f, ctx, None)
+
+  // PR-31 (ADR-008-R SSfilterPushdown wire-up): overload that
+  // forwards the preFilteredDf down to the recursive Scan lower.
+  def lowerFilter(
+      f:             RelOp.Filter,
+      ctx:           EngineContext,
+      preFilteredDf: Option[org.apache.spark.sql.DataFrame],
+  ): Either[EngineError, DataFrame] =
     for {
-      child <- lower(f.input, ctx)
+      child <- lower(f.input, ctx, preFilteredDf)
       pred  <- PortableExprCompiler.toColumn(f.predicate)
     } yield child.filter(pred)
 
@@ -196,8 +264,17 @@ final class MinimalRelOpLowerer(
     * `(expr, alias)` per the IR's projection list. An empty list
     * returns the child unchanged. */
   def lowerProject(p: RelOp.Project, ctx: EngineContext): Either[EngineError, DataFrame] =
+    lowerProject(p, ctx, None)
+
+  // PR-31 (ADR-008-R SSfilterPushdown wire-up): overload that
+  // forwards the preFilteredDf down to the recursive Scan lower.
+  def lowerProject(
+      p:             RelOp.Project,
+      ctx:           EngineContext,
+      preFilteredDf: Option[org.apache.spark.sql.DataFrame],
+  ): Either[EngineError, DataFrame] =
     for {
-      child <- lower(p.input, ctx)
+      child <- lower(p.input, ctx, preFilteredDf)
       cols  <- p.expressions.foldLeft[Either[EngineError, List[Column]]](Right(Nil)) {
         (accE, pair) => for {
           acc   <- accE
@@ -209,7 +286,16 @@ final class MinimalRelOpLowerer(
   /** Sort -> DataFrame: walk the child, then df.orderBy with
     * per-key direction + null ordering. */
   def lowerSort(s: RelOp.Sort, ctx: EngineContext): Either[EngineError, DataFrame] =
-    lower(s.input, ctx).map { df =>
+    lowerSort(s, ctx, None)
+
+  // PR-31 (ADR-008-R SSfilterPushdown wire-up): overload that
+  // forwards the preFilteredDf down to the recursive Scan lower.
+  def lowerSort(
+      s:             RelOp.Sort,
+      ctx:           EngineContext,
+      preFilteredDf: Option[org.apache.spark.sql.DataFrame],
+  ): Either[EngineError, DataFrame] =
+    lower(s.input, ctx, preFilteredDf).map { df =>
       if (s.keys.isEmpty) df
       else {
         val sortCols = s.keys.map { k =>
@@ -239,7 +325,16 @@ final class MinimalRelOpLowerer(
     * `.limit(-1)` with INVALID_LIMIT_LIKE_EXPRESSION when the
     * Long.MaxValue casts to -1. */
   def lowerLimit(l: RelOp.Limit, ctx: EngineContext): Either[EngineError, DataFrame] =
-    lower(l.input, ctx).map { df =>
+    lowerLimit(l, ctx, None)
+
+  // PR-31 (ADR-008-R SSfilterPushdown wire-up): overload that
+  // forwards the preFilteredDf down to the recursive Scan lower.
+  def lowerLimit(
+      l:             RelOp.Limit,
+      ctx:           EngineContext,
+      preFilteredDf: Option[org.apache.spark.sql.DataFrame],
+  ): Either[EngineError, DataFrame] =
+    lower(l.input, ctx, preFilteredDf).map { df =>
       if (l.count == Long.MaxValue) df
       else df.limit(l.count.toInt).offset(l.offset.toInt)
     }
@@ -262,8 +357,17 @@ final class MinimalRelOpLowerer(
     * the direct path is then built on the recursively-lowered
     * DataFrame, not re-resolved.
     */
-  def lowerAggregate(agg: RelOp.Aggregate, ctx: EngineContext): Either[EngineError, DataFrame] = {
-    lower(agg.input, ctx).flatMap { df =>
+  def lowerAggregate(agg: RelOp.Aggregate, ctx: EngineContext): Either[EngineError, DataFrame] =
+    lowerAggregate(agg, ctx, None)
+
+  // PR-31 (ADR-008-R SSfilterPushdown wire-up): overload that
+  // forwards the preFilteredDf down to the recursive Scan lower.
+  def lowerAggregate(
+      agg:           RelOp.Aggregate,
+      ctx:           EngineContext,
+      preFilteredDf: Option[org.apache.spark.sql.DataFrame],
+  ): Either[EngineError, DataFrame] = {
+    lower(agg.input, ctx, preFilteredDf).flatMap { df =>
       // groupBy: convert each Expr to a Spark Column.
       val groupByCols: Array[Column] = agg.groupBy.map { e =>
         val n = e match {
@@ -339,7 +443,18 @@ final class MinimalRelOpLowerer(
     * - j.kind MUST be one of Inner/Left/Right/Full/Cross
     * - j.condition MUST extract at least 1 key via extractJoinKeys (PR-N2)
     */
-  def lowerJoin(j: RelOp.Join, ctx: EngineContext): Either[EngineError, DataFrame] = {
+  def lowerJoin(j: RelOp.Join, ctx: EngineContext): Either[EngineError, DataFrame] =
+    lowerJoin(j, ctx, None)
+
+  // PR-31 (ADR-008-R SSfilterPushdown wire-up): overload that
+  // forwards the preFilteredDf to the LEFT scan lowering only.
+  // The RIGHT scan continues to use its own path (PR-28's
+  // pushdown is per-source; a joined source is a separate concern).
+  def lowerJoin(
+      j:             RelOp.Join,
+      ctx:           EngineContext,
+      preFilteredDf: Option[org.apache.spark.sql.DataFrame],
+  ): Either[EngineError, DataFrame] = {
     val leftScan = j.left match {
       case s: RelOp.Scan => s
       case _ => return Left(EngineError.UnsupportedCapability(
@@ -378,7 +493,7 @@ final class MinimalRelOpLowerer(
     // See `PortableQueryCompiler.applyJoins` for the long form.
     import org.apache.spark.sql.functions.broadcast
     for {
-      leftDf   <- lower(leftScan, ctx)
+      leftDf   <- lower(leftScan, ctx, preFilteredDf)
       rightDf  <- lower(rightScan, ctx)
       // PR-2/B2: narrow the broad `catch { case _: Throwable => }` to the
       // specific `AnalysisException` that the Spark `stats.sizeInBytes` call

@@ -158,6 +158,23 @@ final class PortableQueryCompiler(val spark: SparkSession)
       ctx:   EngineContext,
   ): Either[EngineError, DataFrame] = minimalRelOpLowerer.lower(relOp, ctx)
 
+  // PR-31 (ADR-008-R SSfilterPushdown wire-up, deferred from PR-28):
+  // overload of `compileRelOp` that accepts a pre-filtered source
+  // DataFrame from `SparkSourceResolver.resolveWithPushdown`. The
+  // pre-filtered DF flows down through the RelOp tree (forwarded
+  // to the Scan lower) so the source-level filter is preserved
+  // across the compile step.
+  //
+  // Per [[karpathy-impact-analysis-mindset]] SS2 (binary
+  // compatibility): this is an ADDITIVE overload. The existing
+  // `compileRelOp(relOp, ctx)` signature is preserved.
+  def compileRelOp(
+      relOp:         io.sm8.core.rel.RelOp,
+      ctx:           EngineContext,
+      preFilteredDf: Option[org.apache.spark.sql.DataFrame],
+  ): Either[EngineError, DataFrame] =
+    minimalRelOpLowerer.lower(relOp, ctx, preFilteredDf)
+
   /** Aggregate -> DataFrame: for the GAP-5 minimum, we use the
     * `compileRelOpAggregateSubtree` helper that recursively walks
     * the relOp's child and uses the child's resulting DataFrame
