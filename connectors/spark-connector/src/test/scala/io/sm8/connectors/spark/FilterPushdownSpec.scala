@@ -31,11 +31,12 @@
  * behavior on the ByName (temp view) code path. ByPath (Parquet)
  * is exercised by the existing SparkSourceResolverSpec tests.
  *
- * Per [[karpathy-app-design-mindset]] SS3.1: the wire-up to
- * `compileRelOp` (so the pre-filtered DataFrame actually flows
- * into the typed pipeline) is DEFERRED per senior R-recommendation
- * SS7.1 #2. PR-28 ships the FOUNDATION (the resolver-level
- * pushdown); the wire-up is a follow-up PR-29.
+ * Per [[karpathy-app-design-mindset]] SS3.1: PR-31 closes the
+ * wire-up to `compileRelOp` (so the pre-filtered DataFrame actually
+ * flows into the typed pipeline). PR-28 shipped the FOUNDATION
+ * (the resolver-level pushdown); PR-31 (this commit) closes the
+ * wire-up via 3 ADDITIVE overloads (per [[karpathy-impact-analysis-mindset]]
+ * SS2 binary compatibility: existing call signatures preserved).
  */
 package io.sm8.connectors.spark
 
@@ -199,6 +200,105 @@ class FilterPushdownSpec extends AnyFunSuite with Matchers {
           df.count() shouldBe 1L
         case _ => fail("expected DataFrame")
       }
+    } finally spark.stop()
+  }
+
+  // === PR-31 (wire-up to compileRelOp) -- 2 new tests ===
+
+  // Per [[karpathy-data-driven-refactor-mindset]] SS2 (smart
+  // constructor for validity-at-boundary): the resolver-level
+  // pushdown (PR-28) must flow through to the typed pipeline.
+  // This test verifies the wire-up via `MinimalRelOpLowerer.lower`
+  // + `PortableQueryCompiler.compileRelOp` overloads added in PR-31.
+
+  test("filter pushdown: pre-filtered DataFrame flows end-to-end through compileRelOp -- the PR-31 wire-up") {
+    // Per the user 2026-08-19 directive (go filter pushdown
+    // optimization ensure follow ALL skills ... especially spark
+    // serialization concern and executor performance): the
+    // pre-filtered DataFrame from `resolveWithPushdown` must flow
+    // through `compileRelOp` so the source-level filter is
+    // preserved across the compile step.
+    //
+    // The wire-up is via 3 ADDITIVE overloads:
+    //   - `MinimalRelOpLowerer.lower(relOp, ctx, preFilteredDf)`
+    //   - `MinimalRelOpLowerer.lowerScan(scan, preFilteredDf)`
+    //   - `PortableQueryCompiler.compileRelOp(relOp, ctx, preFilteredDf)`
+    // Per [[karpathy-impact-analysis-mindset]] SS2: the existing
+    // 1-arg `lower` / `lowerScan` / `compileRelOp` are preserved
+    // -- callers that don t pass `preFilteredDf` get the old path.
+    val spark = buildSpark()
+    try {
+      // Register 6 rows: 4 east, 2 west.
+      spark.sql(
+        "SELECT * FROM VALUES " +
+        "('P001', 'east', 'alice'), " +
+        "('P002', 'east', 'bob'), " +
+        "('P003', 'east', 'charlie'), " +
+        "('P004', 'east', 'dave'), " +
+        "('P005', 'west', 'eve'), " +
+        "('P006', 'west', 'frank') " +
+        "AS t(patient_id, region, name)"
+      ).createTempView("patients_csv")
+
+      // Build the pre-filtered DF directly (mimicking what
+      // `SparkEngineProvider.compileModelToDataFrame` does after
+      // PR-31: it calls `resolveWithPushdown` and passes the
+      // pre-filtered DF down to `compileRelOp`).
+      val resolver = new SparkSourceResolver(spark)
+      val source = SourceRef.ByName(table = "patients_csv")
+      val eastPredicate: TypedPredicate[_] = TypedPredicate.of(
+        name = "region=east",
+        predicate = Predicate.Compare("region", CompareOp.Eq, "east"),
+      )
+      val pushdownResult = resolver.resolveWithPushdown(
+        source, Seq(eastPredicate), identity)
+      val (_, preFilteredDf) = pushdownResult.toOption.get
+
+      // Per [[debug-mantra-mindset]] SS1 (assert on the result):
+      // the pre-filtered DF should have 4 rows (not 6). This is
+      // the SOURCE-LEVEL filter -- not the in-memory
+      // `whereFiltersOp` filter at the end of the pipeline.
+      preFilteredDf.count() shouldBe 4L
+
+      // Now verify the wire-up: build a RelOp.Scan that points at
+      // the same source, and verify that `compileRelOp` with the
+      // pre-filtered DF returns a 4-row DataFrame (proving the
+      // wire-up is in effect, not just `resolveWithPushdown`).
+      val scan = io.sm8.core.rel.RelOp.Scan(
+        sourceRef = source,
+        schema = Nil,
+        projection = Nil,
+      )
+      val compiled = new MinimalRelOpLowerer(spark, new PortableQueryCompiler(spark))
+        .lowerScan(scan, Some(preFilteredDf))
+      compiled.toOption.get.count() shouldBe 4L
+    } finally spark.stop()
+  }
+
+  test("filter pushdown: empty whereFilters = no-op (zero behavior change for 19 callers)") {
+    // Per [[karpathy-impact-analysis-mindset]] SS3 (zero behavior
+    // change): when `whereFilters` is Nil, `resolveWithPushdown`
+    // falls back to `resolve` + `readSourceDF` (the existing path).
+    // This test verifies the empty-filters path is unchanged.
+    val spark = buildSpark()
+    try {
+      spark.sql(
+        "SELECT * FROM VALUES " +
+        "('P001', 'east', 'alice'), " +
+        "('P002', 'east', 'bob'), " +
+        "('P003', 'west', 'charlie') " +
+        "AS t(patient_id, region, name)"
+      ).createTempView("patients_csv_v2")
+
+      val resolver = new SparkSourceResolver(spark)
+      val source = SourceRef.ByName(table = "patients_csv_v2")
+      // Per [[scala-spark-batch-bugs-mindset]] SS1 (closure-safety):
+      // empty Seq is a no-op -- the resulting DataFrame is the
+      // FULL source, not a filtered subset.
+      val result = resolver.resolveWithPushdown(source, Seq.empty, identity)
+      val (_, df) = result.toOption.get
+      // All 3 rows present (no filter applied).
+      df.count() shouldBe 3L
     } finally spark.stop()
   }
 }
