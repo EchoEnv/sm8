@@ -22,7 +22,8 @@ package io.sm8.connectors.spark
 import io.sm8.core.engine.{EngineContext, QueryRequest}
 import io.sm8.core.model.TypedDimension
 import io.sm8.core.predicate.{CompareOp, Predicate}
-import io.sm8.core.rel.{TypedAggregateCall, TypedPredicate}
+import io.sm8.core.rel.{TypedAggregateCall, TypedPredicate, TypedPredicateFilterOps}
+import io.sm8.core.rel.TypedPredicateFilterOps._
 
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
 import org.apache.spark.sql.types._

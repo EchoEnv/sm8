@@ -14,17 +14,15 @@ import io.sm8.core.query.QueryBuilderDsl
 import io.sm8.core.model.TypedMeasureBridge._
 import io.sm8.core.rel.{
   AggregateCall, AggregateFn, SortDirection, TypedAggregateCall,
-  TypedPredicate, TypedSortKeyOps, TypedWindow, WindowFunction
+  TypedPredicate, TypedPredicateFilterOps, TypedSortKeyOps, TypedWindow, WindowFunction
 }
-import io.sm8.core.rel.TypedSortKeyOps._
-import io.sm8.core.schema.SealedDataType
 
+import io.sm8.core.schema.SealedDataType
+import io.sm8.core.rel.TypedSortKeyOps._
+import io.sm8.core.rel.TypedPredicateFilterOps._
 import org.apache.spark.sql.{DataFrame, SparkSession}
 import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions._
-
-import scala.util.{Failure, Success, Try}
-
 /** sm8 hospital example — full data-quality workflow.
   *
   * Demonstrates the production-realistic ETL → cleansing → semantic
@@ -564,7 +562,38 @@ object Refs {
             dimensions = Seq(Refs.patientId.name)),
       )
 
-      Logger.info("=" * 70)
+      // ----- Q5: PR-29 (typed filter ergonomics) -- infix sugar end-to-end -----
+      // Per the user's 2026-08-19 directive ("infix notation but still
+      // typed based and no spark serialize issue when closure"): Q5
+      // demonstrates the PR-29 `TypedPredicateFilterOps` infix sugar
+      // end-to-end through `TypedQueryCompiler.apply`.
+      //
+      // Per [[karpathy-app-design-mindset]] SS3.1 (Protocols before
+      // Implementations) + RFC SS3: the infix sugar is at sm8-core
+      // (the protocol); the spark-connector consumes it.
+      //
+      // Per [[karpathy-spark-batch-bugs-mindset]] SS1 (closure-safety
+      // -- the user's explicit priority): the TypedPredicate witnesses
+      // are case-class `extends Serializable` (verified by
+      Logger.info("--- Q5: typed filter ergonomics (infix ===/!==/</<=/>/>=, in/notIn, startsWith/contains/endsWith) end-to-end ---")
+      runQuery(
+        "Q5 (typed DSL): patient demographics filtered via infix sugar (insurance === Medicare AND insurance in (Medicare, Medicaid))",
+        provider,
+        patientsModel,
+        QueryBuilderDsl.start()
+          .groupBy(Refs.insurance)
+          .aggregate(Refs.patientCount.toAggregateCall)
+          .filter(TypedPredicate.and(
+            Refs.insurance === "Medicare",
+            Refs.insurance in List("Medicare", "Medicaid")))
+          .orderByKeys(Refs.insurance.desc)
+          .limit(Some(100L))
+          .build(
+            model = patientsModel.name,
+            dimensions = Seq(Refs.insurance.name),
+          ),
+      )
+       Logger.info("=" * 70)
       Logger.info("All steps complete. The data quality issues from STEP 2 are now")
       Logger.info("resolved -- the queries above run on the cleansed data.")
       Logger.info("Q4 uses the typed QueryBuilderDsl end-to-end (PR-17 + PR-19 + PR-20 + PR-22).")
