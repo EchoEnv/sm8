@@ -289,7 +289,7 @@ class SparkFilterSpec extends AnyFunSuite with Matchers {
         whereFilters = wrapPredicates(
           TypedPredicate.of[Region](
             "NOT (region=east)",
-            TypedPredicate.eq[Region]("region", "east").negatePredicate
+            TypedPredicate.eq[Region]("region", "east").predicate.negatePredicate
           )
         ),
       )

@@ -137,7 +137,11 @@ final class TypedQueryCompiler private (private val spark: org.apache.spark.sql.
         wrap(partitionByOp(df, request), "partitionBy"),
         wrap(havingOp(request), "having"),
         wrap(aggregateOp(request), "aggregateMeasures"),
-        wrap(windowOp(df, request), "window")
+        wrap(windowOp(df, request), "window"),
+        // Per PR-25: limit applied LAST (after sort) so the top-K
+        // cut happens against the sorted output. Per scala-perf-
+        // testingmindset SS3: one DataFrame transform.
+        wrap(limitOp(request), "limit")
       )
       // Reduce: fold the typed-witness transforms over the df.
       // Each step is either an error (short-circuit) or a transform fn.
@@ -191,14 +195,64 @@ final class TypedQueryCompiler private (private val spark: org.apache.spark.sql.
       }
     }
 
-  /** orderBy: `df.orderBy(col1.asc, col2.desc, ...)` — preserves
-    * the typed-witness ordering. Returns a transform fn that
-    * applies df.orderBy with the requested columns. */
+  /** orderBy: typed sort direction routing (PR-25, ADR-008-R
+    * SSExtOrderBy). Returns a transform fn that applies df.orderBy
+    * with the requested columns AND their directions.
+    *
+    * Per PR-25 + senior reviews 2026-08-19:
+    *   1. Zips each dim with its direction (Ascending / Descending).
+    *      The resulting Column is col.asc or col.desc per element.
+    *      Per MinimalRelOpLowerer.lowerSort pattern (the canonical
+    *      Spark direction routing).
+    *   2. padTo safety: if `sortDirections.size < orderBy.size`,
+    *      the missing entries default to Ascending (preserves
+    *      backward compat for legacy orderBy-only callers).
+    *
+    * Per scala-spark-batch-bugs-mindset SS1 (closure-safety -- the
+    * user's explicit concern): the transform fn captures ONLY
+    * Serializable locals (cols is Seq[String], directions is
+    * Seq[SortDirection]). No SparkSession / DataFrame / Iterator
+    * captured.
+    *
+    * Per scala-bug-hunting-mindset SS3 (every match must be
+    * exhaustive): SortDirection sealed ADT (2 cases) is
+    * exhaustively matched. */
   private def orderByOp(request: QueryRequest): Either[EngineError, DataFrame => DataFrame] =
     if (request.orderBy.isEmpty) Right(identity)
     else {
-      val cols: Seq[String] = request.orderBy.map(_.name).toIndexedSeq
-      Right(df => df.orderBy(cols.map(c => df.col(c)): _*))
+      val sortable = request.orderBy.toIndexedSeq
+      // Per senior R-recommendation SS7.1 #3: padTo with Ascending
+      // default. Missing entries -> Ascending (zero behavior change
+      // for legacy orderBy-only callers).
+      val directs: IndexedSeq[io.sm8.core.rel.SortDirection] =
+        request.sortDirections.toIndexedSeq
+          .padTo(sortable.length, io.sm8.core.rel.SortDirection.Ascending)
+      val cols: IndexedSeq[(String, io.sm8.core.rel.SortDirection)] =
+        sortable.map(_.name).zip(directs)
+      Right(df => df.orderBy(cols.map {
+        case (name, dir) =>
+          val col = df.col(name)
+          dir match {
+            case io.sm8.core.rel.SortDirection.Ascending  => col.asc
+            case io.sm8.core.rel.SortDirection.Descending => col.desc
+          }
+      }: _*))
+    }
+
+  /** limit: df.limit(n) -- applied LAST so sort happens before the
+    * top-K cut (per PR-25 + senior review). The pass-through sentinel
+    * `None` (per PR-L's model-without-request-limit shape) is SKIPPED
+    * -- Spark 3.5 rejects `.limit(-1)` with INVALID_LIMIT_LIKE_EXPRESSION
+    * when Long.MaxValue casts to -1.
+    *
+    * Per [[scala-spark-batch-bugs-mindset]] SS1 (closure-safety -- the
+    * user's explicit concern): df.limit is a driver-side transformation;
+    * no executor-side closure capture. */
+  private def limitOp(request: QueryRequest): Either[EngineError, DataFrame => DataFrame] =
+    request.limit match {
+      case None       => Right(identity)
+      case Some(Long.MaxValue) => Right(identity)
+      case Some(n)     => Right(df => df.limit(n.toInt))
     }
   /** partitionBy: best-effort hint per ADR-008-R + ADR-008-L GAP 8.
     * Per [[scala-spark-batch-bugs-mindset]] SS2 (skew hides in
