@@ -1,23 +1,28 @@
 /*
- * SM8 Core — QueryBuilderDsl: typed fluent builder (PR-18, ADR-008-R §PR-18).
+ * SM8 Core -- QueryBuilderDsl: typed fluent builder (PR-18, ADR-008-R §PR-18).
  *
- * Per `debug-mantra` + `scala-bug-huntingmindset` §1: the phantom
+ * Per `debug-mantra` + `scala-bug-huntingmindset` SS1: the phantom
  * `[D]` flows through fluent method wildcards `[_]`; the accumulator
- * stores `Nothing`-typed projections. At the typed→untyped boundary
- * (the accumulator field), we use explicit `.asInstanceOf[Seq[Foo[Nothing]]]`
- * casts with explanatory comments — this is the PR-16 documented
- * pattern for the variance-coercion boundary.
+ * stores `Nothing`-typed projections. At the typed-to-untyped
+ * boundary (the accumulator field), we use explicit
+ * `.asInstanceOf[Seq[Foo[Nothing]]]` casts with explanatory comments
+ * -- this is the PR-16 documented pattern for the variance-coercion
+ * boundary.
+ *
+ * PR-20 (ADR-008-R SSfilter/where): added `filter()` / `where()`
+ * overloads + the `filters: Seq[TypedPredicate[Nothing]]` accumulator
+ * field.
  */
 package io.sm8.core.query
 
 import io.sm8.core.engine.QueryRequest
 import io.sm8.core.model.TypedDimension
-import io.sm8.core.rel.{AggregateFn, ComparisonOp, Having, PartitionBy, TypedAggregateCall, TypedWindow, WindowFunction}
+import io.sm8.core.rel.{AggregateFn, ComparisonOp, Having, PartitionBy, TypedAggregateCall, TypedPredicate, TypedWindow, WindowFunction}
 
 /** Typed fluent builder for `QueryRequest`.
  *
  * Per the "Both via overloads" shape decision: each fluent method has
- * TWO overloads — one with `[_]` wildcards (typed, any phantom) and
+ * TWO overloads -- one with `[_]` wildcards (typed, any phantom) and
  * one with `String` (quick path for legacy/audit use cases).
  */
 object QueryBuilderDsl {
@@ -32,6 +37,7 @@ object QueryBuilderDsl {
       orderBy:            Seq[TypedDimension[Nothing]]       = Nil,
       window:             Seq[TypedWindow[Nothing, Nothing]] = Nil,
       limit:              Option[Long]                        = None,
+      whereFilters:       Seq[TypedPredicate[Nothing]]        = Nil,
   ) {
 
     /** Add typed aggregate measures (typed overload, any phantom).
@@ -116,10 +122,41 @@ object QueryBuilderDsl {
         }.toSeq).asInstanceOf[Seq[TypedWindow[Nothing, Nothing]]]
       )
 
+    /** Add typed filter predicates (typed overload, any phantom).
+      *
+      * Per PR-20 (ADR-008-R SSfilter/where): the typed predicate is
+      * applied via `df.filter(predicate)` BEFORE the aggregate path
+      * (per ADR-008-R §PR-19 spark connector end-to-end). The phantom
+      * `[D]` is captured at construction (object-level Refs); the
+      * accumulator coerces it to `Nothing` via `asInstanceOf` at the
+      * variance boundary. */
+    def filter(predicates: TypedPredicate[_]*): BuiltQuery =
+      copy(whereFilters =
+        (whereFilters ++ predicates.toSeq).asInstanceOf[Seq[TypedPredicate[Nothing]]]
+      )
+
+    /** Add typed filter predicate NAMES (string overload).
+      *
+      * Per karpathy-guidelinesmindset §2 (simplicity): the string
+      * overload is a convenience for quick YAML-style filtering;
+      * it builds `Predicate.Compare(field, =, value)` AST nodes
+      * and wraps them as `TypedPredicate[Nothing]`. */
+    def filterNames(predicates: (String, io.sm8.core.predicate.CompareOp, Any)*): BuiltQuery =
+      copy(whereFilters =
+        (whereFilters ++ predicates.map { case (field, op, value) =>
+          TypedPredicate.of(name = s"$field $op $value",
+            predicate = io.sm8.core.predicate.Predicate.Compare(field, op, value))
+        }.toSeq).asInstanceOf[Seq[TypedPredicate[Nothing]]]
+      )
+
+    /** Alias for `filter(...)` (the `where:` keyword in YAML
+      * convention; per karpathy-app-designmindset SS1.3 -- mirror
+      * the existing QueryRequest shape). */
+    def where(predicates: TypedPredicate[_]*): BuiltQuery = filter(predicates: _*)
+
     /** Add the typed limit. */
     def limit(n: Option[Long]): BuiltQuery =
       copy(limit = n)
-
     /** Build the typed `QueryRequest` wire DTO. */
     def build(model: String, dimensions: Seq[String]): QueryRequest =
       QueryRequest(
@@ -130,11 +167,12 @@ object QueryBuilderDsl {
         partitionBy       = partitionBy,
         orderBy           = orderBy,
         window            = window,
-        limit             = limit
+        limit             = limit,
+        whereFilters      = whereFilters,
       )
   }
 
-  /** Start the fluent builder (per `karpathy-guidelinesmindset` §2:
+  /** Start the fluent builder (per karpathy-guidelinesmindset §2:
    * zero-arg factory for the empty accumulator). */
   def start(): BuiltQuery = BuiltQuery()
 }

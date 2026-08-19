@@ -196,8 +196,20 @@ final case class QueryRequest(
     /** PR-18: typed window specs (rank-only minimal; ADR-008-R). */
     window:        Seq[io.sm8.core.rel.TypedWindow[Nothing, Nothing]] = Nil,
     /** PR-18: typed order-by columns (used by window + sort). */
-    orderBy:       Seq[io.sm8.core.model.TypedDimension[Nothing]]     = Nil,
-) extends Product with Serializable
+    orderBy:           Seq[io.sm8.core.model.TypedDimension[Nothing]]     = Nil,
+    /** PR-20 (ADR-008-R §PR-20): typed predicate filters (DSL
+      * shape -- parallels `where: Option[String]` raw SQL filter).
+      *
+      * Per scala-impact-analysismindset §3 (binary compat): the
+      * existing `filters: List[FilterSpec]` field (line 179) is the
+      * legacy `Model.filters` shape (consumed by
+      * `PortableQueryCompiler.applyFilters`); this NEW field is the
+      * typed-DSL shape (consumed by `TypedQueryCompiler`). Both
+      * default to Nil (zero behavior change for 19 callers).
+      *
+      * Per karpathy-guidelines §3 (surgical): default = Nil. */
+    whereFilters:      Seq[io.sm8.core.rel.TypedPredicate[Nothing]]    = Nil,
+ ) extends Product with Serializable
 
 object QueryRequest {
 
