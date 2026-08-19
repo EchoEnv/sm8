@@ -17,7 +17,7 @@ package io.sm8.core.query
 
 import io.sm8.core.engine.QueryRequest
 import io.sm8.core.model.TypedDimension
-import io.sm8.core.rel.{AggregateFn, ComparisonOp, Having, PartitionBy, TypedAggregateCall, TypedPredicate, TypedWindow, WindowFunction}
+import io.sm8.core.rel.{AggregateFn, ComparisonOp, Having, PartitionBy, SortDirection, TypedAggregateCall, TypedPredicate, TypedSortKey, TypedSortKeyOps, TypedWindow, WindowFunction}
 
 /** Typed fluent builder for `QueryRequest`.
  *
@@ -38,6 +38,7 @@ object QueryBuilderDsl {
       window:             Seq[TypedWindow[Nothing, Nothing]] = Nil,
       limit:              Option[Long]                        = None,
       whereFilters:       Seq[TypedPredicate[Nothing]]        = Nil,
+      sortDirections:     Seq[SortDirection]                   = Nil,
   ) {
 
     /** Add typed aggregate measures (typed overload, any phantom).
@@ -108,6 +109,33 @@ object QueryBuilderDsl {
         (names.toIndexedSeq.map(n => TypedDimension.of(n)).toSeq).asInstanceOf[Seq[TypedDimension[Nothing]]]
       )
 
+    /** Per PR-25 (ADR-008-R SSExtOrderBy) + senior reviews 2026-08-19:
+      * typed order-by via the TypedSortKey extension (.asc / .desc).
+      * Zips dim + direction into the parallel accumulator fields
+      * `orderBy` + `sortKeys` (in lockstep). Per scala-bug-hunting-
+      * mindset SS1 (erasure collision prevention): this is renamed
+      * `orderByKeys` (NOT `orderBy`) -- the existing
+      * `orderBy(dims: TypedDimension[_]*)` overload has the same
+      * erasure signature (Seq[Any]) -- renaming to `orderByKeys`
+      * preserves both APIs at the call site without Scala 2.13
+      * erasure ambiguity.
+      *
+      * Preserves backward compat: TypedDimension-only orderBy(...)
+      * still produces only dim entries (no direction refinement).
+      *
+      * Per scala-jvm-safety-mindset SS2 (Serializable preserved):
+      * TypedSortKey extends Serializable (PR-25 closure-safety spec). */
+    def orderByKeys(keys: TypedSortKey[_, _]*): BuiltQuery = {
+      val dims: Seq[TypedDimension[Nothing]] =
+        keys.toIndexedSeq.map(_.dimension).toSeq.asInstanceOf[Seq[TypedDimension[Nothing]]]
+      val directs: Seq[SortDirection] =
+        keys.toIndexedSeq.map(_.direction).toSeq.asInstanceOf[Seq[SortDirection]]
+      copy(
+        orderBy        = orderBy ++ dims,
+        sortDirections = sortDirections ++ directs
+      )
+    }
+
     /** Add typed window specs (typed overload, any phantom). */
     def window(windows: TypedWindow[_, _]*): BuiltQuery =
       copy(window =
@@ -169,6 +197,10 @@ object QueryBuilderDsl {
         window            = window,
         limit             = limit,
         whereFilters      = whereFilters,
+        // Per PR-25: forward sortDirections directly (set by
+        // orderByKeys overload). Default Ascending for legacy 19
+        // callers (sortDirections defaults to Nil).
+        sortDirections   = sortDirections
       )
   }
 
