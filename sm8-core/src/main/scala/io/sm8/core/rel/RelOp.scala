@@ -157,4 +157,27 @@ object RelOp {
       count:  Long,
       offset: Long = 0L,
   ) extends RelOp
+
+  /** PR-17 (ADR-008-R): apply a window function to a child. Maps to
+    * Spark's `withColumn("rank", F.row_number().over(Window.partitionBy(
+    * ...).orderBy(...)))`, Trino's window function.
+    *
+    * Per `karpathy-guidelines-mindset` "smallest correct core": the
+    * window function is carried as a string + 2 Exprs (partition +
+    * order) — the typed `WindowFunction` ADT lives in the SDK layer
+    * (per ADR-008-R); the IR carries the wire-stable string so the
+    * engine adapter pattern-matches.
+    *
+    * @param input       the child node
+    * @param windowFn    the window function name (`"row_number"`,
+    *                     `"rank"`, `"dense_rank"`)
+    * @param partitionBy the partition-by column reference (Expr)
+    * @param orderBy     the order-by column reference (Expr)
+    */
+  final case class Window(
+      input:       RelOp,
+      windowFn:    String,
+      partitionBy: Expr,
+      orderBy:     Expr,
+  ) extends RelOp
 }
