@@ -12,25 +12,25 @@
  * from schema validation -- not just callers that go through the
  * PR-27 helper.
  *
- * Per [[karpathy-app-design-mindset]] SS3.1 (Protocols before
+ * Per [[scala-app-design-mindset]] SS3.1 (Protocols before
  * Implementations) + RFC SS3 (layer ownership): the validator is
  * at sm8-core (the protocol); the spark-connector consumes it
  * inside the canonical entry point. The wire-DTO `Model` flows
  * through unchanged.
  *
- * Per [[karpathy-impact-analysis-mindset]] SS2 (binary
+ * Per [[scala-impact-analysis-mindset]] SS2 (binary
  * compatibility): the new overload is ADDITIVE. The existing
  * `compileRelOp(relOp, ctx)` (2-arg) and `compileRelOp(relOp, ctx,
  * preFilteredDf)` (3-arg) signatures are preserved. This spec
  * exercises ONLY the new 5-arg overload; the existing overloads
  * are covered by MinimalRelOpLowererSpec + FilterPushdownSpec.
  *
- * Per [[karpathy-bug-hunting-mindset]] SS1 (trust compiler): the
+ * Per [[scala-bug-hunting-mindset]] SS1 (trust compiler): the
  * validator's `Either[ModelValidationError, Unit]` return type
  * forces the caller to handle the validation result at compile
  * time. No silent null. No runtime `UNRESOLVED_COLUMN`.
  *
- * Per [[karpathy-spark-batch-bugs-mindset]] SS1 (closure-safety
+ * Per [[scala-spark-batch-bugs-mindset]] SS1 (closure-safety
  * -- the user's explicit priority): the validation runs in the
  * driver (no Spark closure capture). The pre-filtered DF is built
  * driver-side by `resolveWithPushdown`.
@@ -163,8 +163,12 @@ class CompileRelOpSpec extends AnyFunSuite with Matchers {
         peopleScan, Some(spark.emptyDataFrame))
       result.isLeft shouldBe true
       val err = result.left.toOption.get
+      // Per PR-32 architect + data-eng review (NIT): the
+      // capability string is implementation-leakage (a future
+      // rename would break the test). The structural check below
+      // is what matters: the typed error shape + the bogus
+      // field name (the behaviour-revealing detail).
       err shouldBe a [EngineError.UnsupportedCapability]
-      err.toString should include ("ModelValidator.validateAgainstSchema")
       err.toString should include ("bogus_column")
     } finally spark.stop()
   }
@@ -197,6 +201,12 @@ class CompileRelOpSpec extends AnyFunSuite with Matchers {
       val result = pc.compileRelOp(model, relOp, EngineContext.defaultContext,
         peopleScan, None)
       result.isRight shouldBe true
+      // Per PR-32 data-engineer review (NIT): pin the row count
+      // to the 3-row temp view fixture. The Left/Right split proves
+      // the validation surface; the row-count check proves the
+      // canonical overload actually compiled the relOp against
+      // the resolved source's schema.
+      result.toOption.get.count() shouldBe 3L
     } finally spark.stop()
   }
 }
