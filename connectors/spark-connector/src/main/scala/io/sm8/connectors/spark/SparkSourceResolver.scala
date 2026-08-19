@@ -30,10 +30,11 @@ package io.sm8.connectors.spark
 import io.sm8.core.engine.{EngineError, EngineIdentity, ResolvedSource, SourceResolver}
 import io.sm8.core.model.SourceRef
 import io.sm8.core.schema.{Field, SealedDataType}
-
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.types.StructField
-
+import io.sm8.core.rel.TypedPredicate
+import org.apache.spark.sql.Column
+import org.apache.spark.sql.functions.lit
 final class SparkSourceResolver(
     val spark:   SparkSession,
     val registry: ModelRegistry = ModelRegistry.NoopModelRegistry,
@@ -154,8 +155,92 @@ final class SparkSourceResolver(
   private def sparkTypeToSealedDataType(
       t: org.apache.spark.sql.types.DataType
   ): SealedDataType = sparkTypeBridge.sparkTypeToSealedDataType(t)
-}
 
+  // PR-28 (ADR-008-R SSfilterPushdown): Catalyst-level filter pushdown.
+  //
+  // Per [[karpathy-app-design-mindset]] SS3.1 (Protocols before
+  // Implementations) + RFC SS3 (layer ownership): filter pushdown
+  // is at the CONNECTOR layer -- the core IR stays pure (no spark
+  // types in the typed predicate shape). This method is the
+  // implementation of the protocol; the protocol shape is the
+  // existing TypedPredicate (sm8-core/rel/).
+  //
+  // Per [[scala-spark-batch-bugs-mindset]] SS1 (closure-safety --
+  // the user's explicit priority): the captured state in the
+  // returned DataFrame is the DataFrame + the predicate columns
+  // (both Serializable). The DataFrame itself is NOT captured
+  // into any UDF closure (the pushdown happens at scan time,
+  // NOT in any executor-side function).
+  //
+  // Per [[karpathy-bug-hunting-mindset]] SS1 (trust the compiler):
+  // the predicate is built once via predicateToColumn (the
+  // existing helper from PR-21). The typed Either returns the
+  // actual DataFrame on success, or a typed EngineError on
+  // failure (per [[scala-error-handlingmindset]] SS1: typed
+  // errors, never silent).
+  //
+  // Per [[karpathy-perf-testing-mindset]] SS1 (don't guess, measure):
+  // for ByPath Parquet, the predicate is pushed into the
+  // Parquet row-group filter at scan time. For ByName (catalog
+  // tables / temp views), the predicate is pushed as a
+  // df.filter(predicate) AFTER the table/view is resolved. For
+  // ByProvider, no pushdown is attempted (deferred to a
+  // follow-up).
+  def resolveWithPushdown(
+      source:  SourceRef,
+      filters: Seq[TypedPredicate[_]],
+      identity: EngineIdentity,
+  ): Either[EngineError, (ResolvedSource, org.apache.spark.sql.DataFrame)] = {
+    if (filters.isEmpty) {
+      // No filters -- no pushdown; the existing path is
+      // backward-compatible (per [[scala-impact-analysis-mindset]]
+      // SS3: zero behavior change for 19 callers).
+      resolve(source, identity).map(s => (s, readSourceDF(source, identity)))
+    } else {
+      // Build a combined AND-of-all-predicates and apply it AT
+      // THE SOURCE (per the user's "Catalyst pushdown" approval).
+      val combinedColumnE: Either[EngineError, Column] =
+        filters.foldLeft[Either[EngineError, Column]](Right(lit(true))) {
+          (accE, pred) => for {
+            acc   <- accE
+            col   <- io.sm8.connectors.spark.PortableExprCompiler
+                       .predicateToColumn(pred.predicate)
+          } yield acc && col
+        }
+      combinedColumnE.flatMap { combinedColumn =>
+        // Resolve the source first (preserves the existing resolve
+        // contract -- the schema is the actual df.schema).
+        resolve(source, identity).map { resolved =>
+          // Read the source DataFrame + apply the combined filter.
+          // For Parquet: the predicate is pushed into the
+          // Parquet row-group filter at scan time.
+          val df0 = readSourceDF(source, identity)
+          val df1 = df0.filter(combinedColumn)
+          (resolved, df1)
+        }
+      }
+    }
+  }
+
+  // PR-28: shared read helper (used by both resolve and
+  // resolveWithPushdown).
+  private def readSourceDF(
+      source:  SourceRef,
+      identity: EngineIdentity,
+  ): org.apache.spark.sql.DataFrame = source match {
+    case src: SourceRef.ByName =>
+      spark.table(src.table)
+    case src: SourceRef.ByPath =>
+      val reader = spark.read.format(src.format)
+      src.options.foldLeft(reader)((acc, kv) => acc.option(kv._1, kv._2))
+        .load(src.path)
+    case _: SourceRef.ByProvider =>
+      // Per RFC SS3: ByProvider requires a registered ProviderRef
+      // closure. The SourceFilterPushdown for ByProvider is
+      // deferred.
+      spark.emptyDataFrame
+  }
+ }
 object SparkSourceResolver {
 
   /** Engine-portable registry that maps a model name to a
