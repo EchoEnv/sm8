@@ -1,33 +1,27 @@
 /*
  * SM8 Spark Connector -- SparkFilterSpec (PR-22, ADR-008-R §PR-22).
  *
- * Test categories per ADR-008-R §filter/where (RFC-driven
- * structure):
- *   1. Typed Predicate.Compare via TypedPredicate (6 tests -- one
- *      per CompareOp case: EQ, NE, LT, LE, GT, GE)
+ * Test categories per ADR-008-R §filter/where:
+ *   1. Typed Predicate.Compare via TypedPredicate (6 tests)
  *   2. Typed Predicate.In + IsNull (2 tests)
- *   3. Typed Predicate.And + Or + Not (3 tests, via the existing
- *      `negatePredicate` method + AND/OR combinators)
- *   4. End-to-end: whereFilters + groupBy + aggregateMeasures (2 tests)
+ *   3. Typed Predicate.And + Or + Not (3 tests)
+ *   4. End-to-end: filter + groupBy + aggregateMeasures composition (2 tests)
  *
  * Per [[debug-mantra-mindset]] SS1: every test asserts the
- * EVALUATED RESULT (collect().toSet on the resulting DataFrame),
- * not the intermediate SQL.
+ * EVALUATED RESULT (collect().toSet on the resulting DataFrame).
  *
- * Per [[scala-spark-batch-bugs-mindset]] SS1 (closure-safety -- the
- * user's explicit concern): TypedPredicate captured at object
- * level (Refs below) per PR-16 contract. The compileSteps closure
- * captures only Serializable vals.
+ * Per [[scala-spark-batch-bugs-mindset]] SS1 (closure-safety --
+ * the user's explicit concern): TypedPredicate captured at object
+ * level (Refs below) per PR-16 contract.
  *
- * Per [[scala-perf-testing-mindset]] SS3 (allocation is the tax):
- * zero per-row allocation. Each predicate is applied ONCE per
- * query at driver-side.
+ * Per [[scala-perf-testing-mindset]] SS3: zero per-row allocation;
+ * the typed predicate is applied ONCE at driver-side.
  */
 package io.sm8.connectors.spark
 
 import io.sm8.core.engine.{EngineContext, QueryRequest}
 import io.sm8.core.model.TypedDimension
-import io.sm8.core.predicate.Predicate
+import io.sm8.core.predicate.{CompareOp, Predicate}
 import io.sm8.core.rel.{TypedAggregateCall, TypedPredicate}
 
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
@@ -52,7 +46,6 @@ class SparkFilterSpec extends AnyFunSuite with Matchers {
     StructField("amount", DoubleType, nullable = false),
   ))
 
-  /** Fixture: 2 east rows + 3 west rows. */
   private def fixtureRows: Seq[Row] = Seq(
     Row("east", 100.0),
     Row("east", 200.0),
@@ -60,8 +53,6 @@ class SparkFilterSpec extends AnyFunSuite with Matchers {
     Row("west", 150.0),
     Row("west",  75.0),
   )
-
-  // === Phantom-typed witnesses (object level, per PR-16 closure-safety) ===
 
   sealed trait Region
   sealed trait Amount
@@ -73,8 +64,9 @@ class SparkFilterSpec extends AnyFunSuite with Matchers {
     val sumAmount: TypedAggregateCall[SumAmount] = TypedAggregateCall.sum[SumAmount]("sum_amount", "amount")
   }
 
-  /** Variance-coercion helper (PR-16 documented pattern). */
-  private def wrapPredicates(preds: TypedPredicate[_]*): Seq[TypedPredicate[Nothing]] =
+  private def wrapPredicates(
+      preds: TypedPredicate[_]*
+  ): Seq[TypedPredicate[Nothing]] =
     preds.toIndexedSeq.asInstanceOf[Seq[TypedPredicate[Nothing]]]
 
   private def fixtureDF(spark: SparkSession): DataFrame =
@@ -87,12 +79,14 @@ class SparkFilterSpec extends AnyFunSuite with Matchers {
     try {
       val df = fixtureDF(spark)
       val req = QueryRequest(
-        model = "test", dimensions = Seq("region"),
+        model        = "test",
+        dimensions   = Seq("region"),
         whereFilters = wrapPredicates(TypedPredicate.eq[Region]("region", "east")),
       )
       val result = TypedQueryCompiler(spark).apply(df, req, EngineContext.defaultContext)
       result.isRight shouldBe true
-      val got = result.toOption.get.select("region", "amount").collect()
+      val r = result.toOption.get
+      val got = r.select("region", "amount").collect()
         .map(row => (row.getString(0), row.getDouble(1))).toSet
       got shouldBe Set(("east", 100.0), ("east", 200.0))
     } finally spark.stop()
@@ -103,12 +97,14 @@ class SparkFilterSpec extends AnyFunSuite with Matchers {
     try {
       val df = fixtureDF(spark)
       val req = QueryRequest(
-        model = "test", dimensions = Seq("region"),
+        model        = "test",
+        dimensions   = Seq("region"),
         whereFilters = wrapPredicates(TypedPredicate.ne[Region]("region", "east")),
       )
       val result = TypedQueryCompiler(spark).apply(df, req, EngineContext.defaultContext)
       result.isRight shouldBe true
-      val got = result.toOption.get.select("region", "amount").collect()
+      val r = result.toOption.get
+      val got = r.select("region", "amount").collect()
         .map(row => (row.getString(0), row.getDouble(1))).toSet
       got shouldBe Set(("west", 50.0), ("west", 150.0), ("west", 75.0))
     } finally spark.stop()
@@ -119,12 +115,14 @@ class SparkFilterSpec extends AnyFunSuite with Matchers {
     try {
       val df = fixtureDF(spark)
       val req = QueryRequest(
-        model = "test", dimensions = Seq("region"),
+        model        = "test",
+        dimensions   = Seq("region"),
         whereFilters = wrapPredicates(TypedPredicate.lt[Amount]("amount", 100.0)),
       )
       val result = TypedQueryCompiler(spark).apply(df, req, EngineContext.defaultContext)
       result.isRight shouldBe true
-      val got = result.toOption.get.select("region", "amount").collect()
+      val r = result.toOption.get
+      val got = r.select("region", "amount").collect()
         .map(row => (row.getString(0), row.getDouble(1))).toSet
       got shouldBe Set(("west", 50.0), ("west", 75.0))
     } finally spark.stop()
@@ -135,12 +133,14 @@ class SparkFilterSpec extends AnyFunSuite with Matchers {
     try {
       val df = fixtureDF(spark)
       val req = QueryRequest(
-        model = "test", dimensions = Seq("region"),
+        model        = "test",
+        dimensions   = Seq("region"),
         whereFilters = wrapPredicates(TypedPredicate.le[Amount]("amount", 100.0)),
       )
       val result = TypedQueryCompiler(spark).apply(df, req, EngineContext.defaultContext)
       result.isRight shouldBe true
-      val got = result.toOption.get.select("region", "amount").collect()
+      val r = result.toOption.get
+      val got = r.select("region", "amount").collect()
         .map(row => (row.getString(0), row.getDouble(1))).toSet
       got shouldBe Set(("east", 100.0), ("west", 50.0), ("west", 75.0))
     } finally spark.stop()
@@ -151,12 +151,14 @@ class SparkFilterSpec extends AnyFunSuite with Matchers {
     try {
       val df = fixtureDF(spark)
       val req = QueryRequest(
-        model = "test", dimensions = Seq("region"),
+        model        = "test",
+        dimensions   = Seq("region"),
         whereFilters = wrapPredicates(TypedPredicate.gt[Amount]("amount", 100.0)),
       )
       val result = TypedQueryCompiler(spark).apply(df, req, EngineContext.defaultContext)
       result.isRight shouldBe true
-      val got = result.toOption.get.select("region", "amount").collect()
+      val r = result.toOption.get
+      val got = r.select("region", "amount").collect()
         .map(row => (row.getString(0), row.getDouble(1))).toSet
       got shouldBe Set(("east", 200.0), ("west", 150.0))
     } finally spark.stop()
@@ -167,12 +169,14 @@ class SparkFilterSpec extends AnyFunSuite with Matchers {
     try {
       val df = fixtureDF(spark)
       val req = QueryRequest(
-        model = "test", dimensions = Seq("region"),
+        model        = "test",
+        dimensions   = Seq("region"),
         whereFilters = wrapPredicates(TypedPredicate.ge[Amount]("amount", 100.0)),
       )
       val result = TypedQueryCompiler(spark).apply(df, req, EngineContext.defaultContext)
       result.isRight shouldBe true
-      val got = result.toOption.get.select("region", "amount").collect()
+      val r = result.toOption.get
+      val got = r.select("region", "amount").collect()
         .map(row => (row.getString(0), row.getDouble(1))).toSet
       got shouldBe Set(("east", 100.0), ("east", 200.0), ("west", 150.0))
     } finally spark.stop()
@@ -180,12 +184,13 @@ class SparkFilterSpec extends AnyFunSuite with Matchers {
 
   // === Category 2: Typed Predicate.In + IsNull (2 tests) ===
 
-  test("filter: Predicate.In (region IN ('east','west')) -- always true for our fixture") {
+  test("filter: Predicate.In (region IN ('east','west')) -- all fixture rows pass") {
     val spark = buildSpark()
     try {
       val df = fixtureDF(spark)
       val req = QueryRequest(
-        model = "test", dimensions = Seq("region"),
+        model        = "test",
+        dimensions   = Seq("region"),
         whereFilters = wrapPredicates(TypedPredicate.in[Region]("region", List("east", "west"))),
       )
       val result = TypedQueryCompiler(spark).apply(df, req, EngineContext.defaultContext)
@@ -199,7 +204,8 @@ class SparkFilterSpec extends AnyFunSuite with Matchers {
     try {
       val df = fixtureDF(spark)
       val req = QueryRequest(
-        model = "test", dimensions = Seq("region"),
+        model        = "test",
+        dimensions   = Seq("region"),
         whereFilters = wrapPredicates(TypedPredicate.isNull[Amount]("amount")),
       )
       val result = TypedQueryCompiler(spark).apply(df, req, EngineContext.defaultContext)
@@ -210,71 +216,82 @@ class SparkFilterSpec extends AnyFunSuite with Matchers {
 
   // === Category 3: Typed Predicate.And + Or + Not (3 tests) ===
 
-  // Per PR-20: AND/OR combinators require all children share the phantom [D].
-  // For mixed-phantom compositions (region + amount), wrap each in a
-  // same-phantom `TypedPredicate.of[D](name, predicate)` adapter. The wrap
-  // is the explicit variance-coercion at the combinator boundary.
-
-  test("filter: Predicate.And (region=east AND amount>100.0) -- both children Region phantom") {
+  test("filter: Predicate.And (region=east AND amount>100.0)") {
+    // Per ADR-008-R + PR-20: the AND combinator's phantom is
+    // inferred from the FIRST child; both children must share the
+    // phantom `[D]`. To compose a cross-phantom AND, wrap with
+    // `Predicate.And` directly OR use Predicate.and smart-ctor
+    // (per Predicate.scala).
     val spark = buildSpark()
     try {
       val df = fixtureDF(spark)
-      // Both children with the same phantom (Region). The amount>100
-      // is wrapped in a Region-phantom adapter -- it's the same predicate,
-      // just re-tagged for the combinator's phantom requirement.
-      val regionAndAmountGt: TypedPredicate[Region] =
-        TypedPredicate.of[Region]("amount>100.0",
-          Predicate.Compare("amount", io.sm8.core.predicate.CompareOp.Gt, 100.0))
-      val regionEqEast: TypedPredicate[Region] =
-        TypedPredicate.of[Region]("region=east",
-          Predicate.Compare("region", io.sm8.core.predicate.CompareOp.Eq, "east"))
       val req = QueryRequest(
-        model = "test", dimensions = Seq("region"),
-        whereFilters = wrapPredicates(TypedPredicate.and[Region](regionEqEast, regionAndAmountGt)),
+        model        = "test",
+        dimensions   = Seq("region"),
+        whereFilters = wrapPredicates(
+          TypedPredicate.of[Region](
+            "region=east AND amount>100.0",
+            Predicate.and(List(
+              TypedPredicate.eq[Region]("region", "east").predicate,
+              TypedPredicate.gt[Amount]("amount", 100.0).predicate
+            ))
+          )
+        ),
       )
       val result = TypedQueryCompiler(spark).apply(df, req, EngineContext.defaultContext)
       result.isRight shouldBe true
-      val got = result.toOption.get.select("region", "amount").collect()
+      val r = result.toOption.get
+      val got = r.select("region", "amount").collect()
         .map(row => (row.getString(0), row.getDouble(1))).toSet
       got shouldBe Set(("east", 200.0))
     } finally spark.stop()
   }
 
-  test("filter: Predicate.Or (region=east OR amount<100.0) -- both children Region phantom") {
+  test("filter: Predicate.Or (region=east OR amount<100.0)") {
     val spark = buildSpark()
     try {
       val df = fixtureDF(spark)
-      val regionEqEast: TypedPredicate[Region] =
-        TypedPredicate.of[Region]("region=east",
-          Predicate.Compare("region", io.sm8.core.predicate.CompareOp.Eq, "east"))
-      val amountLt100: TypedPredicate[Region] =
-        TypedPredicate.of[Region]("amount<100.0",
-          Predicate.Compare("amount", io.sm8.core.predicate.CompareOp.Lt, 100.0))
       val req = QueryRequest(
-        model = "test", dimensions = Seq("region"),
-        whereFilters = wrapPredicates(TypedPredicate.or[Region](regionEqEast, amountLt100)),
+        model        = "test",
+        dimensions   = Seq("region"),
+        whereFilters = wrapPredicates(
+          TypedPredicate.of[Region](
+            "region=east OR amount<100.0",
+            Predicate.or(List(
+              TypedPredicate.eq[Region]("region", "east").predicate,
+              TypedPredicate.lt[Amount]("amount", 100.0).predicate
+            ))
+          )
+        ),
       )
       val result = TypedQueryCompiler(spark).apply(df, req, EngineContext.defaultContext)
       result.isRight shouldBe true
-      val got = result.toOption.get.select("region", "amount").collect()
+      val r = result.toOption.get
+      val got = r.select("region", "amount").collect()
         .map(row => (row.getString(0), row.getDouble(1))).toSet
-      got shouldBe Set(("east", 100.0), ("east", 200.0), ("west", 50.0), ("west", 75.0))
+      got shouldBe Set(
+        ("east", 100.0), ("east", 200.0),
+        ("west", 50.0), ("west", 75.0)
+      )
     } finally spark.stop()
   }
 
-  test("filter: Predicate.Not (NOT (region=east)) -- negatePredicate + of wrap") {
+  test("filter: Predicate.Not (NOT (region=east) via negatePredicate + of wrap)") {
+    // Per PR-20: TypedPredicate.negatePredicate produces a
+    // Predicate.Not from the typed witness. Wrap it back in a
+    // TypedPredicate.of for the wire DTO.
     val spark = buildSpark()
     try {
       val df = fixtureDF(spark)
-      // Per PR-20: the existing TypedPredicate.negatePredicate produces
-      // a Predicate.Not from a TypedPredicate. Wrap it back in a
-      // TypedPredicate.of for the wire DTO.
-      val regionEqEast: TypedPredicate[Region] = TypedPredicate.eq[Region]("region", "east")
-      val notRegionEqEast: TypedPredicate[Region] =
-        TypedPredicate.of[Region]("NOT (region=east)", regionEqEast.predicate.negatePredicate)
       val req = QueryRequest(
-        model = "test", dimensions = Seq("region"),
-        whereFilters = wrapPredicates(notRegionEqEast),
+        model        = "test",
+        dimensions   = Seq("region"),
+        whereFilters = wrapPredicates(
+          TypedPredicate.of[Region](
+            "NOT (region=east)",
+            TypedPredicate.eq[Region]("region", "east").negatePredicate
+          )
+        ),
       )
       val result = TypedQueryCompiler(spark).apply(df, req, EngineContext.defaultContext)
       result.isRight shouldBe true
@@ -291,19 +308,19 @@ class SparkFilterSpec extends AnyFunSuite with Matchers {
     try {
       val df = fixtureDF(spark)
       val req = QueryRequest(
-        model = "test",
-        dimensions = Seq("region"),
-        whereFilters = wrapPredicates(TypedPredicate.gt[Amount]("amount", 75.0)),
-        aggregateMeasures = Seq(Refs.sumAmount)
-          .asInstanceOf[Seq[TypedAggregateCall[Nothing]]],
+        model             = "test",
+        dimensions        = Seq("region"),
+        whereFilters      = wrapPredicates(TypedPredicate.gt[Amount]("amount", 75.0)),
+        aggregateMeasures = Seq(Refs.sumAmount).asInstanceOf[Seq[io.sm8.core.rel.TypedAggregateCall[Nothing]]],
       )
       val result = TypedQueryCompiler(spark).apply(df, req, EngineContext.defaultContext)
       result.isRight shouldBe true
+      val r = result.toOption.get
       // filter amount>75: (east,100), (east,200), (west,150)
       // groupBy region + sum amount:
       //   east: 100+200 = 300
       //   west: 150
-      val got = result.toOption.get.select("region", "sum_amount").collect()
+      val got = r.select("region", "sum_amount").collect()
         .map(row => (row.getString(0), row.getDouble(1))).toSet
       got shouldBe Set(("east", 300.0), ("west", 150.0))
     } finally spark.stop()

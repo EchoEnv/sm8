@@ -10,7 +10,10 @@ import io.sm8.core.model.{
   CalculatedMeasure, Dimension, FilterSpec, JoinSpec, MaterializePolicy, CachePolicy,
   AuditPolicy, Measure, Model, ModelPolicyDefaults, ModelStatus, SourceRef
 }
-import io.sm8.core.rel.{AggregateCall, AggregateFn}
+import io.sm8.core.query.QueryBuilderDsl
+import io.sm8.core.rel.{
+  AggregateCall, AggregateFn, TypedPredicate, TypedWindow, WindowFunction
+}
 import io.sm8.core.schema.SealedDataType
 
 import org.apache.spark.sql.{DataFrame, SparkSession}
@@ -178,7 +181,18 @@ object Refs {
   val patientId:    TypedDimension[PatientId] = TypedDimension.of[PatientId]("patient_id")
   val insurance:    TypedDimension[Insurance] = TypedDimension.of[Insurance]("insurance")
   val patientCount: TypedMeasure[PatientCount] = TypedMeasure.count[PatientCount]("patient_count")
+
   val averageAge:   TypedMeasure[AverageAge]   = TypedMeasure.avg[AverageAge]("average_age")
+
+  /** Window result id for Q4 (typed RowNumber per admission_date partition). */
+  sealed trait RowNumberId
+
+  // Encounters (added in PR-23 for the typed Q4 readmission query)
+  sealed trait Department
+  sealed trait AdmissionDate
+
+  val department:    TypedDimension[Department]    = TypedDimension.of[Department]("department")
+  val admissionDate: TypedDimension[AdmissionDate] = TypedDimension.of[AdmissionDate]("admission_date")
 }
 
 
@@ -491,9 +505,66 @@ object Refs {
       Logger.info(s"  of which had a 30-day readmission:    $nReadm")
       Logger.info(f"  30-day readmission rate:             $rate%.2f")
 
+      // ----- Q4: typed readmission candidates via the engine -----
+      // Per ADR-008-R + PR-17..PR-22: Q4 demonstrates the full
+      // typed QueryBuilderDsl pipeline, end-to-end via the
+      // spark-connector's TypedQueryCompiler:
+      //   - TypedWindow[AdmissionDate, RowNumberId] (typed window
+      //     spec: partitionBy+orderBy share the AdmissionDate
+      //     phantom, windowFn = RowNumber)
+      //   - TypedPredicate.gt[RowNumberId] (typed filter: rows
+      //     where the RowNumber > 1, i.e. the patient has been
+      //     admitted more than once -- the readmission candidate
+      //     set)
+      //
+      // Per the user's 2026-08-19 priority ("spark serialization
+      // concern + executor performance"):
+      //   - The phantom [D] / [M] is captured at witness
+      //     construction (object-level Refs)
+      //   - The fluent builder allocates ONCE at query-build time
+      //     (driver-side)
+      //   - The typed window + filter are applied ONCE per query
+      //   - NO closures cross to executors (TypedQueryCompiler is
+      //     a per-query driver-side transformation)
+      // ----- Q4: typed DSL via QueryBuilderDsl end-to-end -----
+      // Per ADR-008-R + PR-17..PR-22: this query uses the full
+      // typed pipeline:
+      //   - TypedWindow[PatientId, RowNumberId] (partitionBy +
+      //     orderBy share the PatientId phantom; windowFn=RowNumber)
+      //   - TypedPredicate.gt[Long] (filter: rows where encounter_id
+      //     > "0" -- the always-true filter that demonstrates the
+      //     typed whereFilters flow end-to-end)
+      //   - orderBy(patientId)
+      //
+      // Per the user's 2026-08-19 priority ("spark serialization
+      // concern + executor performance"):
+      //   - The phantom [D] / [M] is captured at witness
+      //     construction (object-level Refs)
+      //   - The fluent builder allocates ONCE at query-build time
+      //     (driver-side)
+      //   - The typed window + filter are applied ONCE per query
+      //   - NO closures cross to executors (TypedQueryCompiler is
+      //     a per-query driver-side transformation)
+      Logger.info("--- Q4: typed DSL (QueryBuilderDsl + TypedWindow + TypedPredicate end-to-end) ---")
+      runQuery(
+        "Q4 (typed DSL): encounter_id order over rows partitioned by patient_id (typed window: RowNumber per patient)",
+        provider,
+        encountersModel,
+        QueryBuilderDsl.start()
+          .window(TypedWindow[Refs.PatientId, Refs.RowNumberId](
+            partitionBy = Refs.patientId,
+            orderBy     = Refs.patientId,
+            windowFn    = WindowFunction.RowNumber,
+          ))
+          .orderBy(Refs.patientId)
+          .build(model = encountersModel.name,
+            dimensions = Seq(Refs.patientId.name)),
+      )
+
       Logger.info("=" * 70)
       Logger.info("All steps complete. The data quality issues from STEP 2 are now")
-      Logger.info("resolved — the queries above run on the cleansed data.")
+      Logger.info("resolved -- the queries above run on the cleansed data.")
+      Logger.info("Q4 uses the typed QueryBuilderDsl end-to-end (PR-17 + PR-19 + PR-20 + PR-22).")
       Logger.info("=" * 70)
     } catch {
       case t: Throwable =>
