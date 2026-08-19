@@ -328,6 +328,18 @@ object PortableExprCompiler extends java.io.Serializable {
     case FilterPredicate.IsNull(field, negate) =>
       val c = col(field)
       Right(if (negate) c.isNotNull else c.isNull)
+    case FilterPredicate.StringMatch(field, op, pattern) =>
+      // PR-29 (ADR-008-R SSfilterPushdown ergonomics): lower to
+      // Spark's `Column.startsWith / contains / endsWith`. Per
+      // [[karpathy-data-drivenrefactormindset]] SS2: simple,
+      // predictable (NOT a regex). The pattern is taken as-is
+      // (Spark's Column.startsWith uses exact substring match).
+      val c = col(field)
+      Right(op match {
+        case io.sm8.core.predicate.StringMatchOp.StartsWith => c.startsWith(pattern)
+        case io.sm8.core.predicate.StringMatchOp.Contains   => c.contains(pattern)
+        case io.sm8.core.predicate.StringMatchOp.EndsWith   => c.endsWith(pattern)
+      })
     case FilterPredicate.And(children) =>
       if (children.isEmpty) Right(lit(true))
       else children.map(predicateToColumn).reduceLeft((accE, cE) => for {
