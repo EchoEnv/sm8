@@ -30,7 +30,7 @@ import io.sm8.core.expr.Expr
   * Per [[scala-data-driven-refactor-mindset]] §1 (data is data): pure
   * data carrier. The fields are the ONLY data; the methods are derived.
   */
-sealed trait TypedDimension[D] extends Serializable {
+sealed trait TypedDimension[+D] extends Serializable {
   def name: String
   def fieldName: String
   def asFieldRef: Expr = Expr.FieldRef(fieldName)
