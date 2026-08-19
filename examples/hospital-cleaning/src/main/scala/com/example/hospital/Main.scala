@@ -11,9 +11,12 @@ import io.sm8.core.model.{
   AuditPolicy, Measure, Model, ModelPolicyDefaults, ModelStatus, SourceRef
 }
 import io.sm8.core.query.QueryBuilderDsl
+import io.sm8.core.model.TypedMeasureBridge._
 import io.sm8.core.rel.{
-  AggregateCall, AggregateFn, TypedPredicate, TypedWindow, WindowFunction
+  AggregateCall, AggregateFn, SortDirection, TypedAggregateCall,
+  TypedPredicate, TypedSortKeyOps, TypedWindow, WindowFunction
 }
+import io.sm8.core.rel.TypedSortKeyOps._
 import io.sm8.core.schema.SealedDataType
 
 import org.apache.spark.sql.{DataFrame, SparkSession}
@@ -180,7 +183,8 @@ object Refs {
   val gender:       TypedDimension[Gender]    = TypedDimension.of[Gender]("gender")
   val patientId:    TypedDimension[PatientId] = TypedDimension.of[PatientId]("patient_id")
   val insurance:    TypedDimension[Insurance] = TypedDimension.of[Insurance]("insurance")
-  val patientCount: TypedMeasure[PatientCount] = TypedMeasure.count[PatientCount]("patient_count")
+  val patientCount:    TypedMeasure[PatientCount] = TypedMeasure.count[PatientCount]("patient_count")
+  val encounterCount:  TypedMeasure[PatientCount] = TypedMeasure.count[PatientCount]("encounter_count")
 
   val averageAge:   TypedMeasure[AverageAge]   = TypedMeasure.avg[AverageAge]("average_age")
 
@@ -414,62 +418,61 @@ object Refs {
       val provider: io.sm8.connectors.spark.SparkEngineProvider =
         realizedProvider.asInstanceOf[io.sm8.connectors.spark.SparkEngineProvider]
 
-      // ----- Q1a: Patient demographics (by gender) -----
-      // Per the post-ADR-008-P review: sm8's current spark-connector
-      // does NOT yet group in-memory tables by dimension+measure
-      // (this is a known post-v0.1.0 followup). We use direct Spark
-      // here for the grouped query — the same hybrid pattern the
-      // upstream uses for Q3. The `QueryRequest` is built and
-      // passed to `provider.query` for demonstration of the API.
-      Logger.info("--- Q1a: Patient demographics by gender (direct Spark) ---")
-      val byGender = cleansedPatients
-        .groupBy("gender")
-        .count()
-        .orderBy(col("count").desc)
-        .collect()
-      byGender.foreach { row =>
-        Logger.info(s"  ${row.getAs[String]("gender")}: ${row.getAs[Long]("count")}")
-      }
-
-      // ----- Q1b: Patient demographics (by insurance) -----
-      Logger.info("--- Q1b: Patient demographics by insurance (direct Spark) ---")
-      val byInsurance = cleansedPatients
-        .groupBy("insurance")
-        .count()
-        .orderBy(col("count").desc)
-        .collect()
-      byInsurance.foreach { row =>
-        Logger.info(s"  ${row.getAs[String]("insurance")}: ${row.getAs[Long]("count")}")
-      }
-
-      // ----- Q2: ALOS by department -----
-      Logger.info("--- Q2: Average length of stay (ALOS) by department (direct Spark) ---")
-      val withLos = cleansedEncounters
-        .withColumn("los_days", datediff(col("discharge_date"), col("admission_date")))
-      val alosByDept = withLos
-        .groupBy("department")
-        .agg(avg("los_days").as("avg_los"), count("*").as("encounter_count"))
-        .orderBy("department")
-        .collect()
-      alosByDept.foreach { row =>
-        Logger.info(f"  ${row.getAs[String]("department")}: avg_los=${row.getAs[Double]("avg_los")}%.1f, encounters=${row.getAs[Long]("encounter_count")}")
-      }
-
-      // ----- Demonstrate the sm8 provider.query API on the patients model -----
-      // This is the "what the API looks like" demo. The current spark-
-      // connector returns the rows un-grouped (the grouping is a known
-      // followup). The test is here to (a) prove the API round-trips
-      // correctly and (b) provide a starting point for the user once
-      // the grouping is implemented.
+      // ----- Q1a: Patient demographics (by gender) -- TYPED DSL -----
+      // Per PR-26 (ADR-008-R SSMeasureBridge): the typed Measure
+      // witness flows through QueryBuilderDsl + provider.query end-
+      // to-end via the TypedMeasure -> TypedAggregateCall bridge +
+      // TypedQueryCompiler (PR-19). Every typed feature (groupBy +
+      // typed aggregate + orderByKeys desc) is wired.
       runQuery(
-        "Q1a (sm8 API): provider.query(patients, dim=gender, meas=patient_count) — un-grouped rows (see ADR-008-L GAPs for the grouping followup)",
+        "Q1a (typed DSL): provider.query(patients, dim=gender, meas=patient_count)",
         provider,
         patientsModel,
-        QueryRequest(
-          model      = "patients",
-          dimensions = Seq(Refs.gender.name),
-          measures   = Seq(Refs.patientCount.name),
-        ),
+        QueryBuilderDsl.start()
+          .groupBy(Refs.gender)
+          .aggregate(Refs.patientCount.toAggregateCall)
+          .orderByKeys(Refs.gender.desc)
+          .build(
+            model = patientsModel.name,
+            dimensions = Seq(Refs.gender.name),
+          ),
+      )
+
+      // ----- Q1b: Patient demographics (by insurance) -- TYPED DSL -----
+      runQuery(
+        "Q1b (typed DSL): provider.query(patients, dim=insurance, meas=patient_count)",
+        provider,
+        patientsModel,
+        QueryBuilderDsl.start()
+          .groupBy(Refs.insurance)
+          .aggregate(Refs.patientCount.toAggregateCall)
+          .orderByKeys(Refs.insurance.desc)
+          .build(
+            model = patientsModel.name,
+            dimensions = Seq(Refs.insurance.name),
+          ),
+      )
+
+      // ----- Q2: ALOS by department -- TYPED DSL -----
+      // Per PR-26: typed Measure + typed filter + typed orderByKeys
+      // + typed limit all flow through one fluent chain (per
+      // ADR-008-R + the user's executor-perf priority).
+      val encountersWithLos = cleansedEncounters
+        .withColumn("los_days", datediff(col("discharge_date"), col("admission_date")))
+      encountersWithLos.createOrReplaceTempView("encounters_clean_csv")
+      runQuery(
+        "Q2 (typed DSL): ALOS by department (typed aggregate + typed orderBy + typed limit end-to-end)",
+        provider,
+        encountersModel,
+        QueryBuilderDsl.start()
+          .groupBy(Refs.department)
+          .aggregate(Refs.encounterCount.toAggregateCall)
+          .orderByKeys(Refs.department.asc)
+          .limit(Some(100L))
+          .build(
+            model = encountersModel.name,
+            dimensions = Seq(Refs.department.name),
+          ),
       )
 
       // ----- Q3: 30-day readmission rate (computed in Spark using window/lag) -----
