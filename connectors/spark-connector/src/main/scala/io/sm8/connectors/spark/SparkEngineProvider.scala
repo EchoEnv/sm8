@@ -194,31 +194,46 @@ final class SparkEngineProvider(
     // thunk.
     val resolver = new SparkSourceResolver(spark)
     val compileSteps: io.sm8.core.engine.EngineContext => Either[EngineError, org.apache.spark.sql.DataFrame] = { eCtx =>
+      // PR-33 (ADR-008-R SSfilterPushdown typed-DSL wire-up): the
+      // full pipeline now uses `resolveWithPushdown` (per PR-28) +
+      // the canonical `compileRelOp` overload (per PR-32) + the
+      // new `TypedQueryCompiler.apply` overload that suppresses
+      // the in-memory `whereFiltersOp` when the pre-filtered DF
+      // is supplied. This closes the data-engineer SHOULD finding
+      // from PR-31 (the duplicate-filter path).
+      //
+      // Per [[scala-impact-analysis-mindset]] SS3 (zero behavior
+      // change for empty filters): when `request.whereFilters` is
+      // Nil, `resolveWithPushdown` falls back to `resolve` +
+      // `readSourceDF` (the existing path), and the PR-33
+      // TypedQueryCompiler overload's `preFilteredDf` is unused
+      // (the whereFilters check is off -- the in-memory filter
+      // is a no-op anyway). Net effect: zero behavior change for
+      // callers that don't use whereFilters.
       for {
-        resolved <- resolver.resolve(model.source, identity)
+        pushdownResult <- resolver.resolveWithPushdown(
+                            model.source, request.whereFilters, identity)
+        (resolved, preFilteredDf) = pushdownResult
         scan     <- resolved match {
-                     case s: io.sm8.core.engine.ResolvedSource.Scan => Right[EngineError, io.sm8.core.engine.ResolvedSource.Scan](s)
+                     case s: io.sm8.core.engine.ResolvedSource.Scan =>
+                       Right[EngineError, io.sm8.core.engine.ResolvedSource.Scan](s)
                      case _ => Left(EngineError.UnsupportedCapability(
                               engine = sparkEngineName,
-                              capability = "SourceResolver.resolve",
-                              message = s"non-Scan resolution (deferred to PR-M4 full RelOp path)"))
+                              capability = "SourceResolver.resolveWithPushdown",
+                              message = s"non-Scan resolution for source $model.source: ${resolved.getClass.getSimpleName}"))
                    }
-        _        <- io.sm8.core.model.ModelValidator.validateAgainstSchema(model, scan)
-                    .left.map(e => EngineError.UnsupportedCapability(
-                      engine = sparkEngineName,
-                      capability = "ModelValidator.validateAgainstSchema",
-                      message = e.message))
         relOp    <- QueryBuilder.build(model, resolver, identity)
-        df0      <- new PortableQueryCompiler(spark).compileRelOp(relOp, eCtx)
-        // PR-19 (ADR-008-R §PR-19): apply the TYPED QueryRequest
-        // fields (additive in PR-18: aggregateMeasures / having /
-        // partitionBy / window / orderBy). When all fields are Nil
-        // (the legacy 19 callers), the input is returned unchanged
-        // -- zero behavior change.
-        //
-        // Per [[karpathy-guidelines-mindset]] SS3 (surgical): this
-        // is a single for-comp line, additive, no existing path
-        df       <- TypedQueryCompiler(spark).apply(df0, request, eCtx)
+        // PR-32: canonical `compileRelOp(model, relOp, ctx, scan, preFilteredDf)`
+        // overload validates the model against the resolved source's
+        // schema BEFORE lowering.
+        df0      <- new PortableQueryCompiler(spark).compileRelOp(
+                       model, relOp, eCtx, scan, Some(preFilteredDf))
+        // PR-33: the new `TypedQueryCompiler.apply(df, request, ctx,
+        // preFilteredDf)` overload SUPPRESSES the in-memory
+        // `whereFiltersOp` when the pre-filtered DF is supplied
+        // (the filter was already pushed at the source).
+        df       <- TypedQueryCompiler(spark).apply(
+                       df0, request, eCtx, Some(preFilteredDf))
       } yield df
     }
     // PR-3b (ADR-008-P §C1): wrap the compileSteps thunk in the optional
