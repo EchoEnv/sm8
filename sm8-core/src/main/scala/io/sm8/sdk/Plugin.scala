@@ -4,10 +4,10 @@
  * The unit of extension. A Plugin is a named, versioned bundle that, on
  * load, registers one or more Connectors and/or one or more Hooks with
  * the engine. It is the only thing a contributor publishes and the only
- * thing `engine.use(...)` consumes.
+ * thing `engine.use(.)` consumes.
  *
  * Per RFC §7 + plugins.md: `Plugin.setup(engine) -> void` registers
- * adapters via `engine.connectors.register(...)` and hooks via
+ * adapters via `engine.connectors.register(.)` and hooks via
  * `engine.hooks.register(stage, fn, priority)`.
  *
  * Frozen after Step 1. The `setup(engine: Engine)` method signature is
@@ -61,7 +61,7 @@ trait Plugin extends java.io.Serializable {
  * Plugin). Plugins that DO capture state override and list every
  * captured `val`/`var` name.
  *
- * ADDITIVE per [[scala-impact-analysis-mindset]] mantra 3: this is
+ * ADDITIVE 
  * a default-implemented new method on the trait. Source-compatible
  * (existing Plugins compile unchanged; they inherit the `Nil`
  * default). Binary-compatible: the v-table slot is at the end of

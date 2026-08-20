@@ -2,7 +2,7 @@
  * SM8 SDK — ConnectorRegistry.
  *
  * New in Step 3 (extends the SDK from 7 to 10 types — required by
- * the RFC's `engine.adapters.register(...)` pattern that Plugins
+ * the RFC's `engine.adapters.register(.)` pattern that Plugins
  * call from `setup(engine)`).
  *
  * Holds named Connectors. Plugin authors call `engine.connectors.register(c)`

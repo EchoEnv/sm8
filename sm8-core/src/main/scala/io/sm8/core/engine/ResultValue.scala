@@ -14,12 +14,11 @@
  *
  * dispatch, pure data, derived value on the companion): the
  * `isNull` companion helper is a 1-line pattern match — a
- * derived value (per mantra step 1: "cheap, total, pure, purely
- * a function of the fields already there") that belongs on the
+ * derived value that belongs on the
  * companion, not as a method on each case.
  *
  * primitives or `Serializable` Java types (BigDecimal, Instant,
- * LocalDate, String). Per [[scala-spark-batch-bugs-mindset]]:
+ * LocalDate, String). 
  * `Product with Serializable` enables safe Spark closure capture
  * — the case-class auto-derives `equals`/`hashCode`/`toString`
  * (Product) + Java-serialization round-trip (Serializable).
@@ -70,7 +69,7 @@ object ResultValue {
  * boundary. NOT the same as JVM `null` \u2014 a `ResultValue.NullV`
  * is a real value in the row, while JVM `null` would mean
  * "no value at all". Per the design §4.5.4: the consumer
- * pattern-matches on `case NullV =>...` to handle the
+ * pattern-matches on `case NullV =>.` to handle the
  * "value is SQL NULL" case distinctly from "value is
  * absent". */
  case object NullV extends ResultValue

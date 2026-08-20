@@ -33,12 +33,12 @@ final case class RowCapConfig(maxRows: Int) {
  * `config.maxRows`. Step 9a first cut: shape-correct (counter
  * only); real capping lands with the typed Result shape (Step 0).
  *
- * Per [[scala-spark-batch-bugs]] mantra #1: `with java.io.Serializable`
+ * Per 
  * for Spark-closure safety.
  */
 final class RowCapPlugin(config: RowCapConfig) extends Plugin with java.io.Serializable {
 
-  /** Per [[scala-spark-batch-bugs-mindset]] mantra #1: doc the
+  /** 
     * captured `config` (RowCapConfig, Serializable case class) and
     * `fires` (AtomicInteger, Serializable). */
   override def closedOverVars: Seq[String] = Seq("config", "fires")

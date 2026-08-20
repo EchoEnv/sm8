@@ -18,7 +18,7 @@
  * `getOrComputeJournaled(key, model, version, compute)` overload
  * exists for future callers who want single-flight semantics
  * **without** the journal — the typical use is the legacy
- * `Restate.run(handler,..., Supplier)` pattern from v1.x. PR-C5b-ext-γ
+ * `Restate.run(handler,., Supplier)` pattern from v1.x. PR-C5b-ext-γ
  * shipped the v2.x SDK dep + a `RestatedEngineRunner` helper but did
  * NOT wrap the call sites (v2.x requires a `@Service`-handler thread
  * for journaled sub-calls; the follow-up PR does the handler wiring).
@@ -64,7 +64,7 @@ package io.sm8.core.cache
  * == Why journaled-form ==
  *
  * The Restate SDK journals `RestateCachedRow` already (PR-C5b-ext-γ
- * uses `Restate.run("query.execute", RestateCachedRow.class,...)`).
+ * uses `Restate.run("query.execute", RestateCachedRow.class,.)`).
  * Caching the journaled form means cache hits don't have to
  * re-materialize the row — the journaled shape is preserved end-to-end.
  *

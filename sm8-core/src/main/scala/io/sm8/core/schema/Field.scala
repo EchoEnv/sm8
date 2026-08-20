@@ -2,7 +2,7 @@
  * SM8 Core — Field case class.
  *
  * Engine-portable field (name + SealedDataType + nullable).
- * Pure data per [[scala-data-driven-refactor-mindset]] (no
+ * Pure data 
  * behavior; equality auto-derived; `Product with Serializable`
  * for Java-serialization round-trip).
  *
@@ -63,8 +63,7 @@ package io.sm8.core.schema
 final case class Field(
  name:  String,
  dataType: SealedDataType,
- nullable: Boolean,
-) extends Product with Serializable
+ nullable: Boolean) extends Product with Serializable
 
 object Field {
 

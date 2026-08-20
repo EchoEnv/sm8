@@ -91,11 +91,11 @@ trait PreHook {
  *
  * The default `runsOnStop = true` matches Observer semantics (always
  * fire). Plugins that want Mutator semantics (skip on `c.stop`) override
- * to `false` — see [[CacheWritePostHook]] in the cache plugin.
+ * to `false` — see 
  *
  * default method (not a separate trait). One mechanism, two intents —
  * per the RFC's "classification of intent, not a separate mechanism"
- * convention. Per [[scala-bug-hunting-mindset]] §4 "the boundary is
+ * convention. 
  * where it breaks": the short-circuit flag at the dispatcher boundary
  * is the fault line; this flag lets the dispatcher honor both
  * intents without splitting the trait.
@@ -213,7 +213,7 @@ object HookStage {
  *
  * this trait is TYPES-ONLY (no behavior, no method bodies). The concrete
  * implementation lives in the platform layer
- * (sm8-platform/.../EngineHookDispatcher extends HookRunner) so the
+ * (sm8-platform/./EngineHookDispatcher extends HookRunner) so the
  * spark-connector depends on the SDK surface, not on the platform layer
  * (preserving RFC §3 layer ownership: connectors do not import the
  * transport library).

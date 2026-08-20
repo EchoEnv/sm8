@@ -47,5 +47,4 @@ final case class JoinSpec(
  name:  String,
  rightModel: String,
  kind:  JoinKind,
- keys:  List[(String, String)],
-) extends Product with Serializable
+ keys:  List[(String, String)]) extends Product with Serializable

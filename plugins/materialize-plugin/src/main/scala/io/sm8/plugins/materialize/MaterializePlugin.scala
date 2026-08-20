@@ -30,7 +30,7 @@ final class MaterializePlugin(val storageLevel: PersistLevel)
   val fires: AtomicInteger = new AtomicInteger(0)
 
   /**
-   * Per PR #36 / RFC §8 origin ranges: priority 250 falls in the
+   * 
    * FirstParty band (100-899). The materialize plugin is a
    * reference Plugin shipped in io.sm8.plugins.*, so FirstParty is
    * correct (not Core).

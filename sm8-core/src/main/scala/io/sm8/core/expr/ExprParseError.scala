@@ -6,7 +6,7 @@
  *
  * are separate"): ExprParseError covers PARSE failures (shape-level
  * — unclosed paren, unexpected token, invalid literal). The
- * downstream `Model.of(...)` / `ModelBuilder.build(...)` smart
+ * downstream `Model.of(.)` / `ModelBuilder.build(.)` smart
  * constructor covers VALIDITY failures (domain-level — name not
  * blank). ExprParseError stays distinct from ManifestError so
  * callers can tell "the SQL expression is malformed" from "the

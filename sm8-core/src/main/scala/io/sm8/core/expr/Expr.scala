@@ -175,8 +175,8 @@ object Expr {
  // -- Case When (1) --
 
  /** CASE WHEN conditional expression. Maps to SQL's
- * `CASE WHEN cond THEN x ELSE y END`, Spark's `Column.when(...)`
- * foldLeft chain, Trino's `CASE WHEN... THEN... ELSE... END`.
+ * `CASE WHEN cond THEN x ELSE y END`, Spark's `Column.when(.)`
+ * foldLeft chain, Trino's `CASE WHEN. THEN. ELSE. END`.
  * The `branches` are evaluated in order; the first matching
  * `condition` produces the corresponding `result`. If no branch
  * matches, the `otherwise` expression is returned.
@@ -185,7 +185,7 @@ object Expr {
  * shape and is useful for derived measures whose condition
  * structure is computed dynamically.
  *  * Expr)]` is the portable shape; the engine adapter folds it
- * via `Column.when(...).when(...).otherwise(...)`. A free-form
+ * via `Column.when(.).when(.).otherwise(.)`. A free-form
  * `when: Map[Expr, Expr]` would be a downgrade (silent
  * defaulting on lookup miss) — and the order of branches
  * matters in SQL `CASE WHEN`, so `List` (ordered) is correct.
@@ -196,8 +196,7 @@ object Expr {
  */
  final case class CaseWhen(
   branches: List[(Expr, Expr)],
-  otherwise: Expr,
- ) extends Expr
+  otherwise: Expr) extends Expr
 
  // -- Alias (1) --
 
@@ -220,6 +219,5 @@ object Expr {
  */
  final case class Alias(
   name: String,
-  expr: Expr,
- ) extends Expr
+  expr: Expr) extends Expr
 }

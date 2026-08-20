@@ -41,8 +41,8 @@ package io.sm8.sdk
  *
  * Per RFC §3 + §7, `Engine.adapters` remains the SDK surface — but the
  * values registered (today) are `EngineProvider` instances, not
- * `Connector` instances. The legacy `Pipeline` (sm8-core/.../Pipeline.scala)
- * still routes `ConnectorRequest` through `connectors.get(...)` for the
+ * `Connector` instances. The legacy `Pipeline` (sm8-core/./Pipeline.scala)
+ * still routes `ConnectorRequest` through `connectors.get(.)` for the
  * RFC §6 4-stage pipeline test path used by the 5 plugin test suites;
  * production HTTP request flow goes through `EngineService → provider.query`
  * and never touches this Pipeline.

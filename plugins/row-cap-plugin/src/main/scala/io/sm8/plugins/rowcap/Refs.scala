@@ -11,7 +11,7 @@ import io.sm8.core.model.TypedDimension
 /**
  * Phantom-typed dimension witnesses for the row-cap plugin.
  *
- * Per ADR-008-Q §C9 + scala-jvm-safety-mindset §2: defined at `object`
+ * Per ADR-008-Q §C9 +  §2: defined at `object`
  * level for Spark closure-safety (singleton, Serializable round-trip
  * via the trait's `extends Serializable`).
  */

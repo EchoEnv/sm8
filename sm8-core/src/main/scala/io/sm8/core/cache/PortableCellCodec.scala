@@ -2,7 +2,7 @@
  * SM8 Platform — Cell-level encoder/decoder for the engine-portable
  * cached-row wire format.
  *
- * Replaces the Java helpers in `semanticdf-platform/.../QueryService.java`:
+ * Replaces the Java helpers in `semanticdf-platform/./QueryService.java`:
  * - `encodePortableCell` (lines 781-805)
  * - `toJavaValue` (lines 346-370)
  *
@@ -17,7 +17,7 @@
  * `Option[ResultValue]` overload added for null safety.
  *
  * types are impossible (sealed ADT exhaustiveness). The legacy
- * `default: throw new IllegalArgumentException(...)` branch is
+ * `default: throw new IllegalArgumentException(.)` branch is
  * deleted by the compiler — no imperative fallback.
  *
  * (the Java `QueryService.encodePortableCell` + `toJavaValue`
@@ -96,7 +96,7 @@ object PortableCellCodec {
  * - `TimestampV(i)` → `String` (ISO-8601, via `Instant.toString`)
  * - `DateV(d)` → `String` (ISO-8601, via `LocalDate.toString`)
  * - `BinaryV(b)` → raw `Array[Byte]` (the JVM-erased form;
- *  matches what `decodeCell(T_BINARY,...)` returns — no
+ *  matches what `decodeCell(T_BINARY,.)` returns — no
  *  Base64 round-trip needed since this is the in-process MCP
  *  wire response, not the journal wire format)
  *
@@ -124,7 +124,7 @@ object PortableCellCodec {
  * Inverse of [[encodeCell]]. Decodes a string-encoded cell back
  * to its typed Java Object.
  *
- * Throws [[IllegalArgumentException]] on unknown tags
+ * Throws 
  * (forward-compatibility break — the cache row will be rejected
  * if a new tag has been added since the row was written).
  *
@@ -170,10 +170,7 @@ object PortableCellCodec {
   java.sql.Timestamp.from(java.time.Instant.parse(encoded))
   case RestateCachedRow.T_DATE =>
   new java.sql.Date(
-   java.time.LocalDate.parse(encoded)
-   .atStartOfDay(java.time.ZoneOffset.UTC)
-   .toInstant()
-   .toEpochMilli()
+   java.time.LocalDate.parse(encoded).atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli()
   )
   case RestateCachedRow.T_BINARY =>
   java.util.Base64.getDecoder.decode(encoded)

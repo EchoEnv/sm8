@@ -2,7 +2,7 @@
  * SM8 Core — CalculatedMeasure (engine-portable calculated-measure ADT).
  *
  * Per the v0.1.0 IR extension plan (ADR-007 + PR-J): a
- * [[CalculatedMeasure]] is a measure whose value is COMPUTED from
+ * 
  * other measures (or fields). It carries the name + the
  * engine-portable expression that produces the value.
  *
@@ -12,7 +12,7 @@
  * expression is a single aggregate call (`SUM(amount)`,
  * `COUNT(*)`, etc.). Calculated measures have an `expr: Expr` —
  * the expression is ANY engine-portable expression (`a + b`,
- * `field_a / field_b`, `CASE WHEN... END`, etc.). The two are
+ * `field_a / field_b`, `CASE WHEN. END`, etc.). The two are
  * semantically different shapes.
  *
  * ==Why `expr: Expr` (not `String`)==
@@ -27,7 +27,7 @@
  * with the same 2-field shape.
  *
  * Per RFC §3: engine-portable; the engine-specific compile
- * (Spark's `Column = expr.fold(...)`, Trino's SQL
+ * (Spark's `Column = expr.fold(.)`, Trino's SQL
  * `SELECT (a + b) AS calc`, etc.) lives in the engine adapter.
  *
  * calculated-measure dependency DAG surface as
@@ -43,5 +43,4 @@ import io.sm8.core.expr.Expr
 
 final case class CalculatedMeasure(
  name: String,
- expr: Expr,
-) extends Product with Serializable
+ expr: Expr) extends Product with Serializable

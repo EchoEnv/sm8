@@ -12,7 +12,7 @@
  * (`val`, case class, no `var`). The pipeline is `foldLeft`-pure —
  * no shared mutable state, safe under concurrency.
  * fail-fast. The pipeline does NOT wrap them — they propagate to
- * `engine.run(...)`. The hook author chose to throw; we honor that.
+ * `engine.run(.)`. The hook author chose to throw; we honor that.
  * The Pipeline is internal (lives in `io.sm8.core`). Plugin authors
  * never construct a Pipeline directly — they go through
  * `Engine.run(request)`.
@@ -23,7 +23,7 @@ import io.sm8.sdk._
 
 /**
  * Environment passed to each Stage at runtime. Bundles the
- * registries the stages need (per [[scala-data-driven-refactor-mindset]]
+ * registries the stages need (
  * — data, not constructor-args scattered through each stage).
  */
 final case class StageEnv(
@@ -54,8 +54,7 @@ sealed trait Stage {
 object Stage {
 
  /**
- * Parse — convert raw request into an internal query representation.
- * Step 3: no-op. Step 0 will add YAML/JSON lowering here.
+ * Parse — convert raw request into an internal query representation. Step 0 will add YAML/JSON lowering here.
  */
  case object Parse extends Stage {
  override def name: PipelineStage = PipelineStage.Parse
@@ -64,8 +63,6 @@ object Stage {
 
  /**
  * Resolve — pick which adapter(s) will serve the request.
- * Step 3: no-op (resolution is by connector name in
- * `ConnectorRequest`; real IR-driven resolution lands in Step 0).
  */
  case object Resolve extends Stage {
  override def name: PipelineStage = PipelineStage.Resolve
@@ -131,7 +128,7 @@ final class Pipeline(
  /**
  * Run `request` through all stages. Returns the final Result.
  * Per RFC §9: hook throws abort the pipeline. We don't wrap them
- * — they propagate to `engine.run(...)`.
+ * — they propagate to `engine.run(.)`.
  * Per RFC §8 + Context semantics: `Context.stop = true`
  * short-circuits all remaining stages and hooks.
  * @param request the Request to run

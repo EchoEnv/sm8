@@ -3,7 +3,7 @@
  *
  * function (Expr) -> Column with NO captured state. Companion
  * object + sealed-trait dispatch over the closed Expr family
- * from sm8-core. The closure-safety contract from PR #36 (which
+ * from sm8-core. The closure-safety contract 
  * extends java.io.Serializable on EngineProvider) is preserved
  * by the SparkEngineProvider — the compiler itself captures
  * nothing; the SPARK-SPECIFIC Column handle is the one we hand
@@ -42,9 +42,9 @@ import io.sm8.core.predicate.{Predicate => FilterPredicate}
 import org.apache.spark.sql.Column
 import org.apache.spark.sql.functions.{col, lit, not => sparkNot, when}
 /**
- * Engine-specific Spark compiler for portable [[Expr]] -> Spark
+ * Engine-specific Spark compiler for portable 
  * [[Column]]. Pure function (Expr) -> Column with no state, no
- * IO. Per [[scala-data-driven-refactor-mindset]] "sealed-trait
+ * IO. 
  * dispatch": the 24 Expr cases are enumerated at the case-class
  * granularity.
  *
@@ -55,14 +55,14 @@ import org.apache.spark.sql.functions.{col, lit, not => sparkNot, when}
  *
  * (closure-safety, schema-drift verify, idempotent retry): this
  * function is pure; the resulting Column is captured only
- * inside the dispatcher's executor thunk (per PR #32); the
+ * inside the dispatcher's executor thunk (
  * `query` body wraps the resulting DataFrame in a function
  * (not a closure) — no captured state from this compiler.
  */
 object PortableExprCompiler extends java.io.Serializable {
 
  /**
- * Convert a portable [[Expr]] to a Spark [[Column]]. Throws
+ * Convert a portable 
  * `UnsupportedOperationException` for the not-yet-supported
  * cases (Expr.MeasureRef subquery resolution, Expr.FunctionCall
  * UDF resolution). The legacy's 9 LiteralValue cases are
@@ -182,8 +182,8 @@ object PortableExprCompiler extends java.io.Serializable {
 
  // -- FunctionCall: UDF resolution deferred. --
  // PR-O1c (ADR-008-O, P0-2): the previous throw-bomb
- // (`throw new UnsupportedOperationException(...)`) became
- // a typed `Left(EngineError.UnsupportedCapability(...))`
+ // (`throw new UnsupportedOperationException(.)`) became
+ // a typed `Left(EngineError.UnsupportedCapability(.))`
  // so the error flows through the compile boundary instead
  // of crashing the driver or (worse, at scale) killing
  // executors + retrying indefinitely.
@@ -191,10 +191,9 @@ object PortableExprCompiler extends java.io.Serializable {
   Left(EngineError.UnsupportedCapability(
   engine  = "spark-3.5",
   capability = "Expr.FunctionCall",
-  message = s"PortableExprCompiler.toColumn: Expr.FunctionCall('$name',...) is " +
+  message = s"PortableExprCompiler.toColumn: Expr.FunctionCall('$name',.) is " +
       "not supported in this Layer C follow-up (UDF resolution " +
-      "deferred to a future PR that wires the Spark UDF registry).",
-  ))
+      "deferred to a future PR that wires the Spark UDF registry)."))
  }
 
  /**
@@ -217,7 +216,7 @@ object PortableExprCompiler extends java.io.Serializable {
  }
 
  /**
- * Map a portable [[LiteralValue]] to a Spark `lit(...)` column.
+ * Map a portable 
  * `LiteralValue.NullValue` case maps to `lit(null)` (the
  * Spark runtime's null marker). All other cases are
  * type-preserving: the Spark `Column` carries the typed
@@ -238,7 +237,7 @@ object PortableExprCompiler extends java.io.Serializable {
  case LiteralValue.DateValue(d)  => Right(lit(d))
  case LiteralValue.BinaryValue(b)  => Right(lit(b.toArray))
  // PR-O1c (ADR-008-O, P0-2): array literal returns a typed
- // `Left(EngineError.UnsupportedCapability(...))` instead of
+ // `Left(EngineError.UnsupportedCapability(.))` instead of
  // a thrown `UnsupportedOperationException`. Same
  // reasoning as `Expr.FunctionCall` above: the throw-bomb
  // could kill executors at scale. The typed error flows
@@ -250,8 +249,7 @@ object PortableExprCompiler extends java.io.Serializable {
   capability = "LiteralValue.ArrayValue",
   message = "PortableExprCompiler.toColumn: LiteralValue.ArrayValue is not " +
       "supported (array literals are JSON-serialized; future PR can " +
-      "land native Spark array support).",
-  ))
+      "land native Spark array support)."))
  // PR-2/B1 (ADR-008-P §B1 sub-step 2): extend the literalToColumn
  // match with the remaining 2 unwired LiteralValue cases
  // (MapValue + StructValue). Both return typed Left(UnsupportedCapability)
@@ -265,31 +263,28 @@ object PortableExprCompiler extends java.io.Serializable {
   capability = "LiteralValue.MapValue",
   message = "PortableExprCompiler.toColumn: LiteralValue.MapValue is not " +
       "supported (map literals are JSON-serialized; future PR can " +
-      "land native Spark map support).",
-  ))
+      "land native Spark map support)."))
  case LiteralValue.StructValue(_) =>
   Left(EngineError.UnsupportedCapability(
   engine  = "spark-3.5",
   capability = "LiteralValue.StructValue",
   message = "PortableExprCompiler.toColumn: LiteralValue.StructValue is not " +
       "supported (struct literals are JSON-serialized; future PR can " +
-      "land native Spark struct support).",
-  ))
+      "land native Spark struct support)."))
  }
  /**
  * PR-22 (ADR-008-R §PR-22): translate the portable Predicate
  * filter-language AST (sm8-core/predicate/Predicate.scala) to a
  * Spark Column. The 6-case Predicate ADT is exhaustively matched
- * (per scala-bug-hunting-mindset SS3 + scala-data-driven-refactor-
- * mindset SS3 -- sealed over Map).
+ *.
  *
- * Per scala-spark-batch-bugs-mindset SS1 (closure-safety -- the
+ * Per  SS1 (closure-safety -- the
  * user's explicit concern): this method is a pure function
  * (Predicate) -> Either[EngineError, Column]. NO closures cross
  * to executors. The resulting Column is consumed at driver-side
  * via df.filter(column).
  *
- * Per scala-perf-testing-mindset SS3 (allocation is the tax):
+ * Per  SS3 (allocation is the tax):
  * zero per-row allocation. The Column is built once per predicate
  * + reused across all rows in the partition.
  */

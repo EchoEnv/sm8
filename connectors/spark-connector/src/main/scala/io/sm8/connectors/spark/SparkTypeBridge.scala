@@ -84,7 +84,7 @@ object SparkTypeBridge extends java.io.Serializable {
  * adapted to our reactor's 13-case `SealedDataType` ADT.
  *
  * Unsupported Spark types fall back to `Json` so the row data
- * still serializes. Per [[scala-spark-batch-bugs-mindset]] mantra
+ * still serializes. 
  * #3: never assume; verify at the boundary. The fallback is the
  * explicit "I don't know what this is" signal.
  *

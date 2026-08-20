@@ -3,7 +3,7 @@ package io.sm8.core.engine
 /** Engine-portable engine-identity ADT — Phase 2 contract. Mirrors
  * the design doc §4.5 "EngineIdentity".
  *
- * An [[EngineIdentity]] is the wire-stable identity of an engine
+ * An 
  * adapter. It's surfaced in MCP `describe_model`, OKF generation,
  * and audit events. Three fields:
  *
@@ -45,5 +45,4 @@ package io.sm8.core.engine
 final case class EngineIdentity(
  name:    String,
  nativeVersion:  String,
- engineAdapterVersion: String,
-) extends Product with Serializable
+ engineAdapterVersion: String) extends Product with Serializable

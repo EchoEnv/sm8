@@ -29,8 +29,7 @@ package io.sm8.core.engine
  * + Java-serialization round-trip (Serializable). */
 final case class ResultRow(
  values: List[ResultValue],
- schema: ResultSchema,
-) extends Product with Serializable {
+ schema: ResultSchema) extends Product with Serializable {
 
  /** Number of values in the row. Convenience for conformance
  * tests asserting the row length matches the schema field

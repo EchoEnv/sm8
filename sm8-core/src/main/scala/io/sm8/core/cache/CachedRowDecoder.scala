@@ -47,7 +47,7 @@ import io.sm8.core.engine.{PortableQueryResult, ResultRow, ResultSchema, ResultV
  * Row-level decoder for the engine-portable cached-row wire format.
  *
  * Inverse of `toRestateCachedRowFromPortable` (which lives in
- * `semanticdf-platform/.../QueryService.java` lines 711-740 and is
+ * `semanticdf-platform/./QueryService.java` lines 711-740 and is
  * the encode-from-`PortableQueryResult` counterpart).
  */
 object CachedRowDecoder {
@@ -148,7 +148,7 @@ object CachedRowDecoder {
  }
 
  /**
- * Inverse of `encodeCell` in [[PortableCellCodec]]: wrap the
+ * Inverse of `encodeCell` in 
  * JVM-erased decoded value (a `java.lang.Object`) into the
  * corresponding `ResultValue` case. Sealed-trait dispatch on
  * the tag determines the case (per
@@ -229,7 +229,7 @@ object CachedRowDecoder {
  *
  * ==Behavior preservation vs Java==
  *
- * The legacy Java code used `JavaConverters.asJavaIterable(...)`
+ * The legacy Java code used `JavaConverters.asJavaIterable(.)`
  * to walk the portable's Scala `Vector` fields. The Scala version
  * iterates the `Vector` directly — no Java interop needed.
  *

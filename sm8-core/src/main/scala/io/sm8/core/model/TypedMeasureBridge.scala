@@ -3,7 +3,7 @@
  *
  * the PR-23 example migration follow-up: provide the typed-witness
  * to un-typed Measure bridge so that the typed DSL can construct a
- * `Model.of(...)` call WITHOUT losing the phantom `[M]` identity.
+ * `Model.of(.)` call WITHOUT losing the phantom `[M]` identity.
  *
  * Implementations): this is a Protocol bridge in core. The
  * `TypedMeasure[M]` witness (PR-16) carries the measure identity at
@@ -13,7 +13,7 @@
  *
  * runtime): the phantom `[M]` is preserved at construction (the
  * witness carries it; the bridge erases at the variance boundary
- * via the well-tested `Measure(...)` / `TypedAggregateCall.of[M](...)`
+ * via the well-tested `Measure(.)` / `TypedAggregateCall.of[M](.)`
  * factories).
  *
  * user's explicit concern): the bridge is a pure function -- NO
@@ -25,7 +25,7 @@ import io.sm8.core.expr.Expr
 import io.sm8.core.rel.{AggregateCall, AggregateFn}
 
 /**
- * Bridge extension on [[TypedMeasure]] that produces BOTH the
+ * Bridge extension on 
  * un-typed `Measure` shape (for `Model.of`) AND the typed
  * `TypedAggregateCall[M]` shape (for `QueryBuilderDsl.aggregate`).
  *
@@ -60,14 +60,12 @@ object TypedMeasureBridge {
    fn = fn,
    input = Some(Expr.FieldRef(typedMeasure.fieldName)),
    alias = name,
-   distinct = true,
-   )
+   distinct = true)
   case other =>
    AggregateCall(
    fn = other,
    input = inputExpr,
-   alias = name,
-   )
+   alias = name)
   }
   Measure(name = name, expr = aggregateCall)
  }
@@ -86,7 +84,6 @@ object TypedMeasureBridge {
   input =
    if (typedMeasure.fieldName == "*") None
    else Some(Expr.FieldRef(typedMeasure.fieldName)),
-  distinct = (typedMeasure.aggregateFn == AggregateFn.CountDistinct),
-  )
+  distinct = (typedMeasure.aggregateFn == AggregateFn.CountDistinct))
  }
 }

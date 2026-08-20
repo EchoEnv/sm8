@@ -1,9 +1,8 @@
 /*
  * SM8 Core — internal TransformerRegistry implementation.
  *
- * Thread-safe per [[scala-jvm-safety-mindset]]: `activeRef` is an
- * `AtomicReference` (was a `var` in the Step 3 first cut — fixed
- * in the Step 3 audit).
+ * Thread-safe 
+ *.
  */
 package io.sm8.core
 

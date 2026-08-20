@@ -42,7 +42,7 @@ class MaterializePluginLifecycleSpec extends AnyFunSuite with Matchers {
   test("MaterializePlugin: round-trips through Java serialization (PersistLevel + fires captured)") {
     // The plugin captures a `PersistLevel.StubLevel` + an
     // `AtomicInteger` (both Serializable). This test fires the
-    // closure-safety contract per [[scala-spark-batch-bugs-mindset]]
+    // closure-safety contract 
     // mantra #1.
     val original = new MaterializePlugin(PersistLevel.MemoryAndDisk)
     val restored = roundTripViaJavaSerialization(original)

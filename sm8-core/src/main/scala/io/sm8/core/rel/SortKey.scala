@@ -11,7 +11,7 @@
  *
  * Per RFC §3: engine-portable; engine-specific compile lives in
  * the adapter (Spark's `Column.asc()` / `Column.desc_nulls_last()`,
- * Trino's `ORDER BY... ASC NULLS LAST`).
+ * Trino's `ORDER BY. ASC NULLS LAST`).
  *
  * (closed ADT), so the model validator can check that the
  * expression is well-formed (field names exist, operators are
@@ -31,5 +31,4 @@ import io.sm8.core.expr.Expr
 final case class SortKey(
  expression: Expr,
  direction: SortDirection,
- nullOrdering: NullOrdering,
-) extends Product with Serializable
+ nullOrdering: NullOrdering) extends Product with Serializable

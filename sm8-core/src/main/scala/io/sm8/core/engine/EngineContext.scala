@@ -30,9 +30,9 @@ import scala.concurrent.duration.Duration
  * ==Consolidation status==
  * The follow-up implementation will add:
  * - `PortableModel` (the full portable model type) to replace the
- *  `Any` placeholder in `Engine.compile(model: Any,...)`
+ *  `Any` placeholder in `Engine.compile(model: Any,.)`
  * - `PortableExpr` / `RelOp` (the portable IR) to replace the
- *  `Any` placeholder in `Engine.execute(plan: Any,...)`
+ *  `Any` placeholder in `Engine.execute(plan: Any,.)`
  */
 final case class EngineContext(
  materializePolicy: MaterializePolicy,
@@ -40,8 +40,7 @@ final case class EngineContext(
  auditPolicy:  AuditPolicy,
  joinHints:   JoinHints,
  timeout:   Duration,
- cancellation:  CancellationCapability,
-) extends Product with Serializable
+ cancellation:  CancellationCapability) extends Product with Serializable
 
 object EngineContext {
 
@@ -56,8 +55,7 @@ object EngineContext {
  auditPolicy  = AuditPolicy.NoAudit,
  joinHints   = JoinHints(),
  timeout   = Duration.Inf,
- cancellation  = CancellationCapability.Unsupported,
- )
+ cancellation  = CancellationCapability.Unsupported)
 }
 
 // -- MaterializePolicy: whether to persist intermediate results ---
@@ -136,8 +134,7 @@ object AuditPolicy {
 final case class JoinHints(
  broadcastRightBelowBytes: Option[Long] = None,
  skewFactor:    Option[Int] = None,
- preferredStrategy:  Option[JoinStrategy] = None,
-) extends Product with Serializable
+ preferredStrategy:  Option[JoinStrategy] = None) extends Product with Serializable
 
 /** Engine-portable join strategy preference. The engine picks the
  * best match (or rejects if the strategy is unsupported). */

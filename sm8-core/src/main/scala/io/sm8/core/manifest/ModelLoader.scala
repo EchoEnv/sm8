@@ -12,7 +12,7 @@
  * ==Why a separate manifest layer (vs. reading directly into Model)==
  *
  * are separate"): the YAML root is parsed into a `Map[String, Any]`
- * (shape). Then `ModelBuilder.build(...)` validates + constructs the
+ * (shape). Then `ModelBuilder.build(.)` validates + constructs the
  * domain Model (validity). Mixing the two would mean parse failures
  * leak into domain invariants.
  *
@@ -81,7 +81,7 @@ import scala.util.control.NonFatal
  * {{{
  * name: my-model     # required
  * version: 1      # required (>= 0)
- * description: "..."    # optional
+ * description: "."    # optional
  * source:       # required (one of:)
  * byName:
  *  catalog: default   # optional
@@ -117,7 +117,7 @@ object ModelLoader {
  /** Load from a `Path`. Returns `Right(Model)` on success;
  * `Left(ManifestError)` on parse failure. Validation failures
  * (e.g. blank name) surface as `ModelValidationError` from
- * `Model.of(...)` — wrapped in `ManifestError.InvalidYaml` here
+ * `Model.of(.)` — wrapped in `ManifestError.InvalidYaml` here
  * so callers see a single error type from the loader. */
  def fromPath(path: Path): Either[ManifestError, Model] = {
  if (!Files.exists(path))
@@ -194,19 +194,9 @@ object ModelLoader {
   // is set only when present in the YAML (avoids the wart of
   // `Some("")` when the field is absent).
   model <- {
-   val b0 = ModelBuilder()
-   .withName(name.get)
-   .withVersion(version.get)
-   .withSource(src)
-   .withStatus(status)
+   val b0 = ModelBuilder().withName(name.get).withVersion(version.get).withSource(src).withStatus(status)
    val b1 = description.fold(b0)(d => b0.withDescription(d))
-   b1
-   .withDimensions(dims)
-   .withMeasures(meas)
-   .withFilters(filters)
-   .withJoins(joins)
-   .withCalculatedMeasures(calcs)
-   .build
+   b1.withDimensions(dims).withMeasures(meas).withFilters(filters).withJoins(joins).withCalculatedMeasures(calcs).build
   }.left.map(err => ManifestError.InvalidYaml(err.message))
   } yield model
  }
@@ -253,8 +243,7 @@ object ModelLoader {
   Right(SourceRef.ByName(
    catalog = None,
    namespace = if (name == "default") None else Some(name),
-   table  = table.get,
-  ))
+   table  = table.get))
   }
  } else if (m.containsKey("byPath")) {
   val inner = asMap(m.get("byPath")).getOrElse(return Left(ManifestError.InvalidYaml("source.byPath is not a map")))
@@ -354,8 +343,7 @@ object ModelLoader {
  * all() / measure() aware per GAP 1). Parse failure -> typed
  * ManifestError.ParseFailure (never silent). */
  private def parseCalculatedMeasures(
-  seq: Seq[Any],
- ): Either[ManifestError, List[io.sm8.core.model.CalculatedMeasure]] =
+  seq: Seq[Any]): Either[ManifestError, List[io.sm8.core.model.CalculatedMeasure]] =
  seq.toList.flatMap(asMap).map { m =>
   val name = stringField(m, "name").getOrElse("")
   stringField(m, "expr") match {
@@ -383,14 +371,13 @@ object ModelLoader {
  }
 
  /** Parse a legacy measure-expression string into a typed
- * `AggregateCall`. Per [[scala-error-handling-mindset]]:
+ * `AggregateCall`. 
  * unknown function names return `None` (the caller's
  * validation reports the missing measure; never a silent
  * default to a wrong aggregate). */
  private def parseAggregateCall(
   alias: String,
-  expr: String,
- ): Option[io.sm8.core.model.Measure] = {
+  expr: String): Option[io.sm8.core.model.Measure] = {
  import io.sm8.core.expr.Expr
  import io.sm8.core.rel.{AggregateCall, AggregateFn}
  val trimmed = expr.trim
@@ -441,8 +428,7 @@ object ModelLoader {
    io.sm8.core.expr.ExprParser.parseExpr(p).toOption.map { parsed =>
     FilterSpec(
     name  = n,
-    predicate = parsed,
-    )
+    predicate = parsed)
    }
    case _ => None
   }

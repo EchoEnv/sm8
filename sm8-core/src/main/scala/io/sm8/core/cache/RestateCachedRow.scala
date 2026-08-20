@@ -9,7 +9,7 @@
  *
  * Scala 2.13 idiom + match existing style + smart constructor
  * for validity-at-boundary): `final case class` + companion with
- * `val` T_* tag constants. `require(...)` for null/size validation
+ * `val` T_* tag constants. `require(.)` for null/size validation
  * matches the Java compact constructor's behavior. NOT Scala 3
  * `enum`. NOT a Java record.
  *
@@ -27,7 +27,7 @@
  *  constructor params by reflection — the JSON shape is
  *  identical to the Java record)
  *
- * - `require(... ne null,...)` rejects null at the boundary
+ * - `require(. ne null,.)` rejects null at the boundary
  * - Caller bugs surface as IllegalArgumentException at the
  *  smart constructor, never as a downstream NPE
  *

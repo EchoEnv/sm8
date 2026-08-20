@@ -4,8 +4,8 @@
  * Sits in core (sm8-core), not in an adapter or plugin. The unit
  * per RFC §3 Core Boundary: the code does not know which database /
  * cache / auth system is in use. It only builds the IR.
- * ==Why a builder (not just Model.of(...))==
- * `Model.of(...)` is the smart constructor: validates at the boundary,
+ * ==Why a builder (not just Model.of(.))==
+ * `Model.of(.)` is the smart constructor: validates at the boundary,
  * returns `Either[ModelValidationError, Model]`. It works for the
  * common case but every test / dynamic model construction site has
  * to spell out every field. The legacy `io.semanticdf` library used
@@ -37,7 +37,7 @@
  * here is the boundary; field-level invariants are checked once,
  * not by every consumer.
  * closure, no mutable state. The serialized Model is the
- * `final case class Model(...) extends Product with Serializable`
+ * `final case class Model(.) extends Product with Serializable`
  * already in this file — case-class derived Serialization is the
  * contract.
  * factory, not a hot path. No per-call allocation concerns.
@@ -56,7 +56,7 @@ package io.sm8.core.model
  * `Either[ModelValidationError, Model]`.
  * The builder is a typed factory; no behavior, no Spark, no
  * pipeline knowledge.
- * the existing `Model.of(...)` smart constructor stays. The
+ * the existing `Model.of(.)` smart constructor stays. The
  * builder is additive — it gives callers a fluent style for
  * the dynamic-construction use case (tests, programmatic
  * model generation) without forcing every field into a
@@ -71,14 +71,12 @@ final case class ModelBuilder private (
  defaultPolicies: ModelPolicyDefaults  = ModelPolicyDefaults(
   materialize = MaterializePolicy.None,
   cache  = CachePolicy.NoCache,
-  audit  = AuditPolicy.NoAudit,
- ),
+  audit  = AuditPolicy.NoAudit),
  source:   Option[SourceRef]   = None,
  status:   ModelStatus    = ModelStatus.Draft,
  filters:  List[FilterSpec]   = Nil,
  calculatedMeasures: List[CalculatedMeasure] = Nil,
- joins:   List[JoinSpec]   = Nil,
-) {
+ joins:   List[JoinSpec]   = Nil) {
 
  def withName(value: String): ModelBuilder =
  copy(name = Option(value))
@@ -98,7 +96,7 @@ final case class ModelBuilder private (
  /** `expr` is a typed `AggregateCall`.
  * Use `withMeasureAgg(name, fn, expr)` for the common
  * single-aggregate case, or this method with the structural
- * `AggregateCall(...)` for `COUNT(*)` /
+ * `AggregateCall(.)` for `COUNT(*)` /
  * `APPROX_PERCENTILE(x, p)` forms. */
  def withMeasure(name: String, expr: io.sm8.core.rel.AggregateCall): ModelBuilder =
  copy(measures = measures :+ Measure(name, expr))
@@ -108,8 +106,7 @@ final case class ModelBuilder private (
  def withMeasureAgg(
   name: String,
   fn: io.sm8.core.rel.AggregateFn,
-  expr: io.sm8.core.expr.Expr,
- ): ModelBuilder =
+  expr: io.sm8.core.expr.Expr): ModelBuilder =
  copy(measures = measures :+ Measure.aggregate(name, fn, expr))
 
  def withMeasures(values: List[Measure]): ModelBuilder =
@@ -146,10 +143,10 @@ final case class ModelBuilder private (
 
  /**
  * Materialize the validated `Either[ModelValidationError, Model]`.
- * returns an `Either`, never throws. The `Model.of(...)` smart
+ * returns an `Either`, never throws. The `Model.of(.)` smart
  * constructor (called under the hood) holds the same contract.
- * the smoke test asserts that `ModelBuilder().withName(...).build`
- * equals `Model.of(...)` for the same input — round-trip proof.
+ * the smoke test asserts that `ModelBuilder().withName(.).build`
+ * equals `Model.of(.)` for the same input — round-trip proof.
  */
  def build: Either[ModelValidationError, Model] = {
  val n: String = name.getOrElse("")
@@ -168,15 +165,14 @@ final case class ModelBuilder private (
   status   = status,
   filters   = filters,
   calculatedMeasures = calculatedMeasures,
-  joins   = joins,
- )
+  joins   = joins)
  }
 }
 
 object ModelBuilder {
 
  /**
- * Empty builder. All fields default; `build` will return `Left(...)`
+ * Empty builder. All fields default; `build` will return `Left(.)`
  * until `withName` and `withVersion` are set.
  */
  def apply(): ModelBuilder = new ModelBuilder()

@@ -8,27 +8,26 @@
  *
  * Per ADR-008-R §"PR-17 Core types": this trait is the PROTOCOL in
  * core. The witness INSTANCE lives in the consumer's code (`object Refs
- * {... }` in a plugin or example) — NOT in method-local scope (which
+ * {. }` in a plugin or example) — NOT in method-local scope (which
  * would capture the enclosing scope and break Spark closure-serialization
  * with `NotSerializableException` at executor startup).
  *
- * Per `karpathy-app-design-mindset` §3.1 (Protocols before
+ * Per 
  * implementations): the typed builder sits next to the data, behavior
  * lives elsewhere. The phantom `[M]` is purely type-level (zero runtime
- * cost per `scala-perf-testing-mindset` §3: zero per-row allocation;
+ * cost per 
  * case-class `Impl` allocates once at query-build time, driver-side).
  *
- * Per `scala-spark-batch-bugs-mindset` §1 (closure-safety — the user's
+ * Per 
  * explicit concern): this trait extends `Serializable` (verified by the
  * closure-safety spec). The case-class `Impl` form (vs. the anonymous-
  * class form that broke in PR-16) preserves the `name` field through
  * `ObjectOutputStream` round-trip — see `TypedAggregateCallSpec`.
  *
- * Per `scala-data-driven-refactor-mindset` §1 (data is data): pure
+ * Per 
  * carrier, no methods beyond derived accessors. §2 (shape vs validity
  * separate): the case-class constructor is unconditional; the typed
- * builder factory validates at the boundary (per `scala-jvm-safety-mindset`
- * §2).
+ * builder factory validates at the boundary.
  */
 package io.sm8.core.rel
 
@@ -44,7 +43,7 @@ import io.sm8.core.expr.{Expr, LiteralValue}
  * (which may include non-Serializable locals — e.g. a `SparkSession`)
  * and break Spark closure serialization at executor startup.
  *
- * Per `scala-bug-hunting-mindset` §3 (every match must be exhaustive):
+ * Per 
  * the case class `Impl` form provides a proper equals/hashCode + Java
  * getters (per PR-16 lesson — the anonymous-class form returned `null`
  * from `ObjectOutputStream` round-trip because Scala doesn't generate

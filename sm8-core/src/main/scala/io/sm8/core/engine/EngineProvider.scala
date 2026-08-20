@@ -19,7 +19,7 @@ import io.sm8.core.model.Model
  * ==Why `query` returns `Either[EngineError, PortableQueryResult]`==
  * Per the design \u00a76.4: every engine adapter's execute shape.
  * MCP consumers get a uniform `PortableQueryResult` shape (from PR
- * #400). `Either[EngineError,...]` lets the registry surface typed
+ * #400). `Either[EngineError,.]` lets the registry surface typed
  * errors uniformly \u2014 not exceptions.
  * ==Why `model: Model` (not `SemanticTable`)==
  * The MCP is engine-portable. The `Model` is the engine-portable
@@ -62,16 +62,14 @@ trait EngineProvider extends Serializable {
  def query(
   model: Model,
   request: io.sm8.core.engine.QueryRequest,
-  ctx:  EngineContext,
- ): Either[EngineError, PortableQueryResult]
+  ctx:  EngineContext): Either[EngineError, PortableQueryResult]
 
  /** Return a human-readable plan description (no execution).
  * Mirrors `Engine.explain`. Used by the `explain` tool. */
  def explain(
   model: Model,
   request: io.sm8.core.engine.QueryRequest,
-  ctx:  EngineContext,
- ): Either[EngineError, String]
+  ctx:  EngineContext): Either[EngineError, String]
 
  /** Typed URL realization (added 2026-08-15 (typed URL realization per RFC `adapters.md` Rule 4)).
  * A connector that supports URL-based connection (Spark master
@@ -156,11 +154,11 @@ final case class QueryRequest(
  filters: List[io.sm8.core.model.FilterSpec] = Nil,
  /** the current implementation (the design contract current implementation): typed aggregate measures. The
   * phantom `[Nothing]` is the "top" phantom (per the typed
-  * at the consumer's `object Refs {... }` site. The phantom
+  * at the consumer's `object Refs {. }` site. The phantom
   * `Nothing` is `extends Nothing` (the bottom type) so any
   * typed measure `TypedAggregateCall[M]` is a subtype of
   * `TypedAggregateCall[Nothing]` — variance-safe per
-  * scala-bug-huntingmindset §1.
+  *  §1.
   * Per karpathy-guidelines §3 (surgical): default = Nil (no
   * behavior change for existing 19 callers). */
  aggregateMeasures: Seq[io.sm8.core.rel.TypedAggregateCall[Nothing]] = Nil,
@@ -183,8 +181,7 @@ final case class QueryRequest(
   * default to Nil (zero behavior change for 19 callers).
   * Per karpathy-guidelines §3 (surgical): default = Nil. */
  whereFilters:  Seq[io.sm8.core.rel.TypedPredicate[Nothing]] = Nil,
- sortDirections: Seq[io.sm8.core.rel.SortDirection]    = Nil,
- ) extends Product with Serializable
+ sortDirections: Seq[io.sm8.core.rel.SortDirection]    = Nil) extends Product with Serializable
 
 object QueryRequest {
 

@@ -7,8 +7,8 @@
  * that plugin authors need to read but should not re-import from the
  * core package.
  *
- * existing pattern is block-imports from `io.sm8.sdk.{...}` and
- * `io.sm8.core.{...}`. This package object makes the latter optional
+ * existing pattern is block-imports from `io.sm8.sdk.{.}` and
+ * `io.sm8.core.{.}`. This package object makes the latter optional
  * (plugin authors use ONLY `io.sm8.sdk._`).
  *
  * Per ADR-008-P §AR-P1-2: the SDK Protocol surface stays frozen

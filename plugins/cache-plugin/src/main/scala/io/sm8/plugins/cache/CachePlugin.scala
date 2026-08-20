@@ -1,13 +1,13 @@
 /*
  * SM8 cache Hook Plugin — Pre/Post-execute hook pair.
  *
- * ===Per [[scala-data-drivenrefactor-mindset]] (skill)===
+ * ===
  * "no Map-based rule tables": the cache lookup + populate is
  * data-driven through the SDK's Context (EngineHookRequest /
  * EngineHookResult). The Plugin holds ZERO business state beyond
  * the cache reference.
  *
- * ===Per [[scala-spark-batch-bugs-mindset]] (per user directive)===
+ * ===
  * mantra #1 (closure-safety): `with java.io.Serializable` on the
  * Plugin AND each hook class. No SparkSession, no Iterator, no
  * Connection is ever closed over.
@@ -22,7 +22,7 @@
  *   - `META-INF/services/io.sm8.sdk.Plugin` (Portable Portal)
  *   - `META-INF/sm8/plugin.properties` (coords for allowlist Q6=C)
  *
- * ===Per [[karphyaguidsmindset]] "smallest correct change"===
+ * ===
  * Composition only. Each hook is a tiny element-wise transform.
  * Behavior lives in ResultCache (the contract, in sm8-core);
  * this plugin just wires the contract to the SDK Hook surface.
@@ -49,7 +49,7 @@ import io.sm8.sdk.{Context, Engine => SdkEngine, HookManager, HookOrigin, HookSt
 
 final class CachePlugin(val cache: ResultCache) extends Plugin with java.io.Serializable {
 
-  /** Per [[scala-spark-batch-bugs-mindset]] mantra #1: doc the
+  /** 
     * captured `cache` (ResultCache, extends Serializable) plus the
     * 4 AtomicInteger counters (all Serializable). */
   override def closedOverVars: Seq[String] =

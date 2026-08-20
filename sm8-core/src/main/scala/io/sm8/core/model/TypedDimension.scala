@@ -1,9 +1,9 @@
 /*
  * SM8 Core — TypedDimension phantom-typed witness (PR-16, ADR-008-Q §PR-16).
  *
- * Per `karpathy-app-designmindset` §3.1 (Protocols before
+ * Per  §3.1 (Protocols before
  * implementations): this trait is the Protocol in core. The witness
- * INSTANCE lives in the consumer's code (e.g. `object Refs {... }`
+ * INSTANCE lives in the consumer's code (e.g. `object Refs {. }`
  * in a plugin or example) — NOT in method-local scope (which would
  * capture the enclosing scope and break Spark closure-serialization).
  *
@@ -13,7 +13,7 @@
  * Per ADR-008-Q §C9 (Restate forward-looking): `extends Serializable` is
  * required for `Restate.run` journal capture.
  *
- * Per `scala-jvm-safety-mindset` §2 + `scala-spark-batch-bugs-mindset` §1
+ * Per 
  * (closure-safety): the witness holds no resources + no mutable state; it
  * `extends Serializable` at both trait and case-class level for safe
  * `ObjectOutputStream` round-trip + Restate journal capture.
@@ -57,7 +57,7 @@ object TypedDimension {
 
  /**
  * The ONLY way to instantiate a `TypedDimension[D]`. Per ADR-008-Q
- * §C9 + `scala-spark-batch-bugs-mindset` §1: the witness MUST be
+ * §C9 + 
  * defined at `object` level for Spark closure-safety.
  */
  def of[D](name: String, fieldName: String): TypedDimension[D] =

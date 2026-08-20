@@ -2,7 +2,7 @@
  * SM8 SDK — ScalaRestate (Scala 2.13 conversion helpers for the Restate Java SDK).
  *
  * patterns that actually repeat in the platform code, identified by
- * the audit of /tmp/semanticdf (e.g. /tmp/semanticdf/.../QueryService.java
+ * the audit of /tmp/semanticdf (e.g. /tmp/semanticdf/./QueryService.java
  * lines 303, 309, 316, 446-454, 717, 726, 731). No framework, no DSL,
  * no runtime — just extension methods via `implicit class` (Scala 2.13
  * pattern; NOT Scala 3 `extension`).
@@ -27,8 +27,8 @@ import scala.collection.immutable
  * methods on common Java types that PR-B (sm8-mcp) and PR-C
  * (sm8-platform) will use heavily.
  *
- * **Scala 2.13 syntax** — `implicit class X[T](val t: T) { def foo: R =... }`.
- * Do NOT use Scala 3 `extension [T](t: T) def foo: R =...` — that's a
+ * **Scala 2.13 syntax** — `implicit class X[T](val t: T) { def foo: R =. }`.
+ * Do NOT use Scala 3 `extension [T](t: T) def foo: R =.` — that's a
  * different language.
  */
 object ScalaRestate {

@@ -35,8 +35,7 @@ object QueryBuilderDsl {
   window:    Seq[TypedWindow[Nothing, Nothing]] = Nil,
   limit:    Option[Long]      = None,
   whereFilters:  Seq[TypedPredicate[Nothing]]  = Nil,
-  sortDirections:  Seq[SortDirection]     = Nil,
- ) {
+  sortDirections:  Seq[SortDirection]     = Nil) {
 
  /** Add typed aggregate measures (typed overload, any phantom).
   * Coerce `Seq[TypedAggregateCall[_]]` (varargs from typed input)
@@ -116,9 +115,9 @@ object QueryBuilderDsl {
   * erasure signature (Seq[Any]) -- renaming to `orderByKeys`
   * preserves both APIs at the call site without Scala 2.13
   * erasure ambiguity.
-  * Preserves backward compat: TypedDimension-only orderBy(...)
+  * Preserves backward compat: TypedDimension-only orderBy(.)
   * still produces only dim entries (no direction refinement).
-  * Per scala-jvm-safety-mindset SS2 (Serializable preserved):
+  * Per  SS2 (Serializable preserved):
   * TypedSortKey extends Serializable (the current implementation closure-safety spec). */
  def orderByKeys(keys: TypedSortKey[_, _]*): BuiltQuery = {
   val dims: Seq[TypedDimension[Nothing]] =
@@ -170,8 +169,8 @@ object QueryBuilderDsl {
   }.toSeq).asInstanceOf[Seq[TypedPredicate[Nothing]]]
   )
 
- /** Alias for `filter(...)` (the `where:` keyword in YAML
-  * convention; per karpathy-app-designmindset SS1.3 -- mirror
+ /** Alias for `filter(.)` (the `where:` keyword in YAML
+  * convention; per  SS1.3 -- mirror
   * the existing QueryRequest shape). */
  def where(predicates: TypedPredicate[_]*): BuiltQuery = filter(predicates: _*)
 

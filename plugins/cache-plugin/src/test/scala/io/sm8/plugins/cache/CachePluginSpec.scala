@@ -121,8 +121,7 @@ class CachePluginSpec extends AnyFunSuite with Matchers {
 
   test("Portal: META-INF/services/io.sm8.sdk.Plugin declares this plugin") {
     val acc = scala.collection.mutable.Set[String]()
-    val urls = classOf[CachePlugin].getClassLoader
-      .getResources("META-INF/services/io.sm8.sdk.Plugin")
+    val urls = classOf[CachePlugin].getClassLoader.getResources("META-INF/services/io.sm8.sdk.Plugin")
     import scala.jdk.CollectionConverters._
     urls.asScala.foreach { u =>
       scala.io.Source.fromURL(u).getLines().foreach(acc += _)

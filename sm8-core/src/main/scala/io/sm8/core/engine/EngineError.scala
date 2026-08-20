@@ -9,7 +9,7 @@
  * case-class pattern. Compiler enforces exhaustiveness via pattern match.
  *
  * existing style): Scala 2.13 idiom — `sealed trait + final case
- * classes + require(...)`. NO Scala-3-only `enum`.
+ * classes + require(.)`. NO Scala-3-only `enum`.
  *
  * The 7 frozen SDK types are unchanged. PR-B handlers consume this.
  */
@@ -19,7 +19,7 @@ import io.sm8.sdk.{ErrorCode, ErrorDetail}
 
 /**
  * Closed set of wire-stable failure modes. Universal across engines
- * (Spark, Trino, DuckDB,...) per the multi-engine design. Each
+ * (Spark, Trino, DuckDB,.) per the multi-engine design. Each
  * case carries ONLY the data needed to identify the failure; the
  * `engine` field tells the consumer which engine produced it.
  */

@@ -2,7 +2,7 @@
  * SM8 Core — RelOp (engine-portable relational-plan IR).
  * Per the v0.1.0 IR extension plan (ADR-007 + RFC §3): the
  * relational-plan IR is the runtime execution shape. It flows
- * through `Engine.compile(model: RelOp,...)`, the engine adapter's
+ * through `Engine.compile(model: RelOp,.)`, the engine adapter's
  * expression-compile step (each case becomes a native operation —
  * Spark `Dataset` ops, Trino SQL clauses, etc.), and the MCP wire
  * format (for `explain` tool output).
@@ -20,7 +20,7 @@
  * DEFERRED to v0.2.0+ per the legacy design. They can be expressed
  * via combination of the existing nodes if needed. Adding them
  * is a contract change (per `adapters.md` "If a new capability
- * type is needed... that's a contract change").
+ * type is needed. that's a contract change").
  * * contract:
  * `grep -r 'org.apache.spark' sm8-core/src/main/scala/io/sm8/core/rel/RelOp.scala`
  * * (not `Predicate`) — at runtime, filters are expressions (e.g.
@@ -57,13 +57,12 @@ object RelOp {
   * 4-case `ResolvedSource` ADT (Scan / NotFound /
   * Incompatible / AuthFailed) so engine adapters can
   * pattern-match the failure states directly without
-  * re-invoking `SourceResolver.resolve(...)`. Populated by
+  * re-invoking `SourceResolver.resolve(.)`. Populated by
   * `QueryBuilder.assembleRelOp` when the source resolves;
   * `None` when the QueryBuilder's resolver produced a Left
   * (the calling code surfaces the typed error instead).
   */
-  resolution: Option[io.sm8.core.engine.ResolvedSource] = None,
- ) extends RelOp
+  resolution: Option[io.sm8.core.engine.ResolvedSource] = None) extends RelOp
 
  /** Apply a predicate to a child. Maps to Spark's `Filter`,
  * Trino's `WHERE` clause.
@@ -72,8 +71,7 @@ object RelOp {
  */
  final case class Filter(
   input:  RelOp,
-  predicate: Expr,
- ) extends RelOp
+  predicate: Expr) extends RelOp
 
  /** Compute expressions into named columns. Maps to Spark's
  * `Project`, Trino's `SELECT` clause.
@@ -83,8 +81,7 @@ object RelOp {
  */
  final case class Project(
   input:  RelOp,
-  expressions: List[(Expr, String)],
- ) extends RelOp
+  expressions: List[(Expr, String)]) extends RelOp
 
  /** Group by expressions and apply aggregate calls. Maps to
  * Spark's `Aggregate`, Trino's `GROUP BY` clause.
@@ -97,8 +94,7 @@ object RelOp {
  final case class Aggregate(
   input:  RelOp,
   groupBy: List[Expr],
-  aggregates: List[AggregateCall],
- ) extends RelOp
+  aggregates: List[AggregateCall]) extends RelOp
 
  /** Combine two children with a join kind and an optional
  * condition. Maps to Spark's `Join`, Trino's `JOIN` clause.
@@ -113,8 +109,7 @@ object RelOp {
   left:  RelOp,
   right:  RelOp,
   kind:  JoinKind,
-  condition: Expr,
- ) extends RelOp
+  condition: Expr) extends RelOp
 
  /** Order a child by sort keys. Maps to Spark's `Sort`, Trino's
  * `ORDER BY` clause.
@@ -124,11 +119,10 @@ object RelOp {
  */
  final case class Sort(
   input: RelOp,
-  keys: List[SortKey],
- ) extends RelOp
+  keys: List[SortKey]) extends RelOp
 
  /** Take a slice of a child. Maps to Spark's `Limit`, Trino's
- * `LIMIT... OFFSET...` clause.
+ * `LIMIT. OFFSET.` clause.
  * @param input the child node
  * @param count the maximum number of rows to return
  * @param offset the number of rows to skip before returning
@@ -136,13 +130,12 @@ object RelOp {
  final case class Limit(
   input: RelOp,
   count: Long,
-  offset: Long = 0L,
- ) extends RelOp
+  offset: Long = 0L) extends RelOp
 
  /** the current implementation (the design contract): apply a window function to a child. Maps to
  * Spark's `withColumn("rank", F.row_number().over(Window.partitionBy(
- *...).orderBy(...)))`, Trino's window function.
- * Per `karpathy-guidelines-mindset` "smallest correct core": the
+ *.).orderBy(.)))`, Trino's window function.
+ * Per 
  * window function is carried as a string + 2 Exprs (partition +
  * order) — the typed `WindowFunction` ADT lives in the SDK layer
  * (per the design contract); the IR carries the wire-stable string so the
@@ -157,6 +150,5 @@ object RelOp {
   input:  RelOp,
   windowFn: String,
   partitionBy: Expr,
-  orderBy:  Expr,
- ) extends RelOp
+  orderBy:  Expr) extends RelOp
 }

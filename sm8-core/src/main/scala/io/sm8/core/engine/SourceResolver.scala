@@ -3,7 +3,7 @@
  *
  * PR-L (per ADR-008-L): the boundary step BEFORE the engine sees
  * anything. `QueryBuilder.build(model, resolver, identity)` calls
- * `resolver.resolve(...)` to turn a portable `SourceRef` into a
+ * `resolver.resolve(.)` to turn a portable `SourceRef` into a
  * typed `ResolvedSource` (carrying the schema + the provenance),
  * then walks the `Model` to emit a portable `RelOp` tree.
  *
@@ -44,29 +44,25 @@ object ResolvedSource {
  */
  final case class Scan(
   source: SourceRef,
-  schema: List[Field],
- ) extends ResolvedSource
+  schema: List[Field]) extends ResolvedSource
 
  /** The source could not be resolved (table not found, file
  * missing, endpoint unreachable). */
  final case class NotFound(
   source: SourceRef,
-  reason: String,
- ) extends ResolvedSource
+  reason: String) extends ResolvedSource
 
  /** The source was resolved but its shape is incompatible
  * (schema mismatch, type mismatch, partition missing, etc.). */
  final case class Incompatible(
   source: SourceRef,
-  reason: String,
- ) extends ResolvedSource
+  reason: String) extends ResolvedSource
 
  /** The source could not be resolved because authentication
  * failed (credentials missing, token expired, etc.). */
  final case class AuthFailed(
   source: SourceRef,
-  reason: String,
- ) extends ResolvedSource
+  reason: String) extends ResolvedSource
 }
 
 /** The trait a deployment / connector implements to make a
@@ -90,8 +86,7 @@ trait SourceResolver extends java.io.Serializable {
  */
  def resolve(
   source: SourceRef,
-  identity: EngineIdentity,
- ): Either[EngineError, ResolvedSource]
+  identity: EngineIdentity): Either[EngineError, ResolvedSource]
 
  /** Resolve a model-by-name to its `SourceRef`. Used by
  * `QueryBuilder.build` to translate `JoinSpec.rightModel`
@@ -101,11 +96,9 @@ trait SourceResolver extends java.io.Serializable {
  * registry-backed implementation. */
  def resolveModel(
   name:  String,
-  identity: EngineIdentity,
- ): Either[EngineError, SourceRef] =
+  identity: EngineIdentity): Either[EngineError, SourceRef] =
  Left(EngineError.UnsupportedCapability(
   engine  = identity.name,
   capability = "SourceResolver.resolveModel",
-  message = s"Model-by-name resolution not supported by this resolver (name='$name').",
- ))
+  message = s"Model-by-name resolution not supported by this resolver (name='$name')."))
 }

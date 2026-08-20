@@ -48,7 +48,7 @@ object Predicate {
  override def describe: String = s"$field $op $value"
  }
 
- /** `field IN (v1, v2,...) [NOT IN]`. */
+ /** `field IN (v1, v2,.) [NOT IN]`. */
  final case class In(
   field: String,
   values: List[Any],
@@ -105,7 +105,7 @@ object Predicate {
  * the current implementation (the design contract SSfilterPushdown ergonomics): string-match
  * predicate. * (sealed over Map): a sealed trait + case objects (mirrors the
  * existing `CompareOp` ADT pattern). The pattern is NOT a regex
- * (per [[karpathy-data-driven-refactor-mindset]] SS2: simple,
+ * (
  * predictable). Spark's `Column.startsWith/contains/endsWith` is
  * the lowering target.
  * * ADDITIVE only -- existing match sites don't need to handle

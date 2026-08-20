@@ -6,7 +6,7 @@
  *
  * are separate"): ManifestError covers PARSE failures (shape-level:
  * missing fields, type mismatches, unknown SourceRef variants,
- * schema validation failures). The downstream `Model.of(...)`
+ * schema validation failures). The downstream `Model.of(.)`
  * smart constructor covers VALIDITY failures (domain-level: name
  * not blank, version non-negative). The two stay distinct so
  * callers can tell "the YAML is malformed" from "the YAML parsed
@@ -68,7 +68,7 @@ object ManifestError {
  *
  * only after `ManifestValidator.validate(yaml)` returns
  * `Left(SchemaValidation(messages))` — strictly for STRUCTURAL
- * failures (before `Model.of(...)` is called). */
+ * failures (before `Model.of(.)` is called). */
  final case class SchemaValidation(messages: List[String]) extends ManifestError {
  val message: String =
   if (messages.size == 1) s"Schema validation failed: ${messages.head}"

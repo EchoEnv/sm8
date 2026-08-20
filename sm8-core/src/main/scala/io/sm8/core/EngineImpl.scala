@@ -8,11 +8,9 @@
  *  `mutable.Set[Plugin]` — non-thread-safe; per
  * - `catch (Throwable)` replaced with `NonFatal` so `Error`
  *  subclasses propagate; `InterruptedException` restores the
- *  interrupt flag (per [[scala-error-handling-mindset]]).
+ *  interrupt flag (
  * - `Pipeline` is hoisted to a `val` field — was allocated per
- *  `run(request)` (hot path; per [[scala-perf-testing-mindset]]).
- * Step 7: added `discover(allowed)` + `discoverAll()` — ServiceLoader
- * portal with Maven-coords allowlist (Q6 = C). Plugin authors ship
+ *  `run(request)` (hot path; Plugin authors ship
  * `META-INF/services/io.sm8.sdk.Plugin` (class name) +
  * `META-INF/sm8/plugin.properties` (groupId + artifactId).
  */
@@ -116,19 +114,14 @@ final class EngineImpl extends Engine {
  */
  def discoverFromConfig(): List[Plugin] = {
  val resource = "sm8.plugins.allowed"
- val stream = Option(getClass.getClassLoader)
- .map(_.getResourceAsStream(resource)).orNull
+ val stream = Option(getClass.getClassLoader).map(_.getResourceAsStream(resource)).orNull
  if (stream == null) {
   // No allowlist configured - behave like discoverAll().
   // an error; the engine degrades to permissive discovery.
   discoverAll()
  } else {
   try {
-  val allowed = scala.io.Source.fromInputStream(stream, "UTF-8")
-  .getLines()
-  .map(_.trim)
-  .filter(s => s.nonEmpty && !s.startsWith("#"))
-  .toSet
+  val allowed = scala.io.Source.fromInputStream(stream, "UTF-8").getLines().map(_.trim).filter(s => s.nonEmpty && !s.startsWith("#")).toSet
   discover(allowed)
   } catch {
   case NonFatal(e) =>
@@ -182,7 +175,7 @@ final class EngineImpl extends Engine {
  * `Class.getResourceAsStream`) — the classloader lookup is
  * classpath-root-relative; `Class.getResourceAsStream` without a
  * leading `/` is package-relative, which silently misses global
- * resources like `META-INF/sm8/...`.
+ * resources like `META-INF/sm8/.`.
  */
  private def loadMetadata(cls: Class[_]): Option[PluginMetadata] = {
  val resource = "META-INF/sm8/plugin.properties"

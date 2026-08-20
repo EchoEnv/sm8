@@ -31,7 +31,7 @@ package io.sm8.core.engine
  * Per-connector URL grammar validator. Discovered via SPI.
  *
  * this is the per-connector parser, not a core data type. The core
- * `EngineUrl.parse(...)` factory delegates to the engine-specific parser
+ * `EngineUrl.parse(.)` factory delegates to the engine-specific parser
  * looked up by name.
  *
  * for the same reasons as `EngineUrl` (Restate journal capture +
@@ -43,14 +43,14 @@ trait EngineUrlParser extends Serializable {
  def engineName: String
 
  /** Parse the raw URL string into the typed `EngineUrl` for this
- * engine. Returns `Left(EngineError.ConnectionFailed(...))` on
+ * engine. Returns `Left(EngineError.ConnectionFailed(.))` on
  * invalid URL (per RFC `adapters.md` Rule 4 — typed error). */
  def parse(raw: String): Either[EngineError, EngineUrl]
 }
 
 object EngineUrlParser {
  /** SPI lookup: discover all registered parsers + return the one
- * matching `engineName`. Returns `Left(EngineError.EngineUnavailable(...))`
+ * matching `engineName`. Returns `Left(EngineError.EngineUnavailable(.))`
  * if no parser is registered for the engine name.
  *
  * `None`. The caller (sm8-server `EngineLoader.discoverAndRealize`)
@@ -58,8 +58,7 @@ object EngineUrlParser {
  * per design §4.1).
  *
  * standard discovery mechanism — no reflection on the connector
- * class itself (per `karpathy-app-design-mindset` §3.1; SPI is
- * explicit, not implicit).
+ * class itself.
  *
  * ServiceLoader is per-classloader; we cache the loaded instances
  * per-call (no static state to leak).
@@ -70,11 +69,7 @@ object EngineUrlParser {
  ): Either[EngineError, EngineUrlParser] = {
  import scala.jdk.CollectionConverters._
  val allParsers: List[EngineUrlParser] =
-  java.util.ServiceLoader
-  .load(classOf[EngineUrlParser], classLoader)
-  .iterator()
-  .asScala
-  .toList
+  java.util.ServiceLoader.load(classOf[EngineUrlParser], classLoader).iterator().asScala.toList
 
  allParsers.find(_.engineName == engineName) match {
   case Some(parser) => Right(parser)
