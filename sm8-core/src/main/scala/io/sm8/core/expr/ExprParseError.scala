@@ -2,10 +2,8 @@
  * SM8 Core — ExprParseError.
  *
  * Typed parse error for the `Expr` parser. Per
- * [[scala-error-handling-mindset]]: errors are data; the parser
  * returns `Either[ExprParseError, Expr]`, never throws.
  *
- * Per [[scala-data-driven-refactor-mindset]] §2 ("shape and validity
  * are separate"): ExprParseError covers PARSE failures (shape-level
  * — unclosed paren, unexpected token, invalid literal). The
  * downstream `Model.of(...)` / `ModelBuilder.build(...)` smart
@@ -16,61 +14,58 @@
  *
  * ==Spark concerns (per user directive)==
  *
- * Per [[scala-spark-batch-bugs-mindset]] mantras: N/A in core.
  * sm8-core is Spark-free per the plan's inverted enforcer
  * pattern. The ExprParseError type has zero Spark references.
  *
- * Per [[scala-jvm-safety-mindset]]: pure data. No mutable state.
  *
- * Per [[scala-perf-testing-mindset]]: not in hot path.
  */
 package io.sm8.core.expr
 
 /** Typed error from `Expr` parsing. */
 sealed trait ExprParseError extends Product with Serializable {
-  def message: String
+ def message: String
 }
 
 object ExprParseError {
 
-  /** The input string is empty. */
-  final case object EmptyInput extends ExprParseError {
-    val message: String = "Expression is empty"
-  }
+ /** The input string is empty. */
+ final case object EmptyInput extends ExprParseError {
+ val message: String = "Expression is empty"
+ }
 
-  /** An unexpected character was encountered. */
-  final case class UnexpectedToken(
-      token: String,
-      position: Int,
-      reason: String
-  ) extends ExprParseError {
-    val message: String = s"Unexpected token '$token' at position $position: $reason"
-  }
+ /** An unexpected character was encountered. */
+ final case class UnexpectedToken(
+  token: String,
+  position: Int,
+  reason: String
+ ) extends ExprParseError {
+ val message: String = s"Unexpected token '$token' at position $position: $reason"
+ }
 
-  /** A literal value could not be parsed. */
-  final case class InvalidLiteral(
-      raw: String,
-      reason: String
-  ) extends ExprParseError {
-    val message: String = s"Invalid literal '$raw': $reason"
-  }
+ /** A literal value could not be parsed. */
+ final case class InvalidLiteral(
+  raw: String,
+  reason: String
+ ) extends ExprParseError {
+ val message: String = s"Invalid literal '$raw': $reason"
+ }
 
-  /** An opening paren / bracket / block was not closed. */
-  final case class UnclosedDelimiter(
-      opening: Char,
-      position: Int
-  ) extends ExprParseError {
-    val message: String =
-      s"Unclosed delimiter '$opening' starting at position $position"
-  }
+ /** An opening paren / bracket / block was not closed. */
+ final case class UnclosedDelimiter(
+  opening: Char,
+  position: Int
+ ) extends ExprParseError {
+ val message: String =
+  s"Unclosed delimiter '$opening' starting at position $position"
+ }
 
-  /** The parser ran out of tokens while expecting more. */
-  final case object UnexpectedEnd extends ExprParseError {
-    val message: String = "Unexpected end of expression"
-  }
+ /** The parser ran out of tokens while expecting more. */
+ final case object UnexpectedEnd extends ExprParseError {
+ val message: String = "Unexpected end of expression"
+ }
 
-  /** Catch-all for other parse failures. */
-  final case class Other(reason: String) extends ExprParseError {
-    val message: String = s"Parse failure: $reason"
-  }
+ /** Catch-all for other parse failures. */
+ final case class Other(reason: String) extends ExprParseError {
+ val message: String = s"Parse failure: $reason"
+ }
 }

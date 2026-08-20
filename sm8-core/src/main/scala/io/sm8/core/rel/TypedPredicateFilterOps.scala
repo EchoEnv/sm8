@@ -4,17 +4,15 @@
  *
  * Per the user's 2026-08-19 directive ("can we not do it as
  * implicit class like extension method ?? rather than
- * .asc[D](dim), .desc[D](dim)"): ship typed filter ergonomics
+ *.asc[D](dim),.desc[D](dim)"): ship typed filter ergonomics
  * via the existing `TypedSortKeyOps` pattern (PR-25) +
  * `TypedMeasureBridge` (PR-26).
  *
- * Per [[karpathy-app-designmindset]] SS3.1 (Protocols before
  * Implementations): this is a PROTOCOL-side ergonomics layer in
  * core (sm8-core/rel/). The existing `TypedPredicate` protocol
  * (sm8-core/rel/TypedPredicate.scala) is unchanged -- this new
  * file adds the infix sugar + the smart constructors.
  *
- * Per [[karpathy-spark-batch-bugs-mindset]] SS1 (closure-safety
  * -- the user's explicit priority): the implicit extension
  * `extends AnyVal` -- zero allocation at use-site. The captured
  * state in the resulting `TypedPredicate[D]` is a case-class
@@ -22,37 +20,30 @@
  * `TypedPredicateClosureSafetySpec`). SAFE to capture in any
  * Spark UDF closure.
  *
- * Per [[karpathy-bug-huntingmindset]] SS1 (trust compiler, not
  * runtime): the phantom `[D]` is preserved at construction. The
  * implicit class is type-parameterized on `[D]`; the underlying
  * field is `TypedDimension[D]` (also parameterized); the resulting
  * `TypedPredicate[D]` carries the phantom.
  *
- * Per [[karpathy-perf-testingmindset]] SS3 (allocation is the tax):
  * zero per-row allocation. The implicit class wrapper is erased
  * to `TypedDimension` at the JVM level (the `extends AnyVal`
  * value-class optimization).
  *
- * Per [[karpathy-data-driven-refactormindset]] SS1 (data is data):
  * pure data carrier. The implicit class is a thin sugar over the
  * existing factories in `TypedPredicate`.
  *
- * Per [[karpathy-data-driven-refactormindset]] SS3 (sealed over
  * Map): the `StringMatchOp` ADT (in `Predicate.scala`) is a sealed
  * trait + case objects (mirrors the existing `CompareOp` pattern).
  *
- * Per [[karpathy-error-handlingmindset]] SS1 (typed errors, not
  * silent): the smart constructor `Predicate.Compare` always
  * succeeds (the operator enum is closed); the spark connector's
  * `predicateToColumn` lowers the typed predicate to a Spark
  * `Column` (returns `Either[EngineError, Column]`).
  *
- * Per [[karpathy-impact-analysismindset]] SS3 (binary compat):
  * ADDITIVE only -- the existing `TypedPredicate` API + the
  * existing `Predicate` AST are unchanged (except for the additive
  * `StringMatch` case + `StringMatchOp` ADT).
  *
- * Per [[karpathy-bug-huntingmindset]] SS3 (every match must be
  * exhaustive): all 13 infix methods dispatch on a closed type
  * (`TypedDimension[D]`) and produce `TypedPredicate[D]` cases
  * covered by the existing `Predicate` sealed trait (6 `CompareOp`
@@ -69,108 +60,106 @@ import io.sm8.core.predicate.{CompareOp, Predicate, StringMatchOp}
  * (the typed dimension identity) directly -- preserving the
  * phantom `[D]` (per [[karpathy-bug-huntingmindset]] SS1).
  *
- * Per [[karpathy-data-driven-refactormindset]] SS2 (smart
  * constructor for validity-at-boundary): the typed dimension is
  * the boundary; the predicate factory validates the dim's name +
  * the phantom at the boundary.
  */
 object TypedDimensionPredicate {
 
-  /** `field = value`. */
-  def eq[D](dim: TypedDimension[D], value: Any): TypedPredicate[D] =
-    compare(dim, CompareOp.Eq, value)
+ /** `field = value`. */
+ def eq[D](dim: TypedDimension[D], value: Any): TypedPredicate[D] =
+ compare(dim, CompareOp.Eq, value)
 
-  /** `field != value`. */
-  def ne[D](dim: TypedDimension[D], value: Any): TypedPredicate[D] =
-    compare(dim, CompareOp.Ne, value)
+ /** `field != value`. */
+ def ne[D](dim: TypedDimension[D], value: Any): TypedPredicate[D] =
+ compare(dim, CompareOp.Ne, value)
 
-  /** `field < value`. */
-  def lt[D](dim: TypedDimension[D], value: Any): TypedPredicate[D] =
-    compare(dim, CompareOp.Lt, value)
+ /** `field < value`. */
+ def lt[D](dim: TypedDimension[D], value: Any): TypedPredicate[D] =
+ compare(dim, CompareOp.Lt, value)
 
-  /** `field <= value`. */
-  def le[D](dim: TypedDimension[D], value: Any): TypedPredicate[D] =
-    compare(dim, CompareOp.Le, value)
+ /** `field <= value`. */
+ def le[D](dim: TypedDimension[D], value: Any): TypedPredicate[D] =
+ compare(dim, CompareOp.Le, value)
 
-  /** `field > value`. */
-  def gt[D](dim: TypedDimension[D], value: Any): TypedPredicate[D] =
-    compare(dim, CompareOp.Gt, value)
+ /** `field > value`. */
+ def gt[D](dim: TypedDimension[D], value: Any): TypedPredicate[D] =
+ compare(dim, CompareOp.Gt, value)
 
-  /** `field >= value`. */
-  def ge[D](dim: TypedDimension[D], value: Any): TypedPredicate[D] =
-    compare(dim, CompareOp.Ge, value)
+ /** `field >= value`. */
+ def ge[D](dim: TypedDimension[D], value: Any): TypedPredicate[D] =
+ compare(dim, CompareOp.Ge, value)
 
-  /** Shared compare factory (per [[karpathy-data-driven-refactormindset]]
-    * SS2: smart constructor for validity-at-boundary -- the phantom
-    * `[D]` is preserved at construction). */
-  private def compare[D](
-      dim:   TypedDimension[D],
-      op:    CompareOp,
-      value: Any,
-  ): TypedPredicate[D] =
-    TypedPredicate.of[D](
-      name      = s"${dim.name} $op $value",
-      predicate = Predicate.Compare(field = dim.name, op = op, value = value),
-    )
+ /** Shared compare factory (per [[karpathy-data-driven-refactormindset]]
+ * SS2: smart constructor for validity-at-boundary -- the phantom
+ * `[D]` is preserved at construction). */
+ private def compare[D](
+  dim: TypedDimension[D],
+  op: CompareOp,
+  value: Any,
+ ): TypedPredicate[D] =
+ TypedPredicate.of[D](
+  name  = s"${dim.name} $op $value",
+  predicate = Predicate.Compare(field = dim.name, op = op, value = value),
+ )
 
-  /** `field IN (v1, v2, ...)`. */
-  def in[D](dim: TypedDimension[D], values: List[Any]): TypedPredicate[D] =
-    TypedPredicate.of[D](
-      name      = s"${dim.name} IN (${values.mkString(", ")})",
-      predicate = Predicate.In(field = dim.name, values = values, negate = false),
-    )
+ /** `field IN (v1, v2,...)`. */
+ def in[D](dim: TypedDimension[D], values: List[Any]): TypedPredicate[D] =
+ TypedPredicate.of[D](
+  name  = s"${dim.name} IN (${values.mkString(", ")})",
+  predicate = Predicate.In(field = dim.name, values = values, negate = false),
+ )
 
-  /** `field NOT IN (v1, v2, ...)`. Per the user's 2026-08-19 directive
-    * ("also notin ?"): the typed `notin` factory delegates to the
-    * existing `Predicate.In(field, values, negate = true)` -- per
-    * [[karpathy-data-driven-refactormindset]] SS1 (data is data),
-    * no new AST case is needed. */
-  def notIn[D](dim: TypedDimension[D], values: List[Any]): TypedPredicate[D] =
-    TypedPredicate.of[D](
-      name      = s"${dim.name} NOT IN (${values.mkString(", ")})",
-      predicate = Predicate.In(field = dim.name, values = values, negate = true),
-    )
+ /** `field NOT IN (v1, v2,...)`. Per the user's 2026-08-19 directive
+ * ("also notin ?"): the typed `notin` factory delegates to the
+ * existing `Predicate.In(field, values, negate = true)` -- per
+ * no new AST case is needed. */
+ def notIn[D](dim: TypedDimension[D], values: List[Any]): TypedPredicate[D] =
+ TypedPredicate.of[D](
+  name  = s"${dim.name} NOT IN (${values.mkString(", ")})",
+  predicate = Predicate.In(field = dim.name, values = values, negate = true),
+ )
 
-  /** `field IS NULL`. */
-  def isNull[D](dim: TypedDimension[D]): TypedPredicate[D] =
-    TypedPredicate.of[D](
-      name      = s"${dim.name} IS NULL",
-      predicate = Predicate.IsNull(field = dim.name, negate = false),
-    )
+ /** `field IS NULL`. */
+ def isNull[D](dim: TypedDimension[D]): TypedPredicate[D] =
+ TypedPredicate.of[D](
+  name  = s"${dim.name} IS NULL",
+  predicate = Predicate.IsNull(field = dim.name, negate = false),
+ )
 
-  /** `field IS NOT NULL`. */
-  def isNotNull[D](dim: TypedDimension[D]): TypedPredicate[D] =
-    TypedPredicate.of[D](
-      name      = s"${dim.name} IS NOT NULL",
-      predicate = Predicate.IsNull(field = dim.name, negate = true),
-    )
+ /** `field IS NOT NULL`. */
+ def isNotNull[D](dim: TypedDimension[D]): TypedPredicate[D] =
+ TypedPredicate.of[D](
+  name  = s"${dim.name} IS NOT NULL",
+  predicate = Predicate.IsNull(field = dim.name, negate = true),
+ )
 
-  /** `field startsWith pattern` -- per the user's 2026-08-19 directive
-    * ("also startsWith, contains, endsWith ?"). The lowering target is
-    * Spark's `Column.startsWith(pattern)` (per [[karpathy-data-driven-
-    * refactormindset]] SS2: simple, predictable -- NOT a regex). */
-  def startsWith[D](dim: TypedDimension[D], pattern: String): TypedPredicate[D] =
-    stringMatch(dim, StringMatchOp.StartsWith, pattern)
+ /** `field startsWith pattern` -- per the user's 2026-08-19 directive
+ * ("also startsWith, contains, endsWith ?"). The lowering target is
+ * Spark's `Column.startsWith(pattern)` (per [[karpathy-data-driven-
+ * refactormindset]] SS2: simple, predictable -- NOT a regex). */
+ def startsWith[D](dim: TypedDimension[D], pattern: String): TypedPredicate[D] =
+ stringMatch(dim, StringMatchOp.StartsWith, pattern)
 
-  /** `field contains pattern`. */
-  def contains[D](dim: TypedDimension[D], pattern: String): TypedPredicate[D] =
-    stringMatch(dim, StringMatchOp.Contains, pattern)
+ /** `field contains pattern`. */
+ def contains[D](dim: TypedDimension[D], pattern: String): TypedPredicate[D] =
+ stringMatch(dim, StringMatchOp.Contains, pattern)
 
-  /** `field endsWith pattern`. */
-  def endsWith[D](dim: TypedDimension[D], pattern: String): TypedPredicate[D] =
-    stringMatch(dim, StringMatchOp.EndsWith, pattern)
+ /** `field endsWith pattern`. */
+ def endsWith[D](dim: TypedDimension[D], pattern: String): TypedPredicate[D] =
+ stringMatch(dim, StringMatchOp.EndsWith, pattern)
 
-  /** Shared string-match factory (per [[karpathy-data-driven-refactormindset]]
-    * SS2: smart constructor for validity-at-boundary). */
-  private def stringMatch[D](
-      dim:     TypedDimension[D],
-      op:      StringMatchOp,
-      pattern: String,
-  ): TypedPredicate[D] =
-    TypedPredicate.of[D](
-      name      = s"${dim.name} $op '$pattern'",
-      predicate = Predicate.StringMatch(field = dim.name, op = op, pattern = pattern),
-    )
+ /** Shared string-match factory (per [[karpathy-data-driven-refactormindset]]
+ * SS2: smart constructor for validity-at-boundary). */
+ private def stringMatch[D](
+  dim:  TypedDimension[D],
+  op:  StringMatchOp,
+  pattern: String,
+ ): TypedPredicate[D] =
+ TypedPredicate.of[D](
+  name  = s"${dim.name} $op '$pattern'",
+  predicate = Predicate.StringMatch(field = dim.name, op = op, pattern = pattern),
+ )
 }
 
 /**
@@ -179,62 +168,58 @@ object TypedDimensionPredicate {
  * class is `extends AnyVal` (per [[karpathy-jvm-safety-mindset]] SS3
  * + the existing `TypedSortKeyOps` pattern from PR-25).
  *
- * Per [[karpathy-spark-batch-bugs-mindset]] SS1 (closure-safety --
  * the user's explicit priority): the captured state is ONLY
  * `TypedDimension[D]` (Serializable) -- no Spark session / DataFrame
  * / non-Serializable locals.
  *
- * Per [[karpathy-bug-huntingmindset]] SS1 (trust compiler, not
  * runtime): the phantom `[D]` is preserved at construction. The
  * implicit class wrapper is type-parameterized on `[D]` (the
  * existing `TypedSortKeyOps` pattern proves this works in Scala
  * 2.13).
  *
- * Per [[karpathy-perf-testingmindset]] SS3 (allocation is the tax):
  * zero per-row allocation at the use-site (the implicit class is
  * erased to the underlying `TypedDimension[D]`).
  *
- * Per [[karpathy-data-driven-refactormindset]] SS1 (data is data):
  * pure data carrier. The implicit class is a thin sugar over the
  * existing factories in `TypedDimensionPredicate`.
  */
 object TypedPredicateFilterOps {
 
-  implicit class TypedDimensionFilterOps[D](val dim: TypedDimension[D]) extends AnyVal {
+ implicit class TypedDimensionFilterOps[D](val dim: TypedDimension[D]) extends AnyVal {
 
-    /** Per the user's headline ask: infix comparison operators. */
-    def ===[v](value: v): TypedPredicate[D] =
-      TypedDimensionPredicate.eq(dim, value)
-    def !==[v](value: v): TypedPredicate[D] =
-      TypedDimensionPredicate.ne(dim, value)
-    def <[v](value: v): TypedPredicate[D] =
-      TypedDimensionPredicate.lt(dim, value)
-    def <=[v](value: v): TypedPredicate[D] =
-      TypedDimensionPredicate.le(dim, value)
-    def >[v](value: v): TypedPredicate[D] =
-      TypedDimensionPredicate.gt(dim, value)
-    def >=[v](value: v): TypedPredicate[D] =
-      TypedDimensionPredicate.ge(dim, value)
+ /** Per the user's headline ask: infix comparison operators. */
+ def ===[v](value: v): TypedPredicate[D] =
+  TypedDimensionPredicate.eq(dim, value)
+ def !==[v](value: v): TypedPredicate[D] =
+  TypedDimensionPredicate.ne(dim, value)
+ def <[v](value: v): TypedPredicate[D] =
+  TypedDimensionPredicate.lt(dim, value)
+ def <=[v](value: v): TypedPredicate[D] =
+  TypedDimensionPredicate.le(dim, value)
+ def >[v](value: v): TypedPredicate[D] =
+  TypedDimensionPredicate.gt(dim, value)
+ def >=[v](value: v): TypedPredicate[D] =
+  TypedDimensionPredicate.ge(dim, value)
 
-    /** Per the user's directive ("also notin ?"): infix NOT IN list. */
-    def in[v](values: List[v]): TypedPredicate[D] =
-      TypedDimensionPredicate.in(dim, values)
-    def notIn[v](values: List[v]): TypedPredicate[D] =
-      TypedDimensionPredicate.notIn(dim, values)
+ /** Per the user's directive ("also notin ?"): infix NOT IN list. */
+ def in[v](values: List[v]): TypedPredicate[D] =
+  TypedDimensionPredicate.in(dim, values)
+ def notIn[v](values: List[v]): TypedPredicate[D] =
+  TypedDimensionPredicate.notIn(dim, values)
 
-    /** Per the user's directive ("also startsWith, contains, endsWith ?"):
-      * infix string-match operators. */
-    def startsWith(pattern: String): TypedPredicate[D] =
-      TypedDimensionPredicate.startsWith(dim, pattern)
-    def contains(pattern: String): TypedPredicate[D] =
-      TypedDimensionPredicate.contains(dim, pattern)
-    def endsWith(pattern: String): TypedPredicate[D] =
-      TypedDimensionPredicate.endsWith(dim, pattern)
+ /** Per the user's directive ("also startsWith, contains, endsWith ?"):
+  * infix string-match operators. */
+ def startsWith(pattern: String): TypedPredicate[D] =
+  TypedDimensionPredicate.startsWith(dim, pattern)
+ def contains(pattern: String): TypedPredicate[D] =
+  TypedDimensionPredicate.contains(dim, pattern)
+ def endsWith(pattern: String): TypedPredicate[D] =
+  TypedDimensionPredicate.endsWith(dim, pattern)
 
-    /** Null checks. */
-    def isNull: TypedPredicate[D] =
-      TypedDimensionPredicate.isNull(dim)
-    def isNotNull: TypedPredicate[D] =
-      TypedDimensionPredicate.isNotNull(dim)
-  }
+ /** Null checks. */
+ def isNull: TypedPredicate[D] =
+  TypedDimensionPredicate.isNull(dim)
+ def isNotNull: TypedPredicate[D] =
+  TypedDimensionPredicate.isNotNull(dim)
+ }
 }

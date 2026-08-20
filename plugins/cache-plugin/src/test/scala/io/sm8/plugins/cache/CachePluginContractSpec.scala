@@ -14,7 +14,6 @@
  *
  * The hook is read back via `EngineImpl().use(plugin)`.
  *
- * Per [[karpathy-guidelines-mindset]]: smallest correct change.
  */
 package io.sm8.plugins.cache
 

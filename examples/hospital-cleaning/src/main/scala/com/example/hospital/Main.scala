@@ -200,7 +200,6 @@ object Refs {
   /** Per-patient readmission count witness. Phantom `[ReadmissionCount]` matches the
     * `readmission_count` measure in the encounters Model.
     *
-    * Per [[karpathy-app-design-mindset]] SS3.1 (Protocols before
     * Implementations): the witness lives at object level
     * (singleton, Serializable) -- safe for Spark closure
     * serialization per [[scala-spark-batch-bugs-mindset]] SS1.
@@ -279,14 +278,12 @@ object Refs {
     //   - is_readmission = 1 if (prev_admission within 30 days), else 0
     //     (lag window over patient_id partitioned by admission_date)
     //
-    // Per [[karpathy-app-design-mindset]] SS3.1 (Protocols before
     // Implementations) + RFC SS3: the per-row transforms are part
     // of the MODEL contract (the typed `readmission_count` measure
     // references the `is_readmission` field; the
     // `ModelValidator.validateAgainstSchema` requires it to exist
     // in the source schema).
     //
-    // Per [[scala-spark-batch-bugs-mindset]] SS1 (closure-safety --
     // the user's explicit concern): the `lag` window function is
     // built driver-side and applied once per query (no executor
     // closure capture).
@@ -352,12 +349,10 @@ object Refs {
       // computed once via Spark-direct `withColumn` BEFORE the
       // typed query runs (per the Q4 los_days pattern).
       //
-      // Per [[karpathy-app-design-mindset]] SS3.1 (Protocols before
       // Implementations) + RFC SS3: the measure is defined at the
       // MODEL layer (sm8-core/protocol); the spark-connector
       // consumes it.
       //
-      // Per [[scala-spark-batch-bugs-mindset]] SS1 (closure-safety
       // -- the user's explicit concern): no closures cross to
       // executors (the typed aggregate is a driver-side lowering).
       Measure.aggregate(
@@ -558,18 +553,15 @@ object Refs {
       // (deferred). Q3 = Spark-direct per-row enrichment +
       // 1 typed-DSL aggregation + Spark-direct rate computation.
       //
-      // Per [[karpathy-app-design-mindset]] SS3.1 (Protocols before
       // Implementations) + RFC SS3: the per-row enrichment is
       // driver-side (Spark-direct `withColumn`); the typed
       // aggregation is the typed end-to-end pipeline (PR-17/18/19
       // + TypedMeasureBridge PR-26).
       //
-      // Per [[scala-spark-batch-bugs-mindset]] SS1 (closure-safety --
       // the user's explicit concern): the per-row `lag` window
       // function is built driver-side and applied once per query
       // (no executor closure capture).
       //
-      // Per [[scala-spark-batch-bugs-mindset]] SS2 (Skew hides in
       // the aggregate): the per-patient aggregation has no
       // partition hint (the data is small in this example; the
       // typed `partitionBy` hint is opt-in via the DSL).
@@ -625,8 +617,6 @@ object Refs {
         case Left(err) =>
           Logger.error(s"  sm8 query FAILED: ${err.getClass.getSimpleName}: $err")
       }
-
-      // Per [[karpathy-app-design-mindset]] SS3.1: the per-row
       // `encounters_clean_csv` temp view is the single source of
       // truth for the Spark-direct rate computation.
       val enrichedEncounters = spark.table("encounters_clean_csv")
@@ -640,7 +630,6 @@ object Refs {
       // recomputation of sum(is_readmission). The typed result
       // rows are scanned for patient_ids with readmission_count > 0.
       //
-      // Per [[scala-data-driven-refactor-mindset]] SS1 (data is
       // data): the typed result is engine-portable; the Spark-
       // direct join to perPatientEncounterCount would require
       // typed `join` (deferred per ADR-008-R SS"Out of scope").
@@ -648,7 +637,6 @@ object Refs {
       // sufficient and proves the typed pipeline + the rate
       // computation share the same data.
       //
-      // Per [[scala-bug-hunting-mindset]] SS1 (trust compiler):
       // the typed row is `ResultValue` -- SUM produces `IntV(v: Long)`
       // (per sm8-core ResultValue.scala:89).
       val typedReadmittedRows: Int = q3aResult match {
@@ -720,11 +708,9 @@ object Refs {
       // demonstrates the PR-29 `TypedPredicateFilterOps` infix sugar
       // end-to-end through `TypedQueryCompiler.apply`.
       //
-      // Per [[karpathy-app-design-mindset]] SS3.1 (Protocols before
       // Implementations) + RFC SS3: the infix sugar is at sm8-core
       // (the protocol); the spark-connector consumes it.
       //
-      // Per [[karpathy-spark-batch-bugs-mindset]] SS1 (closure-safety
       // -- the user's explicit priority): the TypedPredicate witnesses
       // are case-class `extends Serializable` (verified by
       Logger.info("--- Q5: typed filter ergonomics (infix ===/!==/</<=/>/>=, in/notIn, startsWith/contains/endsWith) end-to-end ---")

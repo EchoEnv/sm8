@@ -1,13 +1,11 @@
 /*
  * SM8 broadcast Hook Plugin.
  *
- * Per [[scala-spark-batch-bugs-mindset]] mantra #2: the broadcast hint
  * prevents shuffle for small DataFrames in joins. Step 9b first cut:
  * shape-correct (counter only). Real implementation will set the
  * broadcast threshold and annotate the join plan when SM8 has Spark
  * integration (deferred).
  *
- * Per [[scala-jvm-safety-mindset]]: AtomicInteger (no `var`).
  * Per [[scala-spark-batch-bugs]] mantra #1: `with java.io.Serializable`
  * for Spark-closure safety (same as Step 8 TrinoConnector + Step 9a
  * Plugins).

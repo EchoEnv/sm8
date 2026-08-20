@@ -9,12 +9,10 @@ import org.scalatest.matchers.should.Matchers
 /**
  * Tests for `InMemoryResultCache` (PR-C5b-ext-β).
  *
- * Per [[scala-jvm-safety-mindset]] "null is a liar": all internal
  * maps are `ConcurrentHashMap`; reads + writes see a consistent
  * snapshot. Single-flight uses `computeIfAbsent` for atomic
  * per-key coalescing.
  *
- * Per [[scala-jar-packaging-mindset]] "no new Maven deps": all
  * types are JDK or Scala stdlib.
  */
 class InMemoryResultCacheSpec extends AnyFunSuite with Matchers {

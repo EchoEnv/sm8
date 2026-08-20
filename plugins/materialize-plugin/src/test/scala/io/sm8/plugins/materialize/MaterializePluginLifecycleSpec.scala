@@ -1,7 +1,6 @@
 /*
  * SM8 materialize Plugin — closure-safety + lifecycle conformance.
  *
- * Per [[scala-spark-batch-bugs-mindset]] mantra #1 ('closures
  * captured by Spark UDFs / lambdas in `Dataset.map` must avoid
  * non-serializable refs'): the materialize Plugin captures the
  * engine-portable `PersistLevel` marker (a sealed trait extending
@@ -9,12 +8,10 @@
  * wraps `StorageLevel` in a concrete `PersistLevel` subtype —
  * which IS Serializable (Spark 3.x's contract).
  *
- * Per [[scala-jvm-safety-mindset]] mantra #3 ('materialized
  * DataFrames must be `.unpersist()`-ed eventually to avoid
  * executor-memory leaks'): the lifecycle pair (PreExecute
  * persist + PostExecute unpersist) is the testable contract.
  *
- * Per [[karpathy-guidelines-mindset]] 'smallest correct core':
  * 3 tests in 1 file. No Spark dependency. The materialize-plugin
  * module is engine-portable — the Spark-specific `StorageLevel`
  * lives in the spark-connector module per the Module Map.
@@ -61,7 +58,6 @@ class MaterializePluginLifecycleSpec extends AnyFunSuite with Matchers {
   }
 
   test("MaterializePlugin: lifecycle contract — BOTH PreExecute (persist) AND PostExecute (unpersist) register") {
-    // Per [[scala-jvm-safety-mindset]] mantra #3: the lifecycle pair
     // (persist before, unpersist after) ensures executor-memory isn't
     // leaked. A regression that registers only one half breaks the
     // contract — this test enforces BOTH.

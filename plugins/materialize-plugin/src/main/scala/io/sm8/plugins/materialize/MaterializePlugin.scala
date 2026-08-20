@@ -1,12 +1,10 @@
 /*
  * SM8 materialize Hook Plugin - persist/unpersist lifecycle.
  *
- * Per [[scala-spark-batch-bugs-mindset]] mantra #1: this Plugin
  * closes over a generic persist-level marker. The Spark-specific
  * StorageLevel capture lives in the spark-connector (per the
  * Module Map: this plugin is engine-portable, not Spark-specific).
  *
- * Per [[scala-jvm-safety-mindset]] mantra #3: the lifecycle pair
  * (PreExecute persist + PostExecute unpersist) ensures executor-
  * memory isn't leaked.
  */

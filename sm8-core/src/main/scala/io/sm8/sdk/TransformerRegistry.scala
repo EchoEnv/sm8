@@ -16,18 +16,18 @@ package io.sm8.sdk
  */
 trait TransformerRegistry {
 
-  /**
-   * Register a Transformer. If this is the first Transformer, it
-   * becomes active automatically. Re-registering a name throws.
-   *
-   * @return this registry, for chaining
-   * @throws IllegalArgumentException if a Transformer with the same name is already registered
-   */
-  def register(transformer: Transformer): TransformerRegistry
+ /**
+ * Register a Transformer. If this is the first Transformer, it
+ * becomes active automatically. Re-registering a name throws.
+ *
+ * @return this registry, for chaining
+ * @throws IllegalArgumentException if a Transformer with the same name is already registered
+ */
+ def register(transformer: Transformer): TransformerRegistry
 
-  /** Set the active Transformer by name. None if not found. */
-  def setActive(name: String): Option[Transformer]
+ /** Set the active Transformer by name. None if not found. */
+ def setActive(name: String): Option[Transformer]
 
-  /** Currently active Transformer, if any. */
-  def active: Option[Transformer]
+ /** Currently active Transformer, if any. */
+ def active: Option[Transformer]
 }

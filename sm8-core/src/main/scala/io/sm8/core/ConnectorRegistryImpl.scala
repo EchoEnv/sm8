@@ -14,19 +14,19 @@ import io.sm8.sdk.{Connector, ConnectorRegistry}
  */
 final class ConnectorRegistryImpl extends ConnectorRegistry {
 
-  private val byName: scala.collection.mutable.LinkedHashMap[String, Connector] =
-    scala.collection.mutable.LinkedHashMap.empty
+ private val byName: scala.collection.mutable.LinkedHashMap[String, Connector] =
+ scala.collection.mutable.LinkedHashMap.empty
 
-  override def register(connector: Connector): ConnectorRegistry = {
-    if (byName.contains(connector.name)) {
-      throw new IllegalArgumentException(
-        s"sm8: Connector '${connector.name}' is already registered")
-    }
-    byName += (connector.name -> connector)
-    this
-  }
+ override def register(connector: Connector): ConnectorRegistry = {
+ if (byName.contains(connector.name)) {
+  throw new IllegalArgumentException(
+  s"sm8: Connector '${connector.name}' is already registered")
+ }
+ byName += (connector.name -> connector)
+ this
+ }
 
-  override def get(name: String): Option[Connector] = byName.get(name)
+ override def get(name: String): Option[Connector] = byName.get(name)
 
-  override def all: Seq[Connector] = byName.values.toSeq
+ override def all: Seq[Connector] = byName.values.toSeq
 }

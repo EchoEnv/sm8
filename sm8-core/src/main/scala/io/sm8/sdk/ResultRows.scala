@@ -12,8 +12,8 @@
  * Per RFC adapters.md Rule 3 + the Connector conformance contract:
  * `query()` returns rows that match `schema()`. Connector authors
  * enforce this by either:
- *   - extending `ConnectorContractSpec` (which asserts the match); or
- *   - overriding `rowsMatchSchema` for a richer notion of "match".
+ * - extending `ConnectorContractSpec` (which asserts the match); or
+ * - overriding `rowsMatchSchema` for a richer notion of "match".
  */
 package io.sm8.sdk
 
