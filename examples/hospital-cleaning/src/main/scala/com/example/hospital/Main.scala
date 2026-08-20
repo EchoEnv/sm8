@@ -291,45 +291,22 @@ object Refs {
       Dimension.field("is_readmission", "is_readmission"))
     val measures: List[Measure] = List(
       Measure.aggregate(name = "encounter_count", fn = AggregateFn.Count, expr = Expr.Literal(LiteralValue.IntValue(1), SealedDataType.Int)),
-      Measure.aggregate(name = "total_los", fn = AggregateFn.Sum, expr = Expr.FieldRef("los_days")),
-      // expired_count: weighted count of expired-status encounters.
-      // Each row contributes 1 if the discharge_status is 'expired',
-      // 0 otherwise. The literal helpers keep the type-checked
-      // mapping (varchar/int) close to the value; the parenthesized
-      // tuple shapes the `Expr.CaseWhen` branch list.
+      Measure.aggregate(name = "total_los", call = "los_days".asField.sum),
       Measure.aggregate(
-        name = "expired_count",
-        fn = AggregateFn.Sum,
-        expr = Expr.CaseWhen(
+        "expired_count",
+        AggregateFn.Sum,
+        Expr.CaseWhen(
           branches = List(
             ("discharge_status".asField === "expired".asVarchar) -> 1.asInt),
           otherwise = 0.asInt)),
-      // `readmission_count` is
-      // the SUM of the per-row `is_readmission` flag (already 0/1
-      // from the Q3 enrichment in Q3b). This is a pure column
-      // reference (NOT a CaseWhen) -- the per-row conditional is
-      // computed once via Spark-direct `withColumn` BEFORE the
-      // typed query runs (per the Q4 los_days pattern).
-      //
-      // Implementations) + RFC SS3: the measure is defined at the
-      // MODEL layer (sm8-core/protocol); the spark-connector
-      // consumes it.
-      //
-      // -- the user's explicit concern): no closures cross to
-      // executors (the typed aggregate is a driver-side lowering).
-      Measure.aggregate(
-        name = "readmission_count",
-        fn = AggregateFn.Sum,
-        expr = Expr.FieldRef("is_readmission")))
-    // avg_los = total_los / encounter_count — pure typed expression
-    // (no AggregateCall — per the CalculatedMeasure design, the
+      Measure.aggregate("readmission_count", "is_readmission".asField.sum))
+    // avg_los = total_los / encounter_count -- pure typed expression
+    // (no AggregateCall -- per the CalculatedMeasure design, the
     // expression is any engine-portable Expr, not a single aggregate).
     val calculatedMeasures: List[CalculatedMeasure] = List(
       CalculatedMeasure(
         name = "avg_los",
-        expr = Expr.Divide(
-          Expr.MeasureRef("total_los"),
-          Expr.MeasureRef("encounter_count"))))
+        expr = "total_los".measure / "encounter_count".measure))
     Model.of(
       name = "encounters",
       version = 1,
