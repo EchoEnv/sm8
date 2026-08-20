@@ -8,9 +8,12 @@
  */
 package io.sm8.core.expr
 
+import io.sm8.core.rel.{AggregateCall, AggregateFn}
 import io.sm8.core.schema.SealedDataType
 
-/** Provides syntactic sugar for constructing `Expr` case classes.
+
+/** Provides syntactic sugar for constructing `Expr` and
+ * `AggregateCall` values.
  *
  * Import the object where the sugar is wanted; the import
  * brings every extension method into scope:
@@ -96,5 +99,96 @@ object ExprSugar {
  */
  implicit class ExprTuple(val cond: Expr) extends AnyVal {
  def ->(thenBranch: Expr): (Expr, Expr) = (cond, thenBranch)
- }
+}
+/** Wrap an `Expr` in a single-input `AggregateCall` (the common
+ * `SUM(x) AS total` / `AVG(x) AS avg` shape). Sugar returns the
+ * existing `AggregateCall` case class — zero new ADT cases.
+ *
+ * Pair with `Measure.aggregate(name, call)` for a fully infix
+ * model definition.
+ *
+ * @example
+ * {{{
+ * import io.sm8.core.expr.ExprSugar._
+ * Measure.aggregate("total_los", "los_days".asField.sum)
+ * Measure.aggregate("avg_los",   "los_days".asField.avg)
+ * }}}
+ */
+implicit class ExprAggregateOps(val left: Expr) extends AnyVal {
+ def sum:           AggregateCall = AggregateCall(AggregateFn.Sum,           Some(left))
+ def avg:           AggregateCall = AggregateCall(AggregateFn.Avg,           Some(left))
+ def min:           AggregateCall = AggregateCall(AggregateFn.Min,           Some(left))
+ def max:           AggregateCall = AggregateCall(AggregateFn.Max,           Some(left))
+ def countDistinct: AggregateCall = AggregateCall(AggregateFn.CountDistinct, Some(left), distinct = true)
+}
+
+/** Build a `COUNT(*)`-shaped `AggregateCall` (no input expression).
+ *
+ * Returns the existing `AggregateCall` case class with
+ * `input = None` and the receiver as the alias — equivalent to
+ * `Measure.aggregate(name, AggregateFn.Count, ???)` where the
+ * third arg is conventionally `1.asInt` but engine-lowered as
+ * `COUNT(*)` (no input).
+ *
+ * Method name is `countStar` (not `count`) to avoid shadowing
+ * `scala.collection.StringOps.count(p: Char => Boolean)`.
+ *
+ * @example
+ * {{{
+ * import io.sm8.core.expr.ExprSugar._
+ * Measure.aggregate("encounter_count", "encounter_id".countStar)
+ * }}}
+ */
+implicit class CountOp(val name: String) extends AnyVal {
+ def countStar: AggregateCall = AggregateCall(AggregateFn.Count, None, name)
+}
+
+/** Reference a sibling measure from inside a `CalculatedMeasure`
+ * or `Expr.CaseWhen` branch.
+ *
+ * Both `name.measure` and `name.all` return the existing
+ * `Expr.MeasureRef(name)` / `Expr.All(name)` case classes — zero
+ * new ADT cases. Engine-agnostic; Spark lowers `MeasureRef` to
+ * `Column = functions.col(measureName)` and `All` to the percent
+ * of total.
+ *
+ * @example
+ * {{{
+ * import io.sm8.core.expr.ExprSugar._
+ * CalculatedMeasure(
+ *   name = "avg_los",
+ *   expr = Expr.Divide("total_los".measure, "encounter_count".measure))
+ * }}}
+ */
+implicit class StringMeasureRefOps(val name: String) extends AnyVal {
+ def measure: Expr = Expr.MeasureRef(name)
+ def all:      Expr = Expr.All(name)
+}
+
+/** Wrap an `Expr` in an `Expr.Cast` to a target `SealedDataType`
+ * (or one of the convenience per-type shortcuts).
+ *
+ * Sugar returns the existing `Expr.Cast(expr, targetType)` case
+ * class — zero new ADT cases. The `.asInt / .asLong / .asDouble /
+ * .asBool / .asVarchar` names intentionally differ from the
+ * literal-lift shortcuts (`IntLit.asInt` returns `Expr.Literal`,
+ * not `Expr.Cast`) — different receiver types resolve without
+ * ambiguity.
+ *
+ * @example
+ * {{{
+ * import io.sm8.core.expr.ExprSugar._
+ * "amount".asField.asLong     // Expr.Cast(FieldRef("amount"), BigInt)
+ * "flag".asField.castAs(SealedDataType.Boolean)
+ * }}}
+ */
+implicit class ExprCastOps(val e: Expr) extends AnyVal {
+ def castAs(t: SealedDataType): Expr.Cast = Expr.Cast(e, t)
+ def asInt:     Expr.Cast = Expr.Cast(e, SealedDataType.Int)
+ def asLong:    Expr.Cast = Expr.Cast(e, SealedDataType.BigInt)
+ def asDouble:  Expr.Cast = Expr.Cast(e, SealedDataType.Double)
+ def asBool:    Expr.Cast = Expr.Cast(e, SealedDataType.Boolean)
+ def asVarchar: Expr.Cast = Expr.Cast(e, SealedDataType.Varchar)
+}
+
 }

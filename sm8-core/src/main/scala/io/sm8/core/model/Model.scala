@@ -144,7 +144,23 @@ object Measure {
   def aggregate(
       name: String,
       fn:    io.sm8.core.rel.AggregateFn,
-      expr:  io.sm8.core.expr.Expr): Measure = Measure(name, AggregateCall(fn, Some(expr), name))
+     expr:  io.sm8.core.expr.Expr): Measure = Measure(name, AggregateCall(fn, Some(expr), name))
+
+ /** Construct a measure from a pre-built `AggregateCall` (the
+ * sugar-friendly form).
+ *
+ * Equivalent to `Measure(name, AggregateCall)` (the structural
+ * constructor). Use with `ExprSugar`'s `Expr.sum / .avg / .countDistinct`
+ * infix for fully infix model definition.
+ *
+ * @example
+ * {{{
+ * import io.sm8.core.expr.ExprSugar._
+ * Measure.aggregate("total_los", "los_days".asField.sum)
+ * Measure.aggregate("avg_los",   "los_days".asField.avg)
+ * }}}
+ */
+ def aggregate(name: String, call: AggregateCall): Measure = Measure(name, call)
 }
 
 /**
