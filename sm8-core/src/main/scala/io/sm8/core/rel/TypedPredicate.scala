@@ -1,35 +1,27 @@
 /*
- * SM8 Core -- TypedPredicate phantom-typed witness (PR-20, ADR-008-R §filter/where).
- *
+ * SM8 Core -- TypedPredicate phantom-typed witness (the current implementation, the design contract/where).
  * The phantom-typed wrapper around the existing `Predicate` AST
  * (in `sm8-core/predicate/Predicate.scala`). The phantom type
  * parameter `[D]` carries the dimension identity at the type
  * level -- a typo at the call site (e.g. `Refs.region` vs
  * `Refs.region2`) is a COMPILE error, not a runtime error.
- *
- * Per ADR-008-R §"PR-17 Core types": this trait is the PROTOCOL in
+ * Per the design contract §"the current implementation Core types": this trait is the PROTOCOL in
  * core. The witness INSTANCE lives in the consumer's code (`object
  * Refs { ... }` in a plugin or example) -- NOT in method-local scope
  * (which would capture the enclosing scope and break Spark closure-
  * serialization with `NotSerializableException` at executor
  * startup).
- *
- * Per [[karpathy-app-design-mindset]] SS3.1 (Protocols before
- * Implementations): the typed builder sits next to the data,
+ *  * Implementations): the typed builder sits next to the data,
  * behavior lives elsewhere. The phantom `[D]` is purely type-level
  * (zero runtime cost per [[scala-perf-testing-mindset]] SS3: zero
  * per-row allocation; case-class `Impl` allocates once at query-
  * build time, driver-side).
- *
- * Per [[scala-spark-batch-bugs-mindset]] SS1 (closure-safety -- the
- * user's explicit concern): this trait extends `Serializable`
+ *  * user's explicit concern): this trait extends `Serializable`
  * (verified by the closure-safety spec). The case-class `Impl`
- * form (vs. the anonymous-class form that broke in PR-16)
+ * form (vs. the anonymous-class form that broke in the current implementation)
  * preserves all fields through `ObjectOutputStream` round-trip --
  * see `TypedPredicateClosureSafetySpec`.
- *
- * Per [[scala-data-driven-refactor-mindset]] SS1 (data is data):
- * pure carrier, no methods beyond derived accessors. SS2 (shape vs
+ *  * pure carrier, no methods beyond derived accessors. SS2 (shape vs
  * validity separate): the case-class constructor is unconditional;
  * the typed builder factory validates at the boundary (per
  * [[scala-jvm-safety-mindset]] SS2).
@@ -41,17 +33,14 @@ import io.sm8.core.predicate.{CompareOp, Predicate}
 /**
  * Phantom-typed witness for a filter predicate. The phantom `[D]`
  * carries the dimension identity at the type level.
- *
- * Per ADR-008-Q §PR-16 (closure-safety contract): the witness MUST
+ * Per the design contract current implementation (closure-safety contract): the witness MUST
  * be defined at `object` level (singleton, class-load time) for
  * Spark closure-safety. Method-local definitions capture the
  * enclosing scope (which may include non-Serializable locals --
  * e.g. a `SparkSession`) and break Spark closure serialization at
  * executor startup.
- *
- * Per [[scala-bug-hunting-mindset]] SS3 (every match must be
- * exhaustive): the case class `Impl` form provides a proper
- * equals/hashCode + Java getters (per PR-16 lesson -- the
+ *  * exhaustive): the case class `Impl` form provides a proper
+ * equals/hashCode + Java getters (per the current implementation lesson -- the
  * anonymous-class form returned `null` from `ObjectOutputStream`
  * round-trip because Scala doesn't generate Java getters for `def`
  * without parens).
@@ -68,7 +57,7 @@ sealed trait TypedPredicate[D] extends Serializable {
 
 object TypedPredicate {
 
-  /** Internal case-class implementation. Per PR-16 lesson: case
+  /** Internal case-class implementation. Per the current implementation lesson: case
     * class (not anonymous-class) so the `predicate` field has a
     * proper Java getter, survives `ObjectOutputStream` round-trip,
     * and Spark closure serialization. */
@@ -87,7 +76,7 @@ object TypedPredicate {
   ): TypedPredicate[D] =
     Impl[D](theName = name, thePredicate = predicate)
 
-  // === Specialized factories (per PR-16 pattern) ===
+  // === Specialized factories (per the current implementation pattern) ===
 
   /** `field = value` -- the most common case. */
   def eq[D](

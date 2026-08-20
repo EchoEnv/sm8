@@ -3,43 +3,32 @@ package io.sm8.core.engine
 import scala.concurrent.duration.Duration
 
 /** Engine-portable typed policies for query execution —
-  * Phase 2 contract. Mirrors the design doc §4 "Engine contract".
-  *
+  * the engine-portable contract. Mirrors the design doc §4 "Engine contract".
   * The `EngineContext` carries the typed policies the caller asks the
   * engine to apply for a single query: materialize (persist
   * intermediate results), cache (result-cache mode), audit (where
   * audit events go), join hints (broadcast / skew), timeout, and
   * cancellation mechanism. The engine adapter adapts each policy
   * to its supported form (per the request-policy matrix in §4.5.3).
-  *
   * ==Why a typed ADT (not a String map)==
-  *
   * The design doc says: "These questions must not be answered by
   * string parameters in `EngineContext`." A closed ADT forces every
   * engine adapter to handle the closed set of policies. Free-form
   * strings would let adapters accidentally invent policy names that
   * the consumer can't classify.
-  *
   * ==Why core (engine-portable)==
-  *
   * The policies are universal across query engines (every engine has
   * the notion of "cache mode" or "join hint"). The engine adapter
   * adapts them; the SHAPE is engine-portable.
-  *
   * ==Data-driven mantra compliance==
-  *
   * - Pure data: sealed traits + final case classes (no behavior)
   * - Equality auto-derived
   * - `Product with Serializable` for Java-serialization round-trip
-  *
   * ==Boundary contract==
-  *
   * Zero Spark imports. Verifiable by:
   * `grep -r 'org.apache.spark' semanticdf-core/src/main/scala/io/semanticdf/core/engine/EngineContext.scala`
-  *
   * ==Consolidation status==
-  *
-  * Phase 2 follow-up PRs will add:
+  * The follow-up implementation will add:
   *   - `PortableModel` (the full portable model type) to replace the
   *     `Any` placeholder in `Engine.compile(model: Any, ...)`
   *   - `PortableExpr` / `RelOp` (the portable IR) to replace the
@@ -74,7 +63,6 @@ object EngineContext {
 // -- MaterializePolicy: whether to persist intermediate results ---
 
 /** Engine-portable policy for materializing intermediate query results.
-  *
   * Different engines support different persistence modes (Spark
   * `MEMORY_ONLY` / `MEMORY_AND_DISK` / etc.; Trino in-memory caching;
   * Databricks Photon cache). The closed ADT forces the consumer to
@@ -143,7 +131,6 @@ object AuditPolicy {
   * optional fields. The engine adapter maps each Option to its
   * engine's native form (e.g. `broadcastRightBelowBytes` → Spark's
   * `autoBroadcastJoinThreshold`).
-  *
   * All fields are Optional so the caller can leave any unset. The
   * adapter interprets `None` as "no preference" for that hint. */
 final case class JoinHints(

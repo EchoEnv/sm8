@@ -1,17 +1,11 @@
 /*
  * SM8 Core — Model + ModelStatus + ModelPolicyDefaults + SourceRef.
- *
- * Per [[karpathy-guidelinesmindset]] (smart constructor for validity-
- * at-boundary + match existing style + Scala 2.13 only): `final class`
+ *  * at-boundary + match existing style + Scala 2.13 only): `final class`
  * with private val fields + smart factory `Model.of(...)`.
- *
- * Per [[scala-data-driven-refactor-mindset]] (data-only, sealed-trait
- * dispatch): `Model` has NO methods beyond the smart constructor
+ *  * dispatch): `Model` has NO methods beyond the smart constructor
  * — pure data. All operations (validation, compile, query) live in
  * adapters or hooks.
- *
- * Per [[scala-impact-analysismindset]]: ADDITIVE to sm8-core. Does not
- * modify any of the 10 frozen SDK types (Plugin, Connector, PreHook,
+ *  * modify any of the 10 frozen SDK types (Plugin, Connector, PreHook,
  * PostHook, Transformer, Context, Engine, ConnectorRegistry, HookManager,
  * TransformerRegistry).
  */
@@ -24,7 +18,6 @@ import io.sm8.sdk.SemanticQuery
  * Engine-portable semantic model container. Holds the dimensions /
  * measures / filters / time-grains / etc. that any engine adapter
  * needs to compile a query.
- *
  * Construction uses the smart factory `Model.of(...)` which runs
  * `ModelValidator.validate(...)` exactly once at the boundary.
  */
@@ -42,8 +35,7 @@ final case class Model private (
     val joins: List[JoinSpec] = Nil
 ) extends Product with Serializable
 
-// Per [[scala-data-driven-refactor-mindset]] step 2 ("shape and
-// validity are separate"): NO `require` in the case-class body.
+// // validity are separate"): NO `require` in the case-class body.
 // Validity is enforced exactly once, at the boundary, by the
 // `Model.of` smart constructor. The constructor is `private`, so
 // `Model.of` is the only instantiation path — the former body
@@ -90,15 +82,13 @@ object AuditPolicy {
   final case class EmitEvents(sinkRef: String) extends AuditPolicy
 }
 
-/** A dimension field on a Model. PR-O4b (ADR-008-O):
+/** A dimension field on a Model. the current implementation:
   * re-typed `expr: String` -> `Expr` (matching the legacy semanticdf
-  * pre-tag audit). Per [[scala-data-driven-refactor-mindset]]: data
-  * is the IR, not free-form strings. A String allowed silent typos
+  * pre-tag audit).   * is the IR, not free-form strings. A String allowed silent typos
   * at engine-compile time (the legacy's stated reason for typed
   * Expr). `dataType: Option[SealedDataType]` carries the optional
   * declared type for model validators; default `None` means
   * "infer from expr".
-  *
   * Smart constructor `Dimension.field(name, fieldName)` for the
   * common case (a column reference). The structural constructor is
   * for `Dimension(name, Expr.Add(...))` etc.
@@ -120,12 +110,11 @@ object Dimension {
     Dimension(name = name, expr = io.sm8.core.expr.Expr.FieldRef(fieldName), dataType = Some(dataType))
 }
 
-/** A measure field on a Model. PR-J (2026-08-16): `expr` is now a
+/** A measure field on a Model. the current implementation: `expr` is now a `expr` is now a
   * typed `AggregateCall` (was `String`). The typed form forces
   * the model validator + engine adapter to handle every case
   * explicitly; a `String` would allow silent typos at
   * engine-compile time.
-  *
   * Smart constructor `Measure.aggregate(name, fn, expr)` covers
   * the common case (`SUM(amount) AS total`). The structural
   * constructor `Measure(name, AggregateCall(...))` is for the
@@ -136,7 +125,6 @@ final case class Measure(name: String, expr: AggregateCall) extends Product with
 object Measure {
 
   /** Construct a single-aggregate measure (the common case).
-    *
     * `Measure.aggregate("total", AggregateFn.Sum, Expr.FieldRef("amount"))`
     * is equivalent to `Measure(name = "total", expr =
     * AggregateCall(fn = Sum, input = Some(FieldRef("amount")),
@@ -154,7 +142,7 @@ object Measure {
  * `FilterSpec(name, predicate: Expr)` defined in
  * `io.sm8.core.model.FilterSpec` (per the legacy semanticdf-core
  * design doc §4.4.1). The raw-SQL version (`expr: String`) that was
- * here in PR-B-prep is removed in PR-C0c — the typed version is
+ * the legacy adapter Predicate is
  * the canonical one.
  */
 
@@ -166,8 +154,8 @@ object Measure {
  */
 sealed trait SourceRef extends Product with Serializable
 object SourceRef {
-  /** Source identified by catalog / namespace / table. PR-O4c
-    * (ADR-008-O): re-port the legacy semanticdf pre-tag shape
+  /** Source identified by catalog / namespace / table.
+    * (the design contract): re-port the legacy semanticdf pre-tag shape
     * (Option[String] for catalog + namespace). The wired SM8 was
     * missing these 2 fields -- they were dropped as "smallest
     * correct change" but the data-engineer parity review flagged
@@ -227,7 +215,7 @@ object Model {
     else if (version < 0)
       Left(ModelValidationError.InvalidVersion(version))
     else
-      // PR-M2 (ADR-008-L Appendix GAP 2): pure model-level
+      // the current implementation: pure model-level
       // cross-reference validation (duplicate-name detection).
       // Schema-level validation lives in
       // `ModelValidator.validateAgainstSchema` (caller-side, after
@@ -272,8 +260,8 @@ object ModelValidationError {
     val message = s"Model version must be non-negative, got $value"
   }
 
-  /** PR-M2: aggregated cross-reference validation errors. All
-    * collected errors are surfaced at once (per [[debug-mantra-mindset]]
+  /** aggregated cross-reference validation errors. All
+    * collected errors are surfaced at once (per the observable-cause principle
     * SS1) -- never silent partial-validation. */
   final case class SchemaValidation(messages: List[String]) extends ModelValidationError {
     val message = s"Model schema validation failed: ${messages.mkString("; ")}"
