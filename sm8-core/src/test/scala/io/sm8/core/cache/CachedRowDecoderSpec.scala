@@ -1,5 +1,8 @@
 package io.sm8.core.cache
 
+import io.sm8.core.engine.{EngineError, PortableQueryResult, ResultRow, ResultSchema, ResultValue}
+import io.sm8.core.schema.{Field, SealedDataType}
+
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
@@ -199,5 +202,51 @@ class CachedRowDecoderSpec extends AnyFunSuite with Matchers {
       )
     )
     noException should be thrownBy CachedRowDecoder.fromRestateCachedRow(row)
+  }
+  // -- ADR-008-Z v1.1: encoder row-length validation returns typed-Left --
+
+  test("toRestateCachedRowFromPortable: row-length mismatch returns Left(IncompatibleExprShape)") {
+    // 4-field schema, but the row has 3 cells. The encoder must return
+    // a typed-Left at the journal boundary (was: IllegalArgumentException
+    // at the case-class apply site).
+    val portable = PortableQueryResult(
+      schema = ResultSchema(List(
+        Field.nonNull("col1", SealedDataType.Varchar),
+        Field.nonNull("col2", SealedDataType.Int),
+        Field.nonNull("col3", SealedDataType.Varchar),
+        Field.nonNull("col4", SealedDataType.Int)
+      )),
+      rows = Vector(ResultRow(
+        values = List(
+          ResultValue.StringV("a"),
+          ResultValue.IntV(1L),
+          ResultValue.StringV("b")
+        ),
+        schema = ResultSchema(Nil)
+      ))
+    )
+    val out = CachedRowDecoder.toRestateCachedRowFromPortable(portable)
+    out.left.get shouldBe a [EngineError.IncompatibleExprShape]
+    out.left.get.message should include ("row 0 has 3 cells, expected 4")
+  }
+
+  test("toRestateCachedRowFromPortable: well-formed PortableQueryResult returns Right(RestateCachedRow)") {
+    val portable = PortableQueryResult(
+      schema = ResultSchema(List(
+        Field.nonNull("name", SealedDataType.Varchar),
+        Field.nonNull("age", SealedDataType.Int)
+      )),
+      rows = Vector(ResultRow(
+        values = List(
+          ResultValue.StringV("Alice"),
+          ResultValue.IntV(30L)
+        ),
+        schema = ResultSchema(Nil)
+      ))
+    )
+    val out = CachedRowDecoder.toRestateCachedRowFromPortable(portable)
+    out.isRight shouldBe true
+    out.right.get.fieldNames shouldBe List("name", "age")
+    out.right.get.fieldTypes shouldBe List(RestateCachedRow.T_STRING, RestateCachedRow.T_LONG)
   }
 }
