@@ -6,6 +6,7 @@ import io.sm8.core.engine.{
   ResultValue
 }
 import io.sm8.core.expr.{Expr, LiteralValue}
+import io.sm8.core.expr.ExprSugar._
 import io.sm8.core.model.{
   CalculatedMeasure, Dimension, FilterSpec, JoinSpec, MaterializePolicy, CachePolicy,
   AuditPolicy, Measure, Model, ModelPolicyDefaults, ModelStatus, SourceRef
@@ -331,17 +332,27 @@ object Refs {
     val measures: List[Measure] = List(
       Measure.aggregate(name = "encounter_count", fn = AggregateFn.Count, expr = Expr.Literal(LiteralValue.IntValue(1), SealedDataType.Int)),
       Measure.aggregate(name = "total_los", fn = AggregateFn.Sum, expr = Expr.FieldRef("los_days")),
+      // Per PR-35 (ADR-008-S ExprSugar): migrated the
+      // `expired_count` measure body from verbose
+      // Expr.Equal(Expr.FieldRef, Expr.Literal) -> Expr.Literal
+      // construction to sugar:
+      //   - "discharge_status".asField === "expired".asVarchar
+      //     (infix === on Expr + asField/asVarchar helpers)
+      //   - 1.asInt / 0.asInt (typed literal helpers)
+      //   - parenthesized (cond -> thenBranch) tuple sugar for
+      //     Expr.CaseWhen branches
+      // The full `Measure.aggregate(...)` block drops from 12 lines
+      // to 9 lines (25% reduction); the inner `Expr.CaseWhen`
+      // body drops from 7 lines to 5 lines. Reads at a glance:
+      // 'WHEN discharge_status = expired THEN 1 ELSE 0'.
       Measure.aggregate(
         name = "expired_count",
         fn = AggregateFn.Sum,
         expr = Expr.CaseWhen(
           branches = List(
-            Expr.Equal(
-              Expr.FieldRef("discharge_status"),
-              Expr.Literal(LiteralValue.StringValue("expired"), SealedDataType.Varchar),
-            ) -> Expr.Literal(LiteralValue.IntValue(1), SealedDataType.Int)
+            ("discharge_status".asField === "expired".asVarchar) -> 1.asInt,
           ),
-          otherwise = Expr.Literal(LiteralValue.IntValue(0), SealedDataType.Int),
+          otherwise = 0.asInt,
         ),
       ),
       // Per PR-34 (Q3 typed-DSL migration): `readmission_count` is
