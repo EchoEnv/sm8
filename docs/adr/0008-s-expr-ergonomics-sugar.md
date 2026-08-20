@@ -4,7 +4,7 @@
 
 > **Decision at a glance** (5-second scan)
 >
-> - **Scope**: sugar over EXISTING `Expr` ADT cases ONLY. 17 `extends AnyVal` extension methods (`===`, `!==`, `<`, `&&`, etc.). NO new ADT cases, NO engine-portability changes.
+> - **Scope**: sugar over EXISTING `Expr` ADT cases ONLY. 21 `extends AnyVal` extension methods (`===`, `!==`, `<`, `&&`, etc.). NO new ADT cases, NO engine-portability changes.
 > - **PR**: 1 atomic PR (`ExprSugar.scala` + `ExprSugarClosureSafetySpec.scala` + example migration).
 > - **Win**: `Measure.aggregate(name = "expired_count", ...)` drops from 12 lines → 6 lines; reads at a glance.
 > - **Deferred**: `Expr.In/Contains/StartsWith/EndsWith/NotIn/Like` ADT cases (PR-29 covers at QUERY layer; no MODEL-layer need today).
@@ -345,8 +345,15 @@ Success criterion: `examples/hospital-cleaning/Main.scala` `expired_count` measu
 3. **Question hypothesis**: the assumption "case-class Expr.Equal extends Product with Serializable → safe Spark closure capture" is the hypothesis under test; the 3-test pattern verifies it from 3 angles.
 4. **Every run is a breadcrumb**: the 3 test names narrate the round-trip → UDF-capture → failure-mode progression (`closure-safety: ExprSugar positive round-trip` → `Spark UDF closure-safe` → `documented failure -- non-Serializable enclosing local throws NotSerializableException`). A future contributor reading the test names alone sees the complete closure-safety contract without opening the test bodies.
 5. **Verify**: `mvn -pl sm8-core,connectors/spark-connector,examples/hospital-cleaning test` on full reactor confirms zero regression + ~10 new tests pass.
-### `scala-spark-streaming-bugs-mindset` (forward-looking, per architect review SHOULD)
-Sugar-built Expr inherits streaming-safety from the existing Expr case-class Serializable contract. The sugar adds NO new state (every method returns the same case class); no `StreamingStateStore` concern arises at the Expr layer. A future PR-36 that consumes `ExprSugar` inside a Structured Streaming job need only re-prove the closure-safety spec at the Expr layer; the sugar itself is structurally streaming-safe.
+
+### `scala-data-driven-refactor-mindset` §1 + §3 (per architect IRC finding)
+- **§1 (data is data)**: the sugar returns existing sealed `Expr` case classes -- pure data carriers (the fields are the ONLY data; the methods are derived constructors). No behavior added.
+- **§3 (sealed over Map)**: `Expr` is the sealed trait (25+ case classes per `Expr.scala:76-254`); the sugar is the canonical constructor path. NO Map-based dispatch (`Map[Symbol, WindowFunction]` would let callers pass `"RANK" / "Rank" / "rank"` with silent defaulting -- the sealed trait wins per §3).
+- **Reference in source code**: per `ExprSugar.scala:30-32` header comment -- "the sugar is the canonical constructor path; no Map-based dispatch, no runtime reflection."
+
+### `scala-chaos-testing-mindset` §2 (silence is a symptom, per architect IRC finding)
+- **Silence is a symptom**: the 3rd closure-safety test (`documented failure -- non-Serializable enclosing local throws NotSerializableException`) makes the NSE **fail-loud**. The alternative (a silent regression of the object-level Serializable rule) would surface only at a Spark UDF capture site in production. The test name + comment point to the fix (define the Expr at `object` level), making the failure observable + actionable.
+- **Reference in source code**: per `ExprSugarClosureSafetySpec.scala` test 3 -- the documented-failure-mode test verifies the witness is Serializable + the non-Serializable enclosing local is NOT (the `assertThrows`-less pattern from `TypedPredicateClosureSafetySpec.scala:72-103`).
 
 ## Out of scope (deferred to future PRs if a real need arises)
 

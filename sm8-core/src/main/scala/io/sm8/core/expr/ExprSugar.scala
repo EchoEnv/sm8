@@ -51,7 +51,7 @@ import io.sm8.core.schema.SealedDataType
 /** Expr ergonomics sugar (PR-35, ADR-008-S v1.3).
  *
  * Per [[karpathy-guidelines-mindset]] §2: this object provides
- * 17 sugar extension methods over EXISTING Expr case classes.
+ * 21 sugar extension methods over EXISTING Expr case classes (comparison 6 + arithmetic 5 + boolean 3 + literal 5 + FieldRef 1 + CaseWhen tuple 1).
  * Import it where needed:
  * {{{
  *   import io.sm8.core.expr.ExprSugar._

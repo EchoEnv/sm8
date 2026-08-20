@@ -2,7 +2,7 @@
  * SM8 Core -- ExprSugarSpec (PR-35, ADR-008-S v1.3).
  *
  * Per [[karpathy-guidelines-mindset]] SS4 (Goal-Driven Execution):
- * the spec verifies all 17 sugar extension methods produce the
+ * the spec verifies all sugar extension methods produce the
  * correct Expr case class (the canonical constructor path).
  *
  * Per [[scala-bug-hunting-mindset]] SS1 (trust compiler, not
@@ -105,10 +105,14 @@ class ExprSugarSpec extends AnyFunSuite with Matchers {
     "discharge_status".asField shouldBe Expr.FieldRef("discharge_status")
   }
 
-  // === Test 7: CaseWhen tuple sugar (the killer demo) ===
+  // === Test 7: CaseWhen tuple sugar (the killer demo, used in PR-34 migration) ===
 
-  test("ExprSugar: cond -> thenBranch produces (Expr, Expr) tuple for Expr.CaseWhen branches") {
-    // The PR-34 expired_count migration target: 12 lines -> 6 lines.
+  test("ExprSugar: List((Expr, Expr)) sugar via parenthesized Expr.Equal -> Expr.Literal") {
+    // Per data-eng review NIT #3: the PR-34 migration uses the
+    // parenthesized form `("discharge_status".asField === "expired".asVarchar) -> 1.asInt`
+    // because `===` returns a single Expr, then `(...)` wraps to
+    // `(Expr, Expr)` for the tuple. This is the actual CaseWhen
+    // sugar pattern used in the example.
     val condition = "discharge_status".asField === "expired".asVarchar
     val thenBranch = 1.asInt
     val elseBranch = 0.asInt
@@ -136,5 +140,30 @@ class ExprSugarSpec extends AnyFunSuite with Matchers {
       otherwise = Expr.Literal(LiteralValue.IntValue(0), SealedDataType.Int)
     )
     sugarExpr shouldBe explicitExpr
+  }
+
+  // === Test 8: ExprTuple implicit class (the single-Expr -> thenBranch form) ===
+
+  test("ExprSugar: ExprTuple.->(thenBranch) produces (Expr, Expr) for single-condition CaseWhen") {
+    // Per data-eng review NIT #3: the ExprTuple implicit class IS
+    // the canonical sugar for `cond -> thenBranch` when cond is a
+    // SINGLE Expr (not a (Expr, Expr) tuple). The PR-34 migration
+    // uses the parenthesized form; this test exercises the
+    // single-Expr form via ExprTuple to prove it's not dead code.
+    val condition: Expr = "x".asField === 1.asInt
+    val thenBranch: Expr = 2.asInt
+
+    // ExprTuple.-> returns (Expr, Expr) -- the canonical CaseWhen shape.
+    val tuple: (Expr, Expr) = condition.->(thenBranch)
+    tuple shouldBe (condition, thenBranch)
+
+    // Use in a CaseWhen.
+    val expr = Expr.CaseWhen(branches = List(tuple), otherwise = 3.asInt)
+    expr shouldBe Expr.CaseWhen(
+      branches = List(
+        Expr.Equal(Expr.FieldRef("x"), Expr.Literal(LiteralValue.IntValue(1), SealedDataType.Int)) -> Expr.Literal(LiteralValue.IntValue(2), SealedDataType.Int)
+      ),
+      otherwise = Expr.Literal(LiteralValue.IntValue(3), SealedDataType.Int)
+    )
   }
 }

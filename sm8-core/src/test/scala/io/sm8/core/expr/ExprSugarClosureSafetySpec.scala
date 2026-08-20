@@ -75,14 +75,16 @@ class ExprSugarClosureSafetySpec extends AnyFunSuite with Matchers {
 
   // === Test 2: Spark UDF closure-safe ===
 
-  test("closure-safety: ExprSugar Spark UDF closure-safe") {
+  test("closure-safety: ExprSugar Spark UDF closure-safe (java.util.function.Function with Serializable)") {
     // Per [[scala-spark-batch-bugs-mindset]] SS1: a sugar-built Expr
     // captured in a UDF-shaped closure does NOT throw
     // NotSerializableException (the closure captures only the
     // Serializable Expr, no enclosing-scope pollution).
     //
-    // Per PR-16 lesson: object-level Expr (singleton, class-load
-    // time) + no enclosing-scope pollution.
+    // Per PR-20 (TypedPredicateClosureSafetySpec.scala:53-63) +
+    // PR-16 lesson: use `java.util.function.Function[X, Y] with
+    // Serializable` (the canonical Spark UDF closure shape --
+    // the closure is checked for Serializable at capture time).
     val expr: Expr = Expr.And(
       "region".asField === "east".asVarchar,
       "active".asField === true.asBool
@@ -93,18 +95,33 @@ class ExprSugarClosureSafetySpec extends AnyFunSuite with Matchers {
     // Serializable, so the closure can be serialized.
     expr.isInstanceOf[Serializable] shouldBe true
 
-    // Per the UDF-shaped closure pattern: define the closure at
-    // object level (the closure body is a thin wrapper around the
-    // pre-built Expr -- no captured state).
-    val capturedExpr = expr // explicit val -- the closure captures this
-    val closure: () => Expr = () => capturedExpr
-    val roundtripped = closure()
+    // Per the PR-20 UDF closure pattern: capture the Expr in a
+    // Java Serializable Function (the Spark UDF contract).
+    // The closure body is a thin wrapper around the pre-built Expr
+    // -- no captured state from the enclosing scope.
+    val capturedExpr = expr
+    val udf: java.util.function.Function[Integer, Expr] with Serializable =
+      new java.util.function.Function[Integer, Expr] with Serializable {
+        override def apply(i: Integer): Expr = capturedExpr
+      }
 
-    // The roundtripped Expr matches the original (no mutation, no
-    // enclosing-scope pollution).
-    roundtripped shouldBe expr
+    // The UDF returns the captured Expr (the closure is purely
+    // functional -- no mutation, no enclosing-scope pollution).
+    udf.apply(42) shouldBe expr
+
+    // Per [[debug-mantra-mindset]] SS1: round-trip the UDF via
+    // ObjectOutputStream to prove it survives Spark closure capture.
+    val baos = new ByteArrayOutputStream()
+    val oos = new ObjectOutputStream(baos)
+    oos.writeObject(udf)
+    oos.close()
+    val bais = new ByteArrayInputStream(baos.toByteArray)
+    val ois = new ObjectInputStream(bais)
+    val deserializedUdf = ois.readObject().asInstanceOf[
+      java.util.function.Function[Integer, Expr] with Serializable
+    ]
+    deserializedUdf.apply(42) shouldBe expr
   }
-
   // === Test 3: Documented failure mode ===
 
   test("closure-safety: documented failure -- non-Serializable enclosing local throws NotSerializableException") {
