@@ -123,13 +123,10 @@ final case class RestateCachedRow(
  fieldNames.size == fieldTypes.size,
  s"fieldNames.size (${fieldNames.size}) != fieldTypes.size (${fieldTypes.size})"
  )
- rows.zipWithIndex.foreach { case (row, i) =>
- if (row != null && row.length != fieldNames.size) {
-  throw new IllegalArgumentException(
-  s"row $i has ${row.length} cells, expected ${fieldNames.size}"
-  )
- }
- }
+ // Row-length validation lives at the encoder (CachedRowDecoder.toRestateCachedRowFromPortable)
+ // which is the only non-test constructor caller. This separation keeps the case-class
+ // invariant a programmer-error check (null + size) and the runtime-error check
+ // (row-length) at the journal boundary as typed-Left per scala-error-handling-mindset.
 }
 
 object RestateCachedRow {

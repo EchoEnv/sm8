@@ -324,7 +324,7 @@ class QueryServiceSpec extends AnyFunSuite with Matchers {
     )
     cache.putJournaledWithModelAndVersion(
       cacheKey,
-      CachedRowDecoder.toRestateCachedRowFromPortable(twoRowsPortable),
+      CachedRowDecoder.toRestateCachedRowFromPortable(twoRowsPortable).right.get,
       "flights",
       dummyModel.version
     )

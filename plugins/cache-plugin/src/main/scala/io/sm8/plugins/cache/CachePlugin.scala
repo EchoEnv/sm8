@@ -146,11 +146,18 @@ private final class CacheWritePostHook(
     counter.incrementAndGet()
     context.result match {
       case Some(EngineHookResult(pqr)) =>
-        val row = CachedRowDecoder.toRestateCachedRowFromPortable(pqr)
-        context.request match {
-          case hookReq: EngineHookRequest =>
-            cache.putJournaledWithModelAndVersion(hookReq.cacheKey, row, hookReq.model.name, hookReq.model.version)
-          case _ =>
+        CachedRowDecoder.toRestateCachedRowFromPortable(pqr) match {
+          case Right(row) =>
+            context.request match {
+              case hookReq: EngineHookRequest =>
+                cache.putJournaledWithModelAndVersion(hookReq.cacheKey, row, hookReq.model.name, hookReq.model.version)
+              case _ =>
+            }
+          case Left(err) =>
+            // Per ADR-008-Z v1.1: the journal boundary is the typed-Left site.
+            // Treat the shape-mismatch as a silent cache miss (do not crash
+            // the workflow); the error is logged for diagnostics.
+            System.err.println(s"sm8: cache write skipped: $err")
         }
       case _ =>
     }

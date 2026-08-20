@@ -41,7 +41,7 @@
  */
 package io.sm8.core.cache
 
-import io.sm8.core.engine.{PortableQueryResult, ResultRow, ResultSchema, ResultValue}
+import io.sm8.core.engine.{EngineError, PortableQueryResult, ResultRow, ResultSchema, ResultValue}
 
 /**
  * Row-level decoder for the engine-portable cached-row wire format.
@@ -236,9 +236,9 @@ object CachedRowDecoder {
  * @param portable the engine-portable result
  * @return   the cache-journal wire format
  */
- def toRestateCachedRowFromPortable(
+def toRestateCachedRowFromPortable(
   portable: PortableQueryResult
- ): RestateCachedRow = {
+): Either[EngineError, RestateCachedRow] = {
  val fieldNames: List[String] = portable.schema.fields.map(_.name).toList
  val fieldTypes: List[String] = portable.schema.fields.map(_.dataType match {
   case dt => resultValueToTag(dt)
@@ -246,12 +246,20 @@ object CachedRowDecoder {
  val rows: List[Array[String]] = portable.rows.toList.map { row =>
   row.values.toList.map(PortableCellCodec.encodeCell).toArray
  }
- RestateCachedRow(
-  fieldNames = fieldNames,
-  fieldTypes = fieldTypes,
-  rows  = rows
- )
+ val fieldCount = fieldNames.size
+ rows.zipWithIndex.find { case (row, i) =>
+  row != null && row.length != fieldCount
+ } match {
+  case Some((row, i)) =>
+  Left(EngineError.IncompatibleExprShape(
+   engine = "cache-journal",
+   shape = s"row[$i].cells(${row.length})",
+   message = s"row $i has ${row.length} cells, expected $fieldCount"
+  ))
+  case None =>
+  Right(RestateCachedRow(fieldNames = fieldNames, fieldTypes = fieldTypes, rows = rows))
  }
+}
 
  /**
  * Map an engine-portable `SealedDataType` to the wire-format
