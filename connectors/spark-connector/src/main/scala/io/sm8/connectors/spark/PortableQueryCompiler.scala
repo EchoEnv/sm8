@@ -605,36 +605,45 @@ final class PortableQueryCompiler(val spark: SparkSession)
  * can compose the direct `df.groupBy().agg()` path without
  * duplicating the per-fn rendering logic.
  */
- def renderAggregate(call: AggregateCall): Either[EngineError, Column] = {
- val inputColE: Either[EngineError, Column] = PortableExprCompiler.toColumn(
-  call.input.getOrElse(Expr.FieldRef(call.alias))
- )
- for {
-  inputCol <- inputColE
-  out <- call.fn match {
-  case AggregateFn.Sum   => Right(sparkSum(inputCol))
-  case AggregateFn.Count   => Right(count(lit(1)))
-  case AggregateFn.CountDistinct => Right(countDistinct(inputCol))
-  case AggregateFn.Avg   => Right(avg(inputCol))
-  case AggregateFn.Min   => Right(sparkMin(inputCol))
-  case AggregateFn.Max   => Right(sparkMax(inputCol))
-  case other =>
-   // Programmer error: applyAggregations pre-validates
-   // against SupportedAggregates. Reaching here is an
-   // internal invariant violation, hence the loud typed
-   // error (not a throw 
-   // rule #3: throw only for programmer errors; here the
-   // invariant break surfaces as a typed EngineError so
-   // the MCP server maps it to a 5xx).
-   Left(EngineError.ProviderInvocationFailed(
-   engine = "spark-3.5",
-   name = "PortableQueryCompiler.renderAggregate",
-   reason = "InvariantViolation",
-   message = s"PortableQueryCompiler.renderAggregate: $other reached the renderer " +
-      s"without FeatureDeferred pre-validation -- internal invariant violation."))
-  }
- } yield out
+def renderAggregate(call: AggregateCall): Either[EngineError, Column] = {
+ // Mirror the validator's allowlist at the lowering boundary:
+ // Count is exempt (lowered as `count(lit(1))` for the COUNT(*) shape);
+ // every other AggregateFn requires a real input expression and fails loud
+ // here if the validator was bypassed. The non-empty path preserves
+ // the existing for-comprehension body verbatim.
+ import io.sm8.core.rel.AggregateFn
+ call.fn match {
+  case AggregateFn.Count if call.input.isEmpty =>
+   Right(count(lit(1)))
+  case fn if call.input.isEmpty =>
+   Left(EngineError.UnsupportedCapability(
+    engine    = "spark-3.5",
+    capability = s"renderAggregate:${call.alias}:${fn}",
+    message   = s"measures[${call.alias}].input is required for aggregate function $fn"))
+  case fn =>
+   for {
+    inputCol <- PortableExprCompiler.toColumn(call.input.get)
+    out <- fn match {
+     case AggregateFn.Sum   => Right(sparkSum(inputCol))
+     case AggregateFn.Count   => Right(count(inputCol))
+     case AggregateFn.CountDistinct => Right(countDistinct(inputCol))
+     case AggregateFn.Avg   => Right(avg(inputCol))
+     case AggregateFn.Min   => Right(sparkMin(inputCol))
+     case AggregateFn.Max   => Right(sparkMax(inputCol))
+     case other =>
+      // Invariant-violation guard: pre-validation in applyAggregations
+      // rejects anything outside SupportedAggregates. Reaching here
+      // is an internal invariant violation.
+      Left(EngineError.ProviderInvocationFailed(
+       engine = "spark-3.5",
+       name = "PortableQueryCompiler.renderAggregate",
+       reason = "InvariantViolation",
+       message = s"PortableQueryCompiler.renderAggregate: $other reached the renderer " +
+        s"without FeatureDeferred pre-validation -- internal invariant violation."))
+    }
+   } yield out
  }
+}
 
  // -- dimension projection (measure-less models) --
 

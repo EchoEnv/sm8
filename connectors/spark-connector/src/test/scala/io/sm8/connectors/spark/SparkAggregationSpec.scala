@@ -7,17 +7,17 @@
  *   3. Typed orderBy + partitionBy (2 tests)
  *   4. No-op (1 test -- legacy 19 callers)
  *
- * Per [[debug-mantra-mindset]] SS1: every test asserts the EVALUATED
+ * Per `debug-mantra` SS1: every test asserts the EVALUATED
  * RESULT (collect on the resulting DataFrame).
  *
- * Per [[scala-spark-batch-bugs-mindset]] mantras SS1, SS3, SS5:
+ * Per `scala-spark-batch-bugs-mindset` mantras SS1, SS3, SS5:
  *   - SS1 (closure-safety): every fixture uses literal values; the
  *     compiler is created per-test (no companion state, no ThreadLocals).
  *   - SS3 (schema-drift): fixtures declare explicit StructTypes.
  *   - SS5 (driver-vs-executor): every test runs entirely in the driver
  *     (createDataFrame + compile + collect). No UDFs, no accumulators.
  *
- * Per [[scala-bug-hunting-mindset]] SS1 (trust compiler, not runtime):
+ * Per `scala-bug-hunting-mindset` SS1 (trust compiler, not runtime):
  * the typed-witness -> QueryRequest cast is the PR-16 documented
  * pattern (`asInstanceOf[Seq[Foo[Nothing]]]` at the variance
  * boundary). The cast is SAFE because the phantom `[D]` is captured
@@ -28,7 +28,8 @@ package io.sm8.connectors.spark
 import io.sm8.core.engine.{EngineContext, QueryRequest}
 import io.sm8.core.expr.{Expr, LiteralValue}
 import io.sm8.core.model.TypedDimension
-import io.sm8.core.rel.{ComparisonOp, Having, PartitionBy, TypedAggregateCall}
+import io.sm8.core.engine.{EngineContext, EngineError, QueryRequest}
+import io.sm8.core.rel.{AggregateFn, ComparisonOp, Having, PartitionBy, TypedAggregateCall}
 import io.sm8.core.schema.SealedDataType
 
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
@@ -86,7 +87,7 @@ class SparkAggregationSpec extends AnyFunSuite with Matchers {
 
   // The QueryRequest fields are typed as `Seq[Foo[Nothing]]`
   // (variance-safety for the wire DTO). Per
-  // [[scala-bug-hunting-mindset]] SS1, the typed-witness `Seq` is
+  // `scala-bug-hunting-mindset` SS1, the typed-witness `Seq` is
   // explicitly erased via `asInstanceOf` at the variance boundary.
   // SAFE: the phantom `[D]` is captured at construction (Refs above).
 
@@ -313,5 +314,123 @@ class SparkAggregationSpec extends AnyFunSuite with Matchers {
       r.count() shouldBe 6L
       r.schema.fields.map(_.name).toSet shouldBe Set("region", "amount", "id")
     } finally spark.stop()
+  }
+  // -- PR-133 / ADR-008-X: lowering-layer input-required fix regression tests --
+
+  // -- Test 1: Count with input = None lowers to count(lit(1)) (COUNT(*) shape) --
+  test("aggregateToColumn: Count with input = None lowers to count(lit(1)) and produces 2 grouped rows") {
+    val spark = buildSpark()
+    try {
+      val df = fixtureDF(spark)
+      val req = QueryRequest(
+        model    = "test",
+        dimensions  = Seq("region"),
+        aggregateMeasures = Seq(TypedAggregateCall.of[Nothing](
+          name = "encounter_count",
+          fn   = AggregateFn.Count,
+          input = None  // <-- the COUNT(*) shape
+        )),
+        whereFilters = Nil,
+        having    = Nil,
+        partitionBy = Nil,
+        orderBy   = Nil,
+        window    = Nil,
+        limit     = None,
+        sortDirections = Nil
+      )
+      val result = TypedQueryCompiler(spark).apply(df, req, EngineContext.defaultContext)
+      result.isRight shouldBe true
+      val rows = result.toOption.get.select("region", "encounter_count").collect()
+        .map(r => (r.getString(0), r.getLong(1))).toSet
+      rows shouldBe Set(("east", 3L), ("west", 3L))
+    } finally spark.stop()
+  }
+
+  // -- Test 2: Sum with input = None fails loud with typed error --
+  test("aggregateToColumn: Sum with input = None fails loud with EngineError.UnsupportedCapability") {
+    val spark = buildSpark()
+    try {
+      val df = fixtureDF(spark)
+      val req = QueryRequest(
+        model    = "test",
+        dimensions  = Seq("region"),
+        aggregateMeasures = Seq(TypedAggregateCall.of[Nothing](
+          name = "total",
+          fn   = AggregateFn.Sum,
+          input = None  // <-- misconfiguration
+        )),
+        whereFilters = Nil,
+        having    = Nil,
+        partitionBy = Nil,
+        orderBy   = Nil,
+        window    = Nil,
+        limit     = None,
+        sortDirections = Nil
+      )
+      val result = TypedQueryCompiler(spark).apply(df, req, EngineContext.defaultContext)
+      result.isLeft shouldBe true
+      val err = result.left.toOption.get
+      err shouldBe a [EngineError.UnsupportedCapability]
+      err.message should include ("measures[total]")
+      err.message should include ("Sum")
+    } finally spark.stop()
+  }
+
+  // -- Test 3: CountDistinct with input = None fails loud with typed error --
+  test("aggregateToColumn: CountDistinct with input = None fails loud with typed error") {
+    val spark = buildSpark()
+    try {
+      val df = fixtureDF(spark)
+      val req = QueryRequest(
+        model    = "test",
+        dimensions  = Seq("region"),
+        aggregateMeasures = Seq(TypedAggregateCall.of[Nothing](
+          name = "unique",
+          fn   = AggregateFn.CountDistinct,
+          input = None
+        )),
+        whereFilters = Nil,
+        having    = Nil,
+        partitionBy = Nil,
+        orderBy   = Nil,
+        window    = Nil,
+        limit     = None,
+        sortDirections = Nil
+      )
+      val result = TypedQueryCompiler(spark).apply(df, req, EngineContext.defaultContext)
+      result.isLeft shouldBe true
+      val err = result.left.toOption.get
+      err shouldBe a [EngineError.UnsupportedCapability]
+      err.message should include ("CountDistinct")
+    } finally spark.stop()
+  }
+
+  // -- Test 4: Avg/Min/Max with input = None all fail loud --
+  test("aggregateToColumn: Avg/Min/Max with input = None all fail loud (mirror Sum)") {
+    for (fn <- Seq(AggregateFn.Avg, AggregateFn.Min, AggregateFn.Max)) {
+      val spark = buildSpark()
+      try {
+        val df = fixtureDF(spark)
+        val req = QueryRequest(
+          model    = "test",
+          dimensions  = Seq("region"),
+          aggregateMeasures = Seq(TypedAggregateCall.of[Nothing](
+            name = s"bad_${fn}",
+            fn   = fn,
+            input = None
+          )),
+          whereFilters = Nil,
+          having    = Nil,
+          partitionBy = Nil,
+          orderBy   = Nil,
+          window    = Nil,
+          limit     = None,
+          sortDirections = Nil
+        )
+        val result = TypedQueryCompiler(spark).apply(df, req, EngineContext.defaultContext)
+        result.isLeft shouldBe true
+        result.left.toOption.get.message should include (fn.toString)
+      } finally spark.stop()
+    }
   }
 }
