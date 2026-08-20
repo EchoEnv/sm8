@@ -1,11 +1,19 @@
 # ADR-008-S: Expr Ergonomics Sugar (PR-35)
 
-**Status:** Proposed (DRAFT for subagent review). **Date:** 2026-08-20. **Author:** SM8 agent (PR-35 follow-up to PR-29 TypedPredicateFilterOps + the user's 2026-08-20 ergonomics directive).
+**Status:** Proposed (v1.2 DRAFT). **Date:** 2026-08-20. **Author:** SM8 agent (PR-35 follow-up to PR-29 TypedPredicateFilterOps + the user's 2026-08-20 ergonomics directive).
+
+> **Decision at a glance** (5-second scan)
+>
+> - **Scope**: sugar over EXISTING `Expr` ADT cases ONLY. 17 `extends AnyVal` extension methods (`===`, `!==`, `<`, `&&`, etc.). NO new ADT cases, NO engine-portability changes.
+> - **PR**: 1 atomic PR (`ExprSugar.scala` + `ExprSugarClosureSafetySpec.scala` + example migration).
+> - **Win**: `Measure.aggregate(name = "expired_count", ...)` drops from 12 lines → 6 lines; reads at a glance.
+> - **Deferred**: `Expr.In/Contains/StartsWith/EndsWith/NotIn/Like` ADT cases (PR-29 covers at QUERY layer; no MODEL-layer need today).
+>
+> **TL;DR**: this PR makes the MODEL layer's `Expr` AST as ergonomic to write as PR-29 made the QUERY layer's `TypedPredicate`. Zero engine-portability cost; future ORM/non-SQL adapter consumes the unchanged `Expr` AST.
 
 > **Revision history**
+>
 > - **v1 (2026-08-20)**: initial design; scope = sugar over EXISTING `Expr` ADT cases only. NO new ADT cases, NO engine-portability changes. 1-PR atomic.
-> - **v1.1 (2026-08-20)**: applied subagent dual-review fixes — (MUST) `LongLit.asLong` uses `LiteralValue.LongValue`; (SHOULD) `expired_count` after-state uses `Expr.FieldRef`; (SHOULD) closure-safety test names use canonical `closure-safety: <clause>` prefix; (SHOULD) out-of-scope mandates future `Expr` ADT extensions extend `ExprSugarClosureSafetySpec`; (MUST) `debug-mantra` 5-step section; (SHOULD) `scala-spark-streaming-bugs-mindset` forward-looking; (SHOULD) `scala-chaos-testing-mindset` §2; (SHOULD) rollback under-count fixed; (NIT) PR-29 sibling reference corrected.
-> - **v1.2 (2026-08-20)**: applied subagent RE-REVIEW fixes — (MUST) `BoolLit.asBool` uses `LiteralValue.BoolValue` (not `BooleanValue` -- actual constructor per `LiteralValue.scala:116`); (SHOULD) out-of-scope mandate paragraph properly placed (v1.1 had the heading but lost the body text on edit); (NIT) `ExprTuple` comment explains WHY it shadows `Any.->` (silences Scala 2.13.18+ deprecation warning on `Any.->`).
 
 ## Context and Problem Statement
 
@@ -34,7 +42,11 @@ This ADR proposes **Scope A only** (PR-35). Scope B at the MODEL layer is explic
 
 ## Why this is a structural ADR (not a "next steps" doc)
 
-Per ADR-008-O §"Cross-cutting principles" #1 (RFC §3 layer ownership preserved) and #2 (skills-first review per commit), the changes are bounded by layer:
+Per ADR-008-O §"Cross-cutting principles":
+- **#1 (RFC §3 layer ownership preserved)**: "Each fix is bounded by its layer; core owns Protocols + sealed ADTs, connectors own Spark `PortableExprCompiler` lowering, plugins/examples own Refs witnesses. No layer crosses the boundary."
+- **#2 (skills-first review per commit)**: "Every commit applies the relevant 13 skills (closure-safety, exhaustive matches, deferred-scope rationale, future-portability, etc.) before landing."
+
+These two principles bound the changes as follows:
 
 | Concern | Layer |
 |---|---|
@@ -49,8 +61,6 @@ Per ADR-008-O §"Cross-cutting principles" #1 (RFC §3 layer ownership preserved
 **No `QueryRequest` field changes** — additive to the example consumer only.
 
 ## Decision
-
-PR-35 ships as **1 atomic PR**: `ExprSugar` (a single new file in `sm8-core/expr/`).
 
 ### PR-35: `ExprSugar` (new file, ~80 LOC)
 
@@ -136,6 +146,7 @@ object ExprSugar {
   implicit class DoubleLit(val d: Double) extends AnyVal {
     def asDouble: Expr = Expr.Literal(
       LiteralValue.DoubleValue(d), SealedDataType.Double)
+  }
   implicit class BoolLit(val b: Boolean) extends AnyVal {
     // Per architect re-review (MUST): LiteralValue.BooleanValue does
     // NOT exist. The actual constructor is BoolValue(v: Boolean)
@@ -226,12 +237,45 @@ Per `karpathy-impact-analysis-mindset` §2 (binary compat): adding new ADT cases
 ### Closure-safety spec (3 tests, per PR-16/17/20/25 pattern)
 
 Per data-eng review (SHOULD), the test names use the canonical
-`closure-safety: <clause>` prefix (matching `TypedPredicateClosureSafetySpec`,
+`closure-safety: <clause>` prefix (matching `TypedPredicateClosureSafetySpec` at
+`sm8-core/src/test/scala/io/sm8/core/rel/TypedPredicateClosureSafetySpec.scala`,
 `TypedAggregateCallClosureSafetySpec`, `TypedSortKeyClosureSafetySpec`):
 
 1. **`closure-safety: ExprSugar positive round-trip`** — `Expr.Equal(...)` built via sugar survives `ObjectOutputStream` round-trip.
 2. **`closure-safety: ExprSugar Spark UDF closure-safe`** — sugar-built `Expr` captured in a UDF-shaped closure does NOT throw `NotSerializableException`.
 3. **`closure-safety: ExprSugar documented failure -- non-Serializable enclosing local throws NotSerializableException`** — method-local sugar-built `Expr` + non-Serializable enclosing local throws NSE (test name + comment point to the fix).
+
+**Test-method skeleton** (per the `TypedPredicateClosureSafetySpec.scala` precedent):
+
+```scala
+class ExprSugarClosureSafetySpec extends AnyFunSuite with Matchers {
+  test("closure-safety: ExprSugar positive round-trip") {
+    val expr: Expr = Expr.Equal(Expr.FieldRef("x"), Expr.Literal(...))
+    // sugar-built Expr -- round-trip via ObjectOutputStream
+    val roundtripped = roundtripViaObjectOutputStream(expr)
+    roundtripped shouldBe expr
+  }
+
+  test("closure-safety: ExprSugar Spark UDF closure-safe") {
+    val expr: Expr = Expr.Equal(...)  // sugar-built
+    // Capture in a UDF-shaped closure -- no NSE
+    val udf: UserDefinedFunction = udf((row: Row) => expr, ...)
+    udf should not be null
+  }
+
+  test("closure-safety: ExprSugar documented failure -- " +
+       "non-Serializable enclosing local throws NotSerializableException") {
+    // Method-local sugar-built Expr + non-Serializable enclosing local
+    class NotSerializable  // intentionally not Serializable
+    val captured = new NotSerializable
+    val expr: Expr = Expr.Equal(...)  // sugar-built, captures `captured`
+    assertThrows[NotSerializableException] {
+      // Capture + serialize -- this WILL throw NSE
+      roundtripViaObjectOutputStream(expr)
+    }
+  }
+}
+```
 
 The PR-34 `examples/hospital-cleaning/Main.scala` `expired_count` measure is the primary migration target. The `readmission_count` measure uses `Expr.FieldRef("is_readmission")` (single-line, already terse — no sugar benefit). The `avg_los` calculated measure uses `Expr.Divide(...)` (2 lines — minor sugar benefit).
 
@@ -299,9 +343,8 @@ Success criterion: `examples/hospital-cleaning/Main.scala` `expired_count` measu
 1. **Reproducibility**: the closure-safety spec is fast (~ms) + deterministic (no time/seed dependencies); the ObjectOutputStream round-trip + Spark UDF capture + failure-mode tests are all reproducible.
 2. **Know the fail path**: the documented failure mode test (method-local sugar-built Expr + non-Serializable enclosing local) PROVES the NSE path before it surprises a contributor.
 3. **Question hypothesis**: the assumption "case-class Expr.Equal extends Product with Serializable → safe Spark closure capture" is the hypothesis under test; the 3-test pattern verifies it from 3 angles.
-4. **Every run is a breadcrumb**: the 3 tests narrate the round-trip / UDF-capture / failure-mode progression -- each test name points to the contract (closure-safety: ExprSugar positive round-trip / Spark UDF closure-safe / documented failure).
+4. **Every run is a breadcrumb**: the 3 test names narrate the round-trip → UDF-capture → failure-mode progression (`closure-safety: ExprSugar positive round-trip` → `Spark UDF closure-safe` → `documented failure -- non-Serializable enclosing local throws NotSerializableException`). A future contributor reading the test names alone sees the complete closure-safety contract without opening the test bodies.
 5. **Verify**: `mvn -pl sm8-core,connectors/spark-connector,examples/hospital-cleaning test` on full reactor confirms zero regression + ~10 new tests pass.
-
 ### `scala-spark-streaming-bugs-mindset` (forward-looking, per architect review SHOULD)
 Sugar-built Expr inherits streaming-safety from the existing Expr case-class Serializable contract. The sugar adds NO new state (every method returns the same case class); no `StreamingStateStore` concern arises at the Expr layer. A future PR-36 that consumes `ExprSugar` inside a Structured Streaming job need only re-prove the closure-safety spec at the Expr layer; the sugar itself is structurally streaming-safe.
 
