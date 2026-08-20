@@ -1,34 +1,24 @@
 /*
  * SM8 Core -- QueryBuilder (engine-portable `Model -> RelOp` lowering).
- *
- * PR-L (per ADR-008-L): the boundary step BEFORE the engine sees
+ * the boundary step BEFORE the engine sees
  * anything. `QueryBuilder.build(model, resolver, identity)` turns
  * a portable `Model` into a portable `RelOp` tree (the SM8
  * "Model -> IR" path). The engine adapter (`PortableQueryCompiler`
  * in the spark-connector, future Trino/DuckDB compilers) then
  * lowers each `RelOp` case to its native operation.
- *
- * Per [[scala-data-driven-refactor-mindset]] SS1 (data in core,
  * behavior in adapters): the lowering is engine-portable --
  * every engine adapter wants the SAME `RelOp` tree for a given
  * `Model` (modulo engine-specific capabilities). The
  * `RelOp -> native plan` is the adapter's behavior.
- *
- * Per [[karpathy-guidelines-mindset]]: ported from the legacy
  * `/tmp/semanticdf/semanticdf-core/src/main/scala/io/semanticdf/core/query/QueryBuilder.scala`
  * with the FULL shape (joins + aggregate + sort + limit + cycle
  * detection) -- not the legacy's v1 single-source scope.
- *
  * ==Why a separate object (not a method on `Model`)==
- *
- * Per [[karpathy-guidelines-mindset]] "smallest correct core":
  * the `Model` class is pure data (per SS1 of the data-driven
  * mantra). Putting `build` on `Model` would mix data with
  * behavior (and `SourceResolver` is a runtime collaborator, not
  * a data field). A separate object keeps `Model` pure.
- *
  * ==Build pipeline==
- *
  *   1. resolveSource(model.source)  -> Scan
  *   2. resolveJoinSources(model.joins)  -> List[(JoinSpec, Scan)]
  *   3. assembleRelOp(model, scan, joinScans)  -> RelOp tree
@@ -37,10 +27,8 @@
  *   4. detectCalcCycles(model.calculatedMeasures)  -> typed
  *      EngineError.UnsupportedCapability (fail-fast at build
  *      time, never a silent runtime crash)
- *
  * ==Boundary contract==
  * ==Boundary contract==
- *
  */
 package io.sm8.core.query
 
@@ -53,8 +41,6 @@ import io.sm8.core.rel.{AggregateCall, JoinKind, RelOp, SortKey}
 object QueryBuilder {
 
   /** Lower a portable [[Model]] to a portable [[RelOp]] tree.
-    *
-    * Per [[scala-data-driven-refactor-mindset]] SS1: the lowering
     * is pure data-shape-only -- no IO beyond the `SourceResolver`
     * call (which the caller chose). The result tree is engine-
     * portable; the engine adapter does the native-plan lower.
@@ -145,9 +131,7 @@ object QueryBuilder {
                                                 message  = s"Source '$source' auth failed: ${au.reason}"))
   }
 
-
   /** Internal: assemble the RelOp tree once every source is resolved
-    *
     * Shape: Scan_1 left-join Scan_2 left-join ... -> Filter ->
     * Project + Aggregate -> Sort -> Limit.
     */
@@ -158,11 +142,11 @@ object QueryBuilder {
   ): RelOp = {
 
     // Build the multi-source Scan via folding Join nodes.
-    // Per RelOp.Join (PR-H): the join shape is Scan_1 ⊕ Scan_2 → Join.
-    // PR-K handles the engine side (5 kinds, single-key equi-join
+    // The join shape is Scan_1 ⊕ Scan_2 → Join.
+    // the engine side handles 5 kinds (single-key equi-join
     // dedup); here we just emit the structural RelOp.
     val multiScan: RelOp = joinScans.foldLeft[RelOp](
-      // PR-O4d (ADR-008-O): carry the resolution provenance on the IR
+      // Carry the resolution provenance on the IR
       // (the legacy pre-tag shape). Every RelOp.Scan carries the
       // ResolvedSource it was lowered from -- the engine adapter
       // pattern-matches the 4 failure cases directly instead of
@@ -181,9 +165,9 @@ object QueryBuilder {
         resolution = Some(sj.rightScan),
       )
       // Build the join condition from the single (left, right) key.
-      // The single-key constraint matches PR-K's spark-side compile.
+      // The single-key constraint matches the engine-side compile.
       // Multi-key joins surface as typed UnsupportedCapability at the
-      // spark compile step (PR-K's contract), not here (the QueryBuilder
+      // spark compile step the engine-side contract), not here (the QueryBuilder
       // shape supports them; the engine adapter may reject).
       val condition: Expr = sj.js.keys match {
         case Nil        => Expr.Literal(io.sm8.core.expr.LiteralValue.BoolValue(true), io.sm8.core.schema.SealedDataType.Boolean)
@@ -228,7 +212,7 @@ object QueryBuilder {
 
     // Sort: v0.1.0 -- no portable sort key. The engine adapter
     // adds engine-specific sort via `preview(n)` / `count()` etc.
-    // PR-L leaves sortKey as a pass-through (RelOp.Sort with empty
+    // sortKey is a pass-through (RelOp.Sort with empty
     // keys = no-op; the engine adapter is free to add its own).
     val sorted: RelOp = RelOp.Sort(input = projected, keys = Nil)
 
@@ -240,7 +224,7 @@ object QueryBuilder {
 
   /** Internal: the Projection expressions. Dimensions + measures
     * + calculated measures. Each calculated measure is wrapped
-    * in `Expr.Alias(name, expr)` (per PR-I) so the engine
+    * in `Expr.Alias(name, expr)` so the engine
     * adapter can name the resulting column.
     */
   private def projectExpressions(model: Model): List[(Expr, String)] = {
@@ -251,15 +235,13 @@ object QueryBuilder {
   }
 
   /**
-    * PR-1/A2 (ADR-008-P §A2): extract the previously-private instance
+    * the current implementation/A2 (the design contract): extract the previously-private instance
     * method `detectCalcCycles` to a public companion-object pure function.
     * Companion-object methods are stateless and callable from anywhere
     * (including the connector layer's `applyCalculatedMeasures` per
-    * ADR-008-L GAP 5 follow-up). Cycle-detection algorithm unchanged;
+    * the design contract GAP 5 follow-up). Cycle-detection algorithm unchanged;
     * visibility moves from `private def` (class) to public `def`
     * (companion object).
-    *
-    * Per [[scala-impact-analysis-mindset]] §2: 1:1 move with NO behavior
     * change; the existing internal caller at line 98 is rewritten to
     * call this companion-object method.
     */

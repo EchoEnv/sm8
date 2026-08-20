@@ -1,41 +1,29 @@
 /*
  * SM8 Core — RelOp (engine-portable relational-plan IR).
- *
  * Per the v0.1.0 IR extension plan (ADR-007 + RFC §3): the
  * relational-plan IR is the runtime execution shape. It flows
  * through `Engine.compile(model: RelOp, ...)`, the engine adapter's
  * expression-compile step (each case becomes a native operation —
  * Spark `Dataset` ops, Trino SQL clauses, etc.), and the MCP wire
  * format (for `explain` tool output).
- *
- * Per [[karpathy-guidelines-mindset]]: ported from the legacy
- * `/tmp/semanticdf/semanticdf-core/src/main/scala/io/semanticdf/core/rel/RelOp.scala`
+ *  * `/tmp/semanticdf/semanticdf-core/src/main/scala/io/semanticdf/core/rel/RelOp.scala`
  * with the same 7 nodes (Scan, Filter, Project, Aggregate, Join,
  * Sort, Limit).
- *
- * Per [[scala-data-driven-refactor-mindset]]: sealed trait + 7
- * case classes. A free-form `plan: String` would let engines
+ *  * case classes. A free-form `plan: String` would let engines
  * invent new plan shapes that the validator and compiler couldn't
  * classify. The closed ADT forces every component to handle the
  * closed set of plan nodes.
- *
  * Per RFC §3: engine-portable; engine-specific compile lives in
  * the adapter (Spark's `LogicalPlan`, Trino's `LogicalPlanner`,
  * DuckDB's `QueryPlan`).
- *
- * Per [[scala-error-handling-mindset]]: set operations (Union,
- * Intersect, Except), window functions, and streaming sinks are
+ *  * Intersect, Except), window functions, and streaming sinks are
  * DEFERRED to v0.2.0+ per the legacy design. They can be expressed
  * via combination of the existing nodes if needed. Adding them
  * is a contract change (per `adapters.md` "If a new capability
  * type is needed... that's a contract change").
- *
- * Per [[scala-jvm-safety-mindset]]: zero spark imports. Boundary
- * contract:
+ *  * contract:
  *   `grep -r 'org.apache.spark' sm8-core/src/main/scala/io/sm8/core/rel/RelOp.scala`
- *
- * Per [[scala-impact-analysis-mindset]]: `Filter.predicate: Expr`
- * (not `Predicate`) — at runtime, filters are expressions (e.g.
+ *  * (not `Predicate`) — at runtime, filters are expressions (e.g.
  * `price > 100`). The higher-level `core.predicate.Predicate`
  * filter language gets compiled into `Expr` for the IR. The IR
  * carries `Expr` because that's what engines actually execute.
@@ -50,7 +38,6 @@ sealed trait RelOp extends Product with Serializable
 object RelOp {
 
   /** Read from a resolved source. The terminal node of any plan.
-    *
     * @param sourceRef  the original `SourceRef` (engine-agnostic reference;
     *                   the engine adapter resolves it to a native table/view)
     * @param schema     the expected schema (after source resolution —
@@ -65,7 +52,7 @@ object RelOp {
       sourceRef:  io.sm8.core.model.SourceRef,
       schema:     List[Field],
       projection: List[Expr],
-      /** PR-O4d (ADR-008-O): resolution provenance. Restored the
+      /** the current implementation: resolution provenance. Restored the
         * legacy semanticdf pre-tag shape -- the IR carries the
         * 4-case `ResolvedSource` ADT (Scan / NotFound /
         * Incompatible / AuthFailed) so engine adapters can
@@ -80,7 +67,6 @@ object RelOp {
 
   /** Apply a predicate to a child. Maps to Spark's `Filter`,
     * Trino's `WHERE` clause.
-    *
     * @param input     the child node
     * @param predicate the predicate expression (returns a boolean)
     */
@@ -91,7 +77,6 @@ object RelOp {
 
   /** Compute expressions into named columns. Maps to Spark's
     * `Project`, Trino's `SELECT` clause.
-    *
     * @param input       the child node
     * @param expressions the projected expressions and their
     *                    aliases (the `String` is the alias)
@@ -103,7 +88,6 @@ object RelOp {
 
   /** Group by expressions and apply aggregate calls. Maps to
     * Spark's `Aggregate`, Trino's `GROUP BY` clause.
-    *
     * @param input      the child node
     * @param groupBy    the group-by expressions (the columns to
     *                   partition by)
@@ -118,7 +102,6 @@ object RelOp {
 
   /** Combine two children with a join kind and an optional
     * condition. Maps to Spark's `Join`, Trino's `JOIN` clause.
-    *
     * @param left      the left child
     * @param right     the right child
     * @param kind      the join kind (Inner / Left / Right / Full
@@ -135,7 +118,6 @@ object RelOp {
 
   /** Order a child by sort keys. Maps to Spark's `Sort`, Trino's
     * `ORDER BY` clause.
-    *
     * @param input the child node
     * @param keys  the sort keys (each is an `Expr` + direction +
     *              null ordering)
@@ -147,7 +129,6 @@ object RelOp {
 
   /** Take a slice of a child. Maps to Spark's `Limit`, Trino's
     * `LIMIT ... OFFSET ...` clause.
-    *
     * @param input  the child node
     * @param count  the maximum number of rows to return
     * @param offset the number of rows to skip before returning
@@ -158,16 +139,14 @@ object RelOp {
       offset: Long = 0L,
   ) extends RelOp
 
-  /** PR-17 (ADR-008-R): apply a window function to a child. Maps to
+  /** the current implementation (the design contract): apply a window function to a child. Maps to
     * Spark's `withColumn("rank", F.row_number().over(Window.partitionBy(
     * ...).orderBy(...)))`, Trino's window function.
-    *
     * Per `karpathy-guidelines-mindset` "smallest correct core": the
     * window function is carried as a string + 2 Exprs (partition +
     * order) — the typed `WindowFunction` ADT lives in the SDK layer
-    * (per ADR-008-R); the IR carries the wire-stable string so the
+    * (per the design contract); the IR carries the wire-stable string so the
     * engine adapter pattern-matches.
-    *
     * @param input       the child node
     * @param windowFn    the window function name (`"row_number"`,
     *                     `"rank"`, `"dense_rank"`)

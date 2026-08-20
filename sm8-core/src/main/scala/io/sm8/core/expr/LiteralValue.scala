@@ -2,34 +2,28 @@ package io.sm8.core.expr
 
 import io.sm8.core.schema.SealedDataType
 
-/** Engine-portable literal-value ADT — Phase 2 contract. Mirrors
+/** Engine-portable literal-value ADT — the engine-portable contract. Mirrors
   * the design doc §4.5.2 "LiteralValue" (16 cases total: 7 numeric
   * + 1 text + 1 boolean + 1 binary + 2 temporal + 3 nested + 1 special).
-  *
   * A `LiteralValue` is the runtime value of a literal expression. It
   * is **engine-portable** in the sense that it carries the value in
   * a portable shape (the `LiteralValue` case), but the actual transport
   * (Spark `Literal`, Trino parameter binding, Databricks value) is
   * engine-specific. Per the data-driven mantra, the value SHAPE is
   * in core; the engine-specific transport is in the engine adapter.
-  *
   * ==Why a separate type from `SealedDataType`==
-  *
   * `SealedDataType` (the type) and `LiteralValue` (the value) are
   * distinct concepts. The type is engine-portable; the value
   * representation must match the engine's transport. For example,
   * `Int` in the type is "32-bit signed integer" — but the value
   * representation depends on whether the engine uses Java's
   * `Integer`, Trino's `INTEGER`, or a custom protocol.
-  *
   * The design's risk #9: "Decimal scale/overflow differs by engine" —
   * engines must report `EngineError.DecimalOverflow` when a result
   * exceeds the declared precision. `DecimalValue(v: BigDecimal)`
   * is the portable value; the engine reports overflow at the
   * boundary.
-  *
   * ==Why 16 cases (not fewer, not more)==
-  *
   * The set covers the values that a portable expression can carry:
   *   - **Numeric** (7): Int, Byte, Short, Long, Float, Double, Decimal (BigDecimal)
   *   - **Text** (1): String
@@ -38,27 +32,20 @@ import io.sm8.core.schema.SealedDataType
   *   - **Temporal** (2): Instant, LocalDate
   *   - **Nested** (3): Array, Map, Struct
   *   - **Special** (1): NullValue (the absence of a value)
-  *
   * `Float` is included because some engines (Trino) use 32-bit floats
   * for analytical workloads (vs. 64-bit `Double`). The design has
   * `FloatValue(v: Float)` as a separate case from `DoubleValue(v: Double)`.
-  *
   * ==Why core (engine-portable)==
-  *
   * The value SHAPE is universal (numeric, text, boolean, etc.). The
   * engine adapter translates to its native transport. Per
   * scala-data-driven-refactor, the shape lives in core; the
   * transport lives in the engine adapter.
-  *
   * ==Data-driven mantra compliance==
-  *
   * - Pure data: sealed trait + case classes / case objects (no behavior)
   * - Equality auto-derived (case classes)
   * - `Product with Serializable` for Java-serialization round-trip
   * - Each case carries only the data needed to identify the value
-  *
   * ==Boundary contract==
-  *
   * Zero Spark imports. Verifiable by:
   * `grep -r 'org.apache.spark' semanticdf-core/src/main/scala/io/semanticdf/core/expr/LiteralValue.scala`
   */
@@ -158,7 +145,6 @@ object LiteralValue {
     * "Empty string is normalized to null" rule: this is the
     * literal value `NULL`, distinct from the type-level
     * "this field accepts null" (`Field.nullable: Boolean`).
-    *
     * Maps to Spark's `NullType` (which is its own value type),
     * Trino's `null` parameter. */
   case object NullValue extends LiteralValue

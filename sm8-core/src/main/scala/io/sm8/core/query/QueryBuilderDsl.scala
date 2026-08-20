@@ -1,15 +1,13 @@
 /*
- * SM8 Core -- QueryBuilderDsl: typed fluent builder (PR-18, ADR-008-R §PR-18).
- *
- * Per `debug-mantra` + `scala-bug-huntingmindset` SS1: the phantom
+ * SM8 Core -- QueryBuilderDsl: typed fluent builder (the current implementation, the design contract current implementation).
+ * The phantom
  * `[D]` flows through fluent method wildcards `[_]`; the accumulator
  * stores `Nothing`-typed projections. At the typed-to-untyped
  * boundary (the accumulator field), we use explicit
  * `.asInstanceOf[Seq[Foo[Nothing]]]` casts with explanatory comments
- * -- this is the PR-16 documented pattern for the variance-coercion
+ * -- this is the the current implementation documented pattern for the variance-coercion
  * boundary.
- *
- * PR-20 (ADR-008-R SSfilter/where): added `filter()` / `where()`
+ * the current implementation (the design contract SSfilter/where): added `filter()` / `where()`
  * overloads + the `filters: Seq[TypedPredicate[Nothing]]` accumulator
  * field.
  */
@@ -20,7 +18,6 @@ import io.sm8.core.model.TypedDimension
 import io.sm8.core.rel.{AggregateFn, ComparisonOp, Having, PartitionBy, SortDirection, TypedAggregateCall, TypedPredicate, TypedSortKey, TypedSortKeyOps, TypedWindow, WindowFunction}
 
 /** Typed fluent builder for `QueryRequest`.
- *
  * Per the "Both via overloads" shape decision: each fluent method has
  * TWO overloads -- one with `[_]` wildcards (typed, any phantom) and
  * one with `String` (quick path for legacy/audit use cases).
@@ -57,7 +54,7 @@ object QueryBuilderDsl {
       )
 
     /** Add typed group-by dimensions (typed overload, any phantom).
-      * Per ADR-008-R: this also populates the default `orderBy`. */
+      * Per the design contract: this also populates the default `orderBy`. */
     def groupBy(dims: TypedDimension[_]*): BuiltQuery =
       copy(orderBy =
         if (orderBy.isEmpty)
@@ -109,7 +106,7 @@ object QueryBuilderDsl {
         (names.toIndexedSeq.map(n => TypedDimension.of(n)).toSeq).asInstanceOf[Seq[TypedDimension[Nothing]]]
       )
 
-    /** Per PR-25 (ADR-008-R SSExtOrderBy) + senior reviews 2026-08-19:
+    /** Per the current implementation (the design contract SSExtOrderBy) + senior reviews 2026-08-19:
       * typed order-by via the TypedSortKey extension (.asc / .desc).
       * Zips dim + direction into the parallel accumulator fields
       * `orderBy` + `sortKeys` (in lockstep). Per scala-bug-hunting-
@@ -119,12 +116,10 @@ object QueryBuilderDsl {
       * erasure signature (Seq[Any]) -- renaming to `orderByKeys`
       * preserves both APIs at the call site without Scala 2.13
       * erasure ambiguity.
-      *
       * Preserves backward compat: TypedDimension-only orderBy(...)
       * still produces only dim entries (no direction refinement).
-      *
       * Per scala-jvm-safety-mindset SS2 (Serializable preserved):
-      * TypedSortKey extends Serializable (PR-25 closure-safety spec). */
+      * TypedSortKey extends Serializable (the current implementation closure-safety spec). */
     def orderByKeys(keys: TypedSortKey[_, _]*): BuiltQuery = {
       val dims: Seq[TypedDimension[Nothing]] =
         keys.toIndexedSeq.map(_.dimension).toSeq.asInstanceOf[Seq[TypedDimension[Nothing]]]
@@ -151,10 +146,9 @@ object QueryBuilderDsl {
       )
 
     /** Add typed filter predicates (typed overload, any phantom).
-      *
-      * Per PR-20 (ADR-008-R SSfilter/where): the typed predicate is
+      * Per the current implementation (the design contract SSfilter/where): the typed predicate is
       * applied via `df.filter(predicate)` BEFORE the aggregate path
-      * (per ADR-008-R §PR-19 spark connector end-to-end). The phantom
+      * (per the design contract current implementation spark connector end-to-end). The phantom
       * `[D]` is captured at construction (object-level Refs); the
       * accumulator coerces it to `Nothing` via `asInstanceOf` at the
       * variance boundary. */
@@ -164,7 +158,6 @@ object QueryBuilderDsl {
       )
 
     /** Add typed filter predicate NAMES (string overload).
-      *
       * Per karpathy-guidelinesmindset §2 (simplicity): the string
       * overload is a convenience for quick YAML-style filtering;
       * it builds `Predicate.Compare(field, =, value)` AST nodes
@@ -197,7 +190,7 @@ object QueryBuilderDsl {
         window            = window,
         limit             = limit,
         whereFilters      = whereFilters,
-        // Per PR-25: forward sortDirections directly (set by
+        // Per the current implementation: forward sortDirections directly (set by
         // orderByKeys overload). Default Ascending for legacy 19
         // callers (sortDirections defaults to Nil).
         sortDirections   = sortDirections
