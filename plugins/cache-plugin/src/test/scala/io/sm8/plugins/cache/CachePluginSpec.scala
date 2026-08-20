@@ -1,16 +1,13 @@
 /*
  * SM8 cache Plugin — standalone spec.
  *
- * Per [[debug-mantra-mindset]] §1: each test exercises ONE
  * observable contract of the plugin (RFC §13 DoD observability).
  *
- * Per [[scala-spark-batch-bugs-mindset]] mantra #1: the plugin is
  * `with java.io.Serializable`. The full integration test
  * (HIT/MISS via the platform's EngineService) lives in sm8-platform
  * where the platform wiring is consumed; this spec confirms the
  * plugin's own corner.
  *
- * Per [[scala-data-drivenrefactor-mindset]]: the plugin holds ZERO
  * business state beyond the cache reference; we verify that the
  * counters + cache are the only captured state.
  *

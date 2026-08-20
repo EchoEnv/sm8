@@ -1,13 +1,10 @@
 /*
  * SM8 audit Hook Plugin.
  *
- * Per [[scala-data-driven-refactor-mindset]] "sealed-trait dispatch":
  * registers a Post-hook at PostFormat. Real audit (SLF4J-sinked
  * structured event) lands in Step 7; for Step 9a we just log to
  * System.err and count fires.
  *
- * Per [[scala-jvm-safety-mindset]]: AtomicInteger (no `var`).
- * Per [[scala-error-handling-mindset]]: hook body is total.
  */
 package io.sm8.plugins.audit
 

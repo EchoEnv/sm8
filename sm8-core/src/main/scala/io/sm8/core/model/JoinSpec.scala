@@ -25,7 +25,6 @@
  * raw source. The model loader resolves the model name to its
  * portable model definition, which in turn has its own source.
  *
- * Per [[karpathy-guidelines-mindset]]: ported from the legacy
  * `/tmp/semanticdf/semanticdf-core/src/main/scala/io/semanticdf/core/model/JoinSpec.scala`
  * with the same 4-field shape.
  *
@@ -33,22 +32,20 @@
  * (Spark's `df.join(other, cond, joinType)`, Trino's `JOIN`)
  * lives in the engine adapter.
  *
- * Per [[scala-error-handling-mindset]]: multi-key joins
  * (`keys.size > 1`) surface as `EngineError.UnsupportedCapability`
  * in the engine adapter (v0.1.0 scope is single-key; multi-key
  * is v0.2.0+).
  *
- * Per [[scala-jvm-safety-mindset]]: zero spark imports.
  * Boundary contract:
- *   `grep -r 'org.apache.spark' sm8-core/src/main/scala/io/sm8/core/model/JoinSpec.scala`
+ * `grep -r 'org.apache.spark' sm8-core/src/main/scala/io/sm8/core/model/JoinSpec.scala`
  */
 package io.sm8.core.model
 
 import io.sm8.core.rel.JoinKind
 
 final case class JoinSpec(
-    name:       String,
-    rightModel: String,
-    kind:       JoinKind,
-    keys:       List[(String, String)],
+ name:  String,
+ rightModel: String,
+ kind:  JoinKind,
+ keys:  List[(String, String)],
 ) extends Product with Serializable

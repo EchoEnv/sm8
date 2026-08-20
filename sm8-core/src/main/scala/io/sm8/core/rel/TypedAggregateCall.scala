@@ -8,7 +8,7 @@
  *
  * Per ADR-008-R §"PR-17 Core types": this trait is the PROTOCOL in
  * core. The witness INSTANCE lives in the consumer's code (`object Refs
- * { ... }` in a plugin or example) — NOT in method-local scope (which
+ * {... }` in a plugin or example) — NOT in method-local scope (which
  * would capture the enclosing scope and break Spark closure-serialization
  * with `NotSerializableException` at executor startup).
  *
@@ -51,70 +51,70 @@ import io.sm8.core.expr.{Expr, LiteralValue}
  * Java getters for `def` without parens).
  */
 sealed trait TypedAggregateCall[M] extends Serializable {
-  def name: String
-  def fn: AggregateFn
-  def input: Option[Expr]
-  def distinct: Boolean
-  def arguments: List[LiteralValue]
+ def name: String
+ def fn: AggregateFn
+ def input: Option[Expr]
+ def distinct: Boolean
+ def arguments: List[LiteralValue]
 
-  /** Underlying untyped `AggregateCall` — the engine adapter consumes this
-    * via the existing typed path (per PR-K / ADR-008-L). */
-  def toAggregateCall: AggregateCall =
-    AggregateCall(
-      fn        = fn,
-      input     = input,
-      alias     = name,
-      distinct  = distinct,
-      arguments = arguments
-    )
+ /** Underlying untyped `AggregateCall` — the engine adapter consumes this
+ * via the existing typed path (per PR-K / ADR-008-L). */
+ def toAggregateCall: AggregateCall =
+ AggregateCall(
+  fn  = fn,
+  input  = input,
+  alias  = name,
+  distinct = distinct,
+  arguments = arguments
+ )
 }
 
 object TypedAggregateCall {
 
-  /** Internal case-class implementation. Per PR-16 lesson: case class
-    * (not anonymous-class) so the `name` field has a proper Java
-    * getter, survives `ObjectOutputStream` round-trip, and Spark closure
-    * serialization. */
-  private final case class Impl[M](
-      theName:     String,
-      theFn:       AggregateFn,
-      theInput:    Option[Expr],
-      theDistinct: Boolean,
-      theArgs:     List[LiteralValue]
-  ) extends TypedAggregateCall[M] {
-    override def name: String                       = theName
-    override def fn: AggregateFn                    = theFn
-    override def input: Option[Expr]                = theInput
-    override def distinct: Boolean                  = theDistinct
-    override def arguments: List[LiteralValue]      = theArgs
-  }
+ /** Internal case-class implementation. Per PR-16 lesson: case class
+ * (not anonymous-class) so the `name` field has a proper Java
+ * getter, survives `ObjectOutputStream` round-trip, and Spark closure
+ * serialization. */
+ private final case class Impl[M](
+  theName:  String,
+  theFn:  AggregateFn,
+  theInput: Option[Expr],
+  theDistinct: Boolean,
+  theArgs:  List[LiteralValue]
+ ) extends TypedAggregateCall[M] {
+ override def name: String      = theName
+ override def fn: AggregateFn     = theFn
+ override def input: Option[Expr]    = theInput
+ override def distinct: Boolean     = theDistinct
+ override def arguments: List[LiteralValue]  = theArgs
+ }
 
-  /** Generic factory. The phantom `[M]` is the witness identity. */
-  def of[M](
-      name:      String,
-      fn:        AggregateFn,
-      input:     Option[Expr]        = None,
-      distinct:  Boolean             = false,
-      arguments: List[LiteralValue]  = Nil
-  ): TypedAggregateCall[M] =
-    Impl[M](theName = name, theFn = fn, theInput = input, theDistinct = distinct, theArgs = arguments)
+ /** Generic factory. The phantom `[M]` is the witness identity. */
+ def of[M](
+  name:  String,
+  fn:  AggregateFn,
+  input:  Option[Expr]  = None,
+  distinct: Boolean    = false,
+  arguments: List[LiteralValue] = Nil
+ ): TypedAggregateCall[M] =
+ Impl[M](theName = name, theFn = fn, theInput = input, theDistinct = distinct, theArgs = arguments)
 
-  /** Specialized factories reusing the PR-16 `TypedMeasure` pattern. */
-  def count[M](name: String): TypedAggregateCall[M] =
-    of[M](name = name, fn = AggregateFn.Count)
+ /** Specialized factories reusing the PR-16 `TypedMeasure` pattern. */
+ def count[M](name: String): TypedAggregateCall[M] =
+ of[M](name = name, fn = AggregateFn.Count)
 
-  def sum[M](name: String, fieldName: String = "amount"): TypedAggregateCall[M] =
-    of[M](name = name, fn = AggregateFn.Sum, input = Some(Expr.FieldRef(fieldName)))
+ def sum[M](name: String, fieldName: String = "amount"): TypedAggregateCall[M] =
+ of[M](name = name, fn = AggregateFn.Sum, input = Some(Expr.FieldRef(fieldName)))
 
-  def avg[M](name: String, fieldName: String = "value"): TypedAggregateCall[M] =
-    of[M](name = name, fn = AggregateFn.Avg, input = Some(Expr.FieldRef(fieldName)))
+ def avg[M](name: String, fieldName: String = "value"): TypedAggregateCall[M] =
+ of[M](name = name, fn = AggregateFn.Avg, input = Some(Expr.FieldRef(fieldName)))
 
-  def min[M](name: String, fieldName: String = "value"): TypedAggregateCall[M] =
-    of[M](name = name, fn = AggregateFn.Min, input = Some(Expr.FieldRef(fieldName)))
+ def min[M](name: String, fieldName: String = "value"): TypedAggregateCall[M] =
+ of[M](name = name, fn = AggregateFn.Min, input = Some(Expr.FieldRef(fieldName)))
 
-  def max[M](name: String, fieldName: String = "value"): TypedAggregateCall[M] =
-    of[M](name = name, fn = AggregateFn.Max, input = Some(Expr.FieldRef(fieldName)))
+ def max[M](name: String, fieldName: String = "value"): TypedAggregateCall[M] =
+ of[M](name = name, fn = AggregateFn.Max, input = Some(Expr.FieldRef(fieldName)))
 
-  def countDistinct[M](name: String, fieldName: String = "id"): TypedAggregateCall[M] =
-    of[M](name = name, fn = AggregateFn.CountDistinct, input = Some(Expr.FieldRef(fieldName)), distinct = true)
+ def countDistinct[M](name: String, fieldName: String = "id"): TypedAggregateCall[M] =
+ of[M](name = name, fn = AggregateFn.CountDistinct, input = Some(Expr.FieldRef(fieldName)), distinct = true)
 }

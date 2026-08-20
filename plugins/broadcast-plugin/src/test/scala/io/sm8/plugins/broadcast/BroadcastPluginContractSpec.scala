@@ -11,7 +11,6 @@
  * unified conformance check; `PreHook` refactors in `sm8-core`
  * cannot silently break the broadcast-plugin contract rules.
  *
- * Per [[karpathy-guidelines-mindset]]: smallest correct change.
  */
 package io.sm8.plugins.broadcast
 

@@ -127,7 +127,6 @@ private final class CacheReadPreHook(
  * the cache layer (the pre-read should have returned the post-write).
  * The dispatcher short-circuits this hook when `c.stop` is true.
  *
- * Per [[scala-spark-batch-bugs-mindset]] §1 (closure-safety):
  * `with java.io.Serializable` — captured `cache` (ResultCache, extends
  * Serializable) and `counter` (AtomicInteger, Serializable).
  */

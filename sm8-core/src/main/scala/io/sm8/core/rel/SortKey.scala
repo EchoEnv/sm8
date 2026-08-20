@@ -5,25 +5,21 @@
  * are part of the relational plan tree (`RelOp.Sort`). Each
  * SortKey carries an `expression: Expr` + direction + null ordering.
  *
- * Per [[karpathy-guidelines-mindset]]: ported from the legacy
  * `/tmp/semanticdf/semanticdf-core/src/main/scala/io/semanticdf/core/rel/SortKey.scala`
  * with the same shape. The plan IR uses `Expr` because plans
  * carry expressions, not column-name strings.
  *
  * Per RFC §3: engine-portable; engine-specific compile lives in
  * the adapter (Spark's `Column.asc()` / `Column.desc_nulls_last()`,
- * Trino's `ORDER BY ... ASC NULLS LAST`).
+ * Trino's `ORDER BY... ASC NULLS LAST`).
  *
- * Per [[scala-error-handling-mindset]]: the `Expr` is typed
  * (closed ADT), so the model validator can check that the
  * expression is well-formed (field names exist, operators are
  * valid, etc.) — no silent failures at engine-compile time.
  *
- * Per [[scala-jvm-safety-mindset]]: zero spark imports; zero
  * static / ThreadLocal state. Boundary contract:
- *   `grep -r 'org.apache.spark' sm8-core/src/main/scala/io/sm8/core/rel/SortKey.scala`
+ * `grep -r 'org.apache.spark' sm8-core/src/main/scala/io/sm8/core/rel/SortKey.scala`
  *
- * Per [[scala-impact-analysis-mindset]]: this type coexists with
  * the simpler `core.field.SortKey` (Phase 1 mirror of the
  * spark-adapter's ordering API). Both survive per karpathy §3
  * (surgical, no opportunistic refactors).
@@ -33,7 +29,7 @@ package io.sm8.core.rel
 import io.sm8.core.expr.Expr
 
 final case class SortKey(
-    expression:   Expr,
-    direction:    SortDirection,
-    nullOrdering: NullOrdering,
+ expression: Expr,
+ direction: SortDirection,
+ nullOrdering: NullOrdering,
 ) extends Product with Serializable

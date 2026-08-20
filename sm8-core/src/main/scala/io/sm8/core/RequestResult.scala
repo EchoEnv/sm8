@@ -19,8 +19,8 @@ import io.sm8.sdk.{ConnectorSchema, Request, Result, ResultRows, SemanticQuery}
  * `connectorName`. The engine looks up the Connector and routes.
  */
 final case class ConnectorRequest(
-    connectorName: String,
-    query: SemanticQuery
+ connectorName: String,
+ query: SemanticQuery
 ) extends Request
 
 /**
@@ -29,7 +29,7 @@ final case class ConnectorRequest(
  * portable row + schema shapes.
  */
 final case class ConnectorResult(
-    connectorName: String,
-    schema: ConnectorSchema,
-    rows: ResultRows
+ connectorName: String,
+ schema: ConnectorSchema,
+ rows: ResultRows
 ) extends Result

@@ -14,10 +14,10 @@
  * builder is fully type-checked at compile time.
  * ==Why in core (not in a plugin)==
  * Per RFC §3 (Core Boundary table):
- *   - Core never imports a specific adapter / plugin / hook.
- *   - Adapters know about a specific data source.
- *   - Plugins bundle adapters + hooks for one purpose.
- *   - Hooks know *when* in the pipeline.
+ * - Core never imports a specific adapter / plugin / hook.
+ * - Adapters know about a specific data source.
+ * - Plugins bundle adapters + hooks for one purpose.
+ * - Hooks know *when* in the pipeline.
  * ModelBuilder knows *how to construct a Model*. That's core. No
  * data-source knowledge, no pipeline knowledge.
  * ==Why immutable (case class)==
@@ -32,10 +32,10 @@
  * per-call invariants only.
  * ==Spark concerns (per user directive)==
  * - mantras #1, #5: no Spark types captured, no executor-side
- *   closure. The builder is pure data.
+ * closure. The builder is pure data.
  * - mantra #3 (schema-drift verify at boundary): the validation
- *   here is the boundary; field-level invariants are checked once,
- *   not by every consumer.
+ * here is the boundary; field-level invariants are checked once,
+ * not by every consumer.
  * closure, no mutable state. The serialized Model is the
  * `final case class Model(...) extends Product with Serializable`
  * already in this file — case-class derived Serialization is the
@@ -63,121 +63,121 @@ package io.sm8.core.model
  * positional arg list.
  */
 final case class ModelBuilder private (
-    name:           Option[String]            = None,
-    version:        Option[Int]               = None,
-    description:    Option[String]            = None,
-    dimensions:     List[Dimension]           = Nil,
-    measures:       List[Measure]             = Nil,
-    defaultPolicies: ModelPolicyDefaults      = ModelPolicyDefaults(
-      materialize = MaterializePolicy.None,
-      cache       = CachePolicy.NoCache,
-      audit       = AuditPolicy.NoAudit,
-    ),
-    source:         Option[SourceRef]         = None,
-    status:         ModelStatus               = ModelStatus.Draft,
-    filters:        List[FilterSpec]          = Nil,
-    calculatedMeasures: List[CalculatedMeasure] = Nil,
-    joins:          List[JoinSpec]            = Nil,
+ name:   Option[String]   = None,
+ version:  Option[Int]    = None,
+ description: Option[String]   = None,
+ dimensions:  List[Dimension]   = Nil,
+ measures:  List[Measure]    = Nil,
+ defaultPolicies: ModelPolicyDefaults  = ModelPolicyDefaults(
+  materialize = MaterializePolicy.None,
+  cache  = CachePolicy.NoCache,
+  audit  = AuditPolicy.NoAudit,
+ ),
+ source:   Option[SourceRef]   = None,
+ status:   ModelStatus    = ModelStatus.Draft,
+ filters:  List[FilterSpec]   = Nil,
+ calculatedMeasures: List[CalculatedMeasure] = Nil,
+ joins:   List[JoinSpec]   = Nil,
 ) {
 
-  def withName(value: String): ModelBuilder =
-    copy(name = Option(value))
+ def withName(value: String): ModelBuilder =
+ copy(name = Option(value))
 
-  def withVersion(value: Int): ModelBuilder =
-    copy(version = Option(value))
+ def withVersion(value: Int): ModelBuilder =
+ copy(version = Option(value))
 
-  def withDescription(value: String): ModelBuilder =
-    copy(description = Option(value))
+ def withDescription(value: String): ModelBuilder =
+ copy(description = Option(value))
 
-  def withDimension(name: String, expr: io.sm8.core.expr.Expr): ModelBuilder =
-    copy(dimensions = dimensions :+ Dimension(name, expr))
+ def withDimension(name: String, expr: io.sm8.core.expr.Expr): ModelBuilder =
+ copy(dimensions = dimensions :+ Dimension(name, expr))
 
-  def withDimensions(values: List[Dimension]): ModelBuilder =
-    copy(dimensions = values)
+ def withDimensions(values: List[Dimension]): ModelBuilder =
+ copy(dimensions = values)
 
-  /** `expr` is a typed `AggregateCall`.
-    * Use `withMeasureAgg(name, fn, expr)` for the common
-    * single-aggregate case, or this method with the structural
-    * `AggregateCall(...)` for `COUNT(*)` /
-    * `APPROX_PERCENTILE(x, p)` forms. */
-  def withMeasure(name: String, expr: io.sm8.core.rel.AggregateCall): ModelBuilder =
-    copy(measures = measures :+ Measure(name, expr))
+ /** `expr` is a typed `AggregateCall`.
+ * Use `withMeasureAgg(name, fn, expr)` for the common
+ * single-aggregate case, or this method with the structural
+ * `AggregateCall(...)` for `COUNT(*)` /
+ * `APPROX_PERCENTILE(x, p)` forms. */
+ def withMeasure(name: String, expr: io.sm8.core.rel.AggregateCall): ModelBuilder =
+ copy(measures = measures :+ Measure(name, expr))
 
-  /** Smart constructor for the common single-aggregate case:
-    * `withMeasureAgg("total", AggregateFn.Sum, Expr.FieldRef("amount"))`. */
-  def withMeasureAgg(
-      name: String,
-      fn:    io.sm8.core.rel.AggregateFn,
-      expr:  io.sm8.core.expr.Expr,
-  ): ModelBuilder =
-    copy(measures = measures :+ Measure.aggregate(name, fn, expr))
+ /** Smart constructor for the common single-aggregate case:
+ * `withMeasureAgg("total", AggregateFn.Sum, Expr.FieldRef("amount"))`. */
+ def withMeasureAgg(
+  name: String,
+  fn: io.sm8.core.rel.AggregateFn,
+  expr: io.sm8.core.expr.Expr,
+ ): ModelBuilder =
+ copy(measures = measures :+ Measure.aggregate(name, fn, expr))
 
-  def withMeasures(values: List[Measure]): ModelBuilder =
-    copy(measures = values)
+ def withMeasures(values: List[Measure]): ModelBuilder =
+ copy(measures = values)
 
-  /** Add a calculated (derived) measure — any `Expr`. */
-  def withCalculatedMeasure(name: String, expr: io.sm8.core.expr.Expr): ModelBuilder =
-    copy(calculatedMeasures = calculatedMeasures :+ CalculatedMeasure(name, expr))
+ /** Add a calculated (derived) measure — any `Expr`. */
+ def withCalculatedMeasure(name: String, expr: io.sm8.core.expr.Expr): ModelBuilder =
+ copy(calculatedMeasures = calculatedMeasures :+ CalculatedMeasure(name, expr))
 
-  def withCalculatedMeasures(values: List[CalculatedMeasure]): ModelBuilder =
-    copy(calculatedMeasures = values)
+ def withCalculatedMeasures(values: List[CalculatedMeasure]): ModelBuilder =
+ copy(calculatedMeasures = values)
 
-  /** Add a join to another model. */
-  def withJoin(spec: JoinSpec): ModelBuilder =
-    copy(joins = joins :+ spec)
+ /** Add a join to another model. */
+ def withJoin(spec: JoinSpec): ModelBuilder =
+ copy(joins = joins :+ spec)
 
-  def withJoins(values: List[JoinSpec]): ModelBuilder =
-    copy(joins = values)
+ def withJoins(values: List[JoinSpec]): ModelBuilder =
+ copy(joins = values)
 
-  def withPolicies(value: ModelPolicyDefaults): ModelBuilder =
-    copy(defaultPolicies = value)
+ def withPolicies(value: ModelPolicyDefaults): ModelBuilder =
+ copy(defaultPolicies = value)
 
-  def withSource(value: SourceRef): ModelBuilder =
-    copy(source = Option(value))
+ def withSource(value: SourceRef): ModelBuilder =
+ copy(source = Option(value))
 
-  def withStatus(value: ModelStatus): ModelBuilder =
-    copy(status = value)
+ def withStatus(value: ModelStatus): ModelBuilder =
+ copy(status = value)
 
-  def withFilter(value: FilterSpec): ModelBuilder =
-    copy(filters = filters :+ value)
+ def withFilter(value: FilterSpec): ModelBuilder =
+ copy(filters = filters :+ value)
 
-  def withFilters(values: List[FilterSpec]): ModelBuilder =
-    copy(filters = values)
+ def withFilters(values: List[FilterSpec]): ModelBuilder =
+ copy(filters = values)
 
-  /**
-   * Materialize the validated `Either[ModelValidationError, Model]`.
-   * returns an `Either`, never throws. The `Model.of(...)` smart
-   * constructor (called under the hood) holds the same contract.
-   * the smoke test asserts that `ModelBuilder().withName(...).build`
-   * equals `Model.of(...)` for the same input — round-trip proof.
-   */
-  def build: Either[ModelValidationError, Model] = {
-    val n: String = name.getOrElse("")
-    val v: Int    = version.getOrElse(-1)
-    val s: SourceRef = source.getOrElse(
-      SourceRef.ByName(table = "unknown")
-    )
-    Model.of(
-      name            = n,
-      version         = v,
-      description     = description,
-      dimensions      = dimensions,
-      measures        = measures,
-      defaultPolicies = defaultPolicies,
-      source          = s,
-      status          = status,
-      filters         = filters,
-      calculatedMeasures = calculatedMeasures,
-      joins           = joins,
-    )
-  }
+ /**
+ * Materialize the validated `Either[ModelValidationError, Model]`.
+ * returns an `Either`, never throws. The `Model.of(...)` smart
+ * constructor (called under the hood) holds the same contract.
+ * the smoke test asserts that `ModelBuilder().withName(...).build`
+ * equals `Model.of(...)` for the same input — round-trip proof.
+ */
+ def build: Either[ModelValidationError, Model] = {
+ val n: String = name.getOrElse("")
+ val v: Int = version.getOrElse(-1)
+ val s: SourceRef = source.getOrElse(
+  SourceRef.ByName(table = "unknown")
+ )
+ Model.of(
+  name   = n,
+  version   = v,
+  description  = description,
+  dimensions  = dimensions,
+  measures  = measures,
+  defaultPolicies = defaultPolicies,
+  source   = s,
+  status   = status,
+  filters   = filters,
+  calculatedMeasures = calculatedMeasures,
+  joins   = joins,
+ )
+ }
 }
 
 object ModelBuilder {
 
-  /**
-   * Empty builder. All fields default; `build` will return `Left(...)`
-   * until `withName` and `withVersion` are set.
-   */
-  def apply(): ModelBuilder = new ModelBuilder()
+ /**
+ * Empty builder. All fields default; `build` will return `Left(...)`
+ * until `withName` and `withVersion` are set.
+ */
+ def apply(): ModelBuilder = new ModelBuilder()
 }

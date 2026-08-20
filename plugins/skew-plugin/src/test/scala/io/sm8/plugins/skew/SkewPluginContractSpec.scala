@@ -10,7 +10,6 @@
  * Per RFC §13 DoD spirit: structural inheritance from the unified
  * contract base.
  *
- * Per [[karpathy-guidelines-mindset]]: smallest correct change.
  */
 package io.sm8.plugins.skew
 

@@ -7,11 +7,11 @@
  * directly — they communicate only through Context.
  *
  * Per RFC §7 (semantic-layer-engine-architecture.md) and the Step-1 plan:
- *   - stage   : current pipeline stage name (parse | resolve | execute | format)
- *   - request : original input, READ-ONLY by convention (RFC hooks.md Rule 2)
- *   - result  : written by execute/format stages; read by PostHooks and Transformers
- *   - meta    : scratch space for plugin-to-plugin communication
- *   - stop    : short-circuit flag; when true, no further stages or hooks run
+ * - stage : current pipeline stage name (parse | resolve | execute | format)
+ * - request : original input, READ-ONLY by convention (RFC hooks.md Rule 2)
+ * - result : written by execute/format stages; read by PostHooks and Transformers
+ * - meta : scratch space for plugin-to-plugin communication
+ * - stop : short-circuit flag; when true, no further stages or hooks run
  *
  * Frozen after Step 1. Any change to field set is a breaking SDK change.
  */
@@ -22,18 +22,18 @@ package io.sm8.sdk
  * execute → format). Immutable snapshot at each stage boundary; hooks
  * receive a Context, return a (possibly mutated) Context.
  *
- * @param stage    current pipeline stage name
- * @param request  original input; do not mutate
- * @param result   output of execute/format; None until execute runs
- * @param meta     scratch space for cross-hook data sharing
- * @param stop     when true, the engine skips all remaining stages and hooks
+ * @param stage current pipeline stage name
+ * @param request original input; do not mutate
+ * @param result output of execute/format; None until execute runs
+ * @param meta  scratch space for cross-hook data sharing
+ * @param stop  when true, the engine skips all remaining stages and hooks
  */
 final case class Context(
-    stage: PipelineStage,
-    request: Request,
-    result: Option[Result] = None,
-    meta: Map[String, Any] = Map.empty,
-    stop: Boolean = false
+ stage: PipelineStage,
+ request: Request,
+ result: Option[Result] = None,
+ meta: Map[String, Any] = Map.empty,
+ stop: Boolean = false
 )
 
 /**
@@ -42,10 +42,10 @@ final case class Context(
  */
 sealed trait PipelineStage
 object PipelineStage {
-  case object Parse   extends PipelineStage
-  case object Resolve extends PipelineStage
-  case object Execute extends PipelineStage
-  case object Format  extends PipelineStage
+ case object Parse extends PipelineStage
+ case object Resolve extends PipelineStage
+ case object Execute extends PipelineStage
+ case object Format extends PipelineStage
 }
 
 /**

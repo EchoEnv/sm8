@@ -1,7 +1,6 @@
 /*
  * SM8 skew Hook Plugin.
  *
- * Per [[scala-spark-batch-bugs-mindset]] mantra #2 "skew hides in the
  * aggregate": real implementation will set the AQE skew threshold
  * via `spark.sql.adaptive.skewJoin.skewedPartitionFactor`. Per the
  * plan, the SM8 core stays Spark-free; the Spark config call lives

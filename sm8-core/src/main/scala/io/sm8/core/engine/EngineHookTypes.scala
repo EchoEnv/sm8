@@ -4,11 +4,11 @@ import io.sm8.core.model.Model
 import io.sm8.sdk.{ Request, Result }
 
 final case class EngineHookRequest(
-    model:      Model,
-    mcpRequest: QueryRequest,
-    cacheKey:   String
+ model:  Model,
+ mcpRequest: QueryRequest,
+ cacheKey: String
 ) extends Request
 
 final case class EngineHookResult(
-    pqr: PortableQueryResult
+ pqr: PortableQueryResult
 ) extends Result

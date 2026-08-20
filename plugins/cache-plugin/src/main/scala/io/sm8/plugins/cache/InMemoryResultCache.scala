@@ -4,21 +4,17 @@
  * Replaces the legacy Java `io.semanticdf.cache.InMemoryResultCache`
  * (semanticdf-spark) with a Scala 2.13 class for `sm8-platform`.
  *
- * Per [[karpathy-guidelines-mindset]] (Scala 2.13 idiom + match
  * existing style): `final class` with a companion factory. NOT
  * Java. Matches the pattern set by `RestateCachedRow` (PR-C1) and
  * the `EngineService` `object` (PR-C5a/b/c).
  *
- * Per [[scala-jvm-safety-mindset]] "null is a liar": all internal
  * maps are `ConcurrentHashMap`; reads see a consistent snapshot;
  * single-flight uses `putIfAbsent` (NOT `computeIfAbsent` — the
  * latter holds a CHM bin lock during compute, which is a documented
  * anti-pattern). No resource lifecycle.
  *
- * Per [[scala-jar-packaging-mindset]]: no new Maven deps.
  * `java.util.concurrent.ConcurrentHashMap` is part of JDK.
  *
- * Per [[scala-error-handling-mindset]]: getOrComputeJournaled
  * propagates `compute.get()` exceptions to ALL waiters for the same
  * key (the legacy semantics). The cache is NOT populated on
  * failure. Exceptions are unwrapped from `ExecutionException` and
@@ -124,8 +120,6 @@ final class InMemoryResultCache(
   // Model → set of keys (for O(1) invalidateModel).
   private val modelIndex: ConcurrentHashMap[String, java.util.Set[String]] =
     new ConcurrentHashMap[String, java.util.Set[String]]()
-
-  // Per [[scala-jvm-safety-mindset]]: plain class (not a `case
   // class` with `var`) so mutation doesn't break `equals`/
   // `hashCode`. `extends Serializable` so the populated cache
   // survives `ObjectOutputStream` round-trip (review pass #2
@@ -208,7 +202,6 @@ final class InMemoryResultCache(
       model: String,
       version: Int
   ): Unit = {
-    // Per [[scala-impact-analysis-mindset]]: a retag (same key,
     // different model) must remove the key from the previous
     // model's index set.
     val existing = entries.get(key)
@@ -294,7 +287,6 @@ final class InMemoryResultCache(
         leaderFut.complete(v)
       } catch {
         case t: InterruptedException =>
-          // Per [[scala-jvm-safety-mindset]] "the JVM clears the
           // interrupt flag before throwing ExecutionException":
           // restore the flag BEFORE completing the future
           // exceptionally. Without this, the leader's interrupt
@@ -337,7 +329,6 @@ final class InMemoryResultCache(
         }
         throw e
       case e: InterruptedException =>
-        // Per [[scala-jvm-safety-mindset]]: restore the
         // interrupt flag before propagating. This branch fires
         // when `get()` was itself interrupted by an external
         // thread interrupt (NOT the leader's exception path).

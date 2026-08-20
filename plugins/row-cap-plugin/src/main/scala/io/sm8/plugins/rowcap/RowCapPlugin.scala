@@ -1,13 +1,10 @@
 /*
  * SM8 row-cap Hook Plugin.
  *
- * Per [[scala-data-driven-refactor-mindset]]: `RowCapConfig` is data
  * (case class). `RowCapPlugin` is behavior (registers the hook).
  * The hook body pattern-matches on `Result` per the SDK shape.
  *
- * Per [[scala-jvm-safety-mindset]]: AtomicInteger (no `var`).
  *
- * Per [[scala-error-handling-mindset]]: hook body is total — no
  * runtime errors expected. Programmer errors (e.g., negative
  * `maxRows`) are rejected at the boundary (case class apply).
  *
@@ -24,7 +21,6 @@ import io.sm8.sdk._
 /**
  * Config for the row-cap hook. Case class — data only.
  *
- * Per [[scala-data-driven-refactor-mindset]] "separate shape from
  * validity": the smart constructor (below) validates non-negative
  * maxRows at the boundary.
  */

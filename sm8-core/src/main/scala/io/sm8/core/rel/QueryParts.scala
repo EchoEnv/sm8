@@ -13,7 +13,7 @@
  *
  * Per `karpathy-app-design-mindset` §3.1 (Protocols before
  * implementations): these are the Protocols in core. Witness
- * INSTANCES live in the consumer's code (`object Refs { ... }`).
+ * INSTANCES live in the consumer's code (`object Refs {... }`).
  *
  * Per `scala-spark-batch-bugs-mindset` §1 (closure-safety — the user's
  * explicit concern): all 5 types `extends Serializable`. Per PR-16
@@ -44,12 +44,12 @@ import io.sm8.core.expr.Expr
 sealed trait ComparisonOp extends Serializable
 
 object ComparisonOp {
-  case object EQ extends ComparisonOp
-  case object NE extends ComparisonOp
-  case object LT extends ComparisonOp
-  case object LE extends ComparisonOp
-  case object GT extends ComparisonOp
-  case object GE extends ComparisonOp
+ case object EQ extends ComparisonOp
+ case object NE extends ComparisonOp
+ case object LT extends ComparisonOp
+ case object LE extends ComparisonOp
+ case object GT extends ComparisonOp
+ case object GE extends ComparisonOp
 }
 
 /**
@@ -63,18 +63,18 @@ object ComparisonOp {
  * defaulting.
  */
 final case class Having[D](
-    dimension: io.sm8.core.model.TypedDimension[D],
-    op:        ComparisonOp,
-    value:     Expr
+ dimension: io.sm8.core.model.TypedDimension[D],
+ op:  ComparisonOp,
+ value:  Expr
 ) extends Serializable
 
 object Having {
-  /** Convenience factory. */
-  def apply[D](
-      dim:   io.sm8.core.model.TypedDimension[D],
-      op:    ComparisonOp,
-      value: Expr
-  ): Having[D] = new Having[D](dim, op, value)
+ /** Convenience factory. */
+ def apply[D](
+  dim: io.sm8.core.model.TypedDimension[D],
+  op: ComparisonOp,
+  value: Expr
+ ): Having[D] = new Having[D](dim, op, value)
 }
 
 /**
@@ -87,12 +87,12 @@ object Having {
  * the connector decides whether to honor it.
  */
 final case class PartitionBy[D](
-    dim: io.sm8.core.model.TypedDimension[D]
+ dim: io.sm8.core.model.TypedDimension[D]
 ) extends Serializable
 
 object PartitionBy {
-  def apply[D](dim: io.sm8.core.model.TypedDimension[D]): PartitionBy[D] =
-    new PartitionBy[D](dim)
+ def apply[D](dim: io.sm8.core.model.TypedDimension[D]): PartitionBy[D] =
+ new PartitionBy[D](dim)
 }
 
 /**
@@ -101,22 +101,22 @@ object PartitionBy {
  *
  * Per ADR-008-R: future PRs may add Lag / Lead / PercentRank /
  * CumeDist / Ntile / FirstValue / LastValue. For v0.1.0, the rank-only
- * minimal set is sufficient (per `karpathy-guidelinesmindset` §2).
+ * minimal set is sufficient (per `karpathy-` §2).
  */
 sealed trait WindowFunction extends Serializable
 
 object WindowFunction {
-  /** `ROW_NUMBER() OVER (PARTITION BY ... ORDER BY ...)` — assigns a
-    * unique sequential integer to each row in its partition. */
-  case object RowNumber extends WindowFunction
+ /** `ROW_NUMBER() OVER (PARTITION BY... ORDER BY...)` — assigns a
+ * unique sequential integer to each row in its partition. */
+ case object RowNumber extends WindowFunction
 
-  /** `RANK() OVER (PARTITION BY ... ORDER BY ...)` — assigns a rank with
-    * gaps (ties get the same rank; next rank skipped). */
-  case object Rank extends WindowFunction
+ /** `RANK() OVER (PARTITION BY... ORDER BY...)` — assigns a rank with
+ * gaps (ties get the same rank; next rank skipped). */
+ case object Rank extends WindowFunction
 
-  /** `DENSE_RANK() OVER (PARTITION BY ... ORDER BY ...)` — assigns a rank
-    * without gaps (ties get the same rank; next rank NOT skipped). */
-  case object DenseRank extends WindowFunction
+ /** `DENSE_RANK() OVER (PARTITION BY... ORDER BY...)` — assigns a rank
+ * without gaps (ties get the same rank; next rank NOT skipped). */
+ case object DenseRank extends WindowFunction
 }
 
 /**
@@ -127,20 +127,20 @@ object WindowFunction {
  *
  * Per `karpathy-app-designmindset` §3.1 (Protocols before
  * implementations): this is the Protocol. The witness INSTANCE
- * lives in `object Refs { ... }`.
+ * lives in `object Refs {... }`.
  */
 final case class TypedWindow[D, M](
-    partitionBy: io.sm8.core.model.TypedDimension[D],
-    orderBy:     io.sm8.core.model.TypedDimension[D],
-    windowFn:    WindowFunction
+ partitionBy: io.sm8.core.model.TypedDimension[D],
+ orderBy:  io.sm8.core.model.TypedDimension[D],
+ windowFn: WindowFunction
 ) extends Serializable {
-  def name: String = s"${windowFn}_${orderBy.name}"
+ def name: String = s"${windowFn}_${orderBy.name}"
 }
 
 object TypedWindow {
-  def apply[D, M](
-      partitionBy: io.sm8.core.model.TypedDimension[D],
-      orderBy:     io.sm8.core.model.TypedDimension[D],
-      windowFn:    WindowFunction
-  ): TypedWindow[D, M] = new TypedWindow[D, M](partitionBy, orderBy, windowFn)
+ def apply[D, M](
+  partitionBy: io.sm8.core.model.TypedDimension[D],
+  orderBy:  io.sm8.core.model.TypedDimension[D],
+  windowFn: WindowFunction
+ ): TypedWindow[D, M] = new TypedWindow[D, M](partitionBy, orderBy, windowFn)
 }

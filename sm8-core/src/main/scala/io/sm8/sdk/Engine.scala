@@ -30,42 +30,42 @@ package io.sm8.sdk
  */
 trait Engine {
 
-  /**
-   * Register a Plugin with the engine. The engine calls
-   * `plugin.setup(this)`. Returns `this` for chaining:
-   * `engine.use(p1).use(p2).use(p3)`.
-   *
-   * The engine guarantees (per karpathy-app-design §4.2):
-   *   - a Plugin whose setup throws does NOT crash the engine — it is
-   *     logged as a warning and skipped;
-   *   - the same Plugin instance is not registered twice (idempotent).
-   */
-  def use(plugin: Plugin): Engine
+ /**
+ * Register a Plugin with the engine. The engine calls
+ * `plugin.setup(this)`. Returns `this` for chaining:
+ * `engine.use(p1).use(p2).use(p3)`.
+ *
+ * The engine guarantees (per karpathy-app-design §4.2):
+ * - a Plugin whose setup throws does NOT crash the engine — it is
+ *  logged as a warning and skipped;
+ * - the same Plugin instance is not registered twice (idempotent).
+ */
+ def use(plugin: Plugin): Engine
 
-  /**
-   * Run a request through the 4-stage pipeline. Implementation lives
-   * in `core.EngineImpl` (Step 3).
-   */
-  def run(request: Request): Result
+ /**
+ * Run a request through the 4-stage pipeline. Implementation lives
+ * in `core.EngineImpl` (Step 3).
+ */
+ def run(request: Request): Result
 
-  /**
-   * Connector registry. Plugins access this from `setup(engine)` to
-   * register their Connectors: `engine.connectors.register(c)`.
-   * Required by the RFC's `engine.adapters.register(...)` pattern.
-   */
-  def connectors: ConnectorRegistry
+ /**
+ * Connector registry. Plugins access this from `setup(engine)` to
+ * register their Connectors: `engine.connectors.register(c)`.
+ * Required by the RFC's `engine.adapters.register(...)` pattern.
+ */
+ def connectors: ConnectorRegistry
 
-  /**
-   * Hook manager. Plugins access this from `setup(engine)` to
-   * register their Pre/PostHooks: `engine.hooks.registerPreHook(...)`.
-   * Step 3 surface: register-only. Priority dispatch lands in Step 4.
-   */
-  def hooks: HookManager
+ /**
+ * Hook manager. Plugins access this from `setup(engine)` to
+ * register their Pre/PostHooks: `engine.hooks.registerPreHook(...)`.
+ * Step 3 surface: register-only. Priority dispatch lands in Step 4.
+ */
+ def hooks: HookManager
 
-  /**
-   * Transformer registry. Plugins access this from `setup(engine)` to
-   * register Transformers: `engine.transformers.register(t)`.
-   * Exactly one Transformer is active at a time (Q3 = swap).
-   */
-  def transformers: TransformerRegistry
+ /**
+ * Transformer registry. Plugins access this from `setup(engine)` to
+ * register Transformers: `engine.transformers.register(t)`.
+ * Exactly one Transformer is active at a time (Q3 = swap).
+ */
+ def transformers: TransformerRegistry
 }
