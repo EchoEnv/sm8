@@ -11,7 +11,7 @@
  * only available post-source-resolution. The `validateAgainstSchema`
  * surface is exercised directly (no public-API dependency there).
  *
- * Per [[debug-mantra-mindset]] SS1: errors accumulate -- never silent
+ * Per `debug-mantra` SS1: errors accumulate -- never silent
  * partial-validation.
  */
 package io.sm8.core.model
@@ -338,4 +338,60 @@ class ModelValidatorSpec extends AnyFunSuite with Matchers {
     res.left.toOption.get shouldBe a [io.sm8.core.model.ModelValidationError]
   }
 
+  // -- PR-132 / ADR-008-W: COUNT(*) fix regression tests --
+
+  test("validateAgainstSchema: COUNT(*) measure (input = None) passes -- no phantom field-reference walk") {
+    val m = Model.of(
+      name    = "ok",
+      version = 1,
+      source  = io.sm8.core.model.SourceRef.ByName(table = "people"),
+      measures = List(io.sm8.core.model.Measure(
+        "encounter_count",
+        io.sm8.core.rel.AggregateCall(io.sm8.core.rel.AggregateFn.Count, None, "encounter_count"))),
+    ).toOption.get
+    ModelValidator.validateAgainstSchema(m, peopleScan) shouldBe Right(())
+  }
+
+  test("validateAgainstSchema: Sum measure with input = None fails loud with explicit message") {
+    val m = Model.of(
+      name    = "ok",
+      version = 1,
+      source  = io.sm8.core.model.SourceRef.ByName(table = "people"),
+      measures = List(io.sm8.core.model.Measure(
+        "total",
+        io.sm8.core.rel.AggregateCall(io.sm8.core.rel.AggregateFn.Sum, None, "total"))),
+    ).toOption.get
+    val msgs = ModelValidator.validateAgainstSchema(m, peopleScan).left.toOption.get
+      .asInstanceOf[ModelValidationError.SchemaValidation].messages
+    msgs.exists(_.contains("measures[total]")) shouldBe true
+    msgs.exists(_.contains("input is required")) shouldBe true
+    msgs.exists(_.contains("Sum")) shouldBe true
+  }
+
+  test("validateAgainstSchema: Avg measure with input = None fails loud (mirrors Sum)") {
+    val m = Model.of(
+      name    = "ok",
+      version = 1,
+      source  = io.sm8.core.model.SourceRef.ByName(table = "people"),
+      measures = List(io.sm8.core.model.Measure(
+        "avg_amount",
+        io.sm8.core.rel.AggregateCall(io.sm8.core.rel.AggregateFn.Avg, None, "avg_amount"))),
+    ).toOption.get
+    val msgs = ModelValidator.validateAgainstSchema(m, peopleScan).left.toOption.get
+      .asInstanceOf[ModelValidationError.SchemaValidation].messages
+    msgs.exists(_.contains("Avg")) shouldBe true
+  }
+
+  test("validateAgainstSchema: COUNT(*) model has no spurious missing-field messages") {
+    val m = Model.of(
+      name    = "ok",
+      version = 1,
+      source  = io.sm8.core.model.SourceRef.ByName(table = "people"),
+      dimensions = List(io.sm8.core.model.Dimension.field("region", "region")),
+      measures = List(io.sm8.core.model.Measure(
+        "encounter_count",
+        io.sm8.core.rel.AggregateCall(io.sm8.core.rel.AggregateFn.Count, None, "encounter_count"))),
+    ).toOption.get
+    ModelValidator.validateAgainstSchema(m, peopleScan) shouldBe Right(())
+  }
 }
