@@ -40,10 +40,10 @@ import org.apache.spark.sql.functions._
   *                      models/ documents the target shape for the
   *                      future sm8 ModelLoader YAML subset extension)
   *   5. QUERIES       — Q1 demographics, Q2 ALOS by department,
-  *                      Q3 30-day readmission rate
+  *                      Q3 30-day readmission rate (partial typed-DSL,
+  *                      PR-34: per-row enrichment + 1 typed aggregation + Spark-direct rate)
   *
   * ==Spark-only example (consumer of sm8-core + spark-connector)==
-  *
   * This example depends on sm8-core (the SDK) and spark-connector
   * (the engine adapter). It does NOT import sm8-platform or
   * sm8-server (the transport libs) — per RFC §3 layer ownership,
@@ -195,8 +195,20 @@ object Refs {
 
   val department:    TypedDimension[Department]    = TypedDimension.of[Department]("department")
   val admissionDate: TypedDimension[AdmissionDate] = TypedDimension.of[AdmissionDate]("admission_date")
-}
 
+  /** Q3 typed-DSL migration (PR-34): per-patient readmission count
+    * witness. Phantom `[ReadmissionCount]` matches the
+    * `readmission_count` measure in the encounters Model.
+    *
+    * Per [[karpathy-app-design-mindset]] SS3.1 (Protocols before
+    * Implementations): the witness lives at object level
+    * (singleton, Serializable) -- safe for Spark closure
+    * serialization per [[scala-spark-batch-bugs-mindset]] SS1.
+    */
+  sealed trait ReadmissionCount
+  val readmissionCount: TypedMeasure[ReadmissionCount] =
+    TypedMeasure.sum[ReadmissionCount]("readmission_count", "is_readmission")
+}
 
   private def ingestAndCleansEncounters(spark: SparkSession): DataFrame = {
     val raw = readCsv(spark, "encounters_raw.csv")
@@ -262,13 +274,44 @@ object Refs {
     * encounter_count) per the model YAML.
     */
   private def buildEncountersModel(cleansedEncounters: DataFrame): Model = {
-    // Per-row transform: los_days = datediff(discharge_date, admission_date)
+    // Per-row transforms (PR-11 + PR-23 + PR-34):
+    //   - los_days = datediff(discharge_date, admission_date)
+    //   - is_readmission = 1 if (prev_admission within 30 days), else 0
+    //     (PR-34 / Q3 typed-DSL migration; lag window over patient_id
+    //     partitioned by admission_date)
+    //
+    // Per [[karpathy-app-design-mindset]] SS3.1 (Protocols before
+    // Implementations) + RFC SS3: the per-row transforms are part
+    // of the MODEL contract (the typed `readmission_count` measure
+    // references the `is_readmission` field; the
+    // `ModelValidator.validateAgainstSchema` requires it to exist
+    // in the source schema).
+    //
+    // Per [[scala-spark-batch-bugs-mindset]] SS1 (closure-safety --
+    // the user's explicit concern): the `lag` window function is
+    // built driver-side and applied once per query (no executor
+    // closure capture).
     val withLos = cleansedEncounters.withColumn(
       "los_days", datediff(col("discharge_date"), col("admission_date"))
     )
+    val withReadmission = withLos
+      .withColumn(
+        "prev_admission",
+        lag(col("admission_date"), 1)
+          .over(Window.partitionBy("patient_id").orderBy("admission_date"))
+      )
+      .withColumn(
+        "days_since_prev",
+        datediff(col("admission_date"), col("prev_admission"))
+      )
+      .withColumn(
+        "is_readmission",
+        when(col("days_since_prev") > 0 && col("days_since_prev") <= 30, lit(1))
+          .otherwise(lit(0))
+      )
     // Register the transformed DF as a temp view so the SourceRef.ByName
     // lookup in the engine can find it.
-    withLos.createOrReplaceTempView("encounters_clean_csv")
+    withReadmission.createOrReplaceTempView("encounters_clean_csv")
 
     val dimensions: List[Dimension] = List(
       Dimension.field("encounter_id", "encounter_id"),
@@ -278,6 +321,12 @@ object Refs {
       Dimension.field("department", "department"),
       Dimension.field("primary_diagnosis", "primary_diagnosis"),
       Dimension.field("discharge_status", "discharge_status"),
+      // Per PR-34 (Q3 typed-DSL migration): `is_readmission` is a
+      // per-row 0/1 flag computed by the `lag`/`datediff`/`when`
+      // enrichment above. The `readmission_count` measure references
+      // this column; `ModelValidator.validateAgainstSchema` requires
+      // it to exist in the source schema.
+      Dimension.field("is_readmission", "is_readmission"),
     )
     val measures: List[Measure] = List(
       Measure.aggregate(name = "encounter_count", fn = AggregateFn.Count, expr = Expr.Literal(LiteralValue.IntValue(1), SealedDataType.Int)),
@@ -294,6 +343,26 @@ object Refs {
           ),
           otherwise = Expr.Literal(LiteralValue.IntValue(0), SealedDataType.Int),
         ),
+      ),
+      // Per PR-34 (Q3 typed-DSL migration): `readmission_count` is
+      // the SUM of the per-row `is_readmission` flag (already 0/1
+      // from the Q3 enrichment in Q3b). This is a pure column
+      // reference (NOT a CaseWhen) -- the per-row conditional is
+      // computed once via Spark-direct `withColumn` BEFORE the
+      // typed query runs (per the Q4 los_days pattern).
+      //
+      // Per [[karpathy-app-design-mindset]] SS3.1 (Protocols before
+      // Implementations) + RFC SS3: the measure is defined at the
+      // MODEL layer (sm8-core/protocol); the spark-connector
+      // consumes it.
+      //
+      // Per [[scala-spark-batch-bugs-mindset]] SS1 (closure-safety
+      // -- the user's explicit concern): no closures cross to
+      // executors (the typed aggregate is a driver-side lowering).
+      Measure.aggregate(
+        name = "readmission_count",
+        fn = AggregateFn.Sum,
+        expr = Expr.FieldRef("is_readmission"),
       ),
     )
     // avg_los = total_los / encounter_count — pure typed expression
@@ -455,9 +524,13 @@ object Refs {
       // Per PR-26: typed Measure + typed filter + typed orderByKeys
       // + typed limit all flow through one fluent chain (per
       // ADR-008-R + the user's executor-perf priority).
-      val encountersWithLos = cleansedEncounters
-        .withColumn("los_days", datediff(col("discharge_date"), col("admission_date")))
-      encountersWithLos.createOrReplaceTempView("encounters_clean_csv")
+      //
+      // Per PR-34: the `encounters_clean_csv` temp view is
+      // registered once in `buildEncountersModel` (with all
+      // per-row enrichment: los_days, prev_admission,
+      // days_since_prev, is_readmission). The previous Q2
+      // re-registration is REMOVED -- it would have stripped
+      // the Q3 enrichment columns.
       runQuery(
         "Q2 (typed DSL): ALOS by department (typed aggregate + typed orderBy + typed limit end-to-end)",
         provider,
@@ -472,49 +545,127 @@ object Refs {
             dimensions = Seq(Refs.department.name),
           ),
       )
+      // ----- Q3: 30-day readmission rate -- PARTIAL TYPED-DSL MIGRATION (PR-34) -----
+      // Per the user's 2026-08-20 directive ("go Q3 example migration
+      // to typed DSL ... ensure follow ALL skills we have in memory,
+      // especially spark serialization concern and executor performance
+      // and RFC for categories code structure") + Option A (Partial)
+      // scope decision: the typed SDK cannot express `Lag` window
+      // functions (deferred per ADR-008-R SS"Out of scope"), HAVING on
+      // aggregates (the typed `Having[D]` ADT operates on
+      // `TypedDimension[D]`, not `TypedMeasure[M]`), or `join`/`distinct`
+      // (deferred). Q3 = Spark-direct per-row enrichment +
+      // 1 typed-DSL aggregation + Spark-direct rate computation.
+      //
+      // Per [[karpathy-app-design-mindset]] SS3.1 (Protocols before
+      // Implementations) + RFC SS3: the per-row enrichment is
+      // driver-side (Spark-direct `withColumn`); the typed
+      // aggregation is the typed end-to-end pipeline (PR-17/18/19
+      // + TypedMeasureBridge PR-26).
+      //
+      // Per [[scala-spark-batch-bugs-mindset]] SS1 (closure-safety --
+      // the user's explicit concern): the per-row `lag` window
+      // function is built driver-side and applied once per query
+      // (no executor closure capture).
+      //
+      // Per [[scala-spark-batch-bugs-mindset]] SS2 (Skew hides in
+      // the aggregate): the per-patient aggregation has no
+      // partition hint (the data is small in this example; the
+      // typed `partitionBy` hint is opt-in via the DSL).
+      Logger.info("--- Q3: 30-day readmission rate (per-patient) -- PARTIAL TYPED-DSL MIGRATION ---")
+      // Per PR-34: the per-row enrichment (prev_admission,
+      // days_since_prev, is_readmission) is computed once in
+      // `buildEncountersModel` -- the `encounters_clean_csv` temp
+      // view already has these columns. The typed Q3a aggregation
+      // reads from that view.
 
-      // ----- Q3: 30-day readmission rate (computed in Spark using window/lag) -----
-      Logger.info("--- Q3: 30-day readmission rate (per-patient) ---")
-      val withReadmission = cleansedEncounters
-        .withColumn(
-          "prev_admission",
-          lag(col("admission_date"), 1)
-            .over(Window.partitionBy("patient_id").orderBy("admission_date"))
-        )
-        .withColumn(
-          "days_since_prev",
-          datediff(col("admission_date"), col("prev_admission"))
-        )
-        .withColumn(
-          "is_readmission",
-          when(col("days_since_prev") > 0 && col("days_since_prev") <= 30, lit(1))
-            .otherwise(lit(0))
-        )
-      val multiEncounter = withReadmission
+      // ----- Q3a TYPED DSL: per-patient readmission count -----
+      // produces per-patient readmission counts via the typed
+      // `TypedAggregateCall` -> Spark `sum(col("is_readmission"))`
+      // lowering (per PR-19 wire-up).
+      // ----- Q3a TYPED DSL: per-patient readmission count -----
+      // Per PR-34: the typed `groupBy(patientId) + aggregate(readmissionCount)`
+      // produces per-patient readmission counts via the typed
+      // `TypedAggregateCall` -> Spark `sum(col("is_readmission"))`
+      // lowering (per PR-19 wire-up).
+      //
+      // Per the data-engineer review (priority 2): the typed Q3a
+      // result is REUSED in the rate computation below (NOT
+      // recomputed). The nReadm count is derived from the typed
+      // result rows directly.
+      val q3aResult = provider.query(
+        encountersModel,
+        QueryBuilderDsl.start()
+          .groupBy(Refs.patientId)
+          .aggregate(Refs.readmissionCount.toAggregateCall)
+          .orderByKeys(Refs.patientId.asc)
+          .limit(Some(100L))
+          .build(
+            model = encountersModel.name,
+            dimensions = Seq(Refs.patientId.name),
+          ),
+        EngineContext.defaultContext,
+      )
+      q3aResult match {
+        case Right(pqr) =>
+          Logger.info(s"--- Q3a (typed DSL): per-patient readmission count ---")
+          Logger.info(s"  rows: ${pqr.rows.size}")
+          pqr.rows.take(10).zipWithIndex.foreach { case (row, i) =>
+            Logger.info(s"  [$i] " + row.values.map {
+              case ResultValue.StringV(s)  => s
+              case ResultValue.IntV(n)     => n.toString
+              case ResultValue.DoubleV(d)  => d.toString
+              case ResultValue.DecimalV(d) => d.toString
+              case ResultValue.NullV       => "null"
+              case ResultValue.BoolV(b)    => b.toString
+              case other                   => other.toString
+            }.mkString(", "))
+          }
+        case Left(err) =>
+          Logger.error(s"  sm8 query FAILED: ${err.getClass.getSimpleName}: $err")
+      }
+
+      // Per [[karpathy-app-design-mindset]] SS3.1: the per-row
+      // `encounters_clean_csv` temp view is the single source of
+      // truth for the Spark-direct rate computation.
+      val enrichedEncounters = spark.table("encounters_clean_csv")
+      val perPatientEncounterCount = enrichedEncounters
         .groupBy("patient_id")
         .count()
         .filter(col("count") > 1)
-      val readmittedPatients = withReadmission
-        .filter(col("is_readmission") === 1)
-        .select("patient_id")
-        .distinct()
-        .join(multiEncounter, Seq("patient_id"))
-      val nMulti   = multiEncounter.count()
-      val nReadm   = readmittedPatients.count()
-      val rate     = if (nMulti > 0) nReadm.toDouble / nMulti.toDouble else 0.0
+      val nMulti = perPatientEncounterCount.count()
+      // count > 0. Per the data-engineer review (priority 2 SHOULD):
+      // the typed Q3a result is REUSED -- no Spark-direct
+      // recomputation of sum(is_readmission). The typed result
+      // rows are scanned for patient_ids with readmission_count > 0.
+      //
+      // Per [[scala-data-driven-refactor-mindset]] SS1 (data is
+      // data): the typed result is engine-portable; the Spark-
+      // direct join to perPatientEncounterCount would require
+      // typed `join` (deferred per ADR-008-R SS"Out of scope").
+      // For Q3's per-example scale, scanning the typed rows is
+      // sufficient and proves the typed pipeline + the rate
+      // computation share the same data.
+      //
+      // Per [[scala-bug-hunting-mindset]] SS1 (trust compiler):
+      // the typed row is `ResultValue` -- SUM produces `IntV(v: Long)`
+      // (per sm8-core ResultValue.scala:89).
+      val typedReadmittedRows: Int = q3aResult match {
+        case Right(pqr) =>
+          pqr.rows.count { row =>
+            row.values.collectFirst {
+              case ResultValue.IntV(n) if n > 0L => n
+            }.isDefined
+          }
+        case Left(_) => 0
+      }
+      val nReadm = typedReadmittedRows
+      val rate   = if (nMulti > 0) nReadm.toDouble / nMulti.toDouble else 0.0
       Logger.info(s"  patients with multiple encounters: $nMulti")
       Logger.info(s"  of which had a 30-day readmission:    $nReadm")
       Logger.info(f"  30-day readmission rate:             $rate%.2f")
 
       // ----- Q4: typed readmission candidates via the engine -----
-      // Per ADR-008-R + PR-17..PR-22: Q4 demonstrates the full
-      // typed QueryBuilderDsl pipeline, end-to-end via the
-      // spark-connector's TypedQueryCompiler:
-      //   - TypedWindow[AdmissionDate, RowNumberId] (typed window
-      //     spec: partitionBy+orderBy share the AdmissionDate
-      //     phantom, windowFn = RowNumber)
-      //   - TypedPredicate.gt[RowNumberId] (typed filter: rows
-      //     where the RowNumber > 1, i.e. the patient has been
       //     admitted more than once -- the readmission candidate
       //     set)
       //
