@@ -6,6 +6,7 @@ import io.sm8.core.engine.{
   ResultValue
 }
 import io.sm8.core.expr.{Expr, LiteralValue}
+import io.sm8.core.expr.ExprSugar._
 import io.sm8.core.model.{
   CalculatedMeasure, Dimension, FilterSpec, JoinSpec, MaterializePolicy, CachePolicy,
   AuditPolicy, Measure, Model, ModelPolicyDefaults, ModelStatus, SourceRef
@@ -331,17 +332,21 @@ object Refs {
     val measures: List[Measure] = List(
       Measure.aggregate(name = "encounter_count", fn = AggregateFn.Count, expr = Expr.Literal(LiteralValue.IntValue(1), SealedDataType.Int)),
       Measure.aggregate(name = "total_los", fn = AggregateFn.Sum, expr = Expr.FieldRef("los_days")),
+      // Per PR-35 (ADR-008-S ExprSugar): migrated from 12-line
+      // verbose Expr.Equal/Expr.FieldRef/Expr.Literal construction
+      // to 6-line sugar:
+      //   - "discharge_status".asField === "expired".asVarchar
+      //     (infix === on Expr + asField/asVarchar helpers)
+      //   - 1.asInt / 0.asInt (typed literal helpers)
+      //   - cond -> thenBranch tuple sugar for Expr.CaseWhen branches
       Measure.aggregate(
         name = "expired_count",
         fn = AggregateFn.Sum,
         expr = Expr.CaseWhen(
           branches = List(
-            Expr.Equal(
-              Expr.FieldRef("discharge_status"),
-              Expr.Literal(LiteralValue.StringValue("expired"), SealedDataType.Varchar),
-            ) -> Expr.Literal(LiteralValue.IntValue(1), SealedDataType.Int)
+            ("discharge_status".asField === "expired".asVarchar) -> 1.asInt,
           ),
-          otherwise = Expr.Literal(LiteralValue.IntValue(0), SealedDataType.Int),
+          otherwise = 0.asInt,
         ),
       ),
       // Per PR-34 (Q3 typed-DSL migration): `readmission_count` is
