@@ -583,9 +583,17 @@ object Refs {
       // produces per-patient readmission counts via the typed
       // `TypedAggregateCall` -> Spark `sum(col("is_readmission"))`
       // lowering (per PR-19 wire-up).
-      runQuery(
-        "Q3a (typed DSL): per-patient readmission count (groupBy patientId + aggregate readmissionCount)",
-        provider,
+      // ----- Q3a TYPED DSL: per-patient readmission count -----
+      // Per PR-34: the typed `groupBy(patientId) + aggregate(readmissionCount)`
+      // produces per-patient readmission counts via the typed
+      // `TypedAggregateCall` -> Spark `sum(col("is_readmission"))`
+      // lowering (per PR-19 wire-up).
+      //
+      // Per the data-engineer review (priority 2): the typed Q3a
+      // result is REUSED in the rate computation below (NOT
+      // recomputed). The nReadm count is derived from the typed
+      // result rows directly.
+      val q3aResult = provider.query(
         encountersModel,
         QueryBuilderDsl.start()
           .groupBy(Refs.patientId)
@@ -596,19 +604,28 @@ object Refs {
             model = encountersModel.name,
             dimensions = Seq(Refs.patientId.name),
           ),
+        EngineContext.defaultContext,
       )
+      q3aResult match {
+        case Right(pqr) =>
+          Logger.info(s"--- Q3a (typed DSL): per-patient readmission count ---")
+          Logger.info(s"  rows: ${pqr.rows.size}")
+          pqr.rows.take(10).zipWithIndex.foreach { case (row, i) =>
+            Logger.info(s"  [$i] " + row.values.map {
+              case ResultValue.StringV(s)  => s
+              case ResultValue.IntV(n)     => n.toString
+              case ResultValue.DoubleV(d)  => d.toString
+              case ResultValue.DecimalV(d) => d.toString
+              case ResultValue.NullV       => "null"
+              case ResultValue.BoolV(b)    => b.toString
+              case other                   => other.toString
+            }.mkString(", "))
+          }
+        case Left(err) =>
+          Logger.error(s"  sm8 query FAILED: ${err.getClass.getSimpleName}: $err")
+      }
 
-      // ----- Q3 Spark-direct rate computation -----
-      // Per [[karpathy-guidelines-mindset]] SS3 (don't hack the type
-      // system): `count > 1` is a post-aggregate filter on a measure,
-      // which the typed `Having[D]` ADT does not support (it takes
-      // `TypedDimension[D]`, not `TypedMeasure[M]`). Per ADR-008-R
-      // SS"Out of scope", HAVING-on-Measure + `join` + `distinct` are
-      // deferred to future PRs. The rate computation stays Spark-direct
-      // -- the typed Q3a aggregation is the typed-DSL contribution.
       // Per [[karpathy-app-design-mindset]] SS3.1: the per-row
-      // enrichment (los_days, prev_admission, days_since_prev,
-      // is_readmission) lives in `buildEncountersModel`; the
       // `encounters_clean_csv` temp view is the single source of
       // truth for the Spark-direct rate computation.
       val enrichedEncounters = spark.table("encounters_clean_csv")
@@ -617,26 +634,38 @@ object Refs {
         .count()
         .filter(col("count") > 1)
       val nMulti = perPatientEncounterCount.count()
-      // nReadm: count of multi-encounter patients whose readmission
-      // count > 0. Computed via a Spark-direct inner join (typed
-      // `join` is not yet on the DSL).
-      val perPatientReadmission = enrichedEncounters
-        .groupBy("patient_id")
-        .agg(sum(col("is_readmission")).as("readmission_total"))
-        .filter(col("readmission_total") > 0)
-      val readmittedMultiEncounter = perPatientReadmission
-        .join(perPatientEncounterCount, Seq("patient_id"))
-      val nReadm = readmittedMultiEncounter.count()
+      // count > 0. Per the data-engineer review (priority 2 SHOULD):
+      // the typed Q3a result is REUSED -- no Spark-direct
+      // recomputation of sum(is_readmission). The typed result
+      // rows are scanned for patient_ids with readmission_count > 0.
+      //
+      // Per [[scala-data-driven-refactor-mindset]] SS1 (data is
+      // data): the typed result is engine-portable; the Spark-
+      // direct join to perPatientEncounterCount would require
+      // typed `join` (deferred per ADR-008-R SS"Out of scope").
+      // For Q3's per-example scale, scanning the typed rows is
+      // sufficient and proves the typed pipeline + the rate
+      // computation share the same data.
+      //
+      // Per [[scala-bug-hunting-mindset]] SS1 (trust compiler):
+      // the typed row is `ResultValue` -- SUM produces `IntV(v: Long)`
+      // (per sm8-core ResultValue.scala:89).
+      val typedReadmittedRows: Int = q3aResult match {
+        case Right(pqr) =>
+          pqr.rows.count { row =>
+            row.values.collectFirst {
+              case ResultValue.IntV(n) if n > 0L => n
+            }.isDefined
+          }
+        case Left(_) => 0
+      }
+      val nReadm = typedReadmittedRows
       val rate   = if (nMulti > 0) nReadm.toDouble / nMulti.toDouble else 0.0
       Logger.info(s"  patients with multiple encounters: $nMulti")
       Logger.info(s"  of which had a 30-day readmission:    $nReadm")
       Logger.info(f"  30-day readmission rate:             $rate%.2f")
-      // Per ADR-008-R + PR-17..PR-22: Q4 demonstrates the full
-      //   - TypedWindow[AdmissionDate, RowNumberId] (typed window
-      //     spec: partitionBy+orderBy share the AdmissionDate
-      //     phantom, windowFn = RowNumber)
-      //   - TypedPredicate.gt[RowNumberId] (typed filter: rows
-      //     where the RowNumber > 1, i.e. the patient has been
+
+      // ----- Q4: typed readmission candidates via the engine -----
       //     admitted more than once -- the readmission candidate
       //     set)
       //
