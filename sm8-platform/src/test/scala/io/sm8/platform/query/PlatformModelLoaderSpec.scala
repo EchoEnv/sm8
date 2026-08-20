@@ -177,6 +177,55 @@ class PlatformModelLoaderSpec extends AnyFunSuite with Matchers {
       case m: PlatformModelError.SchemaValidation => m.coreError
       case _ => fail(s"expected SchemaValidation, got $err")
     }
-    inner.message should include ("name")
+  inner.message should include ("name")
+  }
+  // -- ADR-008-Y v1.1: typed-IO boundary regression tests --
+
+  test("PlatformModelLoader.fromPath: PathIsADirectory returns Left(ParseFailure) (IOException arm)") {
+    val dir = Files.createTempDirectory("sm8-model-dir-")
+    try {
+      val out = PlatformModelLoader.fromPath(dir)
+      out.left.get shouldBe a [PlatformModelError.ParseFailure]
+      out.left.get.message should include ("IO error")
+    } finally {
+      Files.deleteIfExists(dir)
+    }
+  }
+
+  test("PlatformModelLoader.fromPath: permission denied returns Left(InvalidYaml) (POSIX only)") {
+    val tmp = Files.createTempFile("sm8-model-", ".yml")
+    Files.write(tmp, "name: x\nversion: 1\nsource:\n  byName:\n    table: t\n".getBytes(StandardCharsets.UTF_8))
+    try {
+      assume(
+        Files.getFileAttributeView(tmp, classOf[java.nio.file.attribute.PosixFileAttributeView]) != null,
+        "POSIX file attributes required for this test"
+      )
+      try {
+        Files.setPosixFilePermissions(tmp, java.util.Set.of())
+      } catch {
+        case _: UnsupportedOperationException => cancel("POSIX setPosixFilePermissions not supported")
+      }
+      val out = PlatformModelLoader.fromPath(tmp)
+      out.left.get shouldBe a [PlatformModelError.InvalidYaml]
+    } finally {
+      try {
+        Files.setPosixFilePermissions(tmp, java.util.Set.of(
+          java.nio.file.attribute.PosixFilePermission.OWNER_READ,
+          java.nio.file.attribute.PosixFilePermission.OWNER_WRITE
+        ))
+      } catch { case _: Throwable => () }
+      Files.deleteIfExists(tmp)
+    }
+  }
+
+  test("PlatformModelLoader.fromPath: empty file returns Left(SchemaValidation)") {
+    val tmp = Files.createTempFile("sm8-model-", ".yml")
+    Files.write(tmp, Array.emptyByteArray)
+    try {
+      val out = PlatformModelLoader.fromPath(tmp)
+      out.left.get shouldBe a [PlatformModelError.SchemaValidation]
+    } finally {
+      Files.deleteIfExists(tmp)
+    }
   }
 }
