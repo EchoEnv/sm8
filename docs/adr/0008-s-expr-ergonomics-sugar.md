@@ -3,8 +3,9 @@
 **Status:** Proposed (DRAFT for subagent review). **Date:** 2026-08-20. **Author:** SM8 agent (PR-35 follow-up to PR-29 TypedPredicateFilterOps + the user's 2026-08-20 ergonomics directive).
 
 > **Revision history**
-> - **v1 (2026-08-20, this revision)**: initial design; scope = sugar over EXISTING `Expr` ADT cases only. NO new ADT cases, NO engine-portability changes. 1-PR atomic.
-> - **v1.1 (2026-08-20)**: applied subagent dual-review fixes — (MUST) `LongLit.asLong` uses `LiteralValue.LongValue` (not `IntValue`) per data-eng; (SHOULD) `expired_count` after-state uses `Expr.FieldRef` (not `Refs.*` phantom witness); (SHOULD) closure-safety test names use canonical `closure-safety: <clause>` prefix; (SHOULD) out-of-scope mandates future `Expr` ADT extensions extend `ExprSugarClosureSafetySpec`; (MUST) `debug-mantra` 5-step section added; (SHOULD) `scala-spark-streaming-bugs-mindset` forward-looking added; (SHOULD) `scala-chaos-testing-mindset` §2 (silence is a symptom) added; (SHOULD) rollback under-count fixed; (NIT) PR-29 sibling reference corrected.
+> - **v1 (2026-08-20)**: initial design; scope = sugar over EXISTING `Expr` ADT cases only. NO new ADT cases, NO engine-portability changes. 1-PR atomic.
+> - **v1.1 (2026-08-20)**: applied subagent dual-review fixes — (MUST) `LongLit.asLong` uses `LiteralValue.LongValue`; (SHOULD) `expired_count` after-state uses `Expr.FieldRef`; (SHOULD) closure-safety test names use canonical `closure-safety: <clause>` prefix; (SHOULD) out-of-scope mandates future `Expr` ADT extensions extend `ExprSugarClosureSafetySpec`; (MUST) `debug-mantra` 5-step section; (SHOULD) `scala-spark-streaming-bugs-mindset` forward-looking; (SHOULD) `scala-chaos-testing-mindset` §2; (SHOULD) rollback under-count fixed; (NIT) PR-29 sibling reference corrected.
+> - **v1.2 (2026-08-20)**: applied subagent RE-REVIEW fixes — (MUST) `BoolLit.asBool` uses `LiteralValue.BoolValue` (not `BooleanValue` -- actual constructor per `LiteralValue.scala:116`); (SHOULD) out-of-scope mandate paragraph properly placed (v1.1 had the heading but lost the body text on edit); (NIT) `ExprTuple` comment explains WHY it shadows `Any.->` (silences Scala 2.13.18+ deprecation warning on `Any.->`).
 
 ## Context and Problem Statement
 
@@ -135,10 +136,14 @@ object ExprSugar {
   implicit class DoubleLit(val d: Double) extends AnyVal {
     def asDouble: Expr = Expr.Literal(
       LiteralValue.DoubleValue(d), SealedDataType.Double)
-  }
   implicit class BoolLit(val b: Boolean) extends AnyVal {
+    // Per architect re-review (MUST): LiteralValue.BooleanValue does
+    // NOT exist. The actual constructor is BoolValue(v: Boolean)
+    // (per LiteralValue.scala:116). Pairing BoolValue with
+    // SealedDataType.Boolean produces a runtime-value-tag /
+    // declared-portable-type match (both Boolean).
     def asBool: Expr = Expr.Literal(
-      LiteralValue.BooleanValue(b), SealedDataType.Boolean)
+      LiteralValue.BoolValue(b), SealedDataType.Boolean)
   }
 
   // ---- FieldRef helper ----
@@ -148,8 +153,17 @@ object ExprSugar {
 
   // ---- CaseWhen tuple sugar ----
   // `cond -> thenBranch` parses as `cond.->(thenBranch)`, which
-  // returns `(cond, thenBranch)`. The implicit conversion gives
-  // it the right type for `List((Expr, Expr))`.
+  // returns `(cond, thenBranch)`.
+  //
+  // Per data-eng re-review (NIT): Scala 2.13's `Any.->` returns
+  // `(A, B)` for any A and B -- so this implicit class APPEARS
+  // redundant. However, `Any.->` is **deprecated** in Scala
+  // 2.13.18+ (emits a deprecation warning at every call site
+  // when used with non-AnyVal receivers). The `ExprTuple`
+  // implicit class provides a NON-deprecated `->` overload
+  // specific to `Expr -> Expr` tuples -- the standard Scala
+  // idiom for case-when branch construction (matches PR-29's
+  // `TypedPredicateFilterOps` infix ergonomics).
   implicit class ExprTuple(val cond: Expr) extends AnyVal {
     def ->(thenBranch: Expr): (Expr, Expr) = (cond, thenBranch)
   }
@@ -291,14 +305,18 @@ Success criterion: `examples/hospital-cleaning/Main.scala` `expired_count` measu
 ### `scala-spark-streaming-bugs-mindset` (forward-looking, per architect review SHOULD)
 Sugar-built Expr inherits streaming-safety from the existing Expr case-class Serializable contract. The sugar adds NO new state (every method returns the same case class); no `StreamingStateStore` concern arises at the Expr layer. A future PR-36 that consumes `ExprSugar` inside a Structured Streaming job need only re-prove the closure-safety spec at the Expr layer; the sugar itself is structurally streaming-safe.
 
-### `scala-chaos-testing-mindset` §2 (silence is a symptom, per architect review SHOULD)
-Silence is a symptom — the 3rd closure-safety test (documented failure mode -- method-local Expr + non-Serializable enclosing local throws NSE) makes the failure **fail-loud**. The alternative (a silent regression of the object-level Serializable rule) would surface only at a Spark UDF capture site in production. The test name + comment point to the fix (define the Expr at `object` level), making the failure observable + actionable.
-
 ## Out of scope (deferred to future PRs if a real need arises)
+
+Per architect + data-eng re-reviews (SHOULD): **any future PR adding new `Expr` ADT cases** (e.g. `In`, `Contains`, `StartsWith`, `EndsWith`, `NotIn`, `Like`) **MUST extend `ExprSugarClosureSafetySpec` with a 3-test block** in the PR-16/17/20/25 pattern (positive round-trip + Spark UDF closure-safe + documented failure mode -- non-Serializable enclosing local throws NotSerializableException). This preserves the user's explicit "no spark serialize issue" guarantee at the Expr layer as the ADT evolves.
+
+Deferred items:
 
 - New `Expr` ADT cases: `In`, `NotIn`, `Contains`, `StartsWith`, `EndsWith`, `Like`. **Deferred.** PR-29's `TypedPredicateFilterOps` already covers these at the QUERY layer.
 - New `Expr.FunctionCall` registry for engine-specific functions (e.g. `Spark` `date_format`). **Deferred** — current `FunctionCall(name, args)` is sufficient.
 - Sugar on `LiteralValue` constructors (e.g. `LiteralValue.of(...)` infix). **Deferred** — sugar on `Expr` is the priority.
+
+## Migration cost
+
 - **Source code**: ~80 LOC new (sugar) + ~120 LOC new (closure-safety spec) + ~30 LOC modified (example migration).
 - **Test code**: ~10 new tests (~3 closure-safety + ~7 ergonomics round-trip).
 - **Backwards compatibility**: ZERO breaking changes. Sugar is opt-in via `import io.sm8.core.expr.ExprSugar._`.
