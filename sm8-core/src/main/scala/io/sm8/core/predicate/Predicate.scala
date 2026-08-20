@@ -1,21 +1,14 @@
 /*
  * SM8 Core -- Predicate AST.
- *
  * Engine-portable filter AST. Sealed trait + case classes per
  * [[scala-data-driven-refactor-mindset]]. Smart constructor for
  * smart And/Or builders (per [[karpathy-guidelinesmindset]]).
- *
- * Per [[scala-impact-analysismindset]]: ADDITIVE. No SDK type
- * changes. PR-B handlers consume this.
- *
- * Per [[karpathy-app-designmindset]] SS3.1 (Protocols before
- * Implementations): this is the filter protocol in core (sm8-core).
- * The connector (sm8-connector) consumes it. The PR-29 ergonomic
+ *  * changes. the adapter consumes this.
+ *  * Implementations): this is the filter protocol in core (sm8-core).
+ * The connector (sm8-connector) consumes it. The the current implementation ergonomic
  * sugar (typed factories + implicit-class extension) lives in
  * `sm8-core/rel/TypedPredicate.scala` -- the AST stays pure.
- *
- * Per [[karpathy-spark-batch-bugs-mindset]] SS1 (closure-safety --
- * the user's explicit priority): the AST is pure data (case classes
+ *  * the user's explicit priority): the AST is pure data (case classes
  * + sealed traits) -- no captured non-Serializable state. Safe to
  * capture in any Spark UDF closure.
  */
@@ -110,16 +103,13 @@ object Predicate {
   }
 
   /**
-   * PR-29 (ADR-008-R SSfilterPushdown ergonomics): string-match
-   * predicate. Per [[scala-data-driven-refactor-mindset]] SS3
-   * (sealed over Map): a sealed trait + case objects (mirrors the
+   * the current implementation (the design contract SSfilterPushdown ergonomics): string-match
+   * predicate.    * (sealed over Map): a sealed trait + case objects (mirrors the
    * existing `CompareOp` ADT pattern). The pattern is NOT a regex
    * (per [[karpathy-data-driven-refactor-mindset]] SS2: simple,
    * predictable). Spark's `Column.startsWith/contains/endsWith` is
    * the lowering target.
-   *
-   * Per [[karpathy-impact-analysismindset]] SS3 (binary compat):
-   * ADDITIVE only -- existing match sites don't need to handle
+   *    * ADDITIVE only -- existing match sites don't need to handle
    * the new case (Scala 2.13 sealed-trait matches warn but don't
    * break).
    */
@@ -145,7 +135,7 @@ object CompareOp {
   case object Ge  extends CompareOp { override def toString = ">=" }
 }
 
-/** PR-29: string-match operator enum (sealed trait + case objects per
+/** the current implementation: string-match operator enum (sealed trait + case objects per
   * [[scala-data-driven-refactor-mindset]]; Scala 2.13 idiom). The 3
   * cases mirror Spark's `Column.startsWith/contains/endsWith` API
   * (the lowering target). */

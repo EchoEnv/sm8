@@ -1,39 +1,31 @@
 /*
  * SM8 Core — SealedDataType ADT.
- *
  * Engine-portable sealed ADT for primitive + nested types.
  * Closed set per [[scala-data-driven-refactor-mindset]] (sealed
  * trait + case objects / case classes; Scala 2.13 idiom; NOT
  * Scala 3 `enum`).
- *
- * Per [[karpathy-guidelinesmindset]] (smallest correct core +
- * match existing style): 13 cases covering SQL primitives +
+ *  * match existing style): 13 cases covering SQL primitives +
  * temporal + decimal + nested + JSON + binary. Mirrors the legacy
- * `semanticdf-core` design doc §4.5.2 "Portable types" (Phase 2
+ * the engine-portable types spec
  * contract preserved verbatim — package rename only, no behavior
- * change). The `Binary` case was added in PR-C5b-ext-β (review
+ * change). A `Binary` case was added (review
  * pass #2, finding #2) to support end-to-end `ResultValue.BinaryV`
  * round-trip through the cache journal.
- *
- * Per [[scala-impact-analysis-mindset]]: ADDITIVE to sm8-core.
- * No SDK type changes (Plugin, Connector, PreHook, PostHook,
+ *  * No SDK type changes (Plugin, Connector, PreHook, PostHook,
  * Transformer, Context, Engine, ConnectorRegistry, HookManager,
- * TransformerRegistry all untouched). PR-C1 (sm8-platform
+ * TransformerRegistry all untouched). The sm8-platform
  * bootstrap + `sealedTypeTag` restructure) and later
- * engine-portable path PRs (PR-C2+) consume this.
+ * engine-portable adapters consume this.
  */
 package io.sm8.core.schema
 
 /** Engine-portable sealed ADT for primitive + nested types —
-  * Phase 2 contract. Mirrors the design doc §4.5.2 "Portable types".
-  *
+  * the engine-portable contract. Mirrors the design doc §4.5.2 "Portable types".
   * Every type that flows through the portable model, the MCP wire
   * format, or any engine adapter is one of the cases here. Engine
   * adapters map each case to their native type (Spark `DataType`,
   * Trino `Type`, Databricks `DataType`, etc.).
-  *
   * ==Why a sealed ADT (not a String)==
-  *
   * Per the design doc §0 correction 2: "Capabilities describe what
   * an engine supports; policies describe what this query asks the
   * engine to do." Similarly, types describe the data shape. A free-
@@ -41,9 +33,7 @@ package io.sm8.core.schema
   * that the model validator, type checker, and engine resolvers
   * couldn't classify. A closed ADT forces every component to handle
   * the closed set of types.
-  *
   * ==Why these specific cases==
-  *
   * The set covers the common SQL primitive + nested types:
   *   - **Primitives** (5): BigInt, Int, Double, Varchar, Boolean
   *   - **Temporal** (2): Timestamp, Date
@@ -51,39 +41,29 @@ package io.sm8.core.schema
   *   - **Nested** (3): Array(elementType), Map(keyType, valueType),
   *     Row(fields)
   *   - **Special** (1): Json (JSON string)
-  *
   * The design's "v0.3.0 phantom-ADT finding" removed a few
   * speculative cases (Interval, Uuid, etc.) — those land via the
   * ExtensionValue mechanism instead.
-  *
   * ==Why core (engine-portable)==
-  *
   * Types are universal across query engines. The engine adapter
   * maps each case to its native type. Per scala-data-driven-refactor,
   * data (types) lives in core; behavior (engine-specific mapping)
   * lives in the engine adapter layer.
-  *
   * ==Data-driven mantra compliance==
-  *
   * - Pure data: sealed trait + case classes / case objects (no behavior)
   * - Equality auto-derived (case classes)
   * - `Product with Serializable` for Java-serialization round-trip
   * - Each case carries only the data needed to identify the type
-  *
   * ==Boundary contract==
-  *
   * Zero Spark imports. Verifiable by:
   * `grep -r 'org.apache.spark' sm8-core/src/main/scala/io/sm8/core/schema/SealedDataType.scala`
-  *
   * ==Reserved future cases (NOT in v0.3.0)==
-  *
   * Per design §11, the following are deliberately deferred:
   *   - `Decimal(precision, scale)` `Infinity` / `NaN` sub-cases
   *     (Trino decimal-overflow path; not portable yet)
   *   - `Uuid` (represented as `Varchar` for portability)
   *   - `Interval(startType, endType)` (removed per v0.2.x
   *     phantom-ADT finding; not portable across engines)
-  *
   * `Null` is NOT a type — it's a value-level concept handled by
   * `Field.nullable: Boolean` and the `ResultValue.Null` ADT case
   * (added in v0.3.0). The design's rule "empty string is not null;
@@ -169,7 +149,7 @@ object SealedDataType {
     * `VARBINARY`, Databricks' `BINARY`. The engine-portable wire
     * format (`RestateCachedRow.T_BINARY`) encodes the bytes as
     * Base64; `ResultValue.BinaryV` carries the raw `Array[Byte]`.
-    * Added in PR-C5b-ext-β (review pass #2 finding #2) to support
+    * Added for binary widening support (review pass #2 finding #2) to support
     * end-to-end binary columns through the cache journal. */
   case object Binary extends SealedDataType
 }

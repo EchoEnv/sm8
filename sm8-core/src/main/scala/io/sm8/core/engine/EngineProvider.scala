@@ -2,42 +2,33 @@ package io.sm8.core.engine
 
 import io.sm8.core.model.Model
 
-/** Engine-portable engine-provider trait — Phase 2 contract.
+/** Engine-portable engine-provider trait — the engine-portable contract.
   * Mirrors the design doc §6.4 "EngineProvider".
-  *
   * ==Why a trait (not a concrete class)==
-  *
   * Per scala-data-driven-refactor \u00a71: data in core, behavior in
   * adapters. The PROVIDER trait is the data shape (the contract
   * MCP needs); the IMPLEMENTATIONS (SparkEngineProvider,
   * TrinoEngineProvider) are the engine-specific behavior. The trait
   * lives in core; the implementations live in each engine adapter.
-  *
   * ==Why `available: Boolean` (not just `identity: EngineIdentity`)==
-  *
   * Per the design's `EngineRegistry`: "the registry's `select`
   * filters availability". A provider can be registered but
   * unavailable (e.g. Spark Connect URL not configured; Trino cluster
   * not reachable). `available` is a runtime check, not a config
   * check.
-  *
   * ==Why `query` returns `Either[EngineError, PortableQueryResult]`==
-  *
   * Per the design \u00a76.4: every engine adapter's execute shape.
   * MCP consumers get a uniform `PortableQueryResult` shape (from PR
   * #400). `Either[EngineError, ...]` lets the registry surface typed
   * errors uniformly \u2014 not exceptions.
-  *
   * ==Why `model: Model` (not `SemanticTable`)==
-  *
   * The MCP is engine-portable. The `Model` is the engine-portable
   * shape (from core). The `SemanticTable` is the Spark-specific
   * shape (from the spark adapter). The provider receives a `Model`
   * and translates it to its engine's native shape internally.
-  *
   * Extends `Serializable` so that `EngineRegistry` (which stores
   * `Map[String, EngineProvider]`) can be safely serialized for
-  * `Restate.run` journal capture (PR-C5b-extension). Concrete
+  * `Restate.run` journal capture (forward-looking). Concrete
   * providers must therefore be Serializable themselves — enforced
   * at compile time by this trait. */
 trait EngineProvider extends Serializable {
@@ -50,8 +41,7 @@ trait EngineProvider extends Serializable {
     * configured AND can serve queries right now. */
   def available: Boolean
 
-  /** Lifecycle hook for resource cleanup at shutdown. PR-O4a
-    * (ADR-008-O): the sm8-server runtime installs this in a
+  /** Lifecycle hook for resource cleanup at shutdown. the current implementation: the sm8-server runtime installs this in a
     * `sys.addShutdownHook` so realized SparkSessions stop on exit.
     * The default is a no-op (in-memory connectors have nothing to
     * release). Safe to call multiple times.
@@ -61,7 +51,6 @@ trait EngineProvider extends Serializable {
   /** Execute a query against this engine. Returns the
     * engine-portable `PortableQueryResult` (not the engine-native
     * shape).
-    *
     * @param model    the portable model to query
     * @param request  the MCP query request shape (dimensions,
     *                 measures, where, having, orderBy, limit, etc.)
@@ -84,9 +73,7 @@ trait EngineProvider extends Serializable {
       ctx:     EngineContext,
   ): Either[EngineError, String]
 
-  /** Typed URL realization (added 2026-08-15, PR-B per ADR-006
-    * Post-#65 Refinement + RFC `adapters.md` Rule 4).
-    *
+  /** Typed URL realization (added 2026-08-15 (typed URL realization per RFC `adapters.md` Rule 4)).
     * A connector that supports URL-based connection (Spark master
     * URL, Trino JDBC URL, DuckDB path, HTTP endpoint, etc.)
     * implements this method to build its concrete client/session
@@ -94,16 +81,13 @@ trait EngineProvider extends Serializable {
     * method — it does NOT reflect over the class to find a
     * `(String)` ctor. Per-connector `realize()` validates its own
     * URL grammar; the deployment module does NOT validate.
-    *
     * Default: `None` — this provider does not support URL-based
     * realization (e.g. an embedded/test provider). The deployment
     * keeps the stub as-is; `wire()` fails loud if no available
     * provider remains.
-    *
     * Per RFC §3: the connector is the ONLY piece that knows about
     * connection strings, drivers, or sessions. The platform and
     * the deployment module hold only the string.
-    *
     * @param url the connection URL (e.g. `spark://host:7077`,
     *            `spark-connect://host:15002`, `local[*]`,
     *            `jdbc:trino://host:8080`)
@@ -117,9 +101,7 @@ trait EngineProvider extends Serializable {
 /** Engine-portable query-request shape. The shape is
   * engine-portable (no Spark, no Trino types). The provider
   * translates to its engine's native shape.
-  *
   * ==Why no `where` / `having` / `orderBy` for v1==
-  *
   * The `core.predicate.Predicate` and `predicate.Predicate`
   * (spark-adapter) are TWO different types per the v0.3.0
   * DE review (Predicate type duplication). The MCP server
@@ -130,14 +112,11 @@ trait EngineProvider extends Serializable {
   * the legacy path. A future PR aligns the predicate types
   * (per the design's "Predicate consolidation" plan in
   * design §6.2).
-  *
   * ==Why v0.3.2 adds `where` (raw SQL)==
-  *
   * The Platform's `QueryService` (PR #443's design doc) needs
   * to pass a raw-SQL `where` from its wire DTO through the
-  * engine registry. v0.3.2 Phase 1 introduces this field as
+  * engine registry. the current implementation introduces this field as
   * an engine-specific raw filter:
-  *
   *   - Spark: applies via `df.filter(where)`.
   *   - Other engines (Trino / DuckDB / PG / Hera / UC / HMS):
   *     may convert raw SQL to their native syntax, apply as-is
@@ -146,12 +125,10 @@ trait EngineProvider extends Serializable {
   *     deliberately named `where` to match the platform's
   *     wire DTO; it is NOT promoted to a fully-portable
   *     typed `FilterSpec` yet (that's deferred to a follow-up
-  *     PR per the design doc).
-  *
+  *     the design contract).
   * ==Semantic caveat==
-  *
   * Adding raw SQL to an otherwise-typed request shape is a
-  * pragmatic compromise for Phase 1. The long-term shape
+  * pragmatic compromise for the current implementation. The long-term shape
   * (typed FilterSpec) is documented as future work in
   * `docs/design/v0.3.2-platform-core-model-design.md` §6. */
 final case class QueryRequest(
@@ -177,36 +154,33 @@ final case class QueryRequest(
       * unsupported filter shapes surface as typed
       * EngineError.UnsupportedCapability. */
     filters:    List[io.sm8.core.model.FilterSpec] = Nil,
-    /** PR-18 (ADR-008-R §PR-18): typed aggregate measures. The
+    /** the current implementation (the design contract current implementation): typed aggregate measures. The
       * phantom `[Nothing]` is the "top" phantom (per the typed
       * at the consumer's `object Refs { ... }` site. The phantom
       * `Nothing` is `extends Nothing` (the bottom type) so any
       * typed measure `TypedAggregateCall[M]` is a subtype of
       * `TypedAggregateCall[Nothing]` — variance-safe per
       * scala-bug-huntingmindset §1.
-      *
       * Per karpathy-guidelines §3 (surgical): default = Nil (no
       * behavior change for existing 19 callers). */
     aggregateMeasures: Seq[io.sm8.core.rel.TypedAggregateCall[Nothing]] = Nil,
-    /** PR-18: typed having predicates (per ADR-008-R). */
+    /** the current implementation: typed having predicates (per the design contract). */
     having:        Seq[io.sm8.core.rel.Having[Nothing]]              = Nil,
-    /** PR-18: typed partition hints (best-effort; AQE may override
+    /** the current implementation: typed partition hints (best-effort; AQE may override
       * per scala-spark-batch-bugs §2). */
     partitionBy:   Seq[io.sm8.core.rel.PartitionBy[Nothing]]        = Nil,
-    /** PR-18: typed window specs (rank-only minimal; ADR-008-R). */
+    /** the current implementation: typed window specs (rank-only minimal; the design contract). */
     window:        Seq[io.sm8.core.rel.TypedWindow[Nothing, Nothing]] = Nil,
-    /** PR-18: typed order-by columns (used by window + sort). */
+    /** the current implementation: typed order-by columns (used by window + sort). */
     orderBy:           Seq[io.sm8.core.model.TypedDimension[Nothing]]     = Nil,
-    /** PR-20 (ADR-008-R §PR-20): typed predicate filters (DSL
+    /** the current implementation (the design contract current implementation): typed predicate filters (DSL
       * shape -- parallels `where: Option[String]` raw SQL filter).
-      *
       * Per scala-impact-analysismindset §3 (binary compat): the
       * existing `filters: List[FilterSpec]` field (line 179) is the
       * legacy `Model.filters` shape (consumed by
       * `PortableQueryCompiler.applyFilters`); this NEW field is the
       * typed-DSL shape (consumed by `TypedQueryCompiler`). Both
       * default to Nil (zero behavior change for 19 callers).
-      *
       * Per karpathy-guidelines §3 (surgical): default = Nil. */
     whereFilters:      Seq[io.sm8.core.rel.TypedPredicate[Nothing]]    = Nil,
     sortDirections:   Seq[io.sm8.core.rel.SortDirection]              = Nil,
