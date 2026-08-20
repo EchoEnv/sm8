@@ -4,7 +4,7 @@
  * Updated for PR #36's lifecycle contract: the plugin now takes a
  * PersistLevel (engine-portable marker) constructor arg, and
  * registers BOTH the PreExecute persist + PostExecute unpersist
- * hooks. The pair is the scala-jvm-safety-mindset mantra #3
+ * hooks. The pair is the  mantra #3
  * contract - a regression that registers only one half breaks the
  * materialize lifecycle.
  */

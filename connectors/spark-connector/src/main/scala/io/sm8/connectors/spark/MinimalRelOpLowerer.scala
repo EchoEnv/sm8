@@ -32,7 +32,7 @@
  * Connector-side. The lowerer knows about spark.table, spark.read,
  * StructField, and Column -- those are engine-specific. The core
  * IR (RelOp, Expr, etc.) is engine-portable and lives in
- * sm8-core/.../rel/ + sm8-core/.../expr/. The boundary is the
+ * sm8-core/./rel/ + sm8-core/./expr/. The boundary is the
  * Input/Output types of the lower method: RelOp (in), DataFrame
  * (out), EngineContext (in).
  *
@@ -41,7 +41,7 @@
  * Per the per-node contract from the `rel/` ADT (PR-H):
  * - Scan: read the source via spark.table / spark.read.
  * - Filter: df.filter(expr).
- * - Project: df.select((expr, alias),...).
+ * - Project: df.select((expr, alias),.).
  * - Aggregate: applyAggregations via synthesised Model +
  *  applyAggregations. The "synthesised Model" is the GAP-5
  *  fallback (per the existing compileRelOpAggregate comment);
@@ -83,9 +83,7 @@ final class MinimalRelOpLowerer(
  val spark: SparkSession,
  val pc:  PortableQueryCompiler,
  val identity: EngineIdentity = EngineIdentity(
-  name = "spark-3.5", nativeVersion = "3.5", engineAdapterVersion = "0.1.0",
- ),
-) extends java.io.Serializable {
+  name = "spark-3.5", nativeVersion = "3.5", engineAdapterVersion = "0.1.0")) extends java.io.Serializable {
 
  // PR-M5: the single source of truth for RelOp -> DataFrame lowering.
  // Per-node methods below. `lower` is a thin delegator.
@@ -104,7 +102,7 @@ final class MinimalRelOpLowerer(
  // overload of `lower` that accepts a pre-filtered source DataFrame
  // from `SparkSourceResolver.resolveWithPushdown`. When the RelOp
  // tree starts with `RelOp.Scan`, the pre-filtered DF is used
- // INSTEAD of calling `spark.table(...) / spark.read...load(...)`
+ // INSTEAD of calling `spark.table(.) / spark.read.load(.)`
  // again -- the source-resolution has already been performed by
  // the resolver, AND the predicate has been pushed at the source.
  //
@@ -114,8 +112,7 @@ final class MinimalRelOpLowerer(
  def lower(
   relOp:   RelOp,
   ctx:   EngineContext,
-  preFilteredDf: Option[org.apache.spark.sql.DataFrame],
- ): Either[EngineError, DataFrame] =
+  preFilteredDf: Option[org.apache.spark.sql.DataFrame]): Either[EngineError, DataFrame] =
  relOp match {
   case scan: RelOp.Scan  => lowerScan(scan, preFilteredDf)
   case f: RelOp.Filter => lowerFilter(f, ctx, preFilteredDf)
@@ -132,7 +129,7 @@ final class MinimalRelOpLowerer(
  * Mirrors the legacy resolveSource() but typed for the IR path.
  *
  * The schema comes from the ACTUAL `df.schema` -- per
- * scala-spark-batch-bugs-mindset mantra #3 (schema-drift verify
+ *  mantra #3 (schema-drift verify
  * at the boundary). No caller-supplied "expected" schema. */
  def lowerScan(scan: RelOp.Scan): Either[EngineError, DataFrame] =
  lowerScan(scan, None)
@@ -149,8 +146,7 @@ final class MinimalRelOpLowerer(
  // spark.read path.
  def lowerScan(
   scan:   RelOp.Scan,
-  preFilteredDf: Option[org.apache.spark.sql.DataFrame],
- ): Either[EngineError, DataFrame] = {
+  preFilteredDf: Option[org.apache.spark.sql.DataFrame]): Either[EngineError, DataFrame] = {
  // PR-O1e (ADR-008-O, P0-3): column pruning via scan.projection.
  // (partition-pruning + projection-pushdown): without this,
  // every query reads ALL columns of the table (every partition),
@@ -167,8 +163,8 @@ final class MinimalRelOpLowerer(
  // `Either[EngineError, DataFrame]`; the projection is applied via
  //.map which short-circuits the Left side.
  // PR-2/B2 (ADR-008-P §B2): narrow the 3 `case _: Exception` catches in lowerScan
- // to the specific Spark exceptions that `spark.table(...)` and
- // `spark.read...load(...)` raise when the source is not found / not readable.
+ // to the specific Spark exceptions that `spark.table(.)` and
+ // `spark.read.load(.)` raise when the source is not found / not readable.
  // catching broad `Exception` would also absorb `OutOfMemoryError`,
  // `StackOverflowError`, `SparkException` from a corrupt catalog -- all
  // of which indicate real Spark executor state problems operators need
@@ -187,12 +183,11 @@ final class MinimalRelOpLowerer(
   // The source-resolution + source-level filter have already
   // been applied by `SparkSourceResolver.resolveWithPushdown`.
   // We do NOT re-read the source -- that would defeat the
-  // pushdown (per scala-spark-batch-bugs-mindset mantra #6:
-  // partition-pruning + projection-pushdown).
+  // pushdown.
   Right(df)
   case None =>
   // No pre-filtered DF -- fall back to the original path
-  // (spark.table / spark.read / spark.read.format...).
+  // (spark.table / spark.read / spark.read.format.).
   // Per scala-impact-analysis-mindset SS3: zero behavior
   // change for callers that don't use resolveWithPushdown.
   scan.sourceRef match {
@@ -246,8 +241,7 @@ final class MinimalRelOpLowerer(
  def lowerFilter(
   f:    RelOp.Filter,
   ctx:   EngineContext,
-  preFilteredDf: Option[org.apache.spark.sql.DataFrame],
- ): Either[EngineError, DataFrame] =
+  preFilteredDf: Option[org.apache.spark.sql.DataFrame]): Either[EngineError, DataFrame] =
  for {
   child <- lower(f.input, ctx, preFilteredDf)
   pred <- PortableExprCompiler.toColumn(f.predicate)
@@ -264,8 +258,7 @@ final class MinimalRelOpLowerer(
  def lowerProject(
   p:    RelOp.Project,
   ctx:   EngineContext,
-  preFilteredDf: Option[org.apache.spark.sql.DataFrame],
- ): Either[EngineError, DataFrame] =
+  preFilteredDf: Option[org.apache.spark.sql.DataFrame]): Either[EngineError, DataFrame] =
  for {
   child <- lower(p.input, ctx, preFilteredDf)
   cols <- p.expressions.foldLeft[Either[EngineError, List[Column]]](Right(Nil)) {
@@ -286,8 +279,7 @@ final class MinimalRelOpLowerer(
  def lowerSort(
   s:    RelOp.Sort,
   ctx:   EngineContext,
-  preFilteredDf: Option[org.apache.spark.sql.DataFrame],
- ): Either[EngineError, DataFrame] =
+  preFilteredDf: Option[org.apache.spark.sql.DataFrame]): Either[EngineError, DataFrame] =
  lower(s.input, ctx, preFilteredDf).map { df =>
   if (s.keys.isEmpty) df
   else {
@@ -325,8 +317,7 @@ final class MinimalRelOpLowerer(
  def lowerLimit(
   l:    RelOp.Limit,
   ctx:   EngineContext,
-  preFilteredDf: Option[org.apache.spark.sql.DataFrame],
- ): Either[EngineError, DataFrame] =
+  preFilteredDf: Option[org.apache.spark.sql.DataFrame]): Either[EngineError, DataFrame] =
  lower(l.input, ctx, preFilteredDf).map { df =>
   if (l.count == Long.MaxValue) df
   else df.limit(l.count.toInt).offset(l.offset.toInt)
@@ -340,7 +331,7 @@ final class MinimalRelOpLowerer(
  /** PR-N3: direct Aggregate -> DataFrame lowering. The previous
  * path synthesised a Model + re-resolved the source + called
  * `pc.applyAggregations` -- three indirections for what Spark
- * already supports natively as `df.groupBy(...).agg(...)`. This
+ * already supports natively as `df.groupBy(.).agg(.)`. This
  * path uses the IR's groupBy + aggregates directly and renders
  * the aggregate columns via `pc.renderAggregate` (the same
  * per-fn renderer applyAggregations uses internally).
@@ -358,8 +349,7 @@ final class MinimalRelOpLowerer(
  def lowerAggregate(
   agg:   RelOp.Aggregate,
   ctx:   EngineContext,
-  preFilteredDf: Option[org.apache.spark.sql.DataFrame],
- ): Either[EngineError, DataFrame] = {
+  preFilteredDf: Option[org.apache.spark.sql.DataFrame]): Either[EngineError, DataFrame] = {
  lower(agg.input, ctx, preFilteredDf).flatMap { df =>
   // groupBy: convert each Expr to a Spark Column.
   val groupByCols: Array[Column] = agg.groupBy.map { e =>
@@ -373,8 +363,7 @@ final class MinimalRelOpLowerer(
    return Left(EngineError.UnsupportedCapability(
    engine  = identity.name,
    capability = "MinimalRelOpLowerer.dim",
-   message = s"PR-N3: only FieldRef/MeasureRef groupBy keys are supported. Got: ${e.getClass.getSimpleName}",
-   ))
+   message = s"PR-N3: only FieldRef/MeasureRef groupBy keys are supported. Got: ${e.getClass.getSimpleName}"))
   }
   df.col(n)
   }.toArray
@@ -406,7 +395,7 @@ final class MinimalRelOpLowerer(
  * it is `Expr.Equal(FieldRef(l), FieldRef(r))`. Multi-key joins
  * remain deferred (typed UnsupportedCapability at the legacy
  * applyJoins step). */
- /** PR-N2: flatten an `Expr.And(Expr.Equal(...),...)` tree into a
+ /** PR-N2: flatten an `Expr.And(Expr.Equal(.),.)` tree into a
  * `List[(leftField, rightField)]`. Single `Equal` -> 1 pair.
  * Mixed AND/Eq tree -> only the `Expr.Equal(Expr.FieldRef, Expr.FieldRef)`
  * sub-pairs are kept (the legacy single-key path only matched the
@@ -446,23 +435,20 @@ final class MinimalRelOpLowerer(
  def lowerJoin(
   j:    RelOp.Join,
   ctx:   EngineContext,
-  preFilteredDf: Option[org.apache.spark.sql.DataFrame],
- ): Either[EngineError, DataFrame] = {
+  preFilteredDf: Option[org.apache.spark.sql.DataFrame]): Either[EngineError, DataFrame] = {
  val leftScan = j.left match {
   case s: RelOp.Scan => s
   case _ => return Left(EngineError.UnsupportedCapability(
   engine  = identity.name,
   capability = "MinimalRelOpLowerer.join.left",
-  message = s"PR-N4 minimum: Join.left must be a Scan. Got: ${j.left.getClass.getSimpleName}",
-  ))
+  message = s"PR-N4 minimum: Join.left must be a Scan. Got: ${j.left.getClass.getSimpleName}"))
  }
  val rightScan = j.right match {
   case s: RelOp.Scan => s
   case _ => return Left(EngineError.UnsupportedCapability(
   engine  = identity.name,
   capability = "MinimalRelOpLowerer.join.right",
-  message = s"PR-N4 minimum: Join.right must be a Scan. Got: ${j.right.getClass.getSimpleName}",
-  ))
+  message = s"PR-N4 minimum: Join.right must be a Scan. Got: ${j.right.getClass.getSimpleName}"))
  }
  val joinType = j.kind match {
   case io.sm8.core.rel.JoinKind.Inner => "inner"
@@ -476,8 +462,7 @@ final class MinimalRelOpLowerer(
   return Left(EngineError.UnsupportedCapability(
   engine  = identity.name,
   capability = "MinimalRelOpLowerer.join.keys",
-  message = s"PR-N4 minimum: Join.condition must contain at least one Expr.Equal(FieldRef, FieldRef). Got: ${j.condition.getClass.getSimpleName}",
-  ))
+  message = s"PR-N4 minimum: Join.condition must contain at least one Expr.Equal(FieldRef, FieldRef). Got: ${j.condition.getClass.getSimpleName}"))
  }
  // PR-O2 (ADR-008-O, P0-4): size-based broadcast-join hint.
  // Decision (evaluated AFTER rightDf is loaded so size probe is meaningful):
@@ -490,7 +475,7 @@ final class MinimalRelOpLowerer(
   rightDf <- lower(rightScan, ctx)
   // PR-2/B2: narrow the broad `catch { case _: Throwable => }` to the
   // specific `AnalysisException` that the Spark `stats.sizeInBytes` call
-  // raises when stats are unavailable. Per [[scala-error-handling-mindset]]
+  // raises when stats are unavailable. 
   // SS4 ("never swallow the specific"): catching `Throwable` would also
   // absorb `OutOfMemoryError` and `StackOverflowError` -- real problems
   // operators need to see. The previous code returned `Long.MaxValue`
@@ -526,7 +511,7 @@ final class MinimalRelOpLowerer(
   // the plain Cartesian product. The previous code called
   // `leftDf.join(rightDfEff, joinExpr, "inner")` for Cross, which used the
   // equi-key joinExpr -- NOT a cross join. Fix: use `crossJoin(rightDfEff)`
-  // and skip the joinExpr. Per [[scala-bug-hunting-mindset]] SS1
+  // and skip the joinExpr. 
   // ("trust compiler, not runtime"): the previous code compiled clean but
   // was a silent semantic bug -- Cross was implemented as an Inner join.
   // implementations): the typed `RelOp.Join.kind` contract is honored.

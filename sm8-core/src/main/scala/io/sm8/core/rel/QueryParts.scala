@@ -7,27 +7,27 @@
  * they are tightly coupled (a `Having` carries a `ComparisonOp`; a
  * `TypedWindow` carries a `WindowFunction` + a partition + an order).
  *
- * Per `karpathy-guidelines-mindset` §2 (simplicity first): one
+ * Per 
  * concern per file is the rule, but these 4 types are NOT separate
  * concerns — they form a single typed-DSL primitive group.
  *
- * Per `karpathy-app-design-mindset` §3.1 (Protocols before
+ * Per 
  * implementations): these are the Protocols in core. Witness
- * INSTANCES live in the consumer's code (`object Refs {... }`).
+ * INSTANCES live in the consumer's code (`object Refs {. }`).
  *
- * Per `scala-spark-batch-bugs-mindset` §1 (closure-safety — the user's
+ * Per 
  * explicit concern): all 5 types `extends Serializable`. Per PR-16
  * lesson: case-class `Impl` form (not anonymous-class) for the typed
  * builders that have phantom type params (`Having[D]`, `PartitionBy[D]`,
- * `TypedWindow[D, M]`). Per `scala-jvm-safety-mindset` §2: zero
+ * `TypedWindow[D, M]`). Per 
  * resource capture.
  *
- * Per `scala-data-driven-refactor-mindset` §3 (sealed over Map):
+ * Per 
  * `ComparisonOp` + `WindowFunction` are sealed ADTs (6 + 3 cases).
  * Compiler-enforced exhaustiveness prevents silent typos at the
  * consumer side (e.g. `ComparisonOp.EQ` vs `ComparisonOp.EQUEAL`).
  *
- * Per `scala-perf-testing-mindset` §3 (allocation is the tax): all 4
+ * Per 
  * types are case-class instances that allocate once at query-build
  * time (driver-side). Zero per-row allocation.
  */
@@ -37,7 +37,7 @@ import io.sm8.core.expr.Expr
 
 /**
  * Comparison operator for having predicates. Sealed ADT with 6 cases.
- * Per `scala-data-driven-refactor-mindset` §3: a `Map[String,
+ * Per 
  * ComparisonOp]` would let callers pass `"eq"` / `"EQ"` / `"=="` with
  * silent defaulting — the sealed ADT prevents that.
  */
@@ -58,7 +58,7 @@ object ComparisonOp {
  * used as the dimension in a having clause; the compiler verifies
  * the type identity.
  *
- * Per `scala-error-handling-mindset` §1 (errors are data): the `value`
+ * Per 
  * is a typed `Expr` (NOT `Option[Expr]` or `String`) — no silent
  * defaulting.
  */
@@ -83,7 +83,7 @@ object Having {
  * mindset` §2: AQE may override). The phantom `[D]` matches the
  * dimension identity.
  *
- * Per `karpathy-guidelines-mindset` §2: a HINT, not a constraint —
+ * Per 
  * the connector decides whether to honor it.
  */
 final case class PartitionBy[D](
@@ -106,15 +106,15 @@ object PartitionBy {
 sealed trait WindowFunction extends Serializable
 
 object WindowFunction {
- /** `ROW_NUMBER() OVER (PARTITION BY... ORDER BY...)` — assigns a
+ /** `ROW_NUMBER() OVER (PARTITION BY. ORDER BY.)` — assigns a
  * unique sequential integer to each row in its partition. */
  case object RowNumber extends WindowFunction
 
- /** `RANK() OVER (PARTITION BY... ORDER BY...)` — assigns a rank with
+ /** `RANK() OVER (PARTITION BY. ORDER BY.)` — assigns a rank with
  * gaps (ties get the same rank; next rank skipped). */
  case object Rank extends WindowFunction
 
- /** `DENSE_RANK() OVER (PARTITION BY... ORDER BY...)` — assigns a rank
+ /** `DENSE_RANK() OVER (PARTITION BY. ORDER BY.)` — assigns a rank
  * without gaps (ties get the same rank; next rank NOT skipped). */
  case object DenseRank extends WindowFunction
 }
@@ -125,9 +125,9 @@ object WindowFunction {
  * partition-by column identity; `[M]` matches the result column
  * identity (the rank column).
  *
- * Per `karpathy-app-designmindset` §3.1 (Protocols before
+ * Per  §3.1 (Protocols before
  * implementations): this is the Protocol. The witness INSTANCE
- * lives in `object Refs {... }`.
+ * lives in `object Refs {. }`.
  */
 final case class TypedWindow[D, M](
  partitionBy: io.sm8.core.model.TypedDimension[D],

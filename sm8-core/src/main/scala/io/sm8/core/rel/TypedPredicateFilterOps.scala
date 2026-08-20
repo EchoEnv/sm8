@@ -58,7 +58,7 @@ import io.sm8.core.predicate.{CompareOp, Predicate, StringMatchOp}
 /**
  * Companion smart constructors that take `TypedDimension[D]`
  * (the typed dimension identity) directly -- preserving the
- * phantom `[D]` (per [[karpathy-bug-huntingmindset]] SS1).
+ * phantom `[D]` (
  *
  * constructor for validity-at-boundary): the typed dimension is
  * the boundary; the predicate factory validates the dim's name +
@@ -90,54 +90,48 @@ object TypedDimensionPredicate {
  def ge[D](dim: TypedDimension[D], value: Any): TypedPredicate[D] =
  compare(dim, CompareOp.Ge, value)
 
- /** Shared compare factory (per [[karpathy-data-driven-refactormindset]]
+ /** Shared compare factory (
  * SS2: smart constructor for validity-at-boundary -- the phantom
  * `[D]` is preserved at construction). */
  private def compare[D](
   dim: TypedDimension[D],
   op: CompareOp,
-  value: Any,
- ): TypedPredicate[D] =
+  value: Any): TypedPredicate[D] =
  TypedPredicate.of[D](
   name  = s"${dim.name} $op $value",
-  predicate = Predicate.Compare(field = dim.name, op = op, value = value),
- )
+  predicate = Predicate.Compare(field = dim.name, op = op, value = value))
 
- /** `field IN (v1, v2,...)`. */
+ /** `field IN (v1, v2,.)`. */
  def in[D](dim: TypedDimension[D], values: List[Any]): TypedPredicate[D] =
  TypedPredicate.of[D](
   name  = s"${dim.name} IN (${values.mkString(", ")})",
-  predicate = Predicate.In(field = dim.name, values = values, negate = false),
- )
+  predicate = Predicate.In(field = dim.name, values = values, negate = false))
 
- /** `field NOT IN (v1, v2,...)`. Per the user's 2026-08-19 directive
+ /** `field NOT IN (v1, v2,.)`. Per the user's 2026-08-19 directive
  * ("also notin ?"): the typed `notin` factory delegates to the
  * existing `Predicate.In(field, values, negate = true)` -- per
  * no new AST case is needed. */
  def notIn[D](dim: TypedDimension[D], values: List[Any]): TypedPredicate[D] =
  TypedPredicate.of[D](
   name  = s"${dim.name} NOT IN (${values.mkString(", ")})",
-  predicate = Predicate.In(field = dim.name, values = values, negate = true),
- )
+  predicate = Predicate.In(field = dim.name, values = values, negate = true))
 
  /** `field IS NULL`. */
  def isNull[D](dim: TypedDimension[D]): TypedPredicate[D] =
  TypedPredicate.of[D](
   name  = s"${dim.name} IS NULL",
-  predicate = Predicate.IsNull(field = dim.name, negate = false),
- )
+  predicate = Predicate.IsNull(field = dim.name, negate = false))
 
  /** `field IS NOT NULL`. */
  def isNotNull[D](dim: TypedDimension[D]): TypedPredicate[D] =
  TypedPredicate.of[D](
   name  = s"${dim.name} IS NOT NULL",
-  predicate = Predicate.IsNull(field = dim.name, negate = true),
- )
+  predicate = Predicate.IsNull(field = dim.name, negate = true))
 
  /** `field startsWith pattern` -- per the user's 2026-08-19 directive
  * ("also startsWith, contains, endsWith ?"). The lowering target is
  * Spark's `Column.startsWith(pattern)` (per [[karpathy-data-driven-
- * refactormindset]] SS2: simple, predictable -- NOT a regex). */
+ * refactor] SS2: simple, predictable -- NOT a regex). */
  def startsWith[D](dim: TypedDimension[D], pattern: String): TypedPredicate[D] =
  stringMatch(dim, StringMatchOp.StartsWith, pattern)
 
@@ -149,23 +143,21 @@ object TypedDimensionPredicate {
  def endsWith[D](dim: TypedDimension[D], pattern: String): TypedPredicate[D] =
  stringMatch(dim, StringMatchOp.EndsWith, pattern)
 
- /** Shared string-match factory (per [[karpathy-data-driven-refactormindset]]
+ /** Shared string-match factory (
  * SS2: smart constructor for validity-at-boundary). */
  private def stringMatch[D](
   dim:  TypedDimension[D],
   op:  StringMatchOp,
-  pattern: String,
- ): TypedPredicate[D] =
+  pattern: String): TypedPredicate[D] =
  TypedPredicate.of[D](
   name  = s"${dim.name} $op '$pattern'",
-  predicate = Predicate.StringMatch(field = dim.name, op = op, pattern = pattern),
- )
+  predicate = Predicate.StringMatch(field = dim.name, op = op, pattern = pattern))
 }
 
 /**
  * Per the user's 2026-08-19 directive ("infix notation but still
  * typed based"): infix sugar via an implicit class. The implicit
- * class is `extends AnyVal` (per [[karpathy-jvm-safety-mindset]] SS3
+ * class is `extends AnyVal` (
  * + the existing `TypedSortKeyOps` pattern from PR-25).
  *
  * the user's explicit priority): the captured state is ONLY

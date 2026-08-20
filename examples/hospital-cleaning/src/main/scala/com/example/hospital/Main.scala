@@ -36,7 +36,7 @@ import org.apache.spark.sql.functions._
   *   3. CLEANSE       — normalize names (Title Case), dedup by
   *                      (first_name, last_name, dob), fill missing MRNs
   *   4. SEMANTIC      — build the sm8 `Model` for patients + encounters
-  *                      on the cleansed DataFrames (via `Model.of(...)` —
+  *                      on the cleansed DataFrames (via `Model.of(.)` —
   *                      the canonical pattern; the model YAML in
   *                      models/ documents the target shape for the
   *                      future sm8 ModelLoader YAML subset extension)
@@ -58,7 +58,7 @@ import org.apache.spark.sql.functions._
   * SDK is currently smaller — no `YamlLoader` for the full model
   * shape yet, no phantom-typed refs (the SDK is in early form per
   * ADR-008-P). This example uses the canonical pattern that the
-  * existing sm8 tests use (`Model.of(...)` + `provider.query(...)`)
+  * existing sm8 tests use (`Model.of(.)` + `provider.query(.)`)
   * — same logical workflow, expressed with the public SDK surface
   * available today.
   *
@@ -87,14 +87,13 @@ object Main {
   /** Default policies (no persist, no cache, no audit) for the
     * cleansed models. Per ADR-008-P §AR-P1-2 + RFC §3, a model's
     * default policies are part of the typed engine-portable
-    * contract; production deployments override via `Model.of(...)`
+    * contract; production deployments override via `Model.of(.)`
     * (as the example does below).
     */
   private def defaultPolicies: ModelPolicyDefaults = ModelPolicyDefaults(
     materialize = MaterializePolicy.None,
     cache       = CachePolicy.NoCache,
-    audit       = AuditPolicy.NoAudit,
-  )
+    audit       = AuditPolicy.NoAudit)
 
   // ====== STEP 1 + 2 + 3: INGEST + QUALITY REPORT + CLEANSE ======
 
@@ -104,36 +103,19 @@ object Main {
     * the project root by default.
     */
   private def readCsv(spark: SparkSession, filename: String): DataFrame =
-    spark.read
-      .option("header", "true")
-      .option("inferSchema", "true")
-      .csv(s"data/$filename")
+    spark.read.option("header", "true").option("inferSchema", "true").csv(s"data/$filename")
 
   private def ingestAndCleansPatients(spark: SparkSession): DataFrame = {
-    val raw = readCsv(spark, "patients_raw.csv")
-      .withColumn("date_of_birth", col("date_of_birth").cast("date"))
+    val raw = readCsv(spark, "patients_raw.csv").withColumn("date_of_birth", col("date_of_birth").cast("date"))
 
     // ----- 2. QUALITY REPORT -----
     Logger.info("=" * 70)
     Logger.info("STEP 2: Data quality report")
     Logger.info("=" * 70)
-    val rawLower = raw
-      .withColumn("first_name", lower(col("first_name")))
-      .withColumn("last_name", lower(col("last_name")))
-    val dupByNameDob = rawLower
-      .groupBy("first_name", "last_name", "date_of_birth")
-      .count()
-      .filter(col("count") > 1)
-      .count()
-    val missingMrn = raw
-      .filter(col("mrn").isNull || col("mrn") === "")
-      .count()
-    val dupMrn = raw
-      .filter(col("mrn").isNotNull && col("mrn") =!= "")
-      .groupBy("mrn")
-      .count()
-      .filter(col("count") > 1)
-      .count()
+    val rawLower = raw.withColumn("first_name", lower(col("first_name"))).withColumn("last_name", lower(col("last_name")))
+    val dupByNameDob = rawLower.groupBy("first_name", "last_name", "date_of_birth").count().filter(col("count") > 1).count()
+    val missingMrn = raw.filter(col("mrn").isNull || col("mrn") === "").count()
+    val dupMrn = raw.filter(col("mrn").isNotNull && col("mrn") =!= "").groupBy("mrn").count().filter(col("count") > 1).count()
     Logger.info(s"  duplicate patients (same name+dob): $dupByNameDob")
     Logger.info(s"  rows with missing/empty MRN:        $missingMrn")
     Logger.info(s"  duplicate MRN values:                $dupMrn")
@@ -142,12 +124,8 @@ object Main {
     Logger.info("=" * 70)
     Logger.info("STEP 3: Cleanse")
     Logger.info("=" * 70)
-    val normalized = raw
-      .withColumn("first_name", initcap(col("first_name")))
-      .withColumn("last_name", initcap(col("last_name")))
-    val cleansed = normalized
-      .dropDuplicates("first_name", "last_name", "date_of_birth")
-      .withColumn(
+    val normalized = raw.withColumn("first_name", initcap(col("first_name"))).withColumn("last_name", initcap(col("last_name")))
+    val cleansed = normalized.dropDuplicates("first_name", "last_name", "date_of_birth").withColumn(
         "mrn",
         when(
           col("mrn").isNull || col("mrn") === "",
@@ -162,15 +140,15 @@ object Main {
 
 /**
  * Phantom-typed witnesses (PR-16, ADR-008-Q §PR-16). Per
- * `karpathy-app-design-mindset` §3.1 (Protocols before implementations):
+ * 
  * the witnesses live at object level (singleton, Serializable) —
- * safe for Spark closure serialization per `scala-spark-batch-bugs-mindset` §1.
+ * safe for Spark closure serialization per 
  *
  * Per ADR-008-Q §C3 (wire-shape decision): the phantom witness
  * `.name` extractor is the bridge to the wire DTO
  * `QueryRequest.dimensions: Seq[String]`. A typo at the call site
  * (e.g. `Refs.gende` instead of `Refs.gender`) is a COMPILE error
- * per `scala-bug-hunting-mindset` §1.
+ * per 
  */
 object Refs {
   sealed trait PatientId
@@ -202,7 +180,7 @@ object Refs {
     *
     * Implementations): the witness lives at object level
     * (singleton, Serializable) -- safe for Spark closure
-    * serialization per [[scala-spark-batch-bugs-mindset]] SS1.
+    * serialization 
     */
   sealed trait ReadmissionCount
   val readmissionCount: TypedMeasure[ReadmissionCount] =
@@ -210,9 +188,7 @@ object Refs {
 }
 
   private def ingestAndCleansEncounters(spark: SparkSession): DataFrame = {
-    val raw = readCsv(spark, "encounters_raw.csv")
-      .withColumn("admission_date", col("admission_date").cast("date"))
-      .withColumn("discharge_date", col("discharge_date").cast("date"))
+    val raw = readCsv(spark, "encounters_raw.csv").withColumn("admission_date", col("admission_date").cast("date")).withColumn("discharge_date", col("discharge_date").cast("date"))
 
     // 3b. Remap encounter patient_ids to the primary. In a real
     //     pipeline you'd do this with a join; here the raw data is
@@ -222,11 +198,9 @@ object Refs {
     cleansed
   }
 
-  // ====== STEP 4: build the sm8 Model ======
-
   /** Build the patients `Model` (no DataFrame arg — temp view registered at call site).
     *
-    * Uses `Model.of(...)` directly (the canonical pattern in the
+    * Uses `Model.of(.)` directly (the canonical pattern in the
     * existing sm8 tests like `SparkEngineProviderProductionWiringSpec`).
     * The model YAML in `models/patients.yml` documents the
     * target shape for the future sm8 ModelLoader YAML subset.
@@ -240,13 +214,11 @@ object Refs {
       Dimension.field("date_of_birth", "date_of_birth"),
       Dimension.field("gender", "gender"),
       Dimension.field("city", "city"),
-      Dimension.field("insurance", "insurance"),
-    )
+      Dimension.field("insurance", "insurance"))
     // `Measure.aggregate` is the canonical single-aggregate factory.
     // (For multi-aggregate measures, construct AggregateCall directly.)
     val measures: List[Measure] = List(
-      Measure.aggregate(name = "patient_count", fn = AggregateFn.Count, expr = Expr.Literal(LiteralValue.IntValue(1), SealedDataType.Int)),
-    )
+      Measure.aggregate(name = "patient_count", fn = AggregateFn.Count, expr = Expr.Literal(LiteralValue.IntValue(1), SealedDataType.Int)))
     Model.of(
       name = "patients",
       version = 1,
@@ -254,8 +226,7 @@ object Refs {
       status = ModelStatus.Draft,
       defaultPolicies = defaultPolicies,
       dimensions = dimensions,
-      measures = measures,
-    ) match {
+      measures = measures) match {
       case Right(m) => m
       case Left(err) =>
         throw new IllegalStateException(
@@ -290,20 +261,15 @@ object Refs {
     val withLos = cleansedEncounters.withColumn(
       "los_days", datediff(col("discharge_date"), col("admission_date"))
     )
-    val withReadmission = withLos
-      .withColumn(
+    val withReadmission = withLos.withColumn(
         "prev_admission",
-        lag(col("admission_date"), 1)
-          .over(Window.partitionBy("patient_id").orderBy("admission_date"))
-      )
-      .withColumn(
+        lag(col("admission_date"), 1).over(Window.partitionBy("patient_id").orderBy("admission_date"))
+      ).withColumn(
         "days_since_prev",
         datediff(col("admission_date"), col("prev_admission"))
-      )
-      .withColumn(
+      ).withColumn(
         "is_readmission",
-        when(col("days_since_prev") > 0 && col("days_since_prev") <= 30, lit(1))
-          .otherwise(lit(0))
+        when(col("days_since_prev") > 0 && col("days_since_prev") <= 30, lit(1)).otherwise(lit(0))
       )
     // Register the transformed DF as a temp view so the SourceRef.ByName
     // lookup in the engine can find it.
@@ -322,8 +288,7 @@ object Refs {
       // enrichment above. The `readmission_count` measure references
       // this column; `ModelValidator.validateAgainstSchema` requires
       // it to exist in the source schema.
-      Dimension.field("is_readmission", "is_readmission"),
-    )
+      Dimension.field("is_readmission", "is_readmission"))
     val measures: List[Measure] = List(
       Measure.aggregate(name = "encounter_count", fn = AggregateFn.Count, expr = Expr.Literal(LiteralValue.IntValue(1), SealedDataType.Int)),
       Measure.aggregate(name = "total_los", fn = AggregateFn.Sum, expr = Expr.FieldRef("los_days")),
@@ -337,11 +302,8 @@ object Refs {
         fn = AggregateFn.Sum,
         expr = Expr.CaseWhen(
           branches = List(
-            ("discharge_status".asField === "expired".asVarchar) -> 1.asInt,
-          ),
-          otherwise = 0.asInt,
-        ),
-      ),
+            ("discharge_status".asField === "expired".asVarchar) -> 1.asInt),
+          otherwise = 0.asInt)),
       // `readmission_count` is
       // the SUM of the per-row `is_readmission` flag (already 0/1
       // from the Q3 enrichment in Q3b). This is a pure column
@@ -358,9 +320,7 @@ object Refs {
       Measure.aggregate(
         name = "readmission_count",
         fn = AggregateFn.Sum,
-        expr = Expr.FieldRef("is_readmission"),
-      ),
-    )
+        expr = Expr.FieldRef("is_readmission")))
     // avg_los = total_los / encounter_count — pure typed expression
     // (no AggregateCall — per the CalculatedMeasure design, the
     // expression is any engine-portable Expr, not a single aggregate).
@@ -369,10 +329,7 @@ object Refs {
         name = "avg_los",
         expr = Expr.Divide(
           Expr.MeasureRef("total_los"),
-          Expr.MeasureRef("encounter_count"),
-        ),
-      ),
-    )
+          Expr.MeasureRef("encounter_count"))))
     Model.of(
       name = "encounters",
       version = 1,
@@ -381,8 +338,7 @@ object Refs {
       defaultPolicies = defaultPolicies,
       dimensions = dimensions,
       measures = measures,
-      calculatedMeasures = calculatedMeasures,
-    ) match {
+      calculatedMeasures = calculatedMeasures) match {
       case Right(m) => m
       case Left(err) =>
         throw new IllegalStateException(
@@ -391,8 +347,6 @@ object Refs {
     }
   }
 
-  // ====== STEP 5: run the queries via the spark-connector ======
-
   /** Run a single sm8 query and print the resulting PortableQueryResult
     * as a pretty-printed row count + sample.
     */
@@ -400,8 +354,7 @@ object Refs {
       label: String,
       provider: EngineProvider,
       model: Model,
-      request: QueryRequest,
-  ): Unit = {
+      request: QueryRequest): Unit = {
     Logger.info(s"--- $label ---")
     provider.query(model, request, EngineContext.defaultContext) match {
       case Right(pqr) =>
@@ -417,7 +370,7 @@ object Refs {
             case other                   => other.toString
           }.mkString(", "))
         }
-        if (pqr.rows.size > 10) Logger.info(s"  ... ${pqr.rows.size - 10} more rows")
+        if (pqr.rows.size > 10) Logger.info(s". ${pqr.rows.size - 10} more rows")
       case Left(err) =>
         Logger.error(s"  sm8 query FAILED: ${err.getClass.getSimpleName}: $err")
     }
@@ -425,24 +378,15 @@ object Refs {
 
   def main(args: Array[String]): Unit = {
     // ----- Initialize SparkSession (driver-side, local mode) -----
-    val spark = SparkSession
-      .builder()
-      .master("local[*]")
-      .appName("sm8-hospital-cleaning")
-      .config("spark.ui.enabled", "false")
-      .config("spark.sql.shuffle.partitions", "2")
-      .getOrCreate()
+    val spark = SparkSession.builder().master("local[*]").appName("sm8-hospital-cleaning").config("spark.ui.enabled", "false").config("spark.sql.shuffle.partitions", "2").getOrCreate()
     try {
       Logger.info("=" * 70)
       Logger.info("sm8 hospital example — full data-quality workflow")
       Logger.info("=" * 70)
       Logger.info("Step 1: INGEST (raw CSVs)")
 
-      val rawPatients = readCsv(spark, "patients_raw.csv")
-        .withColumn("date_of_birth", col("date_of_birth").cast("date"))
-      val rawEncounters = readCsv(spark, "encounters_raw.csv")
-        .withColumn("admission_date", col("admission_date").cast("date"))
-        .withColumn("discharge_date", col("discharge_date").cast("date"))
+      val rawPatients = readCsv(spark, "patients_raw.csv").withColumn("date_of_birth", col("date_of_birth").cast("date"))
+      val rawEncounters = readCsv(spark, "encounters_raw.csv").withColumn("admission_date", col("admission_date").cast("date")).withColumn("discharge_date", col("discharge_date").cast("date"))
       val diagnoses = readCsv(spark, "diagnoses.csv")
       Logger.info(s"  raw patients:    ${rawPatients.count()} rows")
       Logger.info(s"  raw encounters:  ${rawEncounters.count()} rows")
@@ -455,8 +399,6 @@ object Refs {
       // Register the cleansed patients DF as a temp view so the
       // SourceRef.ByName lookup in the engine can find it.
       cleansedPatients.createOrReplaceTempView("patients_clean_csv")
-
-      // ----- Step 4: build the sm8 models -----
       Logger.info("=" * 70)
       Logger.info("STEP 4: Build semantic models on the cleansed data")
       Logger.info("=" * 70)
@@ -491,30 +433,18 @@ object Refs {
         "Q1a (typed DSL): provider.query(patients, dim=gender, meas=patient_count)",
         provider,
         patientsModel,
-        QueryBuilderDsl.start()
-          .groupBy(Refs.gender)
-          .aggregate(Refs.patientCount.toAggregateCall)
-          .orderByKeys(Refs.gender.desc)
-          .build(
+        QueryBuilderDsl.start().groupBy(Refs.gender).aggregate(Refs.patientCount.toAggregateCall).orderByKeys(Refs.gender.desc).build(
             model = patientsModel.name,
-            dimensions = Seq(Refs.gender.name),
-          ),
-      )
+            dimensions = Seq(Refs.gender.name)))
 
       // ----- Q1b: Patient demographics (by insurance) -- TYPED DSL -----
       runQuery(
         "Q1b (typed DSL): provider.query(patients, dim=insurance, meas=patient_count)",
         provider,
         patientsModel,
-        QueryBuilderDsl.start()
-          .groupBy(Refs.insurance)
-          .aggregate(Refs.patientCount.toAggregateCall)
-          .orderByKeys(Refs.insurance.desc)
-          .build(
+        QueryBuilderDsl.start().groupBy(Refs.insurance).aggregate(Refs.patientCount.toAggregateCall).orderByKeys(Refs.insurance.desc).build(
             model = patientsModel.name,
-            dimensions = Seq(Refs.insurance.name),
-          ),
-      )
+            dimensions = Seq(Refs.insurance.name)))
 
       // ----- Q2: ALOS by department -- TYPED DSL -----
       // Per PR-26: typed Measure + typed filter + typed orderByKeys
@@ -531,19 +461,12 @@ object Refs {
         "Q2 (typed DSL): ALOS by department (typed aggregate + typed orderBy + typed limit end-to-end)",
         provider,
         encountersModel,
-        QueryBuilderDsl.start()
-          .groupBy(Refs.department)
-          .aggregate(Refs.encounterCount.toAggregateCall)
-          .orderByKeys(Refs.department.asc)
-          .limit(Some(100L))
-          .build(
+        QueryBuilderDsl.start().groupBy(Refs.department).aggregate(Refs.encounterCount.toAggregateCall).orderByKeys(Refs.department.asc).limit(Some(100L)).build(
             model = encountersModel.name,
-            dimensions = Seq(Refs.department.name),
-          ),
-      )
+            dimensions = Seq(Refs.department.name)))
       // ----- Q3: 30-day readmission rate -- PARTIAL TYPED-DSL MIGRATION -----
       // Per the user's 2026-08-20 directive ("go Q3 example migration
-      // to typed DSL ... ensure follow ALL skills we have in memory,
+      // to typed DSL. ensure follow ALL skills we have in memory,
       // especially spark serialization concern and executor performance
       // and RFC for categories code structure") + Option A (Partial)
       // scope decision: the typed SDK cannot express `Lag` window
@@ -588,17 +511,10 @@ object Refs {
       // result rows directly.
       val q3aResult = provider.query(
         encountersModel,
-        QueryBuilderDsl.start()
-          .groupBy(Refs.patientId)
-          .aggregate(Refs.readmissionCount.toAggregateCall)
-          .orderByKeys(Refs.patientId.asc)
-          .limit(Some(100L))
-          .build(
+        QueryBuilderDsl.start().groupBy(Refs.patientId).aggregate(Refs.readmissionCount.toAggregateCall).orderByKeys(Refs.patientId.asc).limit(Some(100L)).build(
             model = encountersModel.name,
-            dimensions = Seq(Refs.patientId.name),
-          ),
-        EngineContext.defaultContext,
-      )
+            dimensions = Seq(Refs.patientId.name)),
+        EngineContext.defaultContext)
       q3aResult match {
         case Right(pqr) =>
           Logger.info(s"--- Q3a (typed DSL): per-patient readmission count ---")
@@ -620,10 +536,7 @@ object Refs {
       // `encounters_clean_csv` temp view is the single source of
       // truth for the Spark-direct rate computation.
       val enrichedEncounters = spark.table("encounters_clean_csv")
-      val perPatientEncounterCount = enrichedEncounters
-        .groupBy("patient_id")
-        .count()
-        .filter(col("count") > 1)
+      val perPatientEncounterCount = enrichedEncounters.groupBy("patient_id").count().filter(col("count") > 1)
       val nMulti = perPatientEncounterCount.count()
       // count > 0. Per the data-engineer review (priority 2 SHOULD):
       // the typed Q3a result is REUSED -- no Spark-direct
@@ -668,7 +581,7 @@ object Refs {
       //   - NO closures cross to executors (TypedQueryCompiler is
       //     a per-query driver-side transformation)
       // ----- Q4: typed DSL via QueryBuilderDsl end-to-end -----
-      // Per ADR-008-R + PR-17..PR-22: this query uses the full
+      // Per ADR-008-R + PR-17.PR-22: this query uses the full
       // typed pipeline:
       //   - TypedWindow[PatientId, RowNumberId] (partitionBy +
       //     orderBy share the PatientId phantom; windowFn=RowNumber)
@@ -691,16 +604,11 @@ object Refs {
         "Q4 (typed DSL): encounter_id order over rows partitioned by patient_id (typed window: RowNumber per patient)",
         provider,
         encountersModel,
-        QueryBuilderDsl.start()
-          .window(TypedWindow[Refs.PatientId, Refs.RowNumberId](
+        QueryBuilderDsl.start().window(TypedWindow[Refs.PatientId, Refs.RowNumberId](
             partitionBy = Refs.patientId,
             orderBy     = Refs.patientId,
-            windowFn    = WindowFunction.RowNumber,
-          ))
-          .orderBy(Refs.patientId)
-          .build(model = encountersModel.name,
-            dimensions = Seq(Refs.patientId.name)),
-      )
+            windowFn    = WindowFunction.RowNumber)).orderBy(Refs.patientId).build(model = encountersModel.name,
+            dimensions = Seq(Refs.patientId.name)))
 
       // ----- Q5: PR-29 (typed filter ergonomics) -- infix sugar end-to-end -----
       // Per the user's 2026-08-19 directive ("infix notation but still
@@ -718,19 +626,11 @@ object Refs {
         "Q5 (typed DSL): patient demographics filtered via infix sugar (insurance === Medicare AND insurance in (Medicare, Medicaid))",
         provider,
         patientsModel,
-        QueryBuilderDsl.start()
-          .groupBy(Refs.insurance)
-          .aggregate(Refs.patientCount.toAggregateCall)
-          .filter(TypedPredicate.and(
+        QueryBuilderDsl.start().groupBy(Refs.insurance).aggregate(Refs.patientCount.toAggregateCall).filter(TypedPredicate.and(
             Refs.insurance === "Medicare",
-            Refs.insurance in List("Medicare", "Medicaid")))
-          .orderByKeys(Refs.insurance.desc)
-          .limit(Some(100L))
-          .build(
+            Refs.insurance in List("Medicare", "Medicaid"))).orderByKeys(Refs.insurance.desc).limit(Some(100L)).build(
             model = patientsModel.name,
-            dimensions = Seq(Refs.insurance.name),
-          ),
-      )
+            dimensions = Seq(Refs.insurance.name)))
        Logger.info("=" * 70)
       Logger.info("All steps complete. The data quality issues from STEP 2 are now")
       Logger.info("resolved -- the queries above run on the cleansed data.")

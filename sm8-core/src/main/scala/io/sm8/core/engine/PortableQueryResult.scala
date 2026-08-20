@@ -29,8 +29,7 @@ package io.sm8.core.engine
 final case class PortableQueryResult(
  schema: ResultSchema,
  rows:  Vector[ResultRow],
- metadata: Map[String, String] = Map.empty,
-) extends Product with Serializable {
+ metadata: Map[String, String] = Map.empty) extends Product with Serializable {
 
  /** Number of rows. Convenience for MCP / cache / audit. */
  def rowCount: Int = rows.size
@@ -50,6 +49,5 @@ object PortableQueryResult {
  val empty: PortableQueryResult = PortableQueryResult(
  schema = ResultSchema(Nil),
  rows  = Vector.empty,
- metadata = Map.empty,
- )
+ metadata = Map.empty)
 }

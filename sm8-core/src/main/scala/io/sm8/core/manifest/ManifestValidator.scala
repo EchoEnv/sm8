@@ -20,7 +20,7 @@
  * in the sm8-core jar's `src/main/resources/META-INF/sm8/`
  * directory (classloader-resolved).
  * 2. `validate(yaml)` returns `Either[ManifestError, JsonNode]`.
- * Never throws; per [[scala-error-handling-mindset]].
+ * Never throws; 
  * 3. ALL validation messages are collected (not just the first).
  * `com.networktt` aggregates them; we surface them as a list.
  * 4. Jackson's `JsonNode` is the validated output. Downstream
@@ -56,8 +56,8 @@
  * - Serialize: `JsonNode` is auto-Serializable (Jackson).
  *
  * Indirect Spark relation: the validated JSON tree flows to
- * `ModelLoader.fromString(...)` → produces `Model` → consumed by
- * `EngineProvider.query(...)` via the connector layer
+ * `ModelLoader.fromString(.)` → produces `Model` → consumed by
+ * `EngineProvider.query(.)` via the connector layer
  * (PRs #38-#42 handle all Spark concerns). The validator is
  * INDIRECTLY upstream of Spark execution but holds NO Spark
  * references — the boundary holds.
@@ -95,8 +95,7 @@ object ManifestValidator {
  /** Cached, lazily-loaded JSON-schema validator instance. Per
  * lazy val's initialization flag. */
  private lazy val schemaValidator: JsonSchema = {
- val stream = Option(getClass.getClassLoader.getResourceAsStream(SchemaResource))
- .getOrElse(throw new IllegalStateException(
+ val stream = Option(getClass.getClassLoader.getResourceAsStream(SchemaResource)).getOrElse(throw new IllegalStateException(
   s"sm8: cannot find $SchemaResource on the classpath — the schema JSON was not packaged into the sm8-core jar."
   ))
  try {

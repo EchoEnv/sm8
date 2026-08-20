@@ -51,13 +51,13 @@ trait Engine {
  /**
  * Connector registry. Plugins access this from `setup(engine)` to
  * register their Connectors: `engine.connectors.register(c)`.
- * Required by the RFC's `engine.adapters.register(...)` pattern.
+ * Required by the RFC's `engine.adapters.register(.)` pattern.
  */
  def connectors: ConnectorRegistry
 
  /**
  * Hook manager. Plugins access this from `setup(engine)` to
- * register their Pre/PostHooks: `engine.hooks.registerPreHook(...)`.
+ * register their Pre/PostHooks: `engine.hooks.registerPreHook(.)`.
  * Step 3 surface: register-only. Priority dispatch lands in Step 4.
  */
  def hooks: HookManager

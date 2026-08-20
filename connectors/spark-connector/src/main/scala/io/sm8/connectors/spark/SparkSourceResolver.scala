@@ -14,7 +14,7 @@
  *  caller-supplied "expected schema". The downstream
  *  `ModelValidator.validateAgainstSchema` then verifies every
  *  Dimension/Measure/Filter references a real field.
- * - #5 (driver-vs-executor): `spark.table(...)` + `spark.read...`
+ * - #5 (driver-vs-executor): `spark.table(.)` + `spark.read.`
  *  are driver-side catalog calls; no executor-side closure.
  *
  * Incompatible, UnsupportedCapability) surface the 4 failure modes
@@ -34,15 +34,13 @@ import org.apache.spark.sql.Column
 import org.apache.spark.sql.functions.lit
 final class SparkSourceResolver(
  val spark: SparkSession,
- val registry: ModelRegistry = ModelRegistry.NoopModelRegistry,
-) extends SourceResolver {
+ val registry: ModelRegistry = ModelRegistry.NoopModelRegistry) extends SourceResolver {
 
  import SparkSourceResolver._
 
  override def resolve(
   source: SourceRef,
-  identity: EngineIdentity,
- ): Either[EngineError, ResolvedSource] = source match {
+  identity: EngineIdentity): Either[EngineError, ResolvedSource] = source match {
  case src: SourceRef.ByName =>
   resolveByName(src, identity)
  case src: SourceRef.ByPath =>
@@ -51,14 +49,12 @@ final class SparkSourceResolver(
   Left(EngineError.UnsupportedCapability(
   engine  = identity.name,
   capability = "SourceRef.ByProvider",
-  message = "SourceRef.ByProvider requires a registered ProviderRef closure (deferred to PR-M4).",
-  ))
+  message = "SourceRef.ByProvider requires a registered ProviderRef closure (deferred to PR-M4)."))
  }
 
  override def resolveModel(
   name:  String,
-  identity: EngineIdentity,
- ): Either[EngineError, SourceRef] =
+  identity: EngineIdentity): Either[EngineError, SourceRef] =
  registry.resolveModel(name).left.map {
   case e: EngineError.UnsupportedCapability =>
   // Re-tag with the engine identity for diagnostics.
@@ -70,8 +66,7 @@ final class SparkSourceResolver(
 
  private def resolveByName(
   src:  SourceRef.ByName,
-  identity: EngineIdentity,
- ): Either[EngineError, ResolvedSource] = {
+  identity: EngineIdentity): Either[EngineError, ResolvedSource] = {
  val tableName = src.table
  val dfOpt: Option[org.apache.spark.sql.DataFrame] =
   try Some(spark.table(tableName)) catch {
@@ -87,22 +82,19 @@ final class SparkSourceResolver(
    Left(EngineError.UnsupportedCapability(
     engine  = identity.name,
     capability = "SourceRef.ByName.schema",
-    message = s"Schema read for table '$tableName' failed: ${e.getClass.getSimpleName}: ${e.getMessage}",
-   ))
+    message = s"Schema read for table '$tableName' failed: ${e.getClass.getSimpleName}: ${e.getMessage}"))
   }
   case None =>
   Left(EngineError.UnsupportedCapability(
    engine  = identity.name,
    capability = "SourceRef.ByName.resolve",
-   message = s"Spark table '$tableName' not found in the active catalog.",
-  ))
+   message = s"Spark table '$tableName' not found in the active catalog."))
  }
  }
 
  private def resolveByPath(
   src:  SourceRef.ByPath,
-  identity: EngineIdentity,
- ): Either[EngineError, ResolvedSource] = {
+  identity: EngineIdentity): Either[EngineError, ResolvedSource] = {
  val dfOpt: Option[org.apache.spark.sql.DataFrame] =
   try {
   val reader = spark.read.format(src.format)
@@ -121,30 +113,26 @@ final class SparkSourceResolver(
    Left(EngineError.UnsupportedCapability(
     engine  = identity.name,
     capability = "SourceRef.ByPath.schema",
-    message = s"Schema read for path '${src.path}' failed: ${e.getClass.getSimpleName}: ${e.getMessage}",
-   ))
+    message = s"Schema read for path '${src.path}' failed: ${e.getClass.getSimpleName}: ${e.getMessage}"))
   }
   case None =>
   Left(EngineError.UnsupportedCapability(
    engine  = identity.name,
    capability = "SourceRef.ByPath.resolve",
-   message = s"Spark path read failed: ${src.format} @ ${src.path}",
-  ))
+   message = s"Spark path read failed: ${src.format} @ ${src.path}"))
  }
  }
 
  /** Map a Spark StructField list to the portable `Field` (name +
- * SealedDataType + nullable). Per [[scala-spark-batch-bugs-mindset]]
+ * SealedDataType + nullable). 
  * mantra #3 (schema-drift verify at the boundary): the types
  * match Spark's analysis-time types, not caller-supplied. */
  private def scanSchema(
-  fields: List[StructField],
- ): List[Field] = fields.map { f =>
+  fields: List[StructField]): List[Field] = fields.map { f =>
  Field(
   name  = f.name,
   dataType = sparkTypeToSealedDataType(f.dataType),
-  nullable = f.nullable,
- )
+  nullable = f.nullable)
  }
 
  // Reuse the existing bridge (single source of truth for Spark -> portable type mapping).
@@ -182,11 +170,10 @@ final class SparkSourceResolver(
  def resolveWithPushdown(
   source: SourceRef,
   filters: Seq[TypedPredicate[_]],
-  identity: EngineIdentity,
- ): Either[EngineError, (ResolvedSource, org.apache.spark.sql.DataFrame)] = {
+  identity: EngineIdentity): Either[EngineError, (ResolvedSource, org.apache.spark.sql.DataFrame)] = {
  if (filters.isEmpty) {
   // No filters -- no pushdown; the existing path is
-  // backward-compatible (per [[scala-impact-analysis-mindset]]
+  // backward-compatible (
   // SS3: zero behavior change for 19 callers).
   resolve(source, identity).map(s => (s, readSourceDF(source, identity)))
  } else {
@@ -196,8 +183,7 @@ final class SparkSourceResolver(
   filters.foldLeft[Either[EngineError, Column]](Right(lit(true))) {
    (accE, pred) => for {
    acc <- accE
-   col <- io.sm8.connectors.spark.PortableExprCompiler
-      .predicateToColumn(pred.predicate)
+   col <- io.sm8.connectors.spark.PortableExprCompiler.predicateToColumn(pred.predicate)
    } yield acc && col
   }
   combinedColumnE.flatMap { combinedColumn =>
@@ -219,14 +205,12 @@ final class SparkSourceResolver(
  // resolveWithPushdown).
  private def readSourceDF(
   source: SourceRef,
-  identity: EngineIdentity,
- ): org.apache.spark.sql.DataFrame = source match {
+  identity: EngineIdentity): org.apache.spark.sql.DataFrame = source match {
  case src: SourceRef.ByName =>
   spark.table(src.table)
  case src: SourceRef.ByPath =>
   val reader = spark.read.format(src.format)
-  src.options.foldLeft(reader)((acc, kv) => acc.option(kv._1, kv._2))
-  .load(src.path)
+  src.options.foldLeft(reader)((acc, kv) => acc.option(kv._1, kv._2)).load(src.path)
  case _: SourceRef.ByProvider =>
   // Per RFC SS3: ByProvider requires a registered ProviderRef
   // closure. The SourceFilterPushdown for ByProvider is

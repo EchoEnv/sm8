@@ -9,7 +9,7 @@
  * with the same 5-field shape.
  *
  * Per RFC §3: engine-portable; engine-specific compile lives in
- * the adapter (Spark's `Column = functions.agg(...)`, Trino's
+ * the adapter (Spark's `Column = functions.agg(.)`, Trino's
  * `SUM(x) AS total`, DuckDB's `SUM("x")`).
  *
  * makes `Count(*)` (no input) explicit at the ADT level — no
@@ -34,5 +34,4 @@ final case class AggregateCall(
  input:  Option[Expr]  = None,
  alias:  String    = "",
  distinct: Boolean    = false,
- arguments: List[LiteralValue] = Nil,
-) extends Product with Serializable
+ arguments: List[LiteralValue] = Nil) extends Product with Serializable

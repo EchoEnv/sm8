@@ -19,7 +19,7 @@
  * name "audit". The PreHook / Transformer slots in HookContractSpec
  * are supplied as no-op stubs (the audit-plugin has none of those).
  *
- * one contract spec per plugin; per [[scala-jvm-safety-mindset]]:
+ * one contract spec per plugin; 
  * `EngineImpl` is fresh per test, no static state.
  */
 package io.sm8.plugins.audit

@@ -11,7 +11,7 @@ import io.sm8.core.expr.Expr
  * The spark-coupled `SemanticFilter` carries a
  * `SemanticScope => Column` closure (Spark `Column` is engine-
  * specific). The portable `FilterSpec` carries an `Expr: Expr`
- * (engine-portable, from PR #359). The two coexist intentionally:
+ * (engine-portable,. The two coexist intentionally:
  * the spark-coupled version is used by the existing `SemanticTable`'s
  * row-filter API; the portable version is used by the future
  * `Model.of` API and the v2 manifest.
@@ -42,7 +42,7 @@ import io.sm8.core.expr.Expr
  * ==Why core (engine-portable)==
  *
  * Filter specs are universal across query engines. The engine-
- * specific compile (Spark's `df.filter(...)`, Trino's `WHERE`,
+ * specific compile (Spark's `df.filter(.)`, Trino's `WHERE`,
  * etc.) lives in the engine adapter.
  *
  * ==Data-driven mantra compliance==
@@ -58,5 +58,4 @@ import io.sm8.core.expr.Expr
  */
 final case class FilterSpec(
  name:  String,
- predicate: Expr,
-) extends Product with Serializable
+ predicate: Expr) extends Product with Serializable

@@ -31,8 +31,7 @@ final class SparkEngineProviderDescriptor
  EngineIdentity(
   name     = "spark-3.5",
   nativeVersion  = "<uninitialized>",
-  engineAdapterVersion = "0.1.0",
- )
+  engineAdapterVersion = "0.1.0")
 
  override val available: Boolean = false
 
@@ -46,8 +45,7 @@ final class SparkEngineProviderDescriptor
   spark   = org.apache.spark.sql.SparkSession.builder().master(url).getOrCreate(),
   bridge   = SparkTypeBridge,
   sparkEngineName = "spark-3.5",
-  hookRunner  = None,
- )) catch {
+  hookRunner  = None)) catch {
   case _: Throwable => None
  }
 
@@ -62,8 +60,7 @@ final class SparkEngineProviderDescriptor
    spark   = org.apache.spark.sql.SparkSession.builder().master(spark.master).getOrCreate(),
    bridge   = SparkTypeBridge,
    sparkEngineName = "spark-3.5",
-   hookRunner  = None,
-  )) catch {
+   hookRunner  = None)) catch {
    case e: Throwable =>
    Left(EngineError.ConnectionFailed(
     engine = "spark",
@@ -82,19 +79,16 @@ final class SparkEngineProviderDescriptor
  override def query(
   model: io.sm8.core.model.Model,
   request: io.sm8.core.engine.QueryRequest,
-  ctx:  io.sm8.core.engine.EngineContext,
- ): Either[io.sm8.core.engine.EngineError, io.sm8.core.engine.PortableQueryResult] =
+  ctx:  io.sm8.core.engine.EngineContext): Either[io.sm8.core.engine.EngineError, io.sm8.core.engine.PortableQueryResult] =
  Left(io.sm8.core.engine.EngineError.UnsupportedCapability(
   engine  = identity.name,
   capability = "SparkEngineProviderDescriptor.query",
-  message = "Descriptor carries no SparkSession; call realize(url) first.",
- ))
+  message = "Descriptor carries no SparkSession; call realize(url) first."))
 
  override def explain(
   model: io.sm8.core.model.Model,
   request: io.sm8.core.engine.QueryRequest,
-  ctx:  io.sm8.core.engine.EngineContext,
- ): Either[io.sm8.core.engine.EngineError, String] =
+  ctx:  io.sm8.core.engine.EngineContext): Either[io.sm8.core.engine.EngineError, String] =
  Right(s"spark.explain(${model.name}): no SparkSession (descriptor)")
 }
 

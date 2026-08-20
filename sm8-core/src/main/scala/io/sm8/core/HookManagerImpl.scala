@@ -1,16 +1,11 @@
 /*
  * SM8 Core — internal HookManager implementation.
- *
- * Step 4: stores registered Hooks and returns them in dispatch order:
- * - Primary sort: priority (lower runs first; per RFC §8)
- * - Tie-break: registration sequence (earlier runs first)
- *
- * case class (priority + sequence + hook + origin). The dispatch
+ * The dispatch
  * list is derived (sorted on read) — no in-place mutation of dispatch
  * order.
  *
- * Per RFC §13 conformance PR (this PR): the `require(priority >= 0)`
- * check is replaced with a typed-origin range check via
+ * Per RFC §13 conformance PR : the `require(priority >= 0)`
+ *  typed-origin range check via
  * `io.sm8.sdk.HookOrigin.validate(origin, priority)`. Plugin authors
  * declare the origin of their plugin at registration time (default =
  * FirstParty, matching `io.sm8.plugins.*` reference plugins).
@@ -18,7 +13,7 @@
  * boundary (the SDK doc already declared this throw — the contract
  * is preserved).
  *
- * `AtomicLong` (was a `var` in earlier internal-only versions). The
+ *. The
  * hook storage map is a `mutable.Map` (same pattern as
  * `ConnectorRegistryImpl`; documented single-threaded use — register
  * at startup, dispatch at request time).
@@ -70,7 +65,7 @@ final class HookManagerImpl extends HookManager {
  private val postHooks: scala.collection.mutable.Map[HookStage, scala.collection.mutable.Buffer[HookEntry[PostHook]]] = scala.collection.mutable.Map.empty
 
  // AtomicLong so concurrent register* don't share a sequence slot.
- // Per the audit (Step 3 audit fix).
+ //
  private val nextSeq: AtomicLong = new AtomicLong(0L)
 
  /**
@@ -149,11 +144,9 @@ final class HookManagerImpl extends HookManager {
  ): Seq[(T, Int)] = store.get(stage) match {
  case None  => Seq.empty
  case Some(buf) =>
-  // Sort on read. Per [[scala-perf-testing-mindset]] the buffer
+  // Sort on read. 
   // is small (handful of hooks per stage); sort cost is negligible
   // compared to the hook bodies themselves.
-  buf.toSeq
-  .sortBy(e => (e.priority, e.seq))
-  .map(e => (e.hook, e.priority))
+  buf.toSeq.sortBy(e => (e.priority, e.seq)).map(e => (e.hook, e.priority))
  }
 }

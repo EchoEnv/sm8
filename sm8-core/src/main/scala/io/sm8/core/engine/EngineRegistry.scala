@@ -6,7 +6,7 @@ package io.sm8.core.engine
  * ==Why a registry (not direct provider use)==
  *
  * Per the design: "the registry's `select` filters availability".
- * Multiple providers (Spark, Trino, Databricks,...) can be
+ * Multiple providers (Spark, Trino, Databricks,.) can be
  * registered; the MCP `query` tool routes to the chosen one
  * (via `request.engine` or the default). The registry centralizes
  * the lookup + availability check.
@@ -33,17 +33,14 @@ package io.sm8.core.engine
  * engine-portable error shape (no exceptions for control flow). */
 final class EngineRegistry (
  private val engines: Map[String, EngineProvider],
- val default:  String,
-) extends Serializable {
+ val default:  String) extends Serializable {
 
  require(
  engines.contains(default),
- s"EngineRegistry default '$default' is not in the engines map (${engines.keys.mkString(", ")})",
- )
+ s"EngineRegistry default '$default' is not in the engines map (${engines.keys.mkString(", ")})")
  require(
  engines(default).available,
- s"EngineRegistry default '$default' is registered but NOT available at startup (per design §4.1: misconfigured boots must fail loud)",
- )
+ s"EngineRegistry default '$default' is registered but NOT available at startup (per design §4.1: misconfigured boots must fail loud)")
 
  /** Select a provider by name. Returns:
  * - `Right(provider)` if the name matches a registered AND
@@ -58,8 +55,7 @@ final class EngineRegistry (
   case _      => Left(EngineError.EngineUnavailable(
   engine  = name,
   available = available,
-  wasDefault = (name == default), message = "engine unavailable: " + name,
-  ))
+  wasDefault = (name == default), message = "engine unavailable: " + name))
  }
  }
 
@@ -92,6 +88,5 @@ object EngineRegistry {
  *     unregistered or unavailable at construction */
  def apply(
   engines: Map[String, EngineProvider],
-  default: String,
- ): EngineRegistry = new EngineRegistry(engines, default)
+  default: String): EngineRegistry = new EngineRegistry(engines, default)
 }

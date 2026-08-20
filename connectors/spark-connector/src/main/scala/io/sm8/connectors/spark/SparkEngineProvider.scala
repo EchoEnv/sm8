@@ -1,7 +1,7 @@
 /*
  * SM8 Spark Engine Provider - real runtime (Layer C of Step 8 follow-up + PR #41 Model.compile port).
  *
- * Per scala-spark-batch-bugs-mindset mantra #1 ("closures
+ * Per  mantra #1 ("closures
  * captured by Spark UDFs / lambdas in Dataset.map must avoid
  * non-serializable refs"): this provider captures a SparkSession
  * (which IS Serializable in Spark 3.5 and 4.1 - verified by the
@@ -10,16 +10,16 @@
  * inside query()); the SparkTypeBridge + PortableExprCompiler are
  * pure object refs.
  *
- * Per scala-jvm-safety-mindset mantra #3 (long-lived state): the
+ * Per  mantra #3 (long-lived state): the
  * captured compiler is created per query (no static / ThreadLocal
  * state). The SparkSession ref is constructor-frozen.
  *
- * Per scala-spark-batch-bugs-mindset mantra #5 (driver vs executor
+ * Per  mantra #5 (driver vs executor
  * asymmetry): the `compile(model, ctx)` and `collect()` calls
  * both run in the driver process. No driver-side resources leak
  * to executors. ResultRow construction happens in the driver.
  *
- * Per scala-perf-testing-mindset mantra #2 (isolate the hot path):
+ * Per  mantra #2 (isolate the hot path):
  * the compile path (PortableQueryCompiler) and the per-row decode
  * path (decodeRow/decodeCell) are separated so future profiling
  * can attribute cost cleanly.
@@ -58,8 +58,6 @@ final class SparkEngineProvider(
  val hookRunner:  Option[HookRunner] = None
 ) extends EngineProvider {
 
-
-
  /**
  * Typed URL realization (PR-B per RFC `adapters.md` Rule 4).
  *
@@ -84,9 +82,7 @@ final class SparkEngineProvider(
   spark   = org.apache.spark.sql.SparkSession.builder().master(url).getOrCreate(),
   bridge   = SparkTypeBridge,
   sparkEngineName = sparkEngineName,
-  hookRunner  = None,
- ))
-
+  hookRunner  = None))
 
  override lazy val identity: io.sm8.core.engine.EngineIdentity =
  io.sm8.core.engine.EngineIdentity(
@@ -167,14 +163,12 @@ final class SparkEngineProvider(
  override def query(
   model: Model,
   request: QueryRequest,
-  ctx:  EngineContext,
- ): Either[EngineError, PortableQueryResult] = {
+  ctx:  EngineContext): Either[EngineError, PortableQueryResult] = {
  if (spark == null) {
   return Left(EngineError.ConnectionFailed(
   engine = sparkEngineName,
   reason = "SparkSession is null",
-  message = "SparkEngineProvider.query called with null SparkSession",
-  ))
+  message = "SparkEngineProvider.query called with null SparkSession"))
  }
  // PR-M4 (GAP 5 -- the most critical): the IR-extension path
  // (PR-H/I/J/K/L) is now LIVE in production. Steps:
@@ -263,19 +257,18 @@ final class SparkEngineProvider(
  // (`model.name | <mcpRequest>`) so the smoke test in
  // `SparkEngineProviderReplaySafetySpec` can verify cache-hit
  // behavior end-to-end. PR-3a will replace this default with
- // `EngineHookRequest.cacheKey = CachePlugin.computeKey(...)`.
+ // `EngineHookRequest.cacheKey = CachePlugin.computeKey(.)`.
  val cacheKey: String = s"${model.name}|${request}"
  // PR-9: schema metadata shared by the HIT (returned via cached
  // PQR) and MISS (built by `applyPostCompilePipeline`) paths.
  // The cached PQR carries its own metadata; the MISS path adds
- // these. Per [[karpathy-guidelines-mindset]] "match existing
- // style": same keys as the pre-PR-9 inline `Right(...)` block
+ // these. 
+ // style": same keys as the pre-PR-9 inline `Right(.)` block
  // — engine identity, spark version, IR-path provenance.
  val schemaMetadata: Map[String, String] = Map(
   "engine.id"  -> sparkEngineName,
   "engine.version" -> (if (spark != null) spark.version else "<uninitialized>"),
-  "ir.path"  -> "pr-m4",
- )
+  "ir.path"  -> "pr-m4")
  // The runner's `execute` callback receives a `Context` (per the
  // HookRunner Protocol). The actual `EngineContext` for the executor
  // lives in `Context.meta("engineContext")` (per RFC §7 scratch space
@@ -292,12 +285,11 @@ final class SparkEngineProvider(
  // not marshal Context across the wire). For the Restate journal
  // path (PR-C5b-ext-γ), the cache-write PostHook does NOT capture
  // the DataFrame (it stores a `RestateCachedRow` per
- // [[CacheWritePostHook]] — see plugins/cache-plugin).
+ // 
  val initialCtx: Context = Context(
   request = EngineHookRequest(model, request, cacheKey),
   stage = PipelineStage.Execute,
-  meta = Map("engineContext" -> ctx),
- )
+  meta = Map("engineContext" -> ctx))
  // compiled: Either[EngineError, DataFrame]
  // - HIT path (c.stop = true after runner): no compile; use the
  //  runner's `ctx.result` (an EngineHookResult containing the
@@ -337,8 +329,7 @@ final class SparkEngineProvider(
     Left(EngineError.UnsupportedCapability(
      engine  = sparkEngineName,
      capability = "SparkEngineProvider.query",
-     message = "Context.meta missing 'engineContext' (sm8-internal invariant violated)",
-    ))
+     message = "Context.meta missing 'engineContext' (sm8-internal invariant violated)"))
    }
    }).flatMap { finalCtx =>
    finalCtx.result match {
@@ -361,7 +352,7 @@ final class SparkEngineProvider(
      case Some(df) if df.isInstanceOf[org.apache.spark.sql.DataFrame] =>
      // is `Dataset[Row]` — the Row type param is erased at
      // runtime, so a type pattern `case df: DataFrame`
-     // binds `df` as `Any`. Use the `case... if`
+     // binds `df` as `Any`. Use the `case. if`
      // guard with `isInstanceOf` (runtime check) +
      // `asInstanceOf` (the boundary cast). A wrong
      // type here indicates the runner callback
@@ -374,14 +365,12 @@ final class SparkEngineProvider(
      Left(EngineError.UnsupportedCapability(
       engine  = sparkEngineName,
       capability = "SparkEngineProvider.query",
-      message = s"Context.meta('compiledDf') has unexpected type ${other.getClass.getName} (sm8-internal invariant violated)",
-     ))
+      message = s"Context.meta('compiledDf') has unexpected type ${other.getClass.getName} (sm8-internal invariant violated)"))
      case None =>
      Left(EngineError.UnsupportedCapability(
       engine  = sparkEngineName,
       capability = "SparkEngineProvider.query",
-      message = "Context.meta missing 'compiledDf' (sm8-internal invariant violated)",
-     ))
+      message = "Context.meta missing 'compiledDf' (sm8-internal invariant violated)"))
     }
    }
    }
@@ -408,7 +397,7 @@ final class SparkEngineProvider(
  /**
  * PR-9: extract the where/limit/collect/decode pipeline into a
  * helper method so the HIT-path and MISS-path branches in `query`
- * can share it. Per [[karpathy-guidelines-mindset]] "match existing
+ * can share it. 
  * style": this is the same logic the pre-PR-9 inline block had,
  * just lifted into a method (no semantic change).
  *
@@ -426,8 +415,7 @@ final class SparkEngineProvider(
  private[spark] def applyPostCompilePipeline(
   df:    org.apache.spark.sql.DataFrame,
   request:   QueryRequest,
-  schemaMetadata: Map[String, String],
- ): Either[EngineError, PortableQueryResult] = {
+  schemaMetadata: Map[String, String]): Either[EngineError, PortableQueryResult] = {
  val filtered: org.apache.spark.sql.DataFrame =
   request.where.filter(_.nonEmpty) match {
   case Some(w) => df.filter(w)
@@ -472,8 +460,7 @@ final class SparkEngineProvider(
  Right(PortableQueryResult(
   schema = schema,
   rows  = rows,
-  metadata = schemaMetadata,
- ))
+  metadata = schemaMetadata))
  }
  /** PR-N1: walk the produced `RelOp` tree via the engine-portable
  * `QueryBuilder` + the core `RelOpPlanPrinter`. Output is a
@@ -489,8 +476,7 @@ final class SparkEngineProvider(
  override def explain(
   model: Model,
   request: QueryRequest,
-  ctx:  EngineContext,
- ): Either[EngineError, String] = {
+  ctx:  EngineContext): Either[EngineError, String] = {
  val header =
   s"=== SM8 Plan: ${model.name} | engine=${sparkEngineName} version=${identity.nativeVersion} ==="
  QueryBuilder.build(model, resolver, identity) match {
@@ -543,12 +529,11 @@ final class SparkEngineProvider(
  private def compileModelToDataFrame(
   model: Model,
   request: QueryRequest,
-  ctx:  EngineContext,
- ): Either[EngineError, org.apache.spark.sql.DataFrame] = {
+  ctx:  EngineContext): Either[EngineError, org.apache.spark.sql.DataFrame] = {
  val resolver = new SparkSourceResolver(spark)
  // PR-31 (ADR-008-R SSfilterPushdown wire-up, deferred from PR-28):
  // use `resolveWithPushdown` to push the typed whereFilters down to
- // the source. Per [[scala-spark-batch-bugs-mindset]] SS1
+ // the source. 
  // (closure-safety): the source-level filter is built driver-side
  // via `predicateToColumn`; no executor-side closure capture.
  //
@@ -604,7 +589,7 @@ final class SparkEngineProvider(
 
  /** Decode a Spark `Row` to a `List[ResultValue]` aligned with `schema.fields`.
  *
- * Per scala-perf-testing-mindset mantra #3 (count allocations):
+ * Per  mantra #3 (count allocations):
  * the row is a flat seq; no nested walker. The `while` loop
  * preallocates a single Array of size n and converts to List
  * once at the end.
@@ -614,8 +599,7 @@ final class SparkEngineProvider(
  */
  private def decodeRow(
   row: org.apache.spark.sql.Row,
-  schema: ResultSchema,
- ): List[ResultValue] = {
+  schema: ResultSchema): List[ResultValue] = {
  val n: Int = schema.fields.size
  val values = new Array[ResultValue](n)
  var i = 0
@@ -630,8 +614,7 @@ final class SparkEngineProvider(
 
  private def decodeCell(
   cell:  AnyRef,
-  dataType: SealedDataType,
- ): ResultValue = {
+  dataType: SealedDataType): ResultValue = {
  if (cell == null) return ResultValue.NullV
  dataType match {
   case SealedDataType.Boolean =>

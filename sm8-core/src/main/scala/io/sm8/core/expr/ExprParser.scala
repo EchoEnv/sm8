@@ -98,8 +98,7 @@ object ExprParser {
   Left(ExprParseError.UnexpectedToken(
    token = p.peekText(10),
    position = p.position,
-   reason = "expected end of expression",
-  ))
+   reason = "expected end of expression"))
   else
   Right(e)
  }
@@ -266,8 +265,8 @@ object ExprParser {
 
  def parsePrimary(): Either[ExprParseError, Expr] = {
   skipWhitespace()
-  // PR-M1 (ADR-008-L Appendix GAP 1): CASE WHEN... THEN...
-  // [WHEN... THEN...]* [ELSE...] END. Case-insensitive
+  // PR-M1 (ADR-008-L Appendix GAP 1): CASE WHEN. THEN.
+  // [WHEN. THEN.]* [ELSE.] END. Case-insensitive
   // keywords, consistent with AND/OR/NOT/AS/IS. Missing ELSE
   // lowers to Literal(NullValue) per SQL semantics.
   if (startsWithWordCaseInsensitive("case")) {
@@ -292,8 +291,7 @@ object ExprParser {
    Left(ExprParseError.UnexpectedToken(
    token = peekChar().toString,
    position = position,
-   reason = "expected literal, identifier, or '('",
-   ))
+   reason = "expected literal, identifier, or '('"))
   }
   head.flatMap(parseAsSuffix)
   }
@@ -318,8 +316,7 @@ object ExprParser {
    _  = if (!ok) return Left(ExprParseError.UnexpectedToken(
       token = peekText(8),
       position = position,
-      reason = "expected 'THEN' in CASE WHEN",
-     ))
+      reason = "expected 'THEN' in CASE WHEN"))
    _ = skipWhitespace()
    value <- parseOrExpr()
   } yield (cond, value)
@@ -344,14 +341,12 @@ object ExprParser {
    Left(ExprParseError.UnexpectedToken(
     token = peekText(8),
     position = position,
-    reason = "expected 'END' to close CASE WHEN",
-   ))
+    reason = "expected 'END' to close CASE WHEN"))
    else if (branches.isEmpty)
    Left(ExprParseError.UnexpectedToken(
     token = "CASE",
     position = position,
-    reason = "CASE requires at least one WHEN... THEN branch",
-   ))
+    reason = "CASE requires at least one WHEN. THEN branch"))
    else Right(Expr.CaseWhen(branches.toList, els))
   }
   }
@@ -401,8 +396,7 @@ object ExprParser {
     Left(ExprParseError.UnexpectedToken(
      token = peekText(8),
      position = position,
-     reason = "expected type name or alias after 'AS'",
-    ))
+     reason = "expected type name or alias after 'AS'"))
     else if (isTypeKeyword) Left(typeErr)
     else Right(Expr.Alias(name = name, expr = e))
    }
@@ -427,8 +421,7 @@ object ExprParser {
    Left(ExprParseError.UnexpectedToken(
     token = peekChar().toString,
     position = position,
-    reason = "expected 'NULL' or 'NOT NULL' after 'IS'",
-   ))
+    reason = "expected 'NULL' or 'NOT NULL' after 'IS'"))
    }
   } else Right(e)
   }
@@ -478,8 +471,7 @@ object ExprParser {
   case None =>
    Left(ExprParseError.InvalidLiteral(
    raw = name,
-   reason = "unknown or malformed cast target type; supported: INT, BIGINT, DOUBLE, VARCHAR, BOOLEAN, DATE, TIMESTAMP, DECIMAL(p, s)",
-   ))
+   reason = "unknown or malformed cast target type; supported: INT, BIGINT, DOUBLE, VARCHAR, BOOLEAN, DATE, TIMESTAMP, DECIMAL(p, s)"))
   }
  }
 
@@ -509,7 +501,6 @@ object ExprParser {
   scala.util.Try(raw.toInt).getOrElse(-1)
  }
 
-
  private def parseStringLiteral(): Either[ExprParseError, Expr] = {
   val quote = advance()
   val start = position
@@ -521,8 +512,7 @@ object ExprParser {
   advance()
   Right(Expr.Literal(
    value = LiteralValue.StringValue(raw),
-   dataType = SealedDataType.Varchar,
-  ))
+   dataType = SealedDataType.Varchar))
   }
  }
 
@@ -542,8 +532,7 @@ object ExprParser {
   ).map { d =>
    Expr.Literal(
    value = LiteralValue.DoubleValue(d),
-   dataType = SealedDataType.Double,
-   )
+   dataType = SealedDataType.Double)
   }
   } else {
   val raw = chars.slice(start, position).mkString
@@ -552,8 +541,7 @@ object ExprParser {
   ).map { i =>
    Expr.Literal(
    value = LiteralValue.IntValue(i),
-   dataType = SealedDataType.Int,
-   )
+   dataType = SealedDataType.Int)
   }
   }
  }
@@ -563,7 +551,7 @@ object ExprParser {
   advance()
   val word = chars.slice(start, position).mkString
   // Function-call detection: `name(` implies FunctionCall(name, args).
-  // We peek past whitespace before checking — SQL allows `f (...)`.
+  // We peek past whitespace before checking — SQL allows `f (.)`.
   // identifier-then-paren pattern triggers function-call parsing.
   // Bare identifiers (no paren) remain FieldRef.
   skipWhitespace()
@@ -599,12 +587,10 @@ object ExprParser {
   word.toLowerCase match {
    case "true" => Right(Expr.Literal(
    value = LiteralValue.BoolValue(true),
-   dataType = SealedDataType.Boolean,
-   ))
+   dataType = SealedDataType.Boolean))
    case "false" => Right(Expr.Literal(
    value = LiteralValue.BoolValue(false),
-   dataType = SealedDataType.Boolean,
-   ))
+   dataType = SealedDataType.Boolean))
    case _  => Right(Expr.FieldRef(word))
   }
   }

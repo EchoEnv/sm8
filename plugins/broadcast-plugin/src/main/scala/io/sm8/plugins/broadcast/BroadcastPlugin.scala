@@ -6,7 +6,7 @@
  * broadcast threshold and annotate the join plan when SM8 has Spark
  * integration (deferred).
  *
- * Per [[scala-spark-batch-bugs]] mantra #1: `with java.io.Serializable`
+ * Per 
  * for Spark-closure safety (same as Step 8 TrinoConnector + Step 9a
  * Plugins).
  */
@@ -23,7 +23,7 @@ import io.sm8.sdk._
  */
 final class BroadcastPlugin extends Plugin with java.io.Serializable {
 
-  /** Per [[scala-spark-batch-bugs-mindset]] mantra #1. */
+  /** 
   override def closedOverVars: Seq[String] = Seq("fires")
 
   val fires: AtomicInteger = new AtomicInteger(0)

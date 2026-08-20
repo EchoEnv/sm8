@@ -24,13 +24,13 @@
  *       compile boundary (pre-validated -- never
  *       a silent no-op, per ADR-008-H).
  *
- * Per scala-data-driven-refactor-mindset section 1 (behavior in adapters,
+ * Per  section 1 (behavior in adapters,
  * data in core): the `Model` is pure data in sm8-core; this
  * compiler is the Spark-specific behavior that converts it to a
  * `DataFrame`. Other engines (Trino, DuckDB) have analogous
  * compilers that emit SQL strings instead.
  *
- * Per scala-spark-batch-bugs-mindset mantra #1 (closures captured
+ * Per  mantra #1 (closures captured
  * by Spark UDFs / lambdas must avoid non-serializable refs):
  * - This class `extends java.io.Serializable`.
  * - Captures a SparkSession (which Spark 3.5 + 4.1 guarantee is
@@ -41,11 +41,11 @@
  * - The SparkTypeBridge companion is a pure object (Serializable).
  * - No DataFrame / Iterator / Connection is closed over.
  *
- * Per scala-jvm-safety-mindset mantra #3 (long-lived state):
+ * Per  mantra #3 (long-lived state):
  * - No `@volatile var`, no `clear()` method. The SparkSession ref
  *  is constructor-frozen.
  *
- * Per scala-perf-testing-mindset mantra #3 (count allocations):
+ * Per  mantra #3 (count allocations):
  * - The compile path is iterative over the flat Model fields.
  * - applyFilters/applyJoins: single foldLeft each (no double-walk).
  * - collectAllReferences: single mutable-set accumulator walk.
@@ -60,7 +60,7 @@
  * Per scala-impact-analysis-mindset: the compile path DOES NOT
  * cross the executor boundary. The output `DataFrame` is lazy;
  * only `collect()` triggers execution. Per
- * scala-spark-batch-bugs-mindset mantra #5 (driver vs executor
+ *  mantra #5 (driver vs executor
  * asymmetry): the engine driver calls compile() + collect() in
  * the driver process.
  */
@@ -94,10 +94,9 @@ final class PortableQueryCompiler(val spark: SparkSession)
  */
  private val SupportedAggregates: Set[AggregateFn] = Set(
  AggregateFn.Sum, AggregateFn.Count, AggregateFn.CountDistinct,
- AggregateFn.Avg, AggregateFn.Min, AggregateFn.Max,
- )
+ AggregateFn.Avg, AggregateFn.Min, AggregateFn.Max)
 
- /** Compile a portable [[Model]] into a Spark [[DataFrame]].
+ /** Compile a portable 
  *
  * The path is (PR-K order, matching the legacy):
  * 1. resolveSource(model.source) -> Either[EngineError, DataFrame]
@@ -117,8 +116,7 @@ final class PortableQueryCompiler(val spark: SparkSession)
  */
  def compile(
   model: Model,
-  ctx: EngineContext,
- ): Either[EngineError, DataFrame] = {
+  ctx: EngineContext): Either[EngineError, DataFrame] = {
  for {
   sourceDf <- resolveSource(model.source)
   filtered <- applyFilters(sourceDf, model.filters)
@@ -153,8 +151,7 @@ final class PortableQueryCompiler(val spark: SparkSession)
  * are owned by the lowerer. */
  def compileRelOp(
   relOp: io.sm8.core.rel.RelOp,
-  ctx: EngineContext,
- ): Either[EngineError, DataFrame] = minimalRelOpLowerer.lower(relOp, ctx)
+  ctx: EngineContext): Either[EngineError, DataFrame] = minimalRelOpLowerer.lower(relOp, ctx)
 
  // PR-31 (ADR-008-R SSfilterPushdown wire-up, deferred from PR-28):
  // overload of `compileRelOp` that accepts a pre-filtered source
@@ -168,8 +165,7 @@ final class PortableQueryCompiler(val spark: SparkSession)
  def compileRelOp(
   relOp:   io.sm8.core.rel.RelOp,
   ctx:   EngineContext,
-  preFilteredDf: Option[org.apache.spark.sql.DataFrame],
- ): Either[EngineError, DataFrame] =
+  preFilteredDf: Option[org.apache.spark.sql.DataFrame]): Either[EngineError, DataFrame] =
  minimalRelOpLowerer.lower(relOp, ctx, preFilteredDf)
 
  // PR-32 (ADR-008-R SSR3 broader fix; the PR-27 / PR-31 work-around
@@ -199,15 +195,11 @@ final class PortableQueryCompiler(val spark: SparkSession)
   relOp:   io.sm8.core.rel.RelOp,
   ctx:   EngineContext,
   scan:   io.sm8.core.engine.ResolvedSource.Scan,
-  preFilteredDf: Option[org.apache.spark.sql.DataFrame],
- ): Either[EngineError, DataFrame] =
- io.sm8.core.model.ModelValidator
- .validateAgainstSchema(model, scan)
- .left.map(e => EngineError.UnsupportedCapability(
+  preFilteredDf: Option[org.apache.spark.sql.DataFrame]): Either[EngineError, DataFrame] =
+ io.sm8.core.model.ModelValidator.validateAgainstSchema(model, scan).left.map(e => EngineError.UnsupportedCapability(
   engine  = "spark-connector",
   capability = "ModelValidator.validateAgainstSchema",
-  message = e.message))
- .flatMap(_ => compileRelOp(relOp, ctx, preFilteredDf))
+  message = e.message)).flatMap(_ => compileRelOp(relOp, ctx, preFilteredDf))
 
  /** Aggregate -> DataFrame: for the GAP-5 minimum, we use the
  * `compileRelOpAggregateSubtree` helper that recursively walks
@@ -221,10 +213,9 @@ final class PortableQueryCompiler(val spark: SparkSession)
  * a new RelOp->DataFrame aggregator. The model is reconstructed
  * from the relOp's aggregates (the IR carries the call shape). */
  private def resolveSource(
-  source: SourceRef,
- ): Either[EngineError, DataFrame] = source match {
+  source: SourceRef): Either[EngineError, DataFrame] = source match {
  case src: SourceRef.ByName =>
-  // Resolution strategy: try spark.table(...) first (handles
+  // Resolution strategy: try spark.table(.) first (handles
   // both catalog tables AND session-scoped temp views); fall
   // back to spark.read.table(src.table) for catalog tables.
   try {
@@ -238,41 +229,35 @@ final class PortableQueryCompiler(val spark: SparkSession)
     Left(EngineError.UnsupportedCapability(
     engine = "spark-3.5",
     capability = "SourceRef.ByName",
-    message = s"Spark table '${src.table}' not found.",
-    ))
+    message = s"Spark table '${src.table}' not found."))
    }
   }
 
  case src: SourceRef.ByPath =>
   try {
   Right(
-   spark.read.format(src.format)
-   .options(src.options)
-   .load(src.path)
+   spark.read.format(src.format).options(src.options).load(src.path)
   )
   } catch {
   case e: Exception =>
    Left(EngineError.UnsupportedCapability(
    engine = "spark-3.5",
    capability = "SourceRef.ByPath",
-   message = s"Spark path read failed: ${e.getMessage}",
-   ))
+   message = s"Spark path read failed: ${e.getMessage}"))
   }
 
  case _: SourceRef.ByProvider =>
   Left(EngineError.UnsupportedCapability(
   engine = "spark-3.5",
   capability = "SourceRef.ByProvider",
-  message = "SourceRef.ByProvider requires a registered ProviderRef closure (deferred to future PR).",
-  ))
+  message = "SourceRef.ByProvider requires a registered ProviderRef closure (deferred to future PR)."))
  }
 
  // -- filter application --
 
  private def applyFilters(
   df:  DataFrame,
-  filters: List[FilterSpec],
- ): Either[EngineError, DataFrame] = filters.foldLeft[Either[EngineError, DataFrame]](Right(df)) {
+  filters: List[FilterSpec]): Either[EngineError, DataFrame] = filters.foldLeft[Either[EngineError, DataFrame]](Right(df)) {
  (accE, f) => for {
   acc <- accE
   col <- PortableExprCompiler.toColumn(f.predicate)
@@ -281,7 +266,7 @@ final class PortableQueryCompiler(val spark: SparkSession)
 
  // -- join application (PR-K) --
 
- /** Fold the model's [[JoinSpec]] list onto the DataFrame.
+ /** Fold the model's 
  *
  * v0.1.0 scope (matching the legacy's v0.3.1): single-key
  * equi-joins over the 5 kinds. The right side resolves via
@@ -296,8 +281,7 @@ final class PortableQueryCompiler(val spark: SparkSession)
  private def applyJoins(
   df: DataFrame,
   joins: List[JoinSpec],
-  ctx: io.sm8.core.engine.EngineContext,
- ): Either[EngineError, DataFrame] =
+  ctx: io.sm8.core.engine.EngineContext): Either[EngineError, DataFrame] =
  joins.foldLeft[Either[EngineError, DataFrame]](Right(df)) { (accE, js) =>
   accE.flatMap { accDf =>
   // Multi-key is deferred (typed error, per the legacy scope).
@@ -305,13 +289,12 @@ final class PortableQueryCompiler(val spark: SparkSession)
    Left(EngineError.UnsupportedCapability(
    engine  = "spark-3.5",
    capability = "JoinSpec.keys",
-   message = s"Multi-key joins (${js.keys.size} keys) deferred to a future PR.",
-   ))
+   message = s"Multi-key joins (${js.keys.size} keys) deferred to a future PR."))
   } else {
    // Resolve the right-side model by name in the active catalog.
    // PR-2/B2 (ADR-008-P §B2): narrow the catch from broad `case _: Exception`
-   // to the specific Spark exceptions that `spark.table(...)` raises when the
-   // table is not found. Per [[scala-error-handling-mindset]] SS4 ("never
+   // to the specific Spark exceptions that `spark.table(.)` raises when the
+   // table is not found. 
    // swallow the specific"): catching `Exception` would also absorb
    // `OutOfMemoryError` / `StackOverflowError` / `SparkException` /
    // `AnalysisException` -- all of which indicate real Spark executor
@@ -329,14 +312,12 @@ final class PortableQueryCompiler(val spark: SparkSession)
     Left(EngineError.UnsupportedCapability(
     engine  = "spark-3.5",
     capability = "JoinSpec.rightModel",
-    message = s"Right-side model '${js.rightModel}' not found.",
-    ))
+    message = s"Right-side model '${js.rightModel}' not found."))
    case _: org.apache.spark.sql.AnalysisException =>
     Left(EngineError.UnsupportedCapability(
     engine  = "spark-3.5",
     capability = "JoinSpec.rightModel",
-    message = s"Right-side model '${js.rightModel}' not resolvable: AnalysisException.",
-    ))
+    message = s"Right-side model '${js.rightModel}' not resolvable: AnalysisException."))
    }
    // PR-2/B3 (ADR-008-P §B3): reject Cross + non-None preferredStrategy BEFORE
    // building the join. Per the RelOp.Join contract (PR-H): Cross is
@@ -346,9 +327,7 @@ final class PortableQueryCompiler(val spark: SparkSession)
    // product's execution. So if a caller asks for Cross + a non-None
    // preferredStrategy, that's a request that's impossible to honor.
    // runtime): fail loud with a typed error rather than silently
-   // dropping the hint (which is the previous behavior -- the hint
-   // was applied to a Cross join, was a no-op, and the caller never
-   // knew). Per [[karpathy-app-design-mindset]] SS3.1 (Protocols before
+   // dropping the hint. 
    // implementations): the typed-error contract is honored.
    rightDf.flatMap { rDf =>
    (js.kind, ctx.joinHints.preferredStrategy) match {
@@ -359,8 +338,7 @@ final class PortableQueryCompiler(val spark: SparkSession)
      message = s"Cross join (PR-H) is unconditional (Cartesian product); " +
         s"the preferredStrategy hint '$strategy' cannot be honored. " +
         s"Either drop the preferredStrategy hint, or change JoinKind to " +
-        s"Inner/Left/Right/Full.",
-    ))
+        s"Inner/Left/Right/Full."))
     case _ => Right(rDf)
    }
    }.flatMap { rDf =>
@@ -374,7 +352,7 @@ final class PortableQueryCompiler(val spark: SparkSession)
    // PR-M4 (GAP 8): honor `ctx.joinHints.preferredStrategy` via
    // the Spark `hint()` API. Broadcast is the most consequential
    // hint (turns a shuffle+shuffle-exchange into a local
-   // map-side broadcast). Per [[scala-spark-batch-bugs-mindset]]
+   // map-side broadcast). 
    // mantra #1 (closure-safety): the hint is a string
    // descriptor -- no captured lambdas.
    // PR-O2 (ADR-008-O, P0-4): honor
@@ -440,8 +418,7 @@ final class PortableQueryCompiler(val spark: SparkSession)
  * walker, single mutable-set accumulator, returns `Set[String]`.
  */
  private def collectAllReferences(
-  calcMeasures: List[CalculatedMeasure],
- ): Set[String] = {
+  calcMeasures: List[CalculatedMeasure]): Set[String] = {
  val out = scala.collection.mutable.Set.empty[String]
  def go(e: Expr): Unit = e match {
   case Expr.All(name)    => out += name
@@ -494,24 +471,19 @@ final class PortableQueryCompiler(val spark: SparkSession)
  */
  def applyAggregations(
   df: DataFrame,
-  model: Model,
- ): Either[EngineError, DataFrame] = {
+  model: Model): Either[EngineError, DataFrame] = {
  if (model.measures.isEmpty) {
   Right(selectDimensions(df, model))
  } else {
   // Pre-validate: every measure's aggregate must be wired.
-  val unwired = model.measures
-  .map(_.expr.fn)
-  .filterNot(SupportedAggregates.contains)
-  .distinct
+  val unwired = model.measures.map(_.expr.fn).filterNot(SupportedAggregates.contains).distinct
   if (unwired.nonEmpty) {
   Left(EngineError.FeatureDeferred(
    engine = "spark-3.5",
    feature = s"aggregate:${unwired.mkString(",")}",
    release = "post-v0.1.0",
    message = "Advanced aggregates (Stddev/Variance/Median/Percentile/ApproxPercentile/First/Last) " +
-      "defer to a future PR (use SQL-side or engine-specific paths).",
-  ))
+      "defer to a future PR (use SQL-side or engine-specific paths)."))
   } else {
   val dimColsE: Either[EngineError, Array[Column]] = PortableExprCompiler.colsOf(
    model.dimensions.map(_.expr).toList
@@ -539,8 +511,7 @@ final class PortableQueryCompiler(val spark: SparkSession)
      Left(EngineError.UnsupportedCapability(
      engine  = "spark-3.5",
      capability = "MaterializePolicy.Persist",
-     message = s"Unknown Spark StorageLevel: '$level'. Expected one of: DISK_ONLY, DISK_ONLY_2, MEMORY_ONLY, MEMORY_ONLY_2, MEMORY_AND_DISK, MEMORY_AND_DISK_2, MEMORY_AND_DISK_SER, MEMORY_AND_DISK_SER_2, OFF_HEAP.",
-     ))
+     message = s"Unknown Spark StorageLevel: '$level'. Expected one of: DISK_ONLY, DISK_ONLY_2, MEMORY_ONLY, MEMORY_ONLY_2, MEMORY_AND_DISK, MEMORY_AND_DISK_2, MEMORY_AND_DISK_SER, MEMORY_AND_DISK_SER_2, OFF_HEAP."))
     }
    case _ =>
     Right(result)
@@ -564,8 +535,7 @@ final class PortableQueryCompiler(val spark: SparkSession)
  private def applyGroupByAgg(
   df:  DataFrame,
   model: Model,
-  dimCols: Array[Column],
- ): Either[EngineError, DataFrame] = {
+  dimCols: Array[Column]): Either[EngineError, DataFrame] = {
  val aggColsE: Either[EngineError, List[Column]] =
   model.measures.foldLeft[Either[EngineError, List[Column]]](Right(Nil)) {
   (accE, m) => for {
@@ -593,8 +563,7 @@ final class PortableQueryCompiler(val spark: SparkSession)
  * compiler that handles CASE WHEN / Alias / All from PR-I). */
  private def applyCalculatedMeasures(
   df: DataFrame,
-  model: Model,
- ): Either[EngineError, DataFrame] = model.calculatedMeasures.foldLeft[Either[EngineError, DataFrame]](Right(df)) {
+  model: Model): Either[EngineError, DataFrame] = model.calculatedMeasures.foldLeft[Either[EngineError, DataFrame]](Right(df)) {
  (accE, calc) => for {
   acc <- accE
   c <- PortableExprCompiler.toColumn(calc.expr)
@@ -612,8 +581,7 @@ final class PortableQueryCompiler(val spark: SparkSession)
  private def applyWithWindows(
   df:  DataFrame,
   model: Model,
-  dimCols: Array[Column],
- ): Either[EngineError, DataFrame] = {
+  dimCols: Array[Column]): Either[EngineError, DataFrame] = {
  val windowSpec =
   if (dimCols.isEmpty) Window.partitionBy()
   else Window.partitionBy(dimCols: _*)
@@ -627,7 +595,7 @@ final class PortableQueryCompiler(val spark: SparkSession)
  withMeasuresE.flatMap(applyCalculatedMeasures(_, model))
  }
 
- /** Render a portable [[AggregateCall]] as a Spark [[Column]].
+ /** Render a portable 
  *
  * Total for the 6 SupportedAggregates (pre-validated by
  * applyAggregations -- reaching the fallback here is an internal
@@ -654,7 +622,7 @@ final class PortableQueryCompiler(val spark: SparkSession)
    // Programmer error: applyAggregations pre-validates
    // against SupportedAggregates. Reaching here is an
    // internal invariant violation, hence the loud typed
-   // error (not a throw per [[scala-error-handling-mindset]]
+   // error (not a throw 
    // rule #3: throw only for programmer errors; here the
    // invariant break surfaces as a typed EngineError so
    // the MCP server maps it to a 5xx).
@@ -663,8 +631,7 @@ final class PortableQueryCompiler(val spark: SparkSession)
    name = "PortableQueryCompiler.renderAggregate",
    reason = "InvariantViolation",
    message = s"PortableQueryCompiler.renderAggregate: $other reached the renderer " +
-      s"without FeatureDeferred pre-validation -- internal invariant violation.",
-   ))
+      s"without FeatureDeferred pre-validation -- internal invariant violation."))
   }
  } yield out
  }
@@ -679,15 +646,13 @@ final class PortableQueryCompiler(val spark: SparkSession)
  */
  private def selectDimensions(
   df: DataFrame,
-  model: Model,
- ): DataFrame = {
+  model: Model): DataFrame = {
  // PR-O4b (ADR-008-O): dimension expr is now a typed Expr. For the
  // common FieldRef case we extract the name; other Expr shapes are
  // flattened to their first FieldRef here (the column-projection
  // contract is "select these column names").
  val dimNames: Array[String] = model.dimensions.map(d =>
-  io.sm8.core.expr.Calculator.fieldNamesOf(d.expr).headOption
-  .getOrElse(d.name)
+  io.sm8.core.expr.Calculator.fieldNamesOf(d.expr).headOption.getOrElse(d.name)
  ).toArray
  if (dimNames.isEmpty) df
  else df.select(dimNames.map(name => df.col(name)): _*)

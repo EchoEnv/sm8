@@ -17,7 +17,7 @@
  * implementations): the subtrait is the Protocol; connectors
  * implement it. Per §1 ("errors are
  * data"): the typed `Either[EngineError, EngineProvider]` return type
- * replaces the silent `Option[...]` (which could not distinguish
+ * replaces the silent `Option[.]` (which could not distinguish
  * "engine doesn't support URL realization" from "URL is invalid for
  * this engine").
  *
@@ -37,9 +37,9 @@ package io.sm8.core.engine
 /**
  * Typed realization contract (subtrait of `EngineProvider`).
  *
- * typed-error realization. Per [[scala-error-handling-mindset]] §1
+ * typed-error realization. 
  * ("errors are data"): the return type is `Either[EngineError,
- * EngineProvider]` (typed error), not `Option[...]` (silent failure).
+ * EngineProvider]` (typed error), not `Option[.]` (silent failure).
  *
  * Connectors that want typed-error realization implement BOTH
  * `EngineProvider` AND this subtrait. The `EngineLoader` (in sm8-server)
@@ -69,7 +69,7 @@ object TypedRealizationProvider {
 
  /** Default `realizeTyped` impl: converts `EngineUrl` → raw string,
  * delegates to `realize(url: String)`, maps `Some(p)` → `Right(p)`,
- * `None` → `Left(ConnectionFailed(...))`.
+ * `None` → `Left(ConnectionFailed(.))`.
  *
  * boundary conversion. The legacy `realize(url)` may return `None`
  * for two reasons (URL invalid OR engine doesn't support URL

@@ -7,7 +7,7 @@
  * Step 0.
  *
  * Plugin authors in Step 3 send a `ConnectorRequest` to
- * `engine.run(...)`. The engine routes to the named Connector,
+ * `engine.run(.)`. The engine routes to the named Connector,
  * invokes `query`, and returns a `ConnectorResult` (rows + schema).
  */
 package io.sm8.core

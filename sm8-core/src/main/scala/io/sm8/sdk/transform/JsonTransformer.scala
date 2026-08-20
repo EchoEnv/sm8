@@ -28,7 +28,7 @@ import io.sm8.sdk.{Context, Transformer}
  * (first-party range per RFC §8).
  *
  * Construction: `JsonTransformer()` (case class, no args).
- * Auto-activated on first `register(...)` per the TransformerRegistry
+ * Auto-activated on first `register(.)` per the TransformerRegistry
  * contract.
  */
 final case class JsonTransformer() extends Transformer {

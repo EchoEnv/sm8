@@ -15,12 +15,12 @@ import io.sm8.sdk._
 /**
  * Audit Hook Plugin. Records each engine.run via a PostFormat hook.
  *
- * Per [[scala-spark-batch-bugs]] mantra #1: `with java.io.Serializable`
+ * Per 
  * for Spark-closure safety (same pattern as Step 8 TrinoConnector fix).
  */
 final class AuditPlugin extends Plugin with java.io.Serializable {
 
-  /** Per [[scala-spark-batch-bugs-mindset]] mantra #1: doc the
+  /** 
     * captured `fires` AtomicInteger. Round-trips through
     * ObjectOutputStream (verified by PluginSerializationSpec). */
   override def closedOverVars: Seq[String] = Seq("fires")

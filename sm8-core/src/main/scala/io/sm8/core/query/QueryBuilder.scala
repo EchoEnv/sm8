@@ -40,7 +40,7 @@ import io.sm8.core.rel.{AggregateCall, JoinKind, RelOp, SortKey}
 
 object QueryBuilder {
 
- /** Lower a portable [[Model]] to a portable [[RelOp]] tree.
+ /** Lower a portable 
  * is pure data-shape-only -- no IO beyond the `SourceResolver`
  * call (which the caller chose). The result tree is engine-
  * portable; the engine adapter does the native-plan lower.
@@ -48,8 +48,7 @@ object QueryBuilder {
  def build(
   model: Model,
   resolver: SourceResolver,
-  identity: EngineIdentity,
- ): Either[EngineError, RelOp] = {
+  identity: EngineIdentity): Either[EngineError, RelOp] = {
 
  // Step 1: resolve the primary source.
  val primaryScanE = for {
@@ -90,8 +89,7 @@ object QueryBuilder {
  /** Internal: a join + its resolved right-side Scan. */
  private case class ScanJoin(
   js:  io.sm8.core.model.JoinSpec,
-  rightScan: ResolvedSource.Scan,
- )
+  rightScan: ResolvedSource.Scan)
 
  /** Surface a resolver failure as a typed error tagged with the
  * model name for diagnostics. */
@@ -107,12 +105,11 @@ object QueryBuilder {
 
  /** Internal: pattern-match the `ResolvedSource` ADT to `Scan`,
  * mapping the 3 failure cases to typed `EngineError.FeatureDeferred`
- * at the build boundary (per [[scala-error-handling-mindset]]:
+ * at the build boundary (
  * never silent no-ops). */
  private def toScan(
   rs:  ResolvedSource,
-  source: String,
- ): Either[EngineError, ResolvedSource.Scan] = rs match {
+  source: String): Either[EngineError, ResolvedSource.Scan] = rs match {
  case scan: ResolvedSource.Scan   => Right(scan)
  case nf: ResolvedSource.NotFound  => Left(EngineError.FeatureDeferred(
             engine = "query-builder",
@@ -132,14 +129,13 @@ object QueryBuilder {
  }
 
  /** Internal: assemble the RelOp tree once every source is resolved
- * Shape: Scan_1 left-join Scan_2 left-join... -> Filter ->
+ * Shape: Scan_1 left-join Scan_2 left-join. -> Filter ->
  * Project + Aggregate -> Sort -> Limit.
  */
  private def assembleRelOp(
   model:  Model,
   primary: ResolvedSource.Scan,
-  joinScans: List[ScanJoin],
- ): RelOp = {
+  joinScans: List[ScanJoin]): RelOp = {
 
  // Build the multi-source Scan via folding Join nodes.
  // The join shape is Scan_1 ⊕ Scan_2 → Join.
@@ -155,15 +151,13 @@ object QueryBuilder {
   sourceRef = primary.source,
   schema = primary.schema,
   projection = Nil, // v0.1.0: read all columns; engine can prune
-  resolution = Some(primary),
-  )
+  resolution = Some(primary))
  ) { (acc, sj) =>
   val rightScanNode = RelOp.Scan(
   sourceRef = sj.rightScan.source,
   schema  = sj.rightScan.schema,
   projection = Nil,
-  resolution = Some(sj.rightScan),
-  )
+  resolution = Some(sj.rightScan))
   // Build the join condition from the single (left, right) key.
   // The single-key constraint matches the engine-side compile.
   // Multi-key joins surface as typed UnsupportedCapability at the
@@ -178,8 +172,7 @@ object QueryBuilder {
   left  = acc,
   right  = rightScanNode,
   kind  = sj.js.kind,
-  condition = condition,
-  )
+  condition = condition)
  }
 
  // Apply model.filters as a Filter chain (foldLeft).
@@ -196,18 +189,14 @@ object QueryBuilder {
   aggregates = model.measures.map(m => AggregateCall(
    fn  = m.expr.fn,
    input  = m.expr.input,
-   alias  = m.name,
-  )),
-  )
+   alias  = m.name)))
   RelOp.Project(
   input  = aggNode,
-  expressions = projectExpressions(model),
-  )
+  expressions = projectExpressions(model))
  } else {
   RelOp.Project(
   input  = filtered,
-  expressions = projectExpressions(model),
-  )
+  expressions = projectExpressions(model))
  }
 
  // Sort: v0.1.0 -- no portable sort key. The engine adapter
@@ -246,8 +235,7 @@ object QueryBuilder {
  * call this companion-object method.
  */
  def detectCalcCycles(
-  calcs: List[CalculatedMeasure],
- ): Either[EngineError, Unit] = {
+  calcs: List[CalculatedMeasure]): Either[EngineError, Unit] = {
  val byName: Map[String, CalculatedMeasure] =
   calcs.map(c => c.name -> c).toMap
 
@@ -305,8 +293,7 @@ object QueryBuilder {
   case Some(cycle) => Left(EngineError.UnsupportedCapability(
    engine  = "query-builder",
    capability = "CalculatedMeasure.cycle",
-   message = s"Cycle in calculated-measure DAG: ${cycle.mkString(" -> ")}",
-  ))
+   message = s"Cycle in calculated-measure DAG: ${cycle.mkString(" -> ")}"))
   case None => Right(())
   }
  }

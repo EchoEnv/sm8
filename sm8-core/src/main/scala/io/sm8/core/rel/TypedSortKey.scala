@@ -6,12 +6,12 @@
  * expose typed `.asc` / `.desc` extension methods on `TypedDimension[D]`
  * via a Scala 2.13 implicit class. The phantom `[D]` is captured at
  * construction; direction is a typed ADT (per [[scala-data-driven-
- * refactor-mindset]] SS3: sealed trait, not Map[String, _]).
+ * ]] SS3: sealed trait, not Map[String, _]).
  *
  * Implementations): this is the PROTOCOL in core. The witness INSTANCE
- * lives in the consumer's code (e.g. `object Refs {... }`) -- NOT in
+ * lives in the consumer's code (e.g. `object Refs {. }`) -- NOT in
  * method-local scope (which would capture the enclosing scope and
- * break Spark closure-serialization per `scala-spark-batch-bugs-mindset`
+ * break Spark closure-serialization per 
  * SS1).
  *
  * the extension is purely ADDITIVE -- no API changes to `TypedWindow`,
@@ -88,7 +88,7 @@ object TypedSortKey {
  * the extension produces a `TypedSortKey[D, Dir]` -- the typed build
  * site accumulates these in `QueryBuilderDsl.orderByAs` /
  * `QueryBuilderDsl.orderByDesc` (PR-24 followup) instead of
- * `orderBy(...)`. The legacy `orderBy(...)` remains Ascending-default
+ * `orderBy(.)`. The legacy `orderBy(.)` remains Ascending-default
  * for backward compat.
  *
  * user's explicit concern): the implicit class is a thin wrapper

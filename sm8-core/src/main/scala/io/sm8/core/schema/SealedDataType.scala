@@ -1,7 +1,7 @@
 /*
  * SM8 Core — SealedDataType ADT.
  * Engine-portable sealed ADT for primitive + nested types.
- * Closed set per [[scala-data-driven-refactor-mindset]] (sealed
+ * Closed set 
  * trait + case objects / case classes; Scala 2.13 idiom; NOT
  * Scala 3 `enum`).
  * * match existing style): 13 cases covering SQL primitives +
@@ -135,7 +135,7 @@ object SealedDataType {
   extends SealedDataType
 
  /** Struct / row type with named fields. Maps to Spark's
- * `StructType`, Trino's `ROW(field1 type1,...)`, etc. */
+ * `StructType`, Trino's `ROW(field1 type1,.)`, etc. */
  final case class Row(fields: Seq[Field]) extends SealedDataType
 
  // -- Special --

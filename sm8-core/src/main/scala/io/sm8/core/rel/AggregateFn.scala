@@ -43,11 +43,11 @@ object AggregateFn {
  /** Count of distinct values. NOT additive — requires
  * distinct-count re-aggregation, more expensive than
  * Sum/Count. Maps to Spark `countDistinct`, Trino
- * `APPROX_DISTINCT`, DuckDB `COUNT(DISTINCT...)`. */
+ * `APPROX_DISTINCT`, DuckDB `COUNT(DISTINCT.)`. */
  case object CountDistinct extends AggregateFn
 
  /** First value in group. Additive for some rollups. Maps to
- * Spark `first`, Trino `MIN(...) FILTER (WHERE ROW_NUMBER = 1)`. */
+ * Spark `first`, Trino `MIN(.) FILTER (WHERE ROW_NUMBER = 1)`. */
  case object First extends AggregateFn
 
  // -- Non-additive (cannot be re-aggregated from finer-grain) --
@@ -81,7 +81,7 @@ object AggregateFn {
 
  // -- Order-statistic (position-based; expensive at scale) --
 
- /** Exact median (50th percentile). Maps to Spark `percentile_approx(..., 0.5)`
+ /** Exact median (50th percentile). Maps to Spark `percentile_approx(., 0.5)`
  * or `median`, Trino `MEDIAN`, DuckDB `MEDIAN`. Distinct from
  * `ApproxPercentile` — see ADR note. */
  case object Median extends AggregateFn
@@ -105,6 +105,6 @@ object AggregateFn {
  // -- Position --
 
  /** Last value in group. Maps to Spark `last`, Trino
- * `MAX(...) FILTER (WHERE ROW_NUMBER = N)`. */
+ * `MAX(.) FILTER (WHERE ROW_NUMBER = N)`. */
  case object Last extends AggregateFn
 }

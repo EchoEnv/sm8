@@ -130,7 +130,7 @@ final class InMemoryResultCache(
       val version: Int
   ) extends Serializable {
     // Volatile so the eviction scan (which reads this) sees
-    // a consistent timestamp; per [[scala-jvm-safety-mindset]]
+    // a consistent timestamp; 
     // "the JVM is not sequential" — non-volatile reads can
     // return stale values, evicting hot entries.
     @volatile var lastAccessNanos: Long = System.nanoTime()
@@ -231,7 +231,7 @@ final class InMemoryResultCache(
     else {
       keys.asScala.count { key =>
         // CAS-remove: only count if the entry's tag still matches.
-        // `entries.asScala.find(...)` is stale-readable, so we
+        // `entries.asScala.find(.)` is stale-readable, so we
         // do the tag-check via a single putIfAbsent side-step:
         // entries.remove(key) returns null if already gone or
         // if it was already retagged away from `name`. The

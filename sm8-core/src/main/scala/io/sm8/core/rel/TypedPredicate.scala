@@ -7,13 +7,13 @@
  * `Refs.region2`) is a COMPILE error, not a runtime error.
  * Per the design contract §"the current implementation Core types": this trait is the PROTOCOL in
  * core. The witness INSTANCE lives in the consumer's code (`object
- * Refs {... }` in a plugin or example) -- NOT in method-local scope
+ * Refs {. }` in a plugin or example) -- NOT in method-local scope
  * (which would capture the enclosing scope and break Spark closure-
  * serialization with `NotSerializableException` at executor
  * startup).
  * * Implementations): the typed builder sits next to the data,
  * behavior lives elsewhere. The phantom `[D]` is purely type-level
- * (zero runtime cost per [[scala-perf-testing-mindset]] SS3: zero
+ * (zero runtime cost 
  * per-row allocation; case-class `Impl` allocates once at query-
  * build time, driver-side).
  * * user's explicit concern): this trait extends `Serializable`
@@ -125,7 +125,7 @@ object TypedPredicate {
  of[D](name = s"${field}>=${value}", predicate =
   Predicate.Compare(field = field, op = CompareOp.Ge, value = value))
 
- /** `field IN (v1, v2,...)` -- the in-list case. */
+ /** `field IN (v1, v2,.)` -- the in-list case. */
  def in[D](
   field: String,
   values: List[Any]

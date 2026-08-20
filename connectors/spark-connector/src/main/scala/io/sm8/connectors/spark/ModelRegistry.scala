@@ -8,7 +8,7 @@
  * / session-scoped view / file glob holds the model-to-source map)
  * is adapter-specific behavior per RFC SS3.
  *
- * Two reference implementations (this PR):
+ * Two reference implementations :
  * - `NoopModelRegistry`: returns `UnsupportedCapability` for every
  *  name. Suit deployments that do not support multi-model queries.
  * - `SessionCatalogModelRegistry`: maps name -> SourceRef.ByName
@@ -42,7 +42,6 @@ object ModelRegistry {
   Left(EngineError.UnsupportedCapability(
   engine  = "spark-3.5",
   capability = "ModelRegistry.resolveModel",
-  message = s"No model registry bound; cannot resolve model '$name'.",
-  ))
+  message = s"No model registry bound; cannot resolve model '$name'."))
  }
 }

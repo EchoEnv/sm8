@@ -1,11 +1,11 @@
 /*
  * SM8 Core — TypedMeasure phantom-typed witness (PR-16, ADR-008-Q §PR-16).
  *
- * Per `karpathy-app-designmindset` §3.1 (Protocols before implementations):
+ * Per  §3.1 (Protocols before implementations):
  * the trait is the Protocol in core. The witness INSTANCE lives in the
- * consumer's code (e.g. `object Refs {... }` in a plugin).
+ * consumer's code (e.g. `object Refs {. }` in a plugin).
  *
- * Per `scala-spark-batch-bugs-mindset` §1 (closure-safety) + ADR-008-Q §C9
+ * Per 
  * (Restate forward-looking): `extends Serializable` at both trait + impl.
  */
 package io.sm8.core.model
@@ -17,7 +17,7 @@ import io.sm8.core.rel.AggregateFn
  * Phantom-typed witness for a `Measure`. The phantom `[M]` carries the
  * measure identity at the type level.
  *
- * Per `scala-data-driven-refactor-mindset` §1 (data is data): pure data
+ * Per 
  * carrier. The fields are the ONLY data; the methods are derived.
  */
 sealed trait TypedMeasure[M] extends Serializable {

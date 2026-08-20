@@ -32,7 +32,7 @@
  * (`EngineUrl` instances) may also cross the closure boundary via
  * `TypedRealizationProvider.realizeTyped`.
  *
- * ==Wire-stable shape (per karpathy-app-design-mindset §3.1)==
+ * ==Wire-stable shape ==
  *
  * The 3 case classes carry ONLY the typed fields needed for the
  * engine-specific realization (master URL, JDBC URL, or no-arg for
