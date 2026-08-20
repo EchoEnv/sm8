@@ -218,7 +218,7 @@ object Refs {
     // `Measure.aggregate` is the canonical single-aggregate factory.
     // (For multi-aggregate measures, construct AggregateCall directly.)
     val measures: List[Measure] = List(
-      Measure.aggregate(name = "patient_count", fn = AggregateFn.Count, expr = Expr.Literal(LiteralValue.IntValue(1), SealedDataType.Int)))
+      Measure.aggregate("patient_count", "patient_id".countStar))
     Model.of(
       name = "patients",
       version = 1,
@@ -290,8 +290,8 @@ object Refs {
       // it to exist in the source schema.
       Dimension.field("is_readmission", "is_readmission"))
     val measures: List[Measure] = List(
-      Measure.aggregate(name = "encounter_count", fn = AggregateFn.Count, expr = Expr.Literal(LiteralValue.IntValue(1), SealedDataType.Int)),
-      Measure.aggregate(name = "total_los", call = "los_days".asField.sum),
+      Measure.aggregate("encounter_count", "encounter_id".countStar),
+      Measure.aggregate("total_los", call = "los_days".asField.sum),
       Measure.aggregate(
         "expired_count",
         AggregateFn.Sum,

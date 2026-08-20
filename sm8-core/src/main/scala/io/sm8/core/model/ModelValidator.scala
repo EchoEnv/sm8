@@ -90,7 +90,19 @@ object ModelValidator {
     // Measures: the input expression (AggregateCall.input).
     // `Measure.expr.fn` is engine-specific (skip here).
     model.measures.foreach { m =>
-      walkExprForFields(m.expr.input.getOrElse(Expr.FieldRef(m.name))).filterNot(available.contains).foreach(name => missing += s"measures[${m.name}].input references unknown field '$name'")
+      // COUNT(*) measures have no input expression (AggregateCall.input == None).
+      // Skip the field-reference walk; the measure name itself is not a source
+      // field and substituting it via getOrElse would produce a false-positive.
+      // All other aggregate functions (Sum/Avg/Min/Max/CountDistinct) require
+      // a real input expression -- missing input is a misconfiguration that the
+      // downstream lowering layer silently defaults (per ADR-008-W §"Deferred"),
+      // so we fail loud here at the model-load boundary.
+      if (m.expr.input.isEmpty) {
+        if (m.expr.fn != io.sm8.core.rel.AggregateFn.Count)
+          missing += s"measures[${m.name}].input is required for aggregate function ${m.expr.fn}"
+      } else {
+        walkExprForFields(m.expr.input.get).filterNot(available.contains).foreach(name => missing += s"measures[${m.name}].input references unknown field '$name'")
+      }
     }
 
     // Calculated measures: any Expr.FieldRef / Expr.MeasureRef
