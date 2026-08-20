@@ -41,8 +41,8 @@ import org.apache.spark.sql.functions._
   *                      models/ documents the target shape for the
   *                      future sm8 ModelLoader YAML subset extension)
   *   5. QUERIES       — Q1 demographics, Q2 ALOS by department,
-  *                      Q3 30-day readmission rate (partial typed-DSL,
-  *                      PR-34: per-row enrichment + 1 typed aggregation + Spark-direct rate)
+  *                      Q3 30-day readmission rate (partial typed-DSL:
+  *                      per-row enrichment + 1 typed aggregation + Spark-direct rate)
   *
   * ==Spark-only example (consumer of sm8-core + spark-connector)==
   * This example depends on sm8-core (the SDK) and spark-connector
@@ -197,8 +197,7 @@ object Refs {
   val department:    TypedDimension[Department]    = TypedDimension.of[Department]("department")
   val admissionDate: TypedDimension[AdmissionDate] = TypedDimension.of[AdmissionDate]("admission_date")
 
-  /** Q3 typed-DSL migration (PR-34): per-patient readmission count
-    * witness. Phantom `[ReadmissionCount]` matches the
+  /** Per-patient readmission count witness. Phantom `[ReadmissionCount]` matches the
     * `readmission_count` measure in the encounters Model.
     *
     * Per [[karpathy-app-design-mindset]] SS3.1 (Protocols before
@@ -275,11 +274,10 @@ object Refs {
     * encounter_count) per the model YAML.
     */
   private def buildEncountersModel(cleansedEncounters: DataFrame): Model = {
-    // Per-row transforms (PR-11 + PR-23 + PR-34):
+    // Per-row transforms applied to the input DataFrame:
     //   - los_days = datediff(discharge_date, admission_date)
     //   - is_readmission = 1 if (prev_admission within 30 days), else 0
-    //     (PR-34 / Q3 typed-DSL migration; lag window over patient_id
-    //     partitioned by admission_date)
+    //     (lag window over patient_id partitioned by admission_date)
     //
     // Per [[karpathy-app-design-mindset]] SS3.1 (Protocols before
     // Implementations) + RFC SS3: the per-row transforms are part
@@ -322,7 +320,7 @@ object Refs {
       Dimension.field("department", "department"),
       Dimension.field("primary_diagnosis", "primary_diagnosis"),
       Dimension.field("discharge_status", "discharge_status"),
-      // Per PR-34 (Q3 typed-DSL migration): `is_readmission` is a
+      // `is_readmission` is a
       // per-row 0/1 flag computed by the `lag`/`datediff`/`when`
       // enrichment above. The `readmission_count` measure references
       // this column; `ModelValidator.validateAgainstSchema` requires
@@ -332,19 +330,11 @@ object Refs {
     val measures: List[Measure] = List(
       Measure.aggregate(name = "encounter_count", fn = AggregateFn.Count, expr = Expr.Literal(LiteralValue.IntValue(1), SealedDataType.Int)),
       Measure.aggregate(name = "total_los", fn = AggregateFn.Sum, expr = Expr.FieldRef("los_days")),
-      // Per PR-35 (ADR-008-S ExprSugar): migrated the
-      // `expired_count` measure body from verbose
-      // Expr.Equal(Expr.FieldRef, Expr.Literal) -> Expr.Literal
-      // construction to sugar:
-      //   - "discharge_status".asField === "expired".asVarchar
-      //     (infix === on Expr + asField/asVarchar helpers)
-      //   - 1.asInt / 0.asInt (typed literal helpers)
-      //   - parenthesized (cond -> thenBranch) tuple sugar for
-      //     Expr.CaseWhen branches
-      // The full `Measure.aggregate(...)` block drops from 12 lines
-      // to 9 lines (25% reduction); the inner `Expr.CaseWhen`
-      // body drops from 7 lines to 5 lines. Reads at a glance:
-      // 'WHEN discharge_status = expired THEN 1 ELSE 0'.
+      // expired_count: weighted count of expired-status encounters.
+      // Each row contributes 1 if the discharge_status is 'expired',
+      // 0 otherwise. The literal helpers keep the type-checked
+      // mapping (varchar/int) close to the value; the parenthesized
+      // tuple shapes the `Expr.CaseWhen` branch list.
       Measure.aggregate(
         name = "expired_count",
         fn = AggregateFn.Sum,
@@ -355,7 +345,7 @@ object Refs {
           otherwise = 0.asInt,
         ),
       ),
-      // Per PR-34 (Q3 typed-DSL migration): `readmission_count` is
+      // `readmission_count` is
       // the SUM of the per-row `is_readmission` flag (already 0/1
       // from the Q3 enrichment in Q3b). This is a pure column
       // reference (NOT a CaseWhen) -- the per-row conditional is
@@ -536,7 +526,7 @@ object Refs {
       // + typed limit all flow through one fluent chain (per
       // ADR-008-R + the user's executor-perf priority).
       //
-      // Per PR-34: the `encounters_clean_csv` temp view is
+      // The `encounters_clean_csv` temp view is
       // registered once in `buildEncountersModel` (with all
       // per-row enrichment: los_days, prev_admission,
       // days_since_prev, is_readmission). The previous Q2
@@ -556,7 +546,7 @@ object Refs {
             dimensions = Seq(Refs.department.name),
           ),
       )
-      // ----- Q3: 30-day readmission rate -- PARTIAL TYPED-DSL MIGRATION (PR-34) -----
+      // ----- Q3: 30-day readmission rate -- PARTIAL TYPED-DSL MIGRATION -----
       // Per the user's 2026-08-20 directive ("go Q3 example migration
       // to typed DSL ... ensure follow ALL skills we have in memory,
       // especially spark serialization concern and executor performance
@@ -583,8 +573,8 @@ object Refs {
       // the aggregate): the per-patient aggregation has no
       // partition hint (the data is small in this example; the
       // typed `partitionBy` hint is opt-in via the DSL).
-      Logger.info("--- Q3: 30-day readmission rate (per-patient) -- PARTIAL TYPED-DSL MIGRATION ---")
-      // Per PR-34: the per-row enrichment (prev_admission,
+      Logger.info("--- Q3: 30-day readmission rate (per-patient) ---")
+      // The per-row enrichment (prev_admission,
       // days_since_prev, is_readmission) is computed once in
       // `buildEncountersModel` -- the `encounters_clean_csv` temp
       // view already has these columns. The typed Q3a aggregation
@@ -595,7 +585,7 @@ object Refs {
       // `TypedAggregateCall` -> Spark `sum(col("is_readmission"))`
       // lowering (per PR-19 wire-up).
       // ----- Q3a TYPED DSL: per-patient readmission count -----
-      // Per PR-34: the typed `groupBy(patientId) + aggregate(readmissionCount)`
+      // The typed `groupBy(patientId) + aggregate(readmissionCount)`
       // produces per-patient readmission counts via the typed
       // `TypedAggregateCall` -> Spark `sum(col("is_readmission"))`
       // lowering (per PR-19 wire-up).
