@@ -121,6 +121,41 @@ final class TypedQueryCompiler private (private val spark: org.apache.spark.sql.
       df:      DataFrame,
       request: QueryRequest,
       ctx:     EngineContext
+  ): Either[EngineError, DataFrame] = apply(df, request, ctx, None)
+
+  // PR-33 (ADR-008-R SSfilterPushdown type-DSL wire-up, deferred
+  // from PR-31 data-engineer review): overload of `apply` that
+  // accepts a pre-filtered source DataFrame from
+  // `SparkSourceResolver.resolveWithPushdown`. When the pre-filtered
+  // DF is defined AND `request.whereFilters` is non-empty, the
+  // in-memory `whereFiltersOp` is SUPPRESSED -- the filter was
+  // already pushed at the source by the resolver. This eliminates
+  // the double-filter redundant work that PR-31 introduced
+  // (where the pushdown filter was applied at the source, then
+  // re-applied in-memory at the end of the typed pipeline).
+  //
+  // Per [[scala-impact-analysis-mindset]] SS2 (binary compatibility):
+  // the new 4-arg overload is ADDITIVE. The existing 3-arg
+  // `apply(df, request, ctx)` is preserved as a 1-line delegator
+  // passing `preFilteredDf = None` (zero behavior change for the
+  // 19 existing callers).
+  //
+  // Per [[scala-spark-batch-bugs-mindset]] SS1 (closure-safety --
+  // the user's explicit priority): the pre-filtered DF was built
+  // driver-side by the resolver (no executor-side closure capture).
+  // The suppressed in-memory filter is a no-op (the equivalent of
+  // `df => df` identity), so there's nothing to substitute.
+  //
+  // Per [[scala-perf-testing-mindset]] SS1 (don't guess, measure):
+  // the headline test in `TypedQueryCompilerPushdownSpec` asserts
+  // on the DataFrame plan (`df.queryExecution.executedPlan`) to
+  // verify the filter is NOT in the typed pipeline when the
+  // pre-filtered DF is supplied.
+  def apply(
+      df:             DataFrame,
+      request:        QueryRequest,
+      ctx:            EngineContext,
+      preFilteredDf:  Option[org.apache.spark.sql.DataFrame],
   ): Either[EngineError, DataFrame] = {
     if (isNoOp(request)) Right(df)
     else {
@@ -131,8 +166,20 @@ final class TypedQueryCompiler private (private val spark: org.apache.spark.sql.
       // the typed `whereFilters` are applied FIRST (before
       // aggregateMeasures / window). This matches the existing
       // `PortableQueryCompiler.applyFilters` order (per PR-L).
+      //
+      // PR-33: when `preFilteredDf` is defined AND the request
+      // has whereFilters, the in-memory `whereFiltersOp` is
+      // SUPPRESSED. The filter was already pushed at the source
+      // by `resolveWithPushdown` (per PR-28) and forwarded
+      // through `compileRelOp` (per PR-31). Re-applying it
+      // here would double the CPU on the survivor rows.
+      val whereFiltersStep: Either[EngineError, DataFrame => DataFrame] =
+        (preFilteredDf, request.whereFilters.isEmpty) match {
+          case (Some(_), false) => Right(identity) // Suppress: filter already pushed
+          case _                => wrap(whereFiltersOp(request), "whereFilters")
+        }
       val orderedSteps: List[Either[EngineError, DataFrame => DataFrame]] = List(
-        wrap(whereFiltersOp(request), "whereFilters"),
+        whereFiltersStep,
         wrap(orderByOp(request), "orderBy"),
         wrap(partitionByOp(df, request), "partitionBy"),
         wrap(havingOp(request), "having"),
