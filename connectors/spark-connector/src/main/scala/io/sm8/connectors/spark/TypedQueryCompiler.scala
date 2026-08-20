@@ -450,20 +450,56 @@ final class TypedQueryCompiler private (private val spark: org.apache.spark.sql.
     * over the `AggregateFn` ADT (5 wired cases per
     * SupportedAggregates from PR-K). */
   private def aggregateToColumn(call: TypedAggregateCall[Nothing]): Either[EngineError, Column] = {
+    // Mirror the validator's allowlist at the lowering boundary:
+    // Count is exempt (lowered as `count(lit(1))` for the COUNT(*) shape);
+    // every other AggregateFn requires a real input expression and fails loud
+    // here if the validator was bypassed (direct API construction, future
+    // lowering paths, or programmatic callers).
     val inputCol: Option[String] = call.input.collect {
       case Expr.FieldRef(name)   => name
       case Expr.MeasureRef(name) => name
     }
     import io.sm8.core.rel.AggregateFn
     call.fn match {
+      case AggregateFn.Count if inputCol.isEmpty =>
+        Right(functions.count(functions.lit(1)))
+      case AggregateFn.CountDistinct if inputCol.isEmpty =>
+        Left(EngineError.UnsupportedCapability(
+          engine    = "spark-3.5",
+          capability = s"aggregateToColumn:${call.name}:CountDistinct",
+          message   = s"measures[${call.name}].input is required for aggregate function CountDistinct"))
+      case AggregateFn.Sum if inputCol.isEmpty =>
+        Left(EngineError.UnsupportedCapability(
+          engine    = "spark-3.5",
+          capability = s"aggregateToColumn:${call.name}:Sum",
+          message   = s"measures[${call.name}].input is required for aggregate function Sum"))
+      case AggregateFn.Avg if inputCol.isEmpty =>
+        Left(EngineError.UnsupportedCapability(
+          engine    = "spark-3.5",
+          capability = s"aggregateToColumn:${call.name}:Avg",
+          message   = s"measures[${call.name}].input is required for aggregate function Avg"))
+      case AggregateFn.Min if inputCol.isEmpty =>
+        Left(EngineError.UnsupportedCapability(
+          engine    = "spark-3.5",
+          capability = s"aggregateToColumn:${call.name}:Min",
+          message   = s"measures[${call.name}].input is required for aggregate function Min"))
+      case AggregateFn.Max if inputCol.isEmpty =>
+        Left(EngineError.UnsupportedCapability(
+          engine    = "spark-3.5",
+          capability = s"aggregateToColumn:${call.name}:Max",
+          message   = s"measures[${call.name}].input is required for aggregate function Max"))
       case AggregateFn.Count =>
-        Right(functions.count(functions.col(inputCol.getOrElse("*"))))
+        Right(functions.count(functions.col(inputCol.get)))
       case AggregateFn.CountDistinct =>
-        Right(functions.countDistinct(functions.col(inputCol.getOrElse("id"))))
-      case AggregateFn.Sum  => Right(functions.sum(functions.col(inputCol.getOrElse("amount"))))
-      case AggregateFn.Avg  => Right(functions.avg(functions.col(inputCol.getOrElse("value"))))
-      case AggregateFn.Min  => Right(functions.min(functions.col(inputCol.getOrElse("value"))))
-      case AggregateFn.Max  => Right(functions.max(functions.col(inputCol.getOrElse("value"))))
+        Right(functions.countDistinct(functions.col(inputCol.get)))
+      case AggregateFn.Sum =>
+        Right(functions.sum(functions.col(inputCol.get)))
+      case AggregateFn.Avg =>
+        Right(functions.avg(functions.col(inputCol.get)))
+      case AggregateFn.Min =>
+        Right(functions.min(functions.col(inputCol.get)))
+      case AggregateFn.Max =>
+        Right(functions.max(functions.col(inputCol.get)))
       case other =>
         Left(EngineError.FeatureDeferred(
           engine  = "spark-3.5",
