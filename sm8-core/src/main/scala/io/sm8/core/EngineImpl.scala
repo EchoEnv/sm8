@@ -1,10 +1,8 @@
 /*
  * SM8 Core — EngineImpl.
- *
  * Concrete implementation of the `io.sm8.sdk.Engine` trait. Lives in
  * `io.sm8.core` (internal — not SDK). Plugin authors get an Engine
  * via `EngineImpl()` or via a factory method in a future step.
- *
  * Audit fixes (Step 3 audit):
  *   - `seenPlugins` is now a `ConcurrentHashMap.newKeySet` (was
  *     `mutable.Set[Plugin]` — non-thread-safe; per
@@ -14,7 +12,6 @@
  *     interrupt flag (per [[scala-error-handling-mindset]]).
  *   - `Pipeline` is hoisted to a `val` field — was allocated per
  *     `run(request)` (hot path; per [[scala-perf-testing-mindset]]).
- *
  * Step 7: added `discover(allowed)` + `discoverAll()` — ServiceLoader
  * portal with Maven-coords allowlist (Q6 = C). Plugin authors ship
  * `META-INF/services/io.sm8.sdk.Plugin` (class name) +
@@ -79,17 +76,11 @@ final class EngineImpl extends Engine {
 
   /**
    * ServiceLoader-based Plugin discovery with Maven-coords allowlist.
-   *
    * Per RFC Q6: only Plugins whose `groupId:artifactId` is in
    * `allowed` are loaded. Bad coords / missing metadata → warning +
    * skip, never crash.
-   *
-   * Per [[scala-error-handling-mindset]]: `ServiceLoader.next()`
    * is an IO boundary — wrap in `NonFatal`, surface as a warning.
-   *
-   * Per [[scala-jvm-safety-mindset]]: discovery happens once at
    * startup; no shared mutable state created.
-   *
    * @param allowed set of `groupId:artifactId` strings
    * @return the Plugins that were successfully loaded
    */
@@ -100,7 +91,6 @@ final class EngineImpl extends Engine {
    * Discover every Plugin on the classpath, ignoring the allowlist.
    * Dev convenience only — production code must use
    * `discover(allowed)` per Q6.
-   *
    * @return all Plugins found, in ServiceLoader iteration order
    */
   def discoverAll(): List[Plugin] =
@@ -109,29 +99,20 @@ final class EngineImpl extends Engine {
   /**
    * ServiceLoader-based Plugin discovery with Maven-coords allowlist
    * loaded from `sm8.plugins.allowed` on the classpath.
-   *
    * The allowlist file is a newline-separated list of `groupId:artifactId`
    * strings. Missing file = empty allowlist = load everything
    * (matches `discoverAll()` behavior, for development convenience).
-   *
    * Per the agile-kindling-beacon plan line 286 ("a third-party
    * Plugin JAR gets loaded when its coords are in `sm8.plugins.allowed`"):
    * this is the configuration mechanism for production deployments
    * to gate which Plugins load.
-   *
-   * Per [[scala-error-handling-mindset]]: malformed allowlist entries
    * are skipped (warned), never crash.
-   *
-   * Per [[scala-jvm-safety-mindset]]: use the classloader (NOT
    * `Class.getResourceAsStream`) — the classloader lookup is
    * classpath-root-relative; `Class.getResourceAsStream` without a
    * leading `/` is package-relative, which silently misses global
    * resources like `sm8.plugins.allowed`.
-   *
-   * Per [[karphy-guidags-mindset]] "smallest correct change": this
    * is a thin convenience method over `discover(allowed)`. It does
    * NOT introduce a new discovery mechanism.
-   *
    * @return the Plugins that were successfully loaded
    */
   def discoverFromConfig(): List[Plugin] = {
@@ -140,7 +121,6 @@ final class EngineImpl extends Engine {
       .map(_.getResourceAsStream(resource)).orNull
     if (stream == null) {
       // No allowlist configured - behave like discoverAll().
-      // Per [[scala-error-handling-mindset]]: missing config is not
       // an error; the engine degrades to permissive discovery.
       discoverAll()
     } else {
@@ -200,8 +180,6 @@ final class EngineImpl extends Engine {
   /**
    * Load `META-INF/sm8/plugin.properties` from the Plugin's
    * classloader. Returns None if missing or malformed (caller logs).
-   *
-   * Per [[scala-jvm-safety-mindset]]: use the classloader (NOT
    * `Class.getResourceAsStream`) — the classloader lookup is
    * classpath-root-relative; `Class.getResourceAsStream` without a
    * leading `/` is package-relative, which silently misses global
@@ -229,7 +207,6 @@ final class EngineImpl extends Engine {
 /**
  * Factory for the default Engine implementation. Used by tests and
  * by callers who don't need a custom registry backing.
- *
  * Returns the concrete type (not the trait) so the Portal methods
  * (`discover`, `discoverAll`) are visible at the call site.
  * The trait `Engine` is the SDK boundary; the concrete type

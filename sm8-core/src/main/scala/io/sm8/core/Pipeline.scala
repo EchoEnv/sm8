@@ -1,26 +1,18 @@
 /*
  * SM8 Core — Pipeline.
- *
  * Runs the 4-stage pipeline (parse → resolve → execute → format) on
  * a Context. Step 4: pre-hooks fire before each stage body, post-hooks
  * fire after; `Context.stop = true` short-circuits the rest of the
  * pipeline; hook throws abort the pipeline (RFC §9 fail-fast).
- *
- * Per [[scala-data-driven-refactor-mindset]] step 3 ("default to
  * sealed-trait/match over Map-based rule tables"): the 4 pipeline
  * stages are a sealed `Stage` hierarchy. The pipeline runner walks
  * a `List[Stage]` (DATA, not control flow) via `foldLeft`. Adding
  * a stage = adding a case class to `Stage` + adding it to
  * `Stage.All`. The compiler enforces both.
- *
- * Per [[scala-jvm-safety-mindset]]: the Context is immutable
  * (`val`, case class, no `var`). The pipeline is `foldLeft`-pure —
  * no shared mutable state, safe under concurrency.
- *
- * Per [[scala-error-handling-mindset]]: hook throws are RFC §9
  * fail-fast. The pipeline does NOT wrap them — they propagate to
  * `engine.run(...)`. The hook author chose to throw; we honor that.
- *
  * The Pipeline is internal (lives in `io.sm8.core`). Plugin authors
  * never construct a Pipeline directly — they go through
  * `Engine.run(request)`.
@@ -43,7 +35,6 @@ final case class StageEnv(
 /**
  * One pipeline stage. Each stage is a pure function
  * `Context => Context` — no side effects on shared state.
- *
  * Adding a stage = add a case object to `Stage` + add it to
  * `Stage.All`. The compiler enforces both (sealed trait forces
  * exhaustiveness; the runner iterates `All`).
@@ -125,7 +116,6 @@ object Stage {
 /**
  * The 4-stage pipeline runner. Stateless — created fresh per
  * `Engine.run(request)` call.
- *
  * Pipeline stages are DATA (`Stage.All`), not control flow. The
  * runner is a single `foldLeft` — adding a stage is data, not code.
  */
@@ -140,13 +130,10 @@ final class Pipeline(
 
   /**
    * Run `request` through all stages. Returns the final Result.
-   *
    * Per RFC §9: hook throws abort the pipeline. We don't wrap them
    * — they propagate to `engine.run(...)`.
-   *
    * Per RFC §8 + Context semantics: `Context.stop = true`
    * short-circuits all remaining stages and hooks.
-   *
    * @param request the Request to run
    * @return the final Result (the last Context's `result`, or a
    *         stub empty result if no stage set one)
@@ -206,7 +193,7 @@ final class Pipeline(
    * Fire post-hooks for `stage` in priority order. Same semantics
    * as `runPreHooks` EXCEPT: respects `PostHook.runsOnStop` to honor
    * the RFC `hooks.md` Observer / Mutator classification. Per
-   * PR-9 (ADR-008-P §T1-D2): when a Pre-hook set `c.stop = true`
+   * the current implementation (the design contract-D2): when a Pre-hook set `c.stop = true`
    * (cache HIT path), Observer hooks (default `runsOnStop = true`)
    * still fire (audit, metrics); Mutator hooks (`runsOnStop = false`)
    * skip (cache write — the cache already has the result; row-cap —
