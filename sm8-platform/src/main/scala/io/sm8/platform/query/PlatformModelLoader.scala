@@ -143,21 +143,48 @@ object PlatformModelLoader {
     * @return `Right(Model)` on success;
     *         `Left(PlatformModelError)` on validation or parse
     *         failure (the case class identifies which stage) */
-  def fromPath(path: Path): Either[PlatformModelError, Model] = {
-    // Per [[karphyaguids-mindset]] "smallest correct change": check
-    // existence first so missing-file becomes a typed error, not a
-    // thrown NoSuchFileException.
+  def fromPath(path: Path): Either[PlatformModelError, Model] =
+    readFile(path).flatMap(validateAndLoad)
+
+  /** Read a YAML file to a UTF-8 string with full typed-error coverage of the IO boundary.
+    *
+    * The 5 caught exceptions are IO-derived: a binary file renamed to `.yml`, a
+    * file deleted between the existence check and the open, a permission revoked
+    * mid-call, a transient disk error, or a non-UTF-8 byte sequence. Each is
+    * surfaced as a typed `Left(PlatformModelError)` so callers pattern-match on
+    * the ADT instead of catching `IOException`.
+    *
+    * The 6 deliberately-uncaught exceptions (`SecurityException`, `OutOfMemoryError`,
+    * `StackOverflowError`, `NullPointerException`, `InvalidPathException`,
+    * `IllegalArgumentException`) are programmer / JVM faults and propagate as
+    * throws so the JVM-fault failure mode is not hidden by a typed error.
+    *
+    * @param path the file path to read from
+    * @return `Right(yaml)` on success; `Left(PlatformModelError)` on any IO failure
+    *         (the ADT case identifies the failure: `InvalidYaml` for missing-file
+    *         or access-denied, `ParseFailure` for UTF-8 or generic IO errors) */
+  private def readFile(path: Path): Either[PlatformModelError, String] = {
     if (!java.nio.file.Files.exists(path))
       Left(PlatformModelError.InvalidYaml(CoreManifestError.InvalidYaml(s"file not found: $path")))
     else {
-      // Read file manually to give the validator the raw text.
-      // Per [[scala-jvm-safety-mindset]]: InputStream.close() in finally.
-      val rawYaml: String = {
+      try {
         val stream = java.nio.file.Files.newInputStream(path)
-        try scala.io.Source.fromInputStream(stream, "UTF-8").mkString
-        finally stream.close()
+        try {
+          val content = scala.io.Source.fromInputStream(stream, "UTF-8").mkString
+          Right(content)
+        } finally stream.close()
+      } catch {
+        case e: java.nio.charset.MalformedInputException =>
+          Left(PlatformModelError.ParseFailure(CoreManifestError.ParseFailure(s"file is not valid UTF-8: ${e.getMessage}")))
+        case e: java.nio.charset.UnmappableCharacterException =>
+          Left(PlatformModelError.ParseFailure(CoreManifestError.ParseFailure(s"file contains unmappable characters: ${e.getMessage}")))
+        case e: java.nio.file.NoSuchFileException =>
+          Left(PlatformModelError.InvalidYaml(CoreManifestError.InvalidYaml(s"file not found: ${e.getMessage}")))
+        case e: java.nio.file.AccessDeniedException =>
+          Left(PlatformModelError.InvalidYaml(CoreManifestError.InvalidYaml(s"access denied: ${e.getMessage}")))
+        case e: java.io.IOException =>
+          Left(PlatformModelError.ParseFailure(CoreManifestError.ParseFailure(s"IO error: ${e.getMessage}")))
       }
-      validateAndLoad(rawYaml)
     }
   }
 
