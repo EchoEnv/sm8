@@ -223,19 +223,37 @@ object QueryBuilder {
  dimCols ++ measCols ++ calcCols
  }
 
- /**
- * the current implementation/A2 (the design contract): extract the previously-private instance
- * method `detectCalcCycles` to a public companion-object pure function.
- * Companion-object methods are stateless and callable from anywhere
- * (including the connector layer's `applyCalculatedMeasures` per
- * the design contract GAP 5 follow-up). Cycle-detection algorithm unchanged;
- * visibility moves from `private def` (class) to public `def`
- * (companion object).
- * change; the existing internal caller at line 98 is rewritten to
- * call this companion-object method.
+/**
+ * Detect cycles in the calculated-measure DAG.
+ *
+ * The cycle-detection walker uses 3-color marking (White / Gray / Black)
+ * with an iterative-DFS continuation frame. Each stack entry is a triple
+ * `(name, remainingChildren, isContinuation)`. The `isContinuation` flag
+ * distinguishes the initial frame (set Gray + push children) from the
+ * continuation frame (set Black + pop path) that fires AFTER the child's
+ * subtree is fully processed. Without the flag, re-pushing a Gray node
+ * with `remaining = Nil` triggers a false-positive cycle (the original
+ * algorithm bug fixed by this ADR).
+ *
+ * Cycle example (a → b):
+ *  visit a: stack = [(a, [b], Init)]; color(a) = White → Gray; push (b, [], Init)
+ *             then push (a, [], Back). path = [a].
+ *  visit b: stack = [(a, [], Back), (b, [], Init)]; color(b) = White → Gray.
+ *             remaining = [] → mark Black + pop path. path = [a]. (Note: a is
+ *             still Gray.)
+ *  pop continuation (a, [], Back): mark a Black + pop path. path = []. No cycle.
+ *
+ * Self-cycle example (a → a):
+ *  visit a: stack = [(a, [a], Init)]; color(a) = White → Gray; push (a, [], Back)
+ *             then push (a, [a], Init). path = [a].
+ *  pop (a, [a], Init): color(a) = Gray → cycle detected.
+ *
+ * @param calcs the calculated measures to check
+ * @return `Right(Unit)` if the DAG is acyclic; `Left(UnsupportedCapability)`
+ *         with the cycle path on the first detected cycle
  */
- def detectCalcCycles(
-  calcs: List[CalculatedMeasure]): Either[EngineError, Unit] = {
+def detectCalcCycles(
+ calcs: List[CalculatedMeasure]): Either[EngineError, Unit] = {
  val byName: Map[String, CalculatedMeasure] =
   calcs.map(c => c.name -> c).toMap
 
@@ -248,43 +266,48 @@ object QueryBuilder {
  def refs(name: String): Set[String] =
   byName.get(name).map(measureRefs).getOrElse(Set.empty)
 
- // Measure-dependency extraction (cycle detection). A name is a cycle
- // ref if it is EITHER:
- // - a MeasureRef / All (Calculator.measureNamesOf), OR
- // - a FieldRef that matches one of the declared calculated measure
- //  names (so a FieldRef to "x" inside calc "a" is a cycle back to
- //  "a" if "x" is also a calc)
+ // A name is a cycle ref if it is EITHER a MeasureRef / All (Calculator.measureNamesOf),
+ // OR a FieldRef that matches one of the declared calculated measure names
+ // (so a FieldRef to "x" inside calc "a" is a cycle back to "a" if "x" is also a calc).
  def measureRefs(c: CalculatedMeasure): Set[String] = {
   val m = io.sm8.core.expr.Calculator.measureNamesOf(c.expr)
   val f = io.sm8.core.expr.Calculator.fieldNamesOf(c.expr)
   (m ++ f).filter(byName.contains)
  }
 
+ // The classical 3-color marking iterative DFS (Cormen et al.):
+ // - Init: enter the node (mark Gray, push children + a continuation frame).
+ // - Back: exit the node (mark Black, pop path).
+ val Init = false
+ val Back = true
+
  def visit(name: String): Either[EngineError, Unit] = {
-  var stack: List[(String, List[String])] = List((name, refs(name).toList))
+  var stack: List[(String, List[String], Boolean)] = List((name, refs(name).toList, Init))
   var path: List[String] = List.empty
   var foundCycle: Option[List[String]] = None
 
   while (stack.nonEmpty && foundCycle.isEmpty) {
-  val (n, remaining) = stack.head
+  val (n, remaining, isContinuation) = stack.head
   stack = stack.tail
-  color(n) match {
-   case Black => ()
-   case Gray => foundCycle = Some((path :+ n).reverse)
-   case White =>
-   color(n) = Gray
-   path = path :+ n
-   remaining match {
-    case Nil =>
-    color(n) = Black
-    path = path.init
-    case head :: tail =>
-    // Push `n` back with the remaining siblings so we can
-    // continue iterating after `head` is fully processed.
-    // This is what catches self-cycles (head == n): when we
-    // revisit n, its color is Gray -> cycle detected.
-    stack = (n -> tail) :: stack
-    stack = (head -> refs(head).toList) :: stack
+  if (isContinuation) {
+   // Subtree complete: mark n Black + pop path.
+   color(n) = Black
+   path = path.init
+  } else {
+   color(n) match {
+    case Black => ()
+    case Gray => foundCycle = Some((path :+ n).reverse)
+    case White =>
+    color(n) = Gray
+    path = path :+ n
+    remaining match {
+     case Nil =>
+     color(n) = Black
+     path = path.init
+     case head :: tail =>
+     stack = (n, tail, Back) :: stack
+     stack = (head, refs(head).toList, Init) :: stack
+    }
    }
   }
   }
