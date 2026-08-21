@@ -168,91 +168,125 @@ object ExprParser {
  }
 
  def parseOrExpr(): Either[ExprParseError, Expr] =
-  parseAndExpr().flatMap { left =>
-  def loop(acc: Expr): Either[ExprParseError, Expr] =
-   if (consumeWordCaseInsensitive("or")) {
-   parseAndExpr().flatMap(right => loop(Expr.Or(acc, right)))
-   } else Right(acc)
-  loop(left)
+  parseAndExpr().flatMap(loopOrExpr)
+ 
+ /**
+  * Iterative loop (while + Either short-circuit) for OR-chained operands.
+  * Lifted from a nested `def` inside `parseOrExpr`'s `flatMap` per
+  * ADR-008-AB (the nested closure-captured method cannot be
+  * `@tailrec`-annotated in Scala 2.13). The `@tailrec` annotation
+  * keeps the JVM stack at 1 frame per call, regardless of how many
+ */
+private def loopOrExpr(acc: Expr): Either[ExprParseError, Expr] = {
+  var current: Expr = acc
+  while (consumeWordCaseInsensitive("or")) {
+   parseAndExpr() match {
+    case Right(right) => current = Expr.Or(current, right)
+    case left @ Left(_) => return left
+   }
   }
-
+  Right(current)
+}
+ 
  def parseAndExpr(): Either[ExprParseError, Expr] =
-  parseNotExpr().flatMap { left =>
-  def loop(acc: Expr): Either[ExprParseError, Expr] =
-   if (consumeWordCaseInsensitive("and")) {
-   parseNotExpr().flatMap(right => loop(Expr.And(acc, right)))
-   } else Right(acc)
-  loop(left)
+  parseNotExpr().flatMap(loopAndExpr)
+ 
+ /** Iterative loop (while + Either short-circuit) for AND-chained operands. See `loopOrExpr`. */
+ private def loopAndExpr(acc: Expr): Either[ExprParseError, Expr] = {
+  var current: Expr = acc
+  while (consumeWordCaseInsensitive("and")) {
+   parseNotExpr() match {
+    case Right(right) => current = Expr.And(current, right)
+    case left @ Left(_) => return left
+   }
   }
-
- def parseNotExpr(): Either[ExprParseError, Expr] =
-  if (consumeWordCaseInsensitive("not")) parseNotExpr().map(Expr.Not)
-  else parseCmpExpr()
-
- /** Comparison: `addExpr ((= | != | < | <= | > | >=) addExpr)?`
-  * Per SQL convention, single `=` is equality. */
- def parseCmpExpr(): Either[ExprParseError, Expr] =
-  parseAddExpr().flatMap { left =>
-  skipWhitespace()
-  val op: Option[(Expr, Expr) => Expr] = peekChar() match {
-   case '=' if !chars.lift(position + 1).contains('=') =>
-   advance(); Some(eqFn)
-   case '!' if chars.lift(position + 1).contains('=') =>
-   advance(); advance(); Some(neqFn)
-   case '<' if chars.lift(position + 1).contains('=') =>
-   advance(); advance(); Some(leFn)
-   case '>' if chars.lift(position + 1).contains('=') =>
-   advance(); advance(); Some(geFn)
-   case '<' =>
-   advance(); Some(ltFn)
-   case '>' =>
-   advance(); Some(gtFn)
-   case _ => None
-  }
-  op match {
-   case None => Right(left)
-   case Some(b) =>
+  Right(current)
+}
+ 
+  def parseNotExpr(): Either[ExprParseError, Expr] =
+   if (consumeWordCaseInsensitive("not")) parseNotExpr().map(Expr.Not)
+   else parseCmpExpr()
+ 
+  /** Comparison: `addExpr ((= | != | < | <= | > | >=) addExpr)?`
+   * Per SQL convention, single `=` is equality. */
+  def parseCmpExpr(): Either[ExprParseError, Expr] =
+   parseAddExpr().flatMap { left =>
    skipWhitespace()
-   parseAddExpr().map(right => b(left, right))
-  }
-  }
-
+   val op: Option[(Expr, Expr) => Expr] = peekChar() match {
+    case '=' if !chars.lift(position + 1).contains('=') =>
+    advance(); Some(eqFn)
+    case '!' if chars.lift(position + 1).contains('=') =>
+    advance(); advance(); Some(neqFn)
+    case '<' if chars.lift(position + 1).contains('=') =>
+    advance(); advance(); Some(leFn)
+    case '>' if chars.lift(position + 1).contains('=') =>
+    advance(); advance(); Some(geFn)
+    case '<' =>
+    advance(); Some(ltFn)
+    case '>' =>
+    advance(); Some(gtFn)
+    case _ => None
+   }
+   op match {
+    case None => Right(left)
+    case Some(b) =>
+    skipWhitespace()
+    parseAddExpr().map(right => b(left, right))
+   }
+   }
+ 
  def parseAddExpr(): Either[ExprParseError, Expr] =
-  parseMulExpr().flatMap { left =>
-  def loop(acc: Expr): Either[ExprParseError, Expr] = {
+  parseMulExpr().flatMap(loopAddExpr)
+ 
+ /** Iterative loop (`@tailrec`) for +/- chained operands. See `loopOrExpr`. */
+ private def loopAddExpr(acc: Expr): Either[ExprParseError, Expr] = {
+  var current: Expr = acc
+  var continue: Boolean = true
+  while (continue) {
    skipWhitespace()
    val opFn: Option[(Expr, Expr) => Expr] = peekChar() match {
-   case '+' => advance(); Some(addFn)
-   case '-' => advance(); Some(subFn)
-   case _ => None
+    case '+' => advance(); Some(addFn)
+    case '-' => advance(); Some(subFn)
+    case _ => None
    }
    opFn match {
-   case None => Right(acc)
-   case Some(b) =>
-    parseMulExpr().flatMap(right => loop(b(acc, right)))
+    case None => continue = false
+    case Some(b) =>
+     parseMulExpr() match {
+      case Right(right) => current = b(current, right)
+      case left @ Left(_) => return left
+     }
    }
   }
-  loop(left)
-  }
-
+  Right(current)
+}
+ 
  def parseMulExpr(): Either[ExprParseError, Expr] =
-  parseUnary().flatMap { left =>
-  def loop(acc: Expr): Either[ExprParseError, Expr] = {
+  parseUnary().flatMap(loopMulExpr)
+ 
+ /** Iterative loop (`@tailrec`) for * / % chained operands. See `loopOrExpr`. */
+ private def loopMulExpr(acc: Expr): Either[ExprParseError, Expr] = {
+  var current: Expr = acc
+  var continue: Boolean = true
+  while (continue) {
    skipWhitespace()
    val opFn: Option[(Expr, Expr) => Expr] = peekChar() match {
-   case '*' => advance(); Some(mulFn)
-   case '/' => advance(); Some(divFn)
-   case '%' => advance(); Some(modFn)
-   case _ => None
+    case '*' => advance(); Some(mulFn)
+    case '/' => advance(); Some(divFn)
+    case '%' => advance(); Some(modFn)
+    case _ => None
    }
    opFn match {
-   case None => Right(acc)
-   case Some(b) =>
-    parseUnary().flatMap(right => loop(b(acc, right)))
+    case None => continue = false
+    case Some(b) =>
+     parseUnary() match {
+      case Right(right) => current = b(current, right)
+      case left @ Left(_) => return left
+     }
    }
   }
-  loop(left)
-  }
+  Right(current)
+}
 
  def parseUnary(): Either[ExprParseError, Expr] = {
   skipWhitespace()

@@ -412,4 +412,40 @@ class ExprParserSpec extends AnyFunSuite with Matchers {
     ois.close()
     restored shouldBe built
   }
+
+  // -- ADR-008-AB: iterative-loop regression (deep nesting) --
+
+  test("ExprParser: 1000-OR-chained expression parses without StackOverflowError") {
+    val input = (1 to 1000).map(i => s"a$i").mkString(" OR ")
+    val out = ExprParser.parseExpr(input)
+    out.isRight shouldBe true
+  }
+
+  test("ExprParser: 1000-AND-chained expression parses without StackOverflowError") {
+    val input = (1 to 1000).map(i => s"a$i").mkString(" AND ")
+    val out = ExprParser.parseExpr(input)
+    out.isRight shouldBe true
+  }
+
+  test("ExprParser: 1000-deep + or - chain parses without StackOverflowError") {
+    val parts = (1 to 1000).map(i => if (i % 2 == 0) s"+ a$i" else s"- a$i")
+    val input = "a1" + parts.drop(1).mkString(" ")
+    val out = ExprParser.parseExpr(input)
+    out.isRight shouldBe true
+  }
+
+  test("ExprParser: 1000-deep * or / or % chain parses without StackOverflowError") {
+    val parts = (1 to 1000).map(i => if (i % 3 == 0) s"* a$i" else if (i % 3 == 1) s"/ a$i" else s"% a$i")
+    val input = "a1" + parts.drop(1).mkString(" ")
+    val out = ExprParser.parseExpr(input)
+    out.isRight shouldBe true
+  }
+
+  test("ExprParser: 1000-deep WHEN branch chain parses without StackOverflowError") {
+    val input = "CASE " +
+      (1 to 1000).map(i => s"WHEN a$i THEN v$i").mkString(" ") +
+      " ELSE v0 END"
+    val out = ExprParser.parseExpr(input)
+    out.isRight shouldBe true
+  }
 }
