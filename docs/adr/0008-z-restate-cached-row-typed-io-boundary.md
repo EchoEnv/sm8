@@ -256,8 +256,10 @@ Rationale:
 ### Binary compatibility
 
 - **Source-compatible**: `RestateCachedRow` apply signature unchanged.
-- **Binary-compatible**: sealed `EngineError` ADT unchanged (no new cases; reused `IncompatibleExprShape`. Corrected from v1.0 which falsely claimed `IncompatibleExprShape` exists.)
+- **Source-CHANGED**: `CachedRowDecoder.toRestateCachedRowFromPortable` (the ONLY non-test constructor caller) return type changed from `RestateCachedRow` to `Either[EngineError, RestateCachedRow]`. This is a **source-incompatible** change for downstream callers using the typed-`Either` chain pattern. Correction: the v1.0 ADR claimed "Source-compatible" but the signature change is in the encoder (production code), not the case-class apply. (Updated v1.1.)
+- **Binary-CHANGED**: same signature change for pre-compiled bytecode. Existing bytecode that compiled against the old `RestateCachedRow`-returning signature will fail to load (mismatched return type). The 1 production caller (`CachePlugin.scala:149`) + 1 test caller (`QueryServiceSpec.scala:327`) are updated in the same PR. Downstream connectors that consume `toRestateCachedRowFromPortable` must recompile.
 - **Wire-compatible**: no new wire types.
+- **EngineError ADT unchanged**: sealed `EngineError` ADT unchanged (no new cases; reused `IncompatibleExprShape`).
 
 ### Spec alignment
 

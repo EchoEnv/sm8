@@ -233,7 +233,7 @@ object QueryBuilder {
  * continuation frame (set Black + pop path) that fires AFTER the child's
  * subtree is fully processed. Without the flag, re-pushing a Gray node
  * with `remaining = Nil` triggers a false-positive cycle (the original
- * algorithm bug fixed by this ADR).
+ * algorithm bug).
  *
  * Cycle example (a → b):
  *  visit a: stack = [(a, [b], Init)]; color(a) = White → Gray; push (b, [], Init)
