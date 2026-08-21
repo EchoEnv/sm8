@@ -163,14 +163,9 @@ Before opening a PR:
 2. If your module adds a Spark dependency, document why in the module's `pom.xml` comment and verify the inverted-enforcer pattern holds.
 3. Update the relevant ADR in `docs/adr/` if the change is architecturally significant.
 
+## Contributors
+
 <a href="https://github.com/EchoEnv/sm8/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=EchoEnv/sm8" />
 </a>
 
----
-
-<div align="center">
-
-[![Star History Chart](https://api.star-history.com/svg?repos=EchoEnv/sm8&type=Date)](https://star-history.com/#EchoEnv/sm8&Date)
-
-</div>
