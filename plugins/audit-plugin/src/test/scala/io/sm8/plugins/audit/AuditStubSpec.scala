@@ -1,7 +1,7 @@
 /*
- * SM8 row-cap Plugin — test.
+ * SM8 audit Plugin — test.
  */
-package io.sm8.plugins.rowcap
+package io.sm8.plugins.audit
 
 import io.sm8.core.{ConnectorRequest, EngineImpl}
 import io.sm8.sdk.HookStage
@@ -9,23 +9,19 @@ import io.sm8.sdk.HookStage
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
-class RowCapPluginSpec extends AnyFlatSpec with Matchers {
+class AuditStubSpec extends AnyFlatSpec with Matchers {
 
-  "RowCapPlugin.setup" should "register a single Post-hook at PostExecute" in {
+  "AuditStub.setup" should "register a single Post-hook at PostFormat" in {
     val engine: EngineImpl = EngineImpl()
-    val plugin = new RowCapPlugin(RowCapConfig(maxRows = 100))
+    val plugin = new AuditStub
     engine.use(plugin)
 
-    engine.hooks.postHooksFor(HookStage.PostExecute).map(_._1.name) shouldBe List("row-cap")
-  }
-
-  it should "reject negative maxRows at the boundary" in {
-    an [IllegalArgumentException] should be thrownBy RowCapConfig(maxRows = -1)
+    engine.hooks.postHooksFor(HookStage.PostFormat).map(_._1.name) shouldBe List("audit-stub")
   }
 
   it should "fire once per engine.run" in {
     val engine: EngineImpl = EngineImpl()
-    val plugin = new RowCapPlugin(RowCapConfig(maxRows = 100))
+    val plugin = new AuditStub
     engine.use(plugin)
 
     val stub = new io.sm8.sdk.Connector {

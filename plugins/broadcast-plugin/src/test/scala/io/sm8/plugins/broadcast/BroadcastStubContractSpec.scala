@@ -1,24 +1,25 @@
 /*
- * SM8 skew Plugin — Conformance contract spec (PR-D per ADR-007).
+ * SM8 broadcast Plugin — Conformance contract spec (PR-D per ADR-007).
  *
  * Extends the unified `HookContractSpec` + `PluginContractSpec`
- * from `io.sm8.sdk.contract`. The skew-plugin ships one PreHook
- * at HookStage.PreExecute, priority 250, name "skew".
+ * from `io.sm8.sdk.contract`. The broadcast-plugin ships one
+ * PreHook at HookStage.PreExecute, priority 250, name "broadcast-stub"".
  *
  * The hook is read back via `EngineImpl().use(plugin)`.
  *
- * Per RFC §13 DoD spirit: structural inheritance from the unified
- * contract base.
+ * Per RFC §13 DoD spirit: future contributors cannot skip the
+ * unified conformance check; `PreHook` refactors in `sm8-core`
+ * cannot silently break the broadcast-plugin contract rules.
  *
  */
-package io.sm8.plugins.skew
+package io.sm8.plugins.broadcast
 
 import io.sm8.core.EngineImpl
 import io.sm8.sdk.{Context, HookStage, PipelineStage, Plugin, PostHook, PreHook, Request, Result, Transformer}
 import io.sm8.sdk.contract.{HookContractSpec, PluginContractSpec}
 
-case object SkewConformanceRequest extends Request
-case object SkewConformanceResult   extends Result
+case object BroadcastConformanceRequest extends Request
+case object BroadcastConformanceResult   extends Result
 
 final class NoopPreHook(override val name: String, override val priority: Int)
     extends PreHook {
@@ -37,33 +38,33 @@ final class NoopTransformer(override val name: String, override val priority: In
   override def transform(context: Context): Context = context
 }
 
-class SkewPluginContractSpec extends HookContractSpec {
+class BroadcastStubContractSpec extends HookContractSpec {
 
   override def preHook: PreHook = {
     val engine = EngineImpl()
-    engine.use(new SkewPlugin)
+    engine.use(new BroadcastStub)
     engine.hooks.preHooksFor(HookStage.PreExecute).head._1
   }
 
   override def postHook: PostHook =
-    new NoopPostHook(name = "skew-conformance-post", priority = 250)
+    new NoopPostHook(name = "broadcast-conformance-post", priority = 250)
 
   override def transformer: Transformer =
-    new NoopTransformer(name = "skew-conformance-transformer", priority = 250)
+    new NoopTransformer(name = "broadcast-conformance-transformer", priority = 250)
 
   override def baselineContext: Context =
     Context(
       stage   = PipelineStage.Execute,
-      request = SkewConformanceRequest,
-      result  = Some(SkewConformanceResult),
+      request = BroadcastConformanceRequest,
+      result  = Some(BroadcastConformanceResult),
       meta    = Map.empty,
       stop    = false
     )
 }
 
-class SkewPluginContractPluginSpec extends PluginContractSpec {
+class BroadcastStubContractPluginSpec extends PluginContractSpec {
 
-  override def plugin: Plugin = new SkewPlugin
+  override def plugin: Plugin = new BroadcastStub
 
   override def engine: io.sm8.sdk.Engine =
     io.sm8.sdk.contract.PluginContractSpecStubs.NoopEngine

@@ -13,9 +13,10 @@ import java.util.concurrent.atomic.AtomicInteger
 
 import io.sm8.sdk._
 
-final class SkewPlugin extends Plugin with java.io.Serializable {
+final class SkewStub extends Plugin with java.io.Serializable {
 
   /** 
+   */
   override def closedOverVars: Seq[String] = Seq("fires")
 
   val fires: AtomicInteger = new AtomicInteger(0)
@@ -23,15 +24,15 @@ final class SkewPlugin extends Plugin with java.io.Serializable {
   override def setup(engine: Engine): Unit = {
     engine.hooks.registerPreHook(
       HookStage.PreExecute,
-      new SkewPreHook(fires),
+      new SkewPreStubHook(fires),
       priority = 250
     )
   }
 }
 
-private final class SkewPreHook(counter: AtomicInteger)
+private final class SkewPreStubHook(counter: AtomicInteger)
     extends PreHook with java.io.Serializable {
-  override val name: String = "skew"
+  override val name: String = "skew-stub"
   override val priority: Int = 250
   override def stage: HookStage = HookStage.PreExecute
   override def run(context: Context): Context = {

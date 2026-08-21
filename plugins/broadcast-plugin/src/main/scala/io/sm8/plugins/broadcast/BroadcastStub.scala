@@ -21,9 +21,10 @@ import io.sm8.sdk._
  * hints on the join plan. Step 9b: shape-correct only — increments
  * a counter on each fire.
  */
-final class BroadcastPlugin extends Plugin with java.io.Serializable {
+final class BroadcastStub extends Plugin with java.io.Serializable {
 
   /** 
+   */
   override def closedOverVars: Seq[String] = Seq("fires")
 
   val fires: AtomicInteger = new AtomicInteger(0)
@@ -31,7 +32,7 @@ final class BroadcastPlugin extends Plugin with java.io.Serializable {
   override def setup(engine: Engine): Unit = {
     engine.hooks.registerPreHook(
       HookStage.PreExecute,
-      new BroadcastPreHook(fires),
+      new BroadcastPreStubHook(fires),
       priority = 250
     )
   }
@@ -42,9 +43,9 @@ final class BroadcastPlugin extends Plugin with java.io.Serializable {
  * implementation will set the broadcast threshold on the SparkConf
  * before query execution.
  */
-private final class BroadcastPreHook(counter: AtomicInteger)
+private final class BroadcastPreStubHook(counter: AtomicInteger)
     extends PreHook with java.io.Serializable {
-  override val name: String = "broadcast"
+  override val name: String = "broadcast-stub"
   override val priority: Int = 250
   override def stage: HookStage = HookStage.PreExecute
   override def run(context: Context): Context = {

@@ -23,7 +23,7 @@ import java.io.{ByteArrayInputStream, ByteArrayOutputStream, ObjectInputStream, 
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
-class MaterializePluginLifecycleSpec extends AnyFunSuite with Matchers {
+class MaterializeStubLifecycleSpec extends AnyFunSuite with Matchers {
 
   /** Round-trip via Java serialization — the path Restate and Spark
     * use to ship plugin instances across threads. */
@@ -39,37 +39,37 @@ class MaterializePluginLifecycleSpec extends AnyFunSuite with Matchers {
     out
   }
 
-  test("MaterializePlugin: round-trips through Java serialization (PersistLevel + fires captured)") {
+  test("MaterializeStub: round-trips through Java serialization (PersistLevel + fires captured)") {
     // The plugin captures a `PersistLevel.StubLevel` + an
     // `AtomicInteger` (both Serializable). This test fires the
     // closure-safety contract 
     // mantra #1.
-    val original = new MaterializePlugin(PersistLevel.MemoryAndDisk)
+    val original = new MaterializeStub(PersistLevel.MemoryAndDisk)
     val restored = roundTripViaJavaSerialization(original)
     restored should not be null
     restored.closedOverVars should contain ("storageLevel")
     restored.closedOverVars should contain ("fires")
   }
 
-  test("MaterializePlugin.closedOverVars: captures 'storageLevel' + 'fires' (both Serializable)") {
-    val p = new MaterializePlugin(PersistLevel.DiskOnly)
+  test("MaterializeStub.closedOverVars: captures 'storageLevel' + 'fires' (both Serializable)") {
+    val p = new MaterializeStub(PersistLevel.DiskOnly)
     p.closedOverVars should contain ("storageLevel")
     p.closedOverVars should contain ("fires")
   }
 
-  test("MaterializePlugin: lifecycle contract — BOTH PreExecute (persist) AND PostExecute (unpersist) register") {
+  test("MaterializeStub: lifecycle contract — BOTH PreExecute (persist) AND PostExecute (unpersist) register") {
     // (persist before, unpersist after) ensures executor-memory isn't
     // leaked. A regression that registers only one half breaks the
     // contract — this test enforces BOTH.
     val engine: io.sm8.core.EngineImpl = io.sm8.core.EngineImpl()
-    val plugin = new MaterializePlugin(PersistLevel.MemoryAndDisk)
+    val plugin = new MaterializeStub(PersistLevel.MemoryAndDisk)
     engine.use(plugin)
 
     val preHooks  = engine.hooks.preHooksFor(io.sm8.sdk.HookStage.PreExecute)
     val postHooks = engine.hooks.postHooksFor(io.sm8.sdk.HookStage.PostExecute)
 
-    preHooks.map(_._1.name) shouldBe List("materialize-pre")
-    postHooks.map(_._1.name) shouldBe List("materialize-post")
+    preHooks.map(_._1.name) shouldBe List("materialize-pre-stub")
+    postHooks.map(_._1.name) shouldBe List("materialize-post-stub")
 
     plugin.fires.get() shouldBe 0  // fires on execute, not on setup
   }

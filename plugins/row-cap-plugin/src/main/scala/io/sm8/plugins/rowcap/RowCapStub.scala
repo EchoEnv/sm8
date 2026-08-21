@@ -1,15 +1,11 @@
 /*
  * SM8 row-cap Hook Plugin.
  *
- * (case class). `RowCapPlugin` is behavior (registers the hook).
- * The hook body pattern-matches on `Result` per the SDK shape.
  *
  *
  * runtime errors expected. Programmer errors (e.g., negative
  * `maxRows`) are rejected at the boundary (case class apply).
- *
- * Step 9a first cut: shape-correct (counter only). Real capping
- * (ctx.result = ctx.result.take(maxRows)) lands when the typed
+ * * (ctx.result = ctx.result.take(maxRows)) lands when the typed
  * Result shape ships (Step 0 — Result is still a marker trait).
  */
 package io.sm8.plugins.rowcap
@@ -36,7 +32,7 @@ final case class RowCapConfig(maxRows: Int) {
  * Per 
  * for Spark-closure safety.
  */
-final class RowCapPlugin(config: RowCapConfig) extends Plugin with java.io.Serializable {
+final class RowCapStub(config: RowCapConfig) extends Plugin with java.io.Serializable {
 
   /** 
     * captured `config` (RowCapConfig, Serializable case class) and
@@ -49,7 +45,7 @@ final class RowCapPlugin(config: RowCapConfig) extends Plugin with java.io.Seria
   override def setup(engine: Engine): Unit = {
     engine.hooks.registerPostHook(
       HookStage.PostExecute,
-      new RowCapPostHook(fires, config),
+      new RowCapPostStubHook(fires, config),
       priority = 200
     )
   }
@@ -62,9 +58,9 @@ final class RowCapPlugin(config: RowCapConfig) extends Plugin with java.io.Seria
  *
  * Serializable: captured in closures must serialize cleanly.
  */
-private final class RowCapPostHook(counter: AtomicInteger, config: RowCapConfig)
+private final class RowCapPostStubHook(counter: AtomicInteger, config: RowCapConfig)
     extends PostHook with java.io.Serializable {
-  override val name: String = "row-cap"
+  override val name: String = "row-cap-stub"
   override val priority: Int = 200
   override def stage: HookStage = HookStage.PostExecute
   override def run(context: Context): Context = {
