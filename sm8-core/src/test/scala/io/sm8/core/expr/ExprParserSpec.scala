@@ -448,4 +448,10 @@ class ExprParserSpec extends AnyFunSuite with Matchers {
     val out = ExprParser.parseExpr(input)
     out.isRight shouldBe true
   }
+
+  test("ExprParser: 1000-arg function call parses without StackOverflowError") {
+    val input = "f(" + (1 to 1000).map(i => s"a$i").mkString(", ") + ")"
+    val out = ExprParser.parseExpr(input)
+    out.isRight shouldBe true
+  }
 }
