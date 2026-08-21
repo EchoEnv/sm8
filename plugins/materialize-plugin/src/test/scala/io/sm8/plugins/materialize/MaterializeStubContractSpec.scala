@@ -27,10 +27,10 @@ final class NoopTransformer(override val name: String, override val priority: In
   override def transform(context: Context): Context = context
 }
 
-class MaterializePluginContractSpec extends HookContractSpec {
+class MaterializeStubContractSpec extends HookContractSpec {
 
-  private val plugin: MaterializePlugin =
-    new MaterializePlugin(PersistLevel.MemoryAndDisk)
+  private val plugin: MaterializeStub =
+    new MaterializeStub(PersistLevel.MemoryAndDisk)
 
   override def preHook: PreHook = {
     val engine = EngineImpl()
@@ -57,10 +57,10 @@ class MaterializePluginContractSpec extends HookContractSpec {
     )
 }
 
-class MaterializePluginContractPluginSpec extends PluginContractSpec {
+class MaterializeStubContractPluginSpec extends PluginContractSpec {
 
   override def plugin: Plugin =
-    new MaterializePlugin(PersistLevel.MemoryAndDisk)
+    new MaterializeStub(PersistLevel.MemoryAndDisk)
 
   override def engine: io.sm8.sdk.Engine =
     io.sm8.sdk.contract.PluginContractSpecStubs.NoopEngine

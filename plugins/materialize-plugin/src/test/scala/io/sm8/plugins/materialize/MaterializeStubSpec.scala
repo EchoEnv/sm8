@@ -16,23 +16,23 @@ import io.sm8.sdk.HookStage
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
-class MaterializePluginSpec extends AnyFlatSpec with Matchers {
+class MaterializeStubSpec extends AnyFlatSpec with Matchers {
 
-  "MaterializePlugin.setup" should "register the lifecycle pair (PreExecute persist + PostExecute unpersist)" in {
+  "MaterializeStub.setup" should "register the lifecycle pair (PreExecute persist + PostExecute unpersist)" in {
     val engine: EngineImpl = EngineImpl()
-    val plugin = new MaterializePlugin(PersistLevel.MemoryAndDisk)
+    val plugin = new MaterializeStub(PersistLevel.MemoryAndDisk)
     engine.use(plugin)
 
     val preHooks  = engine.hooks.preHooksFor(HookStage.PreExecute)
     val postHooks = engine.hooks.postHooksFor(HookStage.PostExecute)
 
-    preHooks.map(_._1.name) shouldBe List("materialize-pre")
-    postHooks.map(_._1.name) shouldBe List("materialize-post")
+    preHooks.map(_._1.name) shouldBe List("materialize-pre-stub")
+    postHooks.map(_._1.name) shouldBe List("materialize-post-stub")
   }
 
   it should "fire twice per engine.run (counter increments on each fire)" in {
     val engine: EngineImpl = EngineImpl()
-    val plugin = new MaterializePlugin(PersistLevel.MemoryAndDisk)
+    val plugin = new MaterializeStub(PersistLevel.MemoryAndDisk)
     engine.use(plugin)
 
     val stub = new io.sm8.sdk.Connector {

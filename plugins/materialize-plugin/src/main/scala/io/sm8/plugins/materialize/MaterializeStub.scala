@@ -24,40 +24,40 @@ object PersistLevel {
   val DiskOnly: PersistLevel = StubLevel("DISK_ONLY")
 }
 
-final class MaterializePlugin(val storageLevel: PersistLevel)
+final class MaterializeStub(val storageLevel: PersistLevel)
     extends Plugin with java.io.Serializable {
 
+  /**
+   * Materialize is a Plugin stub (no real persist/unpersist implementation
+   * lives here -- the real implementation lives in the spark-connector
+   * per ADR-008-P §A3). The hook just increments `fires` to confirm the
+   * lifecycle. FirstParty band (100-899).
+   */
   val fires: AtomicInteger = new AtomicInteger(0)
 
-  /**
-   * 
-   * FirstParty band (100-899). The materialize plugin is a
-   * reference Plugin shipped in io.sm8.plugins.*, so FirstParty is
-   * correct (not Core).
-   */
   override def closedOverVars: Seq[String] = Seq("storageLevel", "fires")
 
   override def setup(engine: Engine): Unit = {
     engine.hooks.registerPreHook(
       HookStage.PreExecute,
-      new MaterializePreHook(fires, storageLevel),
+      new MaterializePreStubHook(fires, storageLevel),
       priority = 250,
       origin = HookOrigin.FirstParty
     )
     engine.hooks.registerPostHook(
       HookStage.PostExecute,
-      new MaterializePostHook(fires),
+      new MaterializePostStubHook(fires),
       priority = 250,
       origin = HookOrigin.FirstParty
     )
   }
 }
 
-private final class MaterializePreHook(
+private final class MaterializePreStubHook(
     counter:      AtomicInteger,
     storageLevel: PersistLevel
 ) extends PreHook with java.io.Serializable {
-  override val name: String  = "materialize-pre"
+  override val name: String  = "materialize-pre-stub"
   override val priority: Int = 250
   override def stage: HookStage = HookStage.PreExecute
 
@@ -67,10 +67,10 @@ private final class MaterializePreHook(
   }
 }
 
-private final class MaterializePostHook(
+private final class MaterializePostStubHook(
     counter: AtomicInteger
 ) extends PostHook with java.io.Serializable {
-  override val name: String  = "materialize-post"
+  override val name: String  = "materialize-post-stub"
   override val priority: Int = 250
   override def stage: HookStage = HookStage.PostExecute
 

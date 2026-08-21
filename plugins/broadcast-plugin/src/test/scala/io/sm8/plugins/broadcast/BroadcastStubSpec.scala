@@ -9,18 +9,18 @@ import io.sm8.sdk.HookStage
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
-class BroadcastPluginSpec extends AnyFlatSpec with Matchers {
+class BroadcastStubSpec extends AnyFlatSpec with Matchers {
 
-  "BroadcastPlugin.setup" should "register a single Pre-hook at PreExecute" in {
+  "BroadcastStub.setup" should "register a single Pre-hook at PreExecute" in {
     val engine: EngineImpl = EngineImpl()
-    val plugin = new BroadcastPlugin
+    val plugin = new BroadcastStub
     engine.use(plugin)
-    engine.hooks.preHooksFor(HookStage.PreExecute).map(_._1.name) shouldBe List("broadcast")
+    engine.hooks.preHooksFor(HookStage.PreExecute).map(_._1.name) shouldBe List("broadcast-stub")
   }
 
   it should "fire once per engine.run" in {
     val engine: EngineImpl = EngineImpl()
-    val plugin = new BroadcastPlugin
+    val plugin = new BroadcastStub
     engine.use(plugin)
 
     val stub = new io.sm8.sdk.Connector {

@@ -16,7 +16,7 @@
  * pulls the registered instance from the engine's HookManager.
  *
  * The plugin ships one PostHook at HookStage.PostFormat, priority 150,
- * name "audit". The PreHook / Transformer slots in HookContractSpec
+ * name "audit-stub"". The PreHook / Transformer slots in HookContractSpec
  * are supplied as no-op stubs (the audit-plugin has none of those).
  *
  * one contract spec per plugin; 
@@ -62,7 +62,7 @@ final class NoopTransformer(override val name: String, override val priority: In
   override def transform(context: Context): Context = context
 }
 
-class AuditPluginContractSpec extends HookContractSpec {
+class AuditStubContractSpec extends HookContractSpec {
 
   /** The audit-plugin's only hook — read back from a fresh engine. */
   override def preHook: PreHook =
@@ -70,7 +70,7 @@ class AuditPluginContractSpec extends HookContractSpec {
 
   override def postHook: PostHook = {
     val engine = EngineImpl()
-    engine.use(new AuditPlugin)
+    engine.use(new AuditStub)
     engine.hooks.postHooksFor(HookStage.PostFormat).head._1
   }
 
@@ -87,9 +87,9 @@ class AuditPluginContractSpec extends HookContractSpec {
     )
 }
 
-class AuditPluginContractPluginSpec extends PluginContractSpec {
+class AuditStubContractPluginSpec extends PluginContractSpec {
 
-  override def plugin: Plugin = new AuditPlugin
+  override def plugin: Plugin = new AuditStub
 
   override def engine: io.sm8.sdk.Engine =
     io.sm8.sdk.contract.PluginContractSpecStubs.NoopEngine

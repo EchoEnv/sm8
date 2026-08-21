@@ -1,25 +1,25 @@
 /*
- * SM8 broadcast Plugin — Conformance contract spec (PR-D per ADR-007).
+ * SM8 row-cap Plugin — Conformance contract spec (PR-D per ADR-007).
  *
  * Extends the unified `HookContractSpec` + `PluginContractSpec`
- * from `io.sm8.sdk.contract`. The broadcast-plugin ships one
- * PreHook at HookStage.PreExecute, priority 250, name "broadcast".
+ * from `io.sm8.sdk.contract`. The row-cap-plugin ships one PostHook
+ * at HookStage.PostExecute, priority 200, name "row-cap". The plugin
+ * constructor requires a `RowCapConfig`.
  *
  * The hook is read back via `EngineImpl().use(plugin)`.
  *
- * Per RFC §13 DoD spirit: future contributors cannot skip the
- * unified conformance check; `PreHook` refactors in `sm8-core`
- * cannot silently break the broadcast-plugin contract rules.
+ * Per RFC §13 DoD spirit: structural inheritance from the unified
+ * contract base.
  *
  */
-package io.sm8.plugins.broadcast
+package io.sm8.plugins.rowcap
 
 import io.sm8.core.EngineImpl
 import io.sm8.sdk.{Context, HookStage, PipelineStage, Plugin, PostHook, PreHook, Request, Result, Transformer}
 import io.sm8.sdk.contract.{HookContractSpec, PluginContractSpec}
 
-case object BroadcastConformanceRequest extends Request
-case object BroadcastConformanceResult   extends Result
+case object RowCapConformanceRequest extends Request
+case object RowCapConformanceResult   extends Result
 
 final class NoopPreHook(override val name: String, override val priority: Int)
     extends PreHook {
@@ -38,33 +38,36 @@ final class NoopTransformer(override val name: String, override val priority: In
   override def transform(context: Context): Context = context
 }
 
-class BroadcastPluginContractSpec extends HookContractSpec {
+class RowCapStubContractSpec extends HookContractSpec {
 
-  override def preHook: PreHook = {
+  private val config: RowCapConfig = RowCapConfig(maxRows = 1000)
+
+  override def preHook: PreHook =
+    new NoopPreHook(name = "row-cap-conformance-pre", priority = 200)
+
+  override def postHook: PostHook = {
     val engine = EngineImpl()
-    engine.use(new BroadcastPlugin)
-    engine.hooks.preHooksFor(HookStage.PreExecute).head._1
+    val plugin = new RowCapStub(config)
+    engine.use(plugin)
+    engine.hooks.postHooksFor(HookStage.PostExecute).head._1
   }
 
-  override def postHook: PostHook =
-    new NoopPostHook(name = "broadcast-conformance-post", priority = 250)
-
   override def transformer: Transformer =
-    new NoopTransformer(name = "broadcast-conformance-transformer", priority = 250)
+    new NoopTransformer(name = "row-cap-conformance-transformer", priority = 200)
 
   override def baselineContext: Context =
     Context(
       stage   = PipelineStage.Execute,
-      request = BroadcastConformanceRequest,
-      result  = Some(BroadcastConformanceResult),
+      request = RowCapConformanceRequest,
+      result  = Some(RowCapConformanceResult),
       meta    = Map.empty,
       stop    = false
     )
 }
 
-class BroadcastPluginContractPluginSpec extends PluginContractSpec {
+class RowCapStubContractPluginSpec extends PluginContractSpec {
 
-  override def plugin: Plugin = new BroadcastPlugin
+  override def plugin: Plugin = new RowCapStub(RowCapConfig(maxRows = 1000))
 
   override def engine: io.sm8.sdk.Engine =
     io.sm8.sdk.contract.PluginContractSpecStubs.NoopEngine

@@ -9,18 +9,18 @@ import io.sm8.sdk.HookStage
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
-class SkewPluginSpec extends AnyFlatSpec with Matchers {
+class SkewStubSpec extends AnyFlatSpec with Matchers {
 
-  "SkewPlugin.setup" should "register a single Pre-hook at PreExecute" in {
+  "SkewStub.setup" should "register a single Pre-hook at PreExecute" in {
     val engine: EngineImpl = EngineImpl()
-    val plugin = new SkewPlugin
+    val plugin = new SkewStub
     engine.use(plugin)
-    engine.hooks.preHooksFor(HookStage.PreExecute).map(_._1.name) shouldBe List("skew")
+    engine.hooks.preHooksFor(HookStage.PreExecute).map(_._1.name) shouldBe List("skew-stub")
   }
 
   it should "fire once per engine.run" in {
     val engine: EngineImpl = EngineImpl()
-    val plugin = new SkewPlugin
+    val plugin = new SkewStub
     engine.use(plugin)
 
     val stub = new io.sm8.sdk.Connector {
