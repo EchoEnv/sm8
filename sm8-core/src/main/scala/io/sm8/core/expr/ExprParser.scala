@@ -337,7 +337,7 @@ private def loopOrExpr(acc: Expr): Either[ExprParseError, Expr] = {
   * Keywords are case-insensitive. Missing ELSE lowers to
   * `Literal(NullValue, Varchar)` (SQL: no ELSE yields NULL).
   * Cursor is pre-"CASE" on entry; consumes through "END". */
- private def parseCaseWhen(): Either[ExprParseError, Expr] = {
+private def parseCaseWhen(): Either[ExprParseError, Expr] = {
   // consume "CASE" (4 chars) + ws
   position += 4
   skipWhitespace()
@@ -354,37 +354,43 @@ private def loopOrExpr(acc: Expr): Either[ExprParseError, Expr] = {
    _ = skipWhitespace()
    value <- parseOrExpr()
   } yield (cond, value)
-  def loop(): Either[ExprParseError, Unit] = {
+  // Iterative loop: collect WHEN-branches into the accumulator.
+  // Stays at 1 JVM stack frame regardless of branch count.
+  var continuing: Boolean = true
+ while (continuing) {
   skipWhitespace()
   if (consumeWordCaseInsensitive("when")) {
-   branch().flatMap { b => branches += b; loop() }
-  } else Right(())
-  }
-  loop().flatMap { _ =>
-  skipWhitespace()
-  val otherwise: Either[ExprParseError, Expr] =
-   if (consumeWordCaseInsensitive("else")) {
-   skipWhitespace(); parseOrExpr()
-   } else {
-   // SQL: missing ELSE yields NULL.
-   Right(Expr.Literal(LiteralValue.NullValue, SealedDataType.Varchar))
+   branch() match {
+    case Right(b) => branches += b
+    case Left(err) => return Left(err)
    }
-  otherwise.flatMap { els =>
-   skipWhitespace()
-   if (!consumeWordCaseInsensitive("end"))
-   Left(ExprParseError.UnexpectedToken(
-    token = peekText(8),
-    position = position,
-    reason = "expected 'END' to close CASE WHEN"))
-   else if (branches.isEmpty)
-   Left(ExprParseError.UnexpectedToken(
-    token = "CASE",
-    position = position,
-    reason = "CASE requires at least one WHEN. THEN branch"))
-   else Right(Expr.CaseWhen(branches.toList, els))
-  }
+  } else {
+   continuing = false
   }
  }
+  skipWhitespace()
+  val otherwise: Either[ExprParseError, Expr] =
+  if (consumeWordCaseInsensitive("else")) {
+  skipWhitespace(); parseOrExpr()
+  } else {
+  // SQL: missing ELSE yields NULL.
+  Right(Expr.Literal(LiteralValue.NullValue, SealedDataType.Varchar))
+  }
+  otherwise.flatMap { els =>
+  skipWhitespace()
+  if (!consumeWordCaseInsensitive("end"))
+  Left(ExprParseError.UnexpectedToken(
+   token = peekText(8),
+   position = position,
+   reason = "expected 'END' to close CASE WHEN"))
+  else if (branches.isEmpty)
+  Left(ExprParseError.UnexpectedToken(
+   token = "CASE",
+   position = position,
+   reason = "CASE requires at least one WHEN. THEN branch"))
+  else Right(Expr.CaseWhen(branches.toList, els))
+  }
+}
 
  /** PR #50 + #53: handle optional postfix clauses after a primary.
   * Returns `Right(e)` unchanged if no postfix follows.

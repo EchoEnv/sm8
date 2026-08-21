@@ -1,7 +1,7 @@
 # ADR-008-AB: ExprParser parseOrExpr/parseAndExpr — @tailrec loop refactor
 
 | Field | Value |
-| **Status** | **v1.1 — review fixes applied** (1 HIGH + 1 HIGH/CRITICAL_GAP + 1 MEDIUM + 2 NIT from dual review) |
+| **Status** | **v1.2 — post-merge review fixes applied** (1 CRITICAL + 1 HIGH fixed; 1 NIT noted) |
 | **Date** | 2026-08-21 |
 | **Module** | `sm8-core` (expression parser) |
 | **Closes** | Senior Architect full-codebase review HIGH-4 (the deferred ADR-008-O §P2-6 fix) |
@@ -10,13 +10,15 @@
 
 ## Decision-at-a-glance
 
-Per ADR-008-O §P2-6, the `loop` helpers inside `parseOrExpr`, `parseAndExpr`, `parseAddExpr`, `parseMulExpr`, and `parseCaseWhen` (ExprParser.scala:170-186, 220-236, 238-255, 306-353) are recursive and risk JVM `StackOverflowError` when parsing deeply-nested expressions. The fix is to lift each `loop` from a nested `def` inside `flatMap` to a top-level `private @tailrec` method that accepts the accumulator as a parameter. Apply to all 5 parsers consistently.
+Per ADR-008-O §P2-6, the `loop` helpers inside `parseOrExpr`, `parseAndExpr`, `parseAddExpr`, `parseMulExpr`, and `parseCaseWhen` (ExprParser.scala:170-186, 220-236, 238-255, 306-353) are recursive and risk JVM `StackOverflowError` when parsing deeply-nested expressions. The fix is to convert each `loop` to a true iterative `while` loop with a mutable accumulator + `Either` match-based short-circuit. Apply to all 5 parsers consistently. (The v1.0/v1.1 proposed `@tailrec`; the v1.2 implementation uses `while` because `@tailrec` is rejected by Scala 2.13 when the recursive call is wrapped in `flatMap`.)
 
 ## Revision history
 
 | Version | Date | Change |
 |---|---|---|
 | v1.0 | 2026-08-21 | Initial draft — refactor loop to @tailrec + regression test |
+| v1.1 | 2026-08-21 | Review fixes — 5 tests (one per lifted parser); parseCaseWhen deferred; LOC revised; private locked |
+| v1.2 | 2026-08-21 | Post-merge review fixes — corrected ADR-vs-implementation drift (the `loop` helpers are iterative, NOT `@tailrec`); lifted `parseCaseWhen`'s internal `def loop()` to iterative (the v1.0/v1.1 deferred this; v1.2 fixes it); clarified the binary-compat claim |
 
 ---
 
@@ -77,7 +79,7 @@ All 5 patterns are symmetric. The fix for one generalizes to all per the same pa
 
 ## Considered options
 
-### Option A: Lift `loop` to a top-level `@tailrec` method per parser
+### Option A: Lift `loop` to a top-level `@tailrec` method per parser (v1.0; REJECTED v1.2)
 
 Extract each `loop` into a separate `@tailrec def loopOrExpr(...)` method that takes the accumulator as a parameter and uses `Either.flatMap` + the existing `consumeWordCaseInsensitive` helper.
 
@@ -102,7 +104,9 @@ def parseOrExpr(): Either[ExprParseError, Expr] =
 - The top-level `loopOrExpr` method is now an internal helper visible to the class (vs. the nested `def` which was scoped to the `flatMap` closure). The cleanest fix is to mark it `private` (or `private[expr]`).
 - The fix must be applied to 5 parsers consistently (or be a partial fix).
 
-### Option B: Convert to iterative with `while` + mutable `List`
+### Option A: Convert to iterative with `while` + mutable accumulator (CHOSEN)
+
+The v1.0 ADR proposed `@tailrec` but the compiler rejected it. The correct fix is iterative.
 
 ```scala
 def parseOrExpr(): Either[ExprParseError, Expr] = {
@@ -152,7 +156,7 @@ def parseOrExpr(): Either[ExprParseError, Expr] =
 
 ## Decision outcome
 
-**Adopt Option A**. Lift `loop` to a top-level `@tailrec def` per parser. Apply to all 5 parsers (`parseOrExpr`, `parseAndExpr`, `parseAddExpr`, `parseMulExpr`, `parseCaseWhen`).
+**Adopt Option A (corrected v1.2)** — but the `@tailrec` annotation was REJECTED by the Scala 2.13 compiler at compile time (the recursive call inside `parseXxx().flatMap(...)` is wrapped in `flatMap`, not a direct tail call). The actual implementation is Option B-style: **convert each `loop` to a true iterative `while` loop with a mutable accumulator + `Either` match-based short-circuit**. Apply to all 5 parsers (parseOrExpr, parseAndExpr, parseAddExpr, parseMulExpr, parseCaseWhen). The implementation is in `ExprParser.scala:180-189` (loopOrExpr), `:195-203` (loopAndExpr), `:242-260` (loopAddExpr), `:268-286` (loopMulExpr), `:357-371` (parseCaseWhen while-loop).
 
 ### Implementation plan
 
