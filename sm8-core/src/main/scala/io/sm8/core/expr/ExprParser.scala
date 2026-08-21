@@ -654,20 +654,25 @@ private def parseCaseWhen(): Either[ExprParseError, Expr] = {
   name: String
  ): Either[ExprParseError, Seq[Expr]] = {
   val buf = scala.collection.mutable.ArrayBuffer.empty[Expr]
-  def loop(): Either[ExprParseError, Seq[Expr]] = {
+ // Iterative loop: collect function-call arguments into the accumulator.
+ // Stays at 1 JVM stack frame regardless of arg count (the 6th loop
+ // lifted per ADR-008-AB v1.3; the 5 prior loops were lifted in PR-137).
+ var continuing: Boolean = true
+ while (continuing) {
   skipWhitespace()
-  parseOrExpr().flatMap { arg =>
-   buf += arg
-   skipWhitespace()
-   if (!atEnd && peekChar() == ',') {
-   advance()
-   loop()
-   } else {
-   Right(buf.toSeq)
-   }
+  parseOrExpr() match {
+   case Right(arg) =>
+    buf += arg
+    skipWhitespace()
+    if (!atEnd && peekChar() == ',') {
+     advance()
+    } else {
+     continuing = false
+    }
+    case Left(err) => return Left(err)
   }
-  }
-  loop()
+ }
+ Right(buf.toSeq)
  }
  }
 }

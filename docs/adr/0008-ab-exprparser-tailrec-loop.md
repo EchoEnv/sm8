@@ -1,7 +1,7 @@
 # ADR-008-AB: ExprParser parseOrExpr/parseAndExpr — @tailrec loop refactor
 
 | Field | Value |
-| **Status** | **v1.2 — post-merge review fixes applied** (1 CRITICAL + 1 HIGH fixed; 1 NIT noted) |
+| **Status** | **v1.3 — third-review fixes applied** (1 CRITICAL + 2 MEDIUM + 1 NIT fixed; 1 OPEN acknowledged) |
 | **Date** | 2026-08-21 |
 | **Module** | `sm8-core` (expression parser) |
 | **Closes** | Senior Architect full-codebase review HIGH-4 (the deferred ADR-008-O §P2-6 fix) |
@@ -19,6 +19,7 @@ Per ADR-008-O §P2-6, the `loop` helpers inside `parseOrExpr`, `parseAndExpr`, `
 | v1.0 | 2026-08-21 | Initial draft — refactor loop to @tailrec + regression test |
 | v1.1 | 2026-08-21 | Review fixes — 5 tests (one per lifted parser); parseCaseWhen deferred; LOC revised; private locked |
 | v1.2 | 2026-08-21 | Post-merge review fixes — corrected ADR-vs-implementation drift (the `loop` helpers are iterative, NOT `@tailrec`); lifted `parseCaseWhen`'s internal `def loop()` to iterative (the v1.0/v1.1 deferred this; v1.2 fixes it); clarified the binary-compat claim |
+| v1.3 | 2026-08-21 | Third-review fixes — lifted the 6th recursive loop (`parseFunctionCallArgs`'s internal `def loop()`) to iterative; added the 1000-arg function-call regression test; removed the false `5000-byte input limit` claim (no such limit exists in code); clarified the AST-depth-only defense |
 
 ---
 
@@ -55,7 +56,7 @@ def parseAndExpr(): Either[ExprParseError, Expr] =
 
 The `loop` is a `def` (nested inside `flatMap`). Each `or` / `and` keyword consumes one stack frame. A pathologically-nested expression like `a OR b OR c OR ... OR z` (1000 OR-chained operands) consumes 1000 JVM stack frames via the nested `def loop` calls.
 
-The 5000-byte input limit (per `ExprParser.scala` PARSER_INPUT_LIMIT) caps the byte-length of the input, but the **AST depth** (not the byte-length) determines the recursion depth. A expression like `field_a OR field_b OR field_c OR ... OR field_10000` (each field is 20 chars → 200,000 chars, but 10000 OR-chained → 10000 stack frames) exceeds the 5000-byte input limit but a shorter expression `a OR b OR c OR ... OR z` (where each `a` is 1 char → 26 chars but 26 OR-chained → 26 frames) is well within the byte limit but still triggers recursion.
+There is no byte-length limit on the input. The **AST depth** (not the byte-length) determines the JVM stack frame count. An expression like `field_a OR field_b OR field_c OR ... OR field_10000` (each field is 20 chars → 200,000 chars; 10000 OR-chained → 10000 stack frames) triggers recursion. A shorter expression `a OR b OR c OR ... OR z` (each `a` is 1 char → 26 chars; 26 OR-chained → 26 frames) is also recursive. The iterative fixes (PR-137 for the 5 parser loops; PR-139 for the 6th function-call-args loop) eliminate the JVM stack growth regardless of input depth.
 
 ### Why the original `@tailrec` annotation failed
 
@@ -98,7 +99,7 @@ def parseOrExpr(): Either[ExprParseError, Expr] =
 - `@tailrec` is now direct (the compiler can verify the tail-call).
 - The fix is **minimal** (~10 lines per parser; 5 parsers × 10 = 50 lines net).
 - The algorithm is unchanged (recursive shape + call graph).
-- The existing 5000-byte limit continues to protect against byte-length attacks.
+- The fixes apply to AST depth; the input-byte-length attack surface is a separate concern (see ADR-0008-E "Parser hard-limits" if/when implemented).
 
 **Cons:**
 - The top-level `loopOrExpr` method is now an internal helper visible to the class (vs. the nested `def` which was scoped to the `flatMap` closure). The cleanest fix is to mark it `private` (or `private[expr]`).
@@ -228,7 +229,7 @@ def parseOrExpr(): Either[ExprParseError, Expr] =
 3. The 5 `parseXxx` public-method signatures are unchanged.
 4. The 2 new tests pass (1000-deep OR + 1000-deep AND).
 5. The 617 existing tests pass (zero regression).
-6. The 5000-byte input limit is preserved.
+6. There is no byte-length limit on the input (the AST-depth iterative fixes eliminate JVM stack growth; byte-length attacks are a separate concern).
 7. The algorithm is unchanged (recursive shape + call graph).
 
 ## Verification plan
@@ -253,7 +254,7 @@ mvn -B -ntp -pl sm8-core,connectors/spark-connector,connectors/in-memory-connect
 | Risk | Mitigation |
 |---|---|
 | The 5 lifts change the call shape (top-level method vs nested closure) | The algorithm is identical (verified by the 617 existing tests passing) |
-| The 1000-deep test exhausts the 5000-byte input limit and is rejected | The test uses field names of length 1 (`a`, `b`, `c`, ...) so the input is well under 5000 bytes |
+| The 1000-deep test exhausts only the AST depth (1000 chained operands) | The test uses field names of length 1 (`a`, `b`, `c`, ...) so the input is small (a few KB) |
 | The `@tailrec` annotation is rejected at compile-time | The fix is the standard Scala 2.13 pattern; the compiler will verify the tail call |
 
 ## Open questions
@@ -261,4 +262,4 @@ mvn -B -ntp -pl sm8-core,connectors/spark-connector,connectors/in-memory-connect
 1. ~~Should the 5 `@tailrec` helpers be `private` (class-internal) or `private[expr]` (parser-internal)? My recommendation: `private` (the parser is the only owner).~~ **RESOLVED v1.1**: `private` (locked in the Implementation plan).
 2. Should the 1000-deep test be parameterized (100, 500, 1000, 5000) to test the speed of recursion depth? My recommendation: NO — 1000 is sufficient to verify the JVM stack is safe. Faster tests are better.
 3. Should `parseCaseWhen` be lifted (it's a more complex `loop`)? My recommendation: YES — the same `@tailrec` pattern applies. The `loop` is recursive on the `branch` collection.
-4. Should the 5000-byte input limit be lowered now that `loop` is `@tailrec`? My recommendation: NO — the limit is a separate defense against byte-length attacks. The `@tailrec` fix is for AST-depth, not byte-length.
+4. Should the input-byte-length be capped as a separate defense? My recommendation: YES (follow-up PR), but out of scope for the AST-depth iterative-loop fix.
