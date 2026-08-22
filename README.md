@@ -1,7 +1,7 @@
 <div align="center">
 
 
-<img src="https://github.com/user-attachments/assets/db0b49a1-cb50-412c-b641-4c32c99ae172" alt="SM8 Semantic Automation Logo" width="500">
+<img src="https://github.com/user-attachments/assets/db0b49a1-cb50-412c-b641-4c32c99ae172" alt="SM8 Semantic Automation Logo" width="437">
 <br><br>
 
 [![GitHub stars](https://img.shields.io/github/stars/EchoEnv/sm8?style=for-the-badge)](https://github.com/EchoEnv/sm8/stargazers)
