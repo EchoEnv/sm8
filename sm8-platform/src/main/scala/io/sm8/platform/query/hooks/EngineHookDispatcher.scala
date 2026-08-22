@@ -23,7 +23,7 @@
  *   captured once per cache-MISS, invoked once.
  * - No mutable state, no `var`, no `ThreadLocal`.
  *
- * Per [[scala-data-driven-refactor-mindset]] "sealed-trait dispatch":
+ * Per scala-data-driven-refactor-mindset "sealed-trait dispatch":
  * the only branching in this file is the match on `Left`/`Right`
 import io.sm8.core.engine.{ EngineHookRequest, EngineHookResult }
 import io.sm8.sdk.{Context, HookManager, HookStage, PipelineStage, PostHook, PreHook}
@@ -32,7 +32,7 @@ import io.sm8.sdk.{Context, HookManager, HookStage, PipelineStage, PostHook, Pre
  * authors who want non-fatal hooks must `try/catch` inside the
  * hook function.
  *
- * Per [[scala-jvm-safety-mindset]] "null is a liar": the
+ * Per scala-jvm-safety-mindset "null is a liar": the
  * dispatcher accepts a non-null `HookManager` at construction
  * time. `execute` is a by-name parameter that is only invoked
  * when a pre-hook does NOT set `context.stop = true`.
@@ -53,7 +53,7 @@ import io.sm8.sdk.{
  * Pure hook dispatcher around the engine-portable Execute stage.
  *
  * Owns no state. Construct once via [[EngineHookDispatcher.apply]];
- * invoke [[run]] per request.
+ * invoke run per request.
  *
  * @param hooks the SDK hook manager (sorted by priority on read)
  */

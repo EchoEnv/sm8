@@ -1,7 +1,7 @@
 /*
  * SM8 Platform — RestatedEngineRunner (v2.x journaled-execution helper).
  *
- * Per [[karpathy-guidelines-mindset]] (smallest correct change):
+ * Per karpathy-guidelines-mindset (smallest correct change):
  * this PR (PR-C5b-ext-γ) ships the SDK dep + a thin v2.x-shaped
  * helper that documents how a future handler will integrate
  * journaled execution. The actual `@Service` handler-class
@@ -34,7 +34,7 @@
  *   1. Adds `dev.restate:sdk-{common,core,java-http}:2.1.1` to
  *      `sm8-platform/pom.xml` (compile) + pins in parent
  *      `pom.xml` `dependencyManagement` (reproducible builds per
- *      [[scala-jar-packaging-mindset]]).
+ *      scala-jar-packaging-mindset).
  *   2. Defines `RestatedEngineRunner.runJournaled(name, ctype,
  *      supplier)`: today's non-handler call path. Calls the
  *      supplier directly + DEBUG-log. Returns the supplier's value.
@@ -101,13 +101,13 @@ object RestatedEngineRunner {
   /**
    * Direct supplier invocation with a single DEBUG log.
    *
-   * Per [[karpathy-guidelines-mindset]] "smallest correct change":
+   * Per karpathy-guidelines-mindset "smallest correct change":
    * the cached-row path becomes journaled once the follow-up
    * handler-class PR lands. Until then, this is the call site
    * that any non-handler caller (tests, CLI driver, dev mode)
    * will exercise.
    *
-   * Per [[scala-error-handling-mindset]]: supplier exceptions
+   * Per scala-error-handling-mindset: supplier exceptions
    * propagate to the caller (no swallow). The supplier is
    * responsible for idempotency under replay — `Restate.run`
    * semantics land in the follow-up PR.
@@ -145,7 +145,7 @@ object RestatedEngineRunner {
   /**
    * Probe for a Restate handler-thread context.
    *
-   * Per [[scala-jvm-safety-mindset]] "null is a liar": the v2.x
+   * Per scala-jvm-safety-mindset "null is a liar": the v2.x
    * SDK provides no `RestateContext.current()` static method
    * (verified by JAR inspection of `sdk-common` + `sdk-core`
    * at v2.1.1). The follow-up handler-class PR must set up a

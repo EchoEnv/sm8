@@ -13,7 +13,7 @@
  *   6. install a JVM shutdown hook (scala-jvm-safetymindset:
  *      release the socket on SIGTERM/SIGINT)
  *
- * ==Per [[karphyaguidsmindset]] "smallest correct change"==
+ * ==Per karphyaguidsmindset "smallest correct change"==
  *
  * Pure composition. Every piece already exists: PlatformModelLoader,
  * EngineRegistry, HttpTransport. Main adds NO engine logic.
@@ -30,14 +30,14 @@
  * Main is NOT a Plugin — it does not register via `Plugin.setup`.
  * It is deployment wiring, the outermost layer.
  *
- * ==Per [[scala-jvm-safetymindset]]==
+ * ==Per scala-jvm-safetymindset==
  *
  * - Shutdown hook: `transport.stop()` on JVM exit (idempotent —
  *   HttpTransport.stop() is a no-op when already stopped).
  * - Fail loud: every Left/throwable maps to a typed exit code +
  *   stderr message. No silent degradation.
  *
- * ==Per [[scala-spark-batch-bugs-mindset]] (per user directive)==
+ * ==Per scala-spark-batch-bugs-mindset (per user directive)==
  *
  * - mantra #1 (closure-safety): the wired `EngineRegistry` is
  *   `Serializable` (verified by MainSpec round-trip + upstream
@@ -49,7 +49,7 @@
  * - mantras #2/#3/#4: N/A — Main executes nothing itself; it is
  *   wiring only.
  *
- * ==Per [[scala-perf-testingmindset]]==
+ * ==Per scala-perf-testingmindset==
  *
  * Boot-time work (model load, provider discovery, bind) happens
  * once. Per-request dispatch is the existing `QueryService` path.
@@ -164,7 +164,7 @@ object Main {
 
   /** Discover providers via ServiceLoader. Driver-side, once at boot.
     *
-    * Per [[scala-impact-analysismindset]]: additive mechanism, local
+    * Per scala-impact-analysismindset: additive mechanism, local
     * to this entry point — does NOT touch the SDK Portal (which
     * discovers Plugins, a different extension type per plugins.md).
     */
@@ -198,8 +198,8 @@ object Main {
   /** PR-15 typed-error realize. Returns `List[Either[EngineError,
     * EngineProvider]]` per provider.
     *
-    * Per [[scala-error-handlingmindset]] §1 + ADR-008-Q §C1: every
-    * provider gets a typed result. Per [[karpathy-guidelinesmindset]]
+    * Per scala-error-handlingmindset §1 + ADR-008-Q §C1: every
+    * provider gets a typed result. Per karpathy-guidelinesmindset
     * §3 (surgical): NEW method; legacy `realize(...)` is unchanged.
     */
   def realize(

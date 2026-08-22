@@ -6,24 +6,24 @@
  * `semanticdf-platform/.../QueryService.java` (lines 1063-1072)
  * with a Scala 2.13 case class.
  *
- * Per [[karpathy-guidelines-mindset]] (Scala 2.13 idiom + match
+ * Per karpathy-guidelines-mindset (Scala 2.13 idiom + match
  * existing style): `final case class`. NOT Scala 3 `enum` or Java
  * `record`. The wire shape is preserved: same 5 fields, same
  * types, same JSON serialization (Jackson maps case-class
  * constructor params identically to Java record components).
  *
- * Per [[scala-data-driven-refactor-mindset]] (pure data): no
+ * Per scala-data-driven-refactor-mindset (pure data): no
  * methods beyond the auto-derived ones (equals, hashCode, copy,
  * toString, productElement, productArity). `Product with Serializable`
  * for transport + cache round-trip.
  *
- * Per [[scala-impact-analysis-mindset]]: 0 callers in our reactor
+ * Per scala-impact-analysis-mindset: 0 callers in our reactor
  * (the legacy `QueryRequest` record in `QueryService.java` lives
  * in `/tmp/semanticdf`, untouched). This case class is the
  * canonical form going forward; PR-C5+ will route the legacy
  * callers through it.
  *
- * Per [[scala-jvm-safety-mindset]]: all fields are `String` or
+ * Per scala-jvm-safety-mindset: all fields are `String` or
  * `List[String]` — no null at the field level; `Option` is
  * applied at the BUILD boundary (PR-C5a's `buildMCPRequest`).
  */

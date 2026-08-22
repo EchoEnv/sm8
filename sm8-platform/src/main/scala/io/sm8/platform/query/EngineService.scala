@@ -20,7 +20,7 @@
  *   }
  *   if (providerHolder[0] == null) { throw new IAE(...); }
  *
- * Per [[scala-jvm-safety-mindset]]: this is a primitive-array-as-
+ * Per scala-jvm-safety-mindset: this is a primitive-array-as-
  * mutable-cell pattern — a Java idiom for "I don't have a
  * monad-handling context, so I'll use a 1-element array to escape
  * the value." The Scala 2.13 equivalent is a direct `for`-
@@ -38,14 +38,14 @@
  * boundary when the `Either` was `Left(...)`, losing the typed
  * `EngineError` info. The Scala version returns the `Either`
  * unchanged — the caller (PR-C5b's wrapper) handles the error
- * path. Per [[scala-error-handling-mindset]] "errors are data".
+ * path. Per scala-error-handling-mindset "errors are data".
  *
- * Per [[scala-data-driven-refactor-mindset]] (sealed-trait
+ * Per scala-data-driven-refactor-mindset (sealed-trait
  * dispatch + MatchError-free): the `buildMCPRequest` helper
  * pattern-matches on `Option` (Scala native) — no Map-based
  * dispatch.
  *
- * Per [[scala-impact-analysis-mindset]]: 0 callers in our reactor
+ * Per scala-impact-analysis-mindset: 0 callers in our reactor
  * (the legacy `QueryService.runQueryViaEngineRegistry` stays in
  * `/tmp/semanticdf` for later migration PRs). PR-C5a ships the
  * engine-selection + MCP-request build; the cache + execute
@@ -189,7 +189,7 @@ object EngineService {
    * and threw `IllegalArgumentException` on `RuntimeException` —
    * losing the typed `EngineError` info.
    *
-   * Per [[scala-error-handling-mindset]]: catch at the IO boundary
+   * Per scala-error-handling-mindset: catch at the IO boundary
    * (this IS the IO boundary for the engine adapter), convert
    * to the typed `EngineError`. The caller (PR-C6) handles the
    * `Either` at the Restate boundary.

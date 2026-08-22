@@ -6,17 +6,17 @@
  * `semanticdf-platform/.../QueryService.java` (lines 1075-1080)
  * with a Scala 2.13 case class.
  *
- * Per [[scala-data-driven-refactor-mindset]] (pure data + Product
+ * Per scala-data-driven-refactor-mindset (pure data + Product
  * with Serializable): pure data, no methods. The `Product`
  * provides case-class `equals`/`hashCode`/`toString`/`copy` +
  * pattern-match destructuring. `Serializable` enables Spark
  * closure capture + Restate SDK journal serialization.
  *
- * Per [[karpathy-guidelines-mindset]] (Scala 2.13 idiom + match
+ * Per karpathy-guidelines-mindset (Scala 2.13 idiom + match
  * existing style): `final case class`. NOT Scala 3 `enum` or
  * Java `record`.
  *
- * Per [[scala-impact-analysis-mindset]] (wire-contract preservation):
+ * Per scala-impact-analysis-mindset (wire-contract preservation):
  *   - Same field names (model, measures, rows, truncated, rowCount)
  *   - Same field types (String, List<String>, List<List<Object>>,
  *     boolean, long)
@@ -24,7 +24,7 @@
  *   - Same JSON wire shape (Jackson serializes Scala case-class
  *     constructor params identically to the Java record)
  *
- * Per [[scala-jvm-safety-mindset]]: all fields are non-null
+ * Per scala-jvm-safety-mindset: all fields are non-null
  * `String`/`List`/`Object`/`Boolean`/`Long`. The `rows: List[List[Object]]`
  * may contain null entries (per the wire contract — null row
  * entries are allowed in `RestateCachedRow`; see PR-C4b).
