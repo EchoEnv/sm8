@@ -20,6 +20,13 @@ package io.sm8.sdk
  *
  * Step 3 surface: register-only, no dispatch yet.
  * Step 4 adds: priority-ordered dispatch + fail-fast on throw.
+ *
+ * No-eviction invariant (per ADR-008-AE v1.0): the manager accumulates
+ * hooks per stage in mutable Maps; there is NO automatic eviction.
+ * The SDK contract is single-boot, single-reload — a future hot-reload
+ * path (e.g. for live plugin updates in long-running services) must
+ * explicitly clear + re-register. The accumulated hooks live for
+ * the lifetime of the manager.
  */
 trait HookManager {
 
