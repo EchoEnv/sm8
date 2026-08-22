@@ -1,8 +1,8 @@
 <div align="center">
 
-# SM8
 
-**A Scala 2.13 semantic query engine with a frozen Core and hot Plugins.**
+<img src="https://github.com/user-attachments/assets/db0b49a1-cb50-412c-b641-4c32c99ae172" alt="SM8 Semantic Automation Logo" width="500">
+<br><br>
 
 [![GitHub stars](https://img.shields.io/github/stars/EchoEnv/sm8?style=for-the-badge)](https://github.com/EchoEnv/sm8/stargazers)
 [![Scala 2.13.18](https://img.shields.io/badge/Scala-2.13.18-DC322F?style=for-the-badge&logo=scala&logoColor=white)](https://www.scala-lang.org/)
