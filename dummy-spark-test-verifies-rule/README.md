@@ -1,33 +1,67 @@
 # dummy-spark-test-verifies-rule
 
-Per **ADR-008-AD v1.1**, this is the negative verification test for the Zero-Spark invariant enforced by `maven-enforcer-plugin` `bannedDependencies`.
+Per **ADR-008-AD v1.1**, this is the executable verification harness for the Zero-Spark invariant enforced by `maven-enforcer-plugin` `bannedDependencies`.
 
-**This module is intentionally kept in the reactor with a Spark dependency.** Running `mvn validate` on this module MUST FAIL with the Zero-Spark invariant error message.
+## What this is
 
-## Why this exists
+This directory contains:
+- `pom.xml` — a Maven module with `<dependency>org.apache.spark:spark-core_2.13</dependency>` (the intended violation)
+- `verify-rule-fires.sh` — an executable shell script that runs `mvn validate` on the dummy module and asserts the enforcer rule fires
 
-A future contributor who:
-1. Removes the per-module `enforce-no-spark` block from `sm8-core/pom.xml` (or any other non-spark-connector module)
-2. Removes the parent's `<pluginManagement>` template
+## Important caveat (per the senior dual review of Wave 2)
 
-...would silently allow Spark to leak into non-spark modules. This dummy module ensures that any future violation is caught at build time.
+**The parent's `<build><plugins>` enforcer config does NOT auto-apply executions to child modules.** Per the maven.apache.org FAQ, children must explicitly re-declare the plugin to inherit executions.
+
+This means:
+- If the **per-module `<plugin><maven-enforcer-plugin>...</maven-enforcer-plugin></plugin>` block is intact** in `sm8-core/pom.xml` (etc.), the rule fires on the dummy module's `mvn validate`.
+- If a future contributor **deletes the per-module block** (e.g. when copying the parent for a new module), the rule stops firing — and the dummy module's `verify-rule-fires.sh` will report FAIL.
+
+The dummy module is intentionally NOT registered in the parent reactor (`<modules>` block in `pom.xml`). This keeps the default reactor build clean (doesn't trigger the violation) while still allowing the verification script to run manually.
 
 ## Usage
 
 ```bash
-# Should FAIL with "Zero-Spark invariant" error message
-mvn -B -ntp -pl dummy-spark-test-verifies-rule validate
+# Should FAIL with "Zero-Spark invariant" message
+bash dummy-spark-test-verifies-rule/verify-rule-fires.sh
 ```
 
-If `validate` succeeds, the Zero-Spark invariant is NOT being enforced — investigate immediately.
+If `Maven exit code: 0` is reported, the Zero-Spark invariant is NOT being enforced — investigate immediately.
 
-## Why we keep this module OUT of the reactor
+If the script reports `PASS: the enforcer rule fired as expected`, the invariant is intact.
 
-This module contains an `org.apache.spark:spark-core_2.13` dependency that VIOLATES the Zero-Spark invariant. It is intentionally NOT registered in the parent pom.xml's `<modules>` block (and therefore not in the default reactor build) so that:
-- The default reactor build (`mvn test`) is not blocked by this violation
-- The negative test is invoked manually with `mvn -pl dummy-spark-test-verifies-rule validate`
+## Per-module enforcer block
 
-To make this module part of the regular build verification, add it to the parent `<modules>` block temporarily — but that would block the regular reactor build.
+The per-module `<plugin><maven-enforcer-plugin>...` block in each non-spark-connector `pom.xml` is:
+
+```xml
+<plugin>
+  <groupId>org.apache.maven.plugins</groupId>
+  <artifactId>maven-enforcer-plugin</artifactId>
+  <version>3.4.1</version>
+  <executions>
+    <execution>
+      <id>enforce-no-spark</id>
+      <goals><goal>enforce</goal></goals>
+    </execution>
+  </executions>
+  <configuration>
+    <rules>
+      <bannedDependencies>
+        <excludes>
+          <exclude>org.apache.spark:*</exclude>
+        </excludes>
+        <message>
+          The Zero-Spark invariant (ADR-008-AD v1.0): every reactor
+          module must remain Spark-free EXCEPT the spark-connector
+          (which opts out via skip=true in its own pom.xml). If
+          you need a Spark class, add the dependency to
+          connectors/spark-connector/pom.xml instead.
+        </message>
+      </bannedDependencies>
+    </rules>
+  </configuration>
+</plugin>
+```
 
 ## See also
 

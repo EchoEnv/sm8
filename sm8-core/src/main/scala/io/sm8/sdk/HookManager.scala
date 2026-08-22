@@ -37,6 +37,10 @@ trait HookManager {
  *
  * @return this manager, for chaining
  * @throws IllegalArgumentException if priority is negative
+ *
+ * No-eviction invariant (per ADR-008-AE v1.0): the hook is appended
+ * to the per-stage buffer; there is NO automatic eviction. See the
+ * trait header for the SDK single-boot, single-reload contract.
  */
  def registerPreHook(stage: HookStage, hook: PreHook, priority: Int): HookManager
 
@@ -57,6 +61,9 @@ trait HookManager {
  /**
  * Register a PostHook bound to `stage` with `priority`.
  * Same priority rules as registerPreHook.
+ *
+ * No-eviction invariant (per ADR-008-AE v1.0): the hook is appended
+ * to the per-stage buffer; there is NO automatic eviction.
  */
  def registerPostHook(stage: HookStage, hook: PostHook, priority: Int): HookManager
 
@@ -69,14 +76,16 @@ trait HookManager {
  def registerPostHook(stage: HookStage, hook: PostHook, priority: Int, origin: HookOrigin): HookManager = registerPostHook(stage, hook, priority)
  /**
  * All PreHooks for a given stage, in priority order (lower first;
- * ties broken by registration order). Returns empty Seq in Step 3
- * (dispatch lands in Step 4). Used by the Pipeline runner.
+ * ties broken by registration order). Returns the accumulated buffer;
+ * no eviction (per ADR-008-AE v1.0). Empty if no PreHooks registered.
+ * Used by the Pipeline runner.
  */
  def preHooksFor(stage: HookStage): Seq[(PreHook, Int)]
 
  /**
- * All PostHooks for a given stage, in priority order. Empty in
- * Step 3.
+ * All PostHooks for a given stage, in priority order. Returns the
+ * accumulated buffer; no eviction (per ADR-008-AE v1.0). Empty if no
+ * PostHooks registered.
  */
  def postHooksFor(stage: HookStage): Seq[(PostHook, Int)]
 }
