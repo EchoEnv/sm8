@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Negative verification module for the Zero-Spark invariant (ADR-008-AD v1.1).
+  This module INTENTIONALLY declares an org.apache.spark:* dependency. When
+  `mvn -B -ntp -pl dummy-spark-test-verifies-rule validate` is run, the
+  parent's `<build><plugins>` enforcer rule (inherited by every reactor
+  module) must fire with the "Zero-Spark invariant" error message.
+  This is the executable contract for the per-module enforcement.
+
+  Per scala-debug-mantra-mindset: the dev reproduces (introduces the
+  Spark dep), traces (the enforcer logs the violation), falsifies (the
+  build fails), verifies (the error matches the documented message).
+
+  Per scala-spark-batch-bugs-mindset #1: a non-spark-connector module
+  that pulls in Spark would close over Spark types in its closures,
+  violating the closure-safety lockdown.
+
+  To regenerate the expected error:
+    mvn -B -ntp -pl dummy-spark-test-verifies-rule validate
+
+  To temporarily silence the rule (for dev only): comment out the
+  <exclude> below OR add <skip>true</skip> to a per-module
+  configuration.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>io.sm8</groupId>
+  <artifactId>dummy-spark-test-verifies-rule</artifactId>
+  <version>0.1.0-SNAPSHOT</version>
+  <packaging>pom</packaging>
+
+  <parent>
+    <groupId>io.sm8</groupId>
+    <artifactId>sm8-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <relativePath>../pom.xml</relativePath>
+  </parent>
+
+  <dependencies>
+    <!-- THIS IS THE INTENDED VIOLATION: a non-spark-connector module must
+         not depend on Spark. The parent's Zero-Spark invariant must fire
+         at validate time. -->
+    <dependency>
+      <groupId>org.apache.spark</groupId>
+      <artifactId>spark-core_2.13</artifactId>
+      <version>${spark.version}</version>
+    </dependency>
+  </dependencies>
+</project>
