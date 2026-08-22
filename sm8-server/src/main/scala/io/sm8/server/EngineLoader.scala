@@ -6,19 +6,19 @@
  * URL realization orchestration; sm8-platform stays pure transport
  * with zero `ServiceLoader` references.
  *
- * Per [[karpathy-app-design-mindset]] §3.1 (Protocols before
+ * Per karpathy-app-design-mindset §3.1 (Protocols before
  * implementations): the `EngineLoader` is a single function
  * (`discoverAndRealize`) that wraps 3 inner steps:
  *   1. Discover `EngineProvider` + `EngineUrlParser` via ServiceLoader.
  *   2. Parse the raw URL into a typed `EngineUrl` (per-connector grammar).
  *   3. Realize each provider against the typed URL with TYPED errors.
  *
- * Per [[scala-error-handlingmindset]] §1 (errors are data) + ADR-008-Q
+ * Per scala-error-handlingmindset §1 (errors are data) + ADR-008-Q
  * §C1: this helper returns `List[Either[EngineError, EngineProvider]]`
  * — typed per-provider errors, not a silent `List[EngineProvider]`
  * that hides the failure mode.
  *
- * Per [[scala-jvm-safety-mindset]] §3 (long-lived state): NO static
+ * Per scala-jvm-safety-mindset §3 (long-lived state): NO static
  * ServiceLoader cache. The loader is per-call (no leak risk across
  * hot-reload); the caller (sm8-server Main.wire) calls this once at
  * boot.
@@ -42,7 +42,7 @@ object EngineLoader {
    *   - `Left(engineError)` for each provider that could NOT be
    *     realized (typed error per ADR-008-Q §C1).
    *
-   * Per [[scala-error-handlingmindset]] §1: the caller (Main.wire)
+   * Per scala-error-handlingmindset §1: the caller (Main.wire)
    * inspects the typed errors and surfaces them as boot failures
    * (fail-loud per design §4.1: misconfigured boots are loud at
    * startup, not silent at query time).
@@ -112,7 +112,7 @@ object EngineLoader {
    * Realize one provider against a typed `EngineUrl`. Per
    * ADR-008-Q §C7: single realization path (typed when available).
    *
-   * Per [[scala-bug-hunting-mindset]] §3 (every match must be
+   * Per scala-bug-hunting-mindset §3 (every match must be
    * exhaustive): the `instanceOf[TypedRealizationProvider]` check
    * is the binary-compat bridge between the new typed path and the
    * legacy `realize(url): Option` path.

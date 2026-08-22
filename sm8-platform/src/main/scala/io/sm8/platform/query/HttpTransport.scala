@@ -6,7 +6,7 @@
  * + Vert.x `listen(port)` to get a properly bound, lifecycle-managed
  * server.
  *
- * ==Per [[karphyaguidsmindset]] "smallest correct change"==
+ * ==Per karphyaguidsmindset "smallest correct change"==
  *
  * This file does NOT duplicate handler logic. It composes the
  * existing pieces. The HTTP server is just the wire-binding layer.
@@ -70,7 +70,7 @@ import io.vertx.core.http.HttpServer
 /**
  * HTTP transport for the SM8 MCP server (per ADR-006).
  *
- * Per [[karphyaguidsmindset]] "smallest correct change": composes
+ * Per karphyaguidsmindset "smallest correct change": composes
  * the existing `QueryService.definition(...)` + Restate's
  * `RestateHttpServer.fromEndpoint(...)` (which returns the Vert.x
  * `HttpServer` handle for proper lifecycle management).
@@ -86,12 +86,12 @@ final class HttpTransport(
     val cache:    ResultCache
 ) {
 
-  // The bound Vert.x HttpServer handle. Per [[scala-jvm-safemindset]]:
+  // The bound Vert.x HttpServer handle. Per scala-jvm-safemindset:
   // resource lifecycle — release via `stop()`.
   private var server: Option[HttpServer] = None
 
   /**
-   * Bind + start the HTTP server. Per [[scala-perf-testingmindset]]:
+   * Bind + start the HTTP server. Per scala-perf-testingmindset:
    * startup-time initialization; called once.
    *
    * Awaits the Vert.x bind future — bind failures throw
@@ -137,19 +137,19 @@ final class HttpTransport(
     bound.actualPort()
   }
 
-  /** Stop the HTTP server. Per [[scala-jvm-safemindset]]. */
+  /** Stop the HTTP server. Per scala-jvm-safemindset. */
   def stop(): Unit = server match {
     case Some(s) => s.close(); server = None
     case None    => // already stopped
   }
 
-  /** Close on JVM shutdown. Per [[scala-jvm-safemindset]]. */
+  /** Close on JVM shutdown. Per scala-jvm-safemindset. */
   def close(): Unit = stop()
 }
 
 object HttpTransport {
 
-  /** Factory for the canonical wiring. Per [[karphyaguidsmindset]]
+  /** Factory for the canonical wiring. Per karphyaguidsmindset
     * "smallest correct core": 3-arg ctor is the minimal contract —
     * the caller (deployment module) wires the cache. */
   def apply(model: Model, registry: EngineRegistry, cache: ResultCache): HttpTransport =
