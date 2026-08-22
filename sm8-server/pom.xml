@@ -64,6 +64,14 @@
     <plugins>
       <plugin><groupId>net.alchim31.maven</groupId><artifactId>scala-maven-plugin</artifactId></plugin>
       <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-compiler-plugin</artifactId></plugin>
+      
+      <!--
+        Zero-Spark invariant per ADR-008-AD v1.1.
+        Future contributors: this per-module block is REQUIRED (Maven
+        inheritance semantics — <build><plugins> in parent does NOT auto-
+        apply executions). The block is identical across all non-spark-
+        connector modules; when adding a new module, copy this block.
+      -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-enforcer-plugin</artifactId>

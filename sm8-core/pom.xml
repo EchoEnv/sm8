@@ -118,6 +118,14 @@
         in. The compile-time classpath must NOT contain org.apache.spark:*.
         Pairs with CoreClasspathSpec (test-time verification).
       -->
+      
+      <!--
+        Zero-Spark invariant per ADR-008-AD v1.1.
+        Future contributors: this per-module block is REQUIRED (Maven
+        inheritance semantics — <build><plugins> in parent does NOT auto-
+        apply executions). The block is identical across all non-spark-
+        connector modules; when adding a new module, copy this block.
+      -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-enforcer-plugin</artifactId>
