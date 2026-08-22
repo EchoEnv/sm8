@@ -39,4 +39,5 @@ object ErrorCode {
  case object PROVIDER_INVOCATION_FAILED extends ErrorCode
  case object SOURCE_SCHEMA_CHANGED extends ErrorCode
  case object ENGINE_UNAVAILABLE extends ErrorCode
+  case object PLUGIN_HOOK_FAILED extends ErrorCode
 }

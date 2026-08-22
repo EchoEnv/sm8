@@ -84,31 +84,50 @@ final class EngineHookDispatcher private (hooks: HookManager) extends io.sm8.sdk
   ): Either[EngineError, Context] = {
     val stage: PipelineStage = PipelineStage.Execute
 
-    val afterPre: Context =
+    val afterPreE: Either[EngineError, Context] =
       firePre(stage, initial)
 
-    if (afterPre.stop) {
-      // Short-circuit: skip executor, still fire post-hooks so
-      // observers (audit, log) see the cached/halted path.
-      // The Context carries whatever the pre-hook set
-      // (`result` may be set; the dispatcher's contract is
-      // "pre-hook-responsible for the result shape").
-      Right(firePost(stage, afterPre))
-    } else {
-      execute(afterPre) match {
-        case Left(err)        => Left(err)
-        case Right(withResult) => Right(firePost(stage, withResult))
+    afterPreE.flatMap { afterPre =>
+      if (afterPre.stop) {
+        // Short-circuit: skip executor, still fire post-hooks so
+        // observers (audit, log) see the cached/halted path.
+        // The Context carries whatever the pre-hook set
+        // (`result` may be set; the dispatcher's contract is
+        // "pre-hook-responsible for the result shape").
+        firePost(stage, afterPre)
+      } else {
+        execute(afterPre).flatMap { withResult =>
+          firePost(stage, withResult)
+        }
       }
     }
   }
 
-  /** Fire every Pre-hook registered for `stage` in priority order. */
-  private def firePre(stage: PipelineStage, ctx: Context): Context = {
+  /**
+   * Fire every Pre-hook registered for `stage` in priority order.
+   *
+   * Per ADR-008-AF v1.0: a Pre-hook that throws is converted to a typed
+   * `EngineError.HookFailed` so the caller can pattern-match on the
+   * hook identity (name + priority + stage) + the underlying message.
+   * The hook `message` is sanitized via `Option(e.getMessage).getOrElse(...)`
+   * to avoid JVM-internal variable-name leaks.
+   */
+  private def firePre(stage: PipelineStage, ctx: Context): Either[EngineError, Context] = {
     val hookStage: HookStage = preStageFor(stage)
     val pre: Seq[(PreHook, Int)] = hooks.preHooksFor(hookStage)
-    pre.foldLeft(ctx) { (c, hp) =>
-      if (c.stop) c
-      else hp._1.run(c)
+    pre.foldLeft[Either[EngineError, Context]](Right(ctx)) { case (acc, (h, p)) =>
+      acc.flatMap { c =>
+        if (c.stop) Right(c)
+        else try Right(h.run(c)) catch {
+          case e: Throwable => Left(EngineError.HookFailed(
+            engine = "<dispatcher>",
+            name = h.name,
+            priority = p,
+            stage = hookStage.toString,
+            message = Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
+          ))
+        }
+      }
     }
   }
 
@@ -129,12 +148,22 @@ final class EngineHookDispatcher private (hooks: HookManager) extends io.sm8.sdk
    * for post-hook intent (RFC `hooks.md` enumerates 5 types; 3 of
    * them post-fire).
    */
-  private def firePost(stage: PipelineStage, ctx: Context): Context = {
+  private def firePost(stage: PipelineStage, ctx: Context): Either[EngineError, Context] = {
     val hookStage: HookStage = postStageFor(stage)
     val post: Seq[(PostHook, Int)] = hooks.postHooksFor(hookStage)
-    post.foldLeft(ctx) { (c, hp) =>
-      if (c.stop && !hp._1.runsOnStop) c
-      else hp._1.run(c)
+    post.foldLeft[Either[EngineError, Context]](Right(ctx)) { case (acc, (h, p)) =>
+      acc.flatMap { c =>
+        if (c.stop && !h.runsOnStop) Right(c)
+        else try Right(h.run(c)) catch {
+          case e: Throwable => Left(EngineError.HookFailed(
+            engine = "<dispatcher>",
+            name = h.name,
+            priority = p,
+            stage = hookStage.toString,
+            message = Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
+          ))
+        }
+      }
     }
   }
 
