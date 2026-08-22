@@ -82,7 +82,15 @@
                  other reactor modules. Per [[scala-jar-packaging-mindset]]
                  "audit jar contents": `org.apache.spark:*` is a
                  connector-only groupId, never a tool/CLI dependency. -->
-            <plugin>
+            
+      <!--
+        Zero-Spark invariant per ADR-008-AD v1.1.
+        Future contributors: this per-module block is REQUIRED (Maven
+        inheritance semantics — <build><plugins> in parent does NOT auto-
+        apply executions). The block is identical across all non-spark-
+        connector modules; when adding a new module, copy this block.
+      -->
+      <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-enforcer-plugin</artifactId>
                 <version>3.4.1</version>
