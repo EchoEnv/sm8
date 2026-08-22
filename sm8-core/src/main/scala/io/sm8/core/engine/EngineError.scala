@@ -124,4 +124,27 @@ object EngineError {
   s"$engine (wasDefault=$wasDefault)",
   Some(engine))
  }
+
+/**
+ * Hook execution failed (per ADR-008-AF v1.0).
+ *
+ * Surfaced by `EngineHookDispatcher` when a PreHook or PostHook throws an
+ * exception. The hook identity (name + priority + stage) is preserved so
+ * operators can debug the failing plugin. The underlying exception
+ * message is captured (without the stack trace -- the trace is logged
+ * separately per RFC §13 observability).
+ *
+ * The `message` field is sanitized: `Option(e.getMessage).getOrElse(...)`
+ * so that JVM-internal variable-name leaks in NPE messages are avoided.
+ */
+final case class HookFailed(
+  engine: String,
+  name: String,
+  priority: Int,
+  stage: String,
+  message: String
+) extends EngineError {
+  override def toErrorDetail: ErrorDetail =
+    ErrorDetail(ErrorCode.PLUGIN_HOOK_FAILED, s"$name @ $stage (prio=$priority)", Some(engine))
+}
 }

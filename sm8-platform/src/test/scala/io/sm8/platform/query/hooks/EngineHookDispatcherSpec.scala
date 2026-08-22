@@ -118,6 +118,34 @@ private final class ShortCircuitPlugin(stub: PortableQueryResult) extends Plugin
   }
 }
 
+
+/**
+ * Stub hook that throws a `RuntimeException` on every invocation. Used
+ * by the new HookFailed tests below to exercise the typed-error
+ * dispatch path (per ADR-008-AF v1.0).
+ */
+private final class FailingPreHook(override val name: String, override val priority: Int)
+    extends PreHook {
+  override def stage: HookStage = HookStage.PreExecute
+  override def run(c: Context): Context =
+    throw new RuntimeException("simulated pre-hook failure")
+}
+
+private final class FailingPostHook(override val name: String, override val priority: Int)
+    extends PostHook {
+  override def stage: HookStage = HookStage.PostExecute
+  override def run(c: Context): Context =
+    throw new RuntimeException("simulated post-hook failure")
+}
+
+private final class FailingHookPlugin(
+    pluginName: String,
+    hookStage: HookStage,
+    register: io.sm8.sdk.Engine => Unit
+) extends Plugin {
+  override def setup(engine: io.sm8.sdk.Engine): Unit = register(engine)
+}
+
 class EngineHookDispatcherSpec extends AnyFunSuite with Matchers {
 
   private def stubPqr: PortableQueryResult = PortableQueryResult(
@@ -198,5 +226,70 @@ class EngineHookDispatcherSpec extends AnyFunSuite with Matchers {
 
     result.isRight shouldBe true
     provider.callCount.get() shouldBe 1
+  }
+
+  test("dispatcher: PreHook that throws returns typed EngineError.HookFailed (per ADR-008-AF v1.0)") {
+    val plugin = new FailingHookPlugin(
+      pluginName = "failing-pre",
+      hookStage = HookStage.PreExecute,
+      register = engine => {
+        engine.hooks.registerPreHook(
+          HookStage.PreExecute,
+          new FailingPreHook("failing-pre", 50),
+          50
+        )
+      }
+    )
+    val engine = new io.sm8.core.EngineImpl
+    plugin.setup(engine)
+    val dispatcher = EngineHookDispatcher(engine.hooks)
+
+    val provider = sampleProvider
+    val result = EngineService.runQueryWithHooks(
+      request    = QueryRequest("m", Nil, Nil, "", ""),
+      model      = sampleModel,
+      registry   = registryWith(provider),
+      cache      = ResultCache.NoOp,
+      dispatcher = dispatcher
+    )
+
+    result.isLeft shouldBe true
+    val err = result.left.toOption.get
+    err shouldBe a [io.sm8.core.engine.EngineError.HookFailed]
+    err.asInstanceOf[io.sm8.core.engine.EngineError.HookFailed].name shouldBe "failing-pre"
+    err.asInstanceOf[io.sm8.core.engine.EngineError.HookFailed].priority shouldBe 50
+    err.asInstanceOf[io.sm8.core.engine.EngineError.HookFailed].stage shouldBe "PreExecute"
+    err.asInstanceOf[io.sm8.core.engine.EngineError.HookFailed].message should include ("simulated")
+  }
+
+  test("dispatcher: PostHook that throws returns typed EngineError.HookFailed") {
+    val plugin = new FailingHookPlugin(
+      pluginName = "failing-post",
+      hookStage = HookStage.PostExecute,
+      register = engine => {
+        engine.hooks.registerPostHook(
+          HookStage.PostExecute,
+          new FailingPostHook("failing-post", 60),
+          60
+        )
+      }
+    )
+    val engine = new io.sm8.core.EngineImpl
+    plugin.setup(engine)
+    val dispatcher = EngineHookDispatcher(engine.hooks)
+
+    val provider = sampleProvider
+    val result = EngineService.runQueryWithHooks(
+      request    = QueryRequest("m", Nil, Nil, "", ""),
+      model      = sampleModel,
+      registry   = registryWith(provider),
+      cache      = ResultCache.NoOp,
+      dispatcher = dispatcher
+    )
+
+    result.isLeft shouldBe true
+    val err = result.left.toOption.get
+    err shouldBe a [io.sm8.core.engine.EngineError.HookFailed]
+    err.asInstanceOf[io.sm8.core.engine.EngineError.HookFailed].name shouldBe "failing-post"
   }
 }
