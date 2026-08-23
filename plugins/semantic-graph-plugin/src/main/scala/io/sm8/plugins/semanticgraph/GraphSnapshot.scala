@@ -44,7 +44,12 @@ final case class GraphSnapshot(
     edges: List[(GraphNode, GraphNode)],
     hasCycle: Boolean,
     cycleError: Option[EngineError],
-    danglingRightNodes: List[GraphNode]
+    danglingRightNodes: List[GraphNode],
+    // PR-161: impact analysis — the reverse-closure of every
+    // node (i.e. every node that transitively depends on this
+    // node). Answers "which calculated measures break if this
+    // dimension changes?" via the meta-inspector.
+    dependents: Map[GraphNode, List[GraphNode]] = Map.empty
 ) {
   /**
    * Projects the snapshot to a `Map[String, Any]` for the wire
@@ -53,18 +58,17 @@ final case class GraphSnapshot(
    * @return the wire-stable map representation
    */
   def toMetaValue: Map[String, Any] = Map(
-    "vertices" -> vertices.map(n => Map("model" -> n.model, "field" -> n.field)),
-    "edges" -> edges.map { case (from, to) =>
-      Map(
-        "from" -> Map("model" -> from.model, "field" -> from.field),
-        "to"   -> Map("model" -> to.model,   "field" -> to.field)
-      )
-    },
     "hasCycle" -> hasCycle,
     "cycleError" -> cycleError.map(_.toString),
     "danglingRightNodes" -> danglingRightNodes.map(n =>
       Map("model" -> n.model, "field" -> n.field)
-    )
+    ),
+    "dependents" -> dependents.map { case (node, deps) =>
+      Map("node" -> Map("model" -> node.model, "field" -> node.field),
+          "dependents" -> deps.map(d => Map("model" -> d.model, "field" -> d.field)))
+    }.toList
+      .sortBy(m => (m("node").asInstanceOf[Map[String, Any]]("model").toString,
+                     m("node").asInstanceOf[Map[String, Any]]("field").toString))
   )
 }
 
