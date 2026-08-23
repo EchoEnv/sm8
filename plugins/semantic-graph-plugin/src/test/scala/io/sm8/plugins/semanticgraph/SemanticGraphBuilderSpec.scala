@@ -318,14 +318,18 @@ class SemanticGraphBuilderSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "exclude same-model edges from cross-model discovery" in {
-    // A calc-measure edge stays in the same model; referencingModels
-    // must never surface a model as referencing itself.
+    // A join that targets the model's OWN key (a self-join) creates a
+    // same-model edge; referencingModels must never surface a model
+    // as referencing itself, so the guard (source.model != targetModel)
+    // is what makes this assertion pass. Without the guard this model
+    // would report ["single"].
+    val keyDim = Dimension("k", Expr.FieldRef("k"), Some(SealedDataType.Varchar))
     val model = Model
       .of(
         name = "single",
         version = 1,
         description = None,
-        dimensions = List.empty,
+        dimensions = List(keyDim),
         measures = List.empty,
         defaultPolicies = ModelPolicyDefaults(
           MaterializePolicy.None,
@@ -336,11 +340,14 @@ class SemanticGraphBuilderSpec extends AnyFlatSpec with Matchers {
         status = ModelStatus.Published,
         filters = List.empty,
         calculatedMeasures = List.empty,
-        joins = List.empty
+        joins = List(JoinSpec("self", "single", JoinKind.Inner, List("k" -> "k")))
       )
       .toOption
       .get
     val g = SemanticGraphBuilder.build(model)
+    // The self-join edge (single.k -> single.k) exists, proving the
+    // guard excludes it: the model must not report itself.
+    g.edges should contain((GraphNode("single", "k"), GraphNode("single", "k")))
     g.referencingModels("single") shouldBe List.empty
   }
 
