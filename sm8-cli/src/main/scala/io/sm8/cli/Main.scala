@@ -299,18 +299,15 @@ object Main {
       System.err.println("sm8 describe: too many arguments. Usage: sm8 describe <model>"); 2
   }
 
-  // PR-151 (ADR-008-AI follow-up): `sm8 inspect <key>` calls the
-  // generic `MetaInspectorService` (per the architect's
-  // 2026-08-23 design review). The CLI knows the key string
-  // (e.g. `io.sm8.plugins.semanticgraph:graph-snapshot`); it
-  // does NOT know the value schema. The transport layer's
-  // `MetaInspectorService` is the seam.
+  // `sm8 inspect <key>` reads a `context.meta` value via the
+  // generic transport-layer meta-inspector. The CLI knows only
+  // the key string (e.g. `io.sm8.plugins.semanticgraph:graph-
+  // snapshot`); it does not know the value schema. The transport
+  // layer's meta-inspector is the seam — the CLI consumes it as
+  // an opaque JSON payload.
   //
-  // Per  SS1 (consume the
-  // generic transport layer): the CLI uses `Client.postJson`
-  // (already in place) with the Restate wire path
-  // `/MetaInspectorService/getMeta` and a `{"key": <key>}`
-  // body.
+  // Uses `Client.postJson` with the Restate wire path
+  // `/MetaInspectorService/getMeta` and a `{"key": <key>}` body.
   private def cmdInspect(cfg: Config, args: List[String]): Int = args match {
     case Nil =>
       System.err.println("sm8 inspect: missing <key>. Usage: sm8 inspect <key>"); 2
