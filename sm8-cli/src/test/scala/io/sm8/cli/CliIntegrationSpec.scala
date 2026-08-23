@@ -760,4 +760,53 @@ class CliIntegrationSpec
     // covered by manual smoke after deployment. The shape is verified by
     // resolveToken() reading from sys.env in priority order.
   }
+
+  // PR-151 (ADR-008-AI follow-up): `sm8 inspect <key>` calls the
+  // generic `MetaInspectorService` (Restate wire:
+  // `POST /MetaInspectorService/getMeta` with `{"key": <key>}` body).
+  // The CLI is generic over the key string; it does NOT know the
+  // value schema.
+  describe("`inspect` command") {
+    it("POSTs the key to /MetaInspectorService/getMeta and prints the value") {
+      val key = "io.sm8.plugins.semanticgraph:graph-snapshot"
+      respondWith(
+        "/MetaInspectorService/getMeta",
+        200,
+        s"""{"status":"ok","data":{"key":"$key","present":true,"value":{"vertices":[],"hasCycle":false}}}"""
+      )
+      val (exit, out, _) = runCli(args("inspect", key))
+      exit shouldBe 0
+      out should include(s"Key:   $key")
+      out should include("Value:")
+    }
+
+    it("returns exit 4 + stderr when the key is absent (present=false)") {
+      val key = "io.sm8.plugins.unknown:foo"
+      respondWith(
+        "/MetaInspectorService/getMeta",
+        200,
+        s"""{"status":"ok","data":{"key":"$key","present":false,"value":null}}"""
+      )
+      val (exit, _, err) = runCli(args("inspect", key))
+      exit shouldBe 4
+      err should include(key)
+      err should include("not set")
+    }
+
+    it("returns exit 2 (usage) when no key is given") {
+      val (exit, _, err) = runCli(args("inspect"))
+      exit shouldBe 2
+      err should include("missing <key>")
+    }
+
+    it("--json prints the raw envelope to stdout") {
+      val key = "io.sm8.plugins.semanticgraph:graph-snapshot"
+      val body =
+        s"""{"status":"ok","data":{"key":"$key","present":true,"value":{"vertices":[]}}}"""
+      respondWith("/MetaInspectorService/getMeta", 200, body)
+      val (exit, out, _) = runCli(args("inspect", key, "--json"))
+      exit shouldBe 0
+      out should include("\"present\":true")
+    }
+  }
 }
