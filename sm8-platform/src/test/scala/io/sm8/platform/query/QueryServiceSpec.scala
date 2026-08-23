@@ -362,4 +362,41 @@ class QueryServiceSpec extends AnyFunSuite with Matchers {
     te.getCode shouldBe 503
     te.getMessage should include("no spark available")
   }
+
+  // Regression test for the architect's HIGH finding in the 3rd-pass
+  // cumulative-session-review: QueryService.engineErrorCode must
+  // handle all 12 EngineError variants. The sealed ADT check
+  // would normally catch this at compile time, but a non-exhaustive
+  // match in the match itself is the cardinal violation of
+  // scala-data-driven-refactor-mindset. A future contributor who
+  // adds a new EngineError variant without updating engineErrorCode
+  // would crash at runtime with a MatchError; this test catches
+  // that by checking each variant's HTTP status code.
+  test("engineErrorCode maps all 12 EngineError variants to HTTP status codes (no MatchError)") {
+    val cases: Seq[(io.sm8.core.engine.EngineError, Int)] = Seq(
+      (EngineError.EngineUnavailable("e", Nil, false, "m"), 503),
+      (EngineError.QueryTimedOut("e", "cancel", "m"), 504),
+      (EngineError.ConnectionFailed("e", "reason", "m"), 502),
+      (EngineError.ProviderInvocationFailed("e", "name", "reason", "m"), 502),
+      (EngineError.CancellationFailed("e", "reason", "m"), 504),
+      (EngineError.UnsupportedCapability("e", "cap", "m"), 501),
+      (EngineError.HookFailed("e", "hook", 1, "PreResolve", "m"), 500),
+      (EngineError.IncompatibleExprShape("e", "shape", "m"), 422),
+      (EngineError.DecimalOverflow("e", "1.0", 38, 10, "m"), 422),
+      (EngineError.SourceSchemaChanged("e", "src", "m"), 409),
+      (EngineError.AuditSinkUnavailable("e", "name", "m"), 503),
+      (EngineError.FeatureDeferred("e", "feature", "v1.0.0", "m"), 501)
+    )
+    cases.foreach { case (err, expected) =>
+      // Use the same private method via reflection to avoid leaking
+      // the method into the public API.
+      val method = classOf[io.sm8.platform.query.QueryService.type]
+        .getDeclaredMethods
+        .find(_.getName == "engineErrorCode")
+        .getOrElse(fail("engineErrorCode not found"))
+      method.setAccessible(true)
+      val code = method.invoke(io.sm8.platform.query.QueryService, err)
+      code shouldBe expected
+    }
+  }
 }

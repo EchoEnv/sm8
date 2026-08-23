@@ -258,7 +258,7 @@ object QueryService {
    * the engine itself rejected.
    *
    * Per scala-data-driven-refactor-mindset "sealed-trait dispatch":
-   * the match is exhaustive over the 11 EngineError variants —
+   * the match is exhaustive over the 12 EngineError variants —
    * the compiler enforces this if a new variant is added.
    */
   private def engineErrorCode(err: io.sm8.core.engine.EngineError): Int = err match {
@@ -268,6 +268,7 @@ object QueryService {
     case _: io.sm8.core.engine.EngineError.ProviderInvocationFailed => 502
     case _: io.sm8.core.engine.EngineError.CancellationFailed       => 504
     case _: io.sm8.core.engine.EngineError.UnsupportedCapability    => 501
+    case _: io.sm8.core.engine.EngineError.HookFailed               => 500
     case _: io.sm8.core.engine.EngineError.IncompatibleExprShape    => 422
     case _: io.sm8.core.engine.EngineError.DecimalOverflow           => 422
     case _: io.sm8.core.engine.EngineError.SourceSchemaChanged     => 409
