@@ -188,7 +188,7 @@ final class SparkEngineProvider(
  // thunk.
  val resolver = new SparkSourceResolver(spark)
  val compileSteps: io.sm8.core.engine.EngineContext => Either[EngineError, org.apache.spark.sql.DataFrame] = { eCtx =>
-  // ADR-009-a v0.1: seed the broadcast byte-threshold from the
+  // Seed the broadcast byte-threshold from the
   // model's join estimates. When the caller set no explicit
   // `broadcastRightBelowBytes`, a model that declares ANY join
   // `estimatedRows` arms the adapter's broadcast byte gate with the
@@ -583,13 +583,11 @@ final class SparkEngineProvider(
      message = s"non-Scan resolution for source $model.source: ${resolved.getClass.getSimpleName}"))
   }
   relOp <- QueryBuilder.build(model, resolver, identity)
-  // PR-32: the canonical `compileRelOp(model, relOp, ctx, scan, preFilteredDf)`
+  // The canonical `compileRelOp(model, relOp, ctx, scan, preFilteredDf)`
   // overload validates the model against the resolved source's
-  // schema BEFORE lowering. This replaces the manual
-  // `ModelValidator.validateAgainstSchema` call that was here
-  // in PR-27 -- the validator is now baked into the canonical
-  // entry point (per RFC SS3 layer ownership).
-  // ADR-009-a v0.1 seed (shared helper): a model declaring a join
+  // schema BEFORE lowering (the validator is baked into the
+  // canonical entry point).
+  // Seed (shared helper): a model declaring a join
   // estimate arms the broadcast byte-gate when no explicit hint is set.
   seedCtx = SparkEngineProvider.seedBroadcastThreshold(spark, ctx, model)
   df0  <- new PortableQueryCompiler(spark).compileRelOp(model, relOp, seedCtx, scan, Some(preFilteredDf))
@@ -685,7 +683,7 @@ final class SparkEngineProvider(
 /**
  * Spark Engine Provider companion.
  *
- * Holds the ADR-009-a seeding constant: the default byte budget used
+ * Holds the broadcast-seed default constant: the byte budget used
  * to arm the adapter's broadcast gate when a model declares a join
  * estimate. Mirrors Spark's own `autoBroadcastJoinThreshold` default
  * (10 MiB) -- an explicit  `JoinHints.broadcastRightBelowBytes` from
@@ -696,7 +694,7 @@ object SparkEngineProvider {
   val BroadcastSeedDefaultBytes: Long = 10L * 1024L * 1024L
 
   /**
-   * ADR-009-a v0.1: arm the adapter's broadcast byte-gate with the
+   * Arms the adapter's broadcast byte-gate with the
    * default budget when the model declares any join `estimatedRows`
    * and the caller set no explicit `broadcastRightBelowBytes`.
    *
@@ -706,6 +704,8 @@ object SparkEngineProvider {
    * over the seed; `preferredStrategy` is untouched (the Cross
    * + strategy rejection guard is never triggered).
    *
+   * @param spark the connected Spark session whose configured
+   *              auto-broadcast threshold seeds the gate
    * @param eCtx the possibly-hint-bearing engine context
    * @param model the query model (join estimates consulted)
    * @return the context with a seeded broadcast threshold if armed
@@ -715,9 +715,8 @@ object SparkEngineProvider {
     eCtx:  io.sm8.core.engine.EngineContext,
     model: io.sm8.core.model.Model
   ): io.sm8.core.engine.EngineContext = {
-    // Default the seed to the operator's SESSION-configured
-    // autoBroadcastJoinThreshold when set, else the 10 MiB fallback —
-    // per ADR-009-a ("defaults to Spark's autoBroadcastJoinThreshold").
+    // Default the seed to the operator's session-configured
+    // autoBroadcastJoinThreshold when set, else the 10 MiB fallback.
     // Reading the session value (not a hard constant) means an
     // operator's tuned OOM headroom is respected.
     val sessionThreshold: Long =

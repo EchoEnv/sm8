@@ -1,7 +1,7 @@
 /*
  * SM8 Spark Connector — SparkBroadcastSeedSpec.
  *
- * ADR-009-a v0.1: a model that declares ANY join `estimatedRows`
+ * A model that declares ANY join `estimatedRows`
  * seeds the adapter's broadcast byte-threshold when the caller set
  * no explicit `JoinHints.broadcastRightBelowBytes`. The seed is an
  * ARM (presence of an estimate turns the byte gate ON with the
@@ -12,7 +12,7 @@
  * To make the tests FALSIFIABLE (not masked by Spark's own
  * auto-broadcast heuristic), every test disables Spark's
  * `spark.sql.autoBroadcastJoinThreshold` (-1). Then the ONLY way a
- * `BroadcastHashJoinExec` can appear is the ADR-009-a seed arming
+ * `BroadcastHashJoinExec` can appear is the seed arming
  * the `functions.broadcast` path (the explicit hint); without the
  * seed, Spark's heuristic is off so the physical plan is a
  * `SortMergeJoinExec`. This pins the seed's actual behavior rather
@@ -88,7 +88,7 @@ class SparkBroadcastSeedSpec extends AnyFunSuite with Matchers {
         .createOrReplaceTempView("orders")
       spark.sql("SELECT * FROM VALUES ('east'),('west') AS t(region)")
         .createOrReplaceTempView("customers")
-      // Drive the REAL ADR-009-a contract: the seed helper + the
+      // Drive the real seed contract: the seed helper + the
       // lowerer's byte-gate. The helper is what query()/explain()
       // use; passing its output into the shared RelOp compile path
       // exercises the exact seeded broadcast decision.
