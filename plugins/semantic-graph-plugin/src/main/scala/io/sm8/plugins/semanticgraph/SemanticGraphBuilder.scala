@@ -27,16 +27,6 @@ import org.jgrapht.graph.DefaultWeightedEdge
 import org.jgrapht.graph.concurrent.AsSynchronizedGraph
 
 /**
- * A node in the semantic graph: a field belonging to a named model.
- *
- * `Product with Serializable` is auto-derived from the case class;
- * required for any future capture in a context.meta value (the
- * Context.meta is a `Map[String, Any]` whose values cross the
- * Restate journal boundary; per the project serialization contract,
- * every value must be Serializable).
- */
-
-/**
  * Engine-portable semantic graph over one or more validated `Model`s.
  *
  * Edges:
@@ -54,10 +44,15 @@ import org.jgrapht.graph.concurrent.AsSynchronizedGraph
  *
  * @param g the synchronized graph (constructed via the companion factory)
  * @param loadedModelNames the set of model names that were passed in
+ * @param estimatedPairs the join-edge endpoint pairs that carry a
+ *                       user-supplied estimate (a membership predicate,
+ *                       distinct from the edge weight — the placeholder
+ *                       1.0 and a real estimate of 1 row share a weight)
  */
 final class SemanticGraph private[semanticgraph] (
     private val g: AsSynchronizedGraph[GraphNode, DefaultWeightedEdge],
-    loadedModelNames: Set[String]
+    loadedModelNames: Set[String],
+    private val estimatedPairs: Set[(GraphNode, GraphNode)]
 ) {
 
   /**
@@ -114,6 +109,53 @@ final class SemanticGraph private[semanticgraph] (
       .sortBy { case (a, b) => (a.model, a.field, b.model, b.field) }
 
   /**
+   * The user-supplied cardinality estimate for a single
+   * left-field -> right-field join edge.
+   *
+   * The number comes from the graph edge weight (the edge is the
+   * single source of truth; join edges are the only non-zero-weight
+   * edges), but only endpoint pairs declared with an estimate are
+   * reported. The placeholder weight `1.0` and a real estimate of
+   * 1 row are indistinguishable by weight alone, so membership in
+   * `estimatedPairs` gates the answer — the predicate is derived in
+   * the same loop that adds the edges, so it cannot drift from the
+   * graph.
+   *
+   * @param from the left-hand field node of the join edge
+   * @param to   the right-hand field node of the join edge
+   * @return    the user-declared row-count estimate, or `None` when
+   *            the pair is not an estimated join edge
+   */
+  def joinCardinality(from: GraphNode, to: GraphNode): Option[Long] =
+    if (estimatedPairs.contains((from, to)))
+      g.getAllEdges(from, to).asScala.headOption.map(g.getEdgeWeight(_).toLong)
+    else None
+
+  /**
+   * All user-declared join cardinality estimates, keyed by the
+   * join edge endpoints.
+   *
+   * The values come from the edge weights; the key set is the
+   * estimated-pairs predicate. For a (from, to) pair with multiple
+   * edges (duplicate key-pair joins), the first edge's weight
+   * wins, matching the edge builder's first-wins. Snapshotted into
+   * `GraphSnapshot.joinCardinalities` for the meta-inspector.
+   * Sorted for determinism (test assertions).
+   *
+   * @return sorted map of join-edge endpoints -> estimate
+   */
+  def joinCardinalities: Map[(GraphNode, GraphNode), Long] =
+    estimatedPairs.toList.flatMap { case (a, b) =>
+      g.getAllEdges(a, b).asScala.headOption.map { e =>
+        ((a, b), g.getEdgeWeight(e).toLong)
+      }
+    }.toMap
+      .toList
+      .sortBy { case ((a, b), _) => (a.model, a.field, b.model, b.field) }
+      .toMap
+      .toMap
+
+  /**
    * The reverse-closure: every node that transitively depends on
    * `node` (i.e. every node reachable by following incoming edges
    * backward from `node`).
@@ -122,6 +164,7 @@ final class SemanticGraph private[semanticgraph] (
    * break if this dimension changes?" — answered by calling
    * `dependents(dimensionNode)`.
    *
+   * @param node the node whose dependents to compute
    * @return the sorted list of nodes that transitively depend on
    *         the given node (the node itself is NOT included)
    */
@@ -236,6 +279,13 @@ object SemanticGraphBuilder {
       if (a == b) () else addEdge(a, b, w)
     }
 
+    // Join-edge estimate bookkeeping (see the join loop below):
+    // `seenPairs` records which endpoint pairs already have an edge
+    // (JGraphT first-wins), `estimatedPairs` records the pairs whose
+    // EDGE-CREATING join declared an estimate.
+    val estimatedPairs = mutable.Set.empty[(GraphNode, GraphNode)]
+    val seenPairs = mutable.Set.empty[(GraphNode, GraphNode)]
+
     models.foreach { model =>
       // Calculated measures -> whatever they reference (reuses the
       // SAME walkers QueryBuilder.detectCalcCycles already trusts).
@@ -257,22 +307,34 @@ object SemanticGraphBuilder {
         )
       }
 
-      // Joins -> edges to the right-hand model's key columns.
-      // Weighted 1 by default; swap in a real cardinality estimate
-      // once one is available (feeds broadcast-plugin / skew-plugin).
+      // Join edges: weighted by the user-declared cardinality
+      // estimate when present, else the 1.0 placeholder (nothing to
+      // guess). The estimated-pairs predicate is built in this same
+      // first-wins loop that creates the edges, so membership always
+      // matches the join whose weight the graph carries — it cannot
+      // diverge from the edge state. A pair whose winning edge is a
+      // placeholder (the first alias declared no estimate) is NOT in
+      // the predicate: joinCardinality returns None for it, per the
+      // ADR "the edge is a join-edge with a user-supplied estimate".
+      //
       // Per ADR-008-AI v1.1 fix 3: dangling right-model references
       // are surfaced via `danglingRightNodes` rather than crashing.
       model.joins.foreach { js: JoinSpec =>
         js.keys.foreach { case (leftKey, rightKey) =>
-          addEdge(
-            GraphNode(model.name, leftKey),
-            GraphNode(js.rightModel, rightKey),
-            1.0
-          )
+          val from = GraphNode(model.name, leftKey)
+          val to = GraphNode(js.rightModel, rightKey)
+          val firstSeen = seenPairs.add((from, to))
+          // addEdge first-wins: JGraphT addEdge returns null for an
+          // already-present pair, so setEdgeWeight is skipped and the
+          // FIRST alias's weight is kept.
+          addEdge(from, to, js.estimatedRows.getOrElse(1L).toDouble)
+          // Membership only when the edge-creating join is the one
+          // declaring an estimate.
+          if (firstSeen && js.estimatedRows.isDefined) estimatedPairs += ((from, to))
         }
       }
     }
 
-    new SemanticGraph(g, byName.keySet)
+    new SemanticGraph(g, byName.keySet, estimatedPairs.toSet)
   }
 }

@@ -66,11 +66,10 @@ final class GraphPostResolveObserver extends PostHook with java.io.Serializable 
           )
         else None
 
-      // PR-161 (impact analysis): compute the reverse-closure
-      // for every node. The user answers "which calc-measures
-      // break if I change dimension X?" by inspecting
-      // `dependents(dim X)` from the meta-inspector. Sub-ms for
-      // realistic models (verified empirically in PR-161's tests).
+      // Impact analysis: compute the reverse-closure for every
+      // node. The user answers "which calc-measures break if I
+      // change dimension X?" by inspecting `dependents(dim X)`
+      // from the meta-inspector. Sub-ms for realistic models.
       val dependentsMap: Map[GraphNode, List[GraphNode]] =
         graph.vertices.iterator.map { n => n -> graph.dependents(n) }.toMap
 
@@ -80,7 +79,8 @@ final class GraphPostResolveObserver extends PostHook with java.io.Serializable 
         hasCycle = graph.hasCycle,
         cycleError = cycleError,
         danglingRightNodes = graph.danglingRightNodes,
-        dependents = dependentsMap
+        dependents = dependentsMap,
+        joinCardinalities = graph.joinCardinalities
       )
 
       context.copy(meta = context.meta + (GraphSnapshot.MetaKey -> snapshot))

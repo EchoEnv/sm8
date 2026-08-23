@@ -228,8 +228,6 @@ object ModelLoader {
   case _      => None
  }
 
- // -- SourceRef parsing (sealed-trait dispatch) --
-
  private def parseSource(m: java.util.Map[_, _]): Either[ManifestError, SourceRef] = {
  if (m.containsKey("byName")) {
   val inner = asMap(m.get("byName")).getOrElse(return Left(ManifestError.InvalidYaml("source.byName is not a map")))
@@ -318,21 +316,38 @@ object ModelLoader {
   val kindStr = stringField(m, "kind").getOrElse("inner")
   val keysRaw = asSeq(m.get("keys"))
   val kind: Either[ManifestError, io.sm8.core.rel.JoinKind] = kindStr.toLowerCase match {
-  case "inner" => Right(io.sm8.core.rel.JoinKind.Inner)
-  case "left" => Right(io.sm8.core.rel.JoinKind.Left)
-  case "right" => Right(io.sm8.core.rel.JoinKind.Right)
-  case "full" | "outer" => Right(io.sm8.core.rel.JoinKind.Full)
-  case "cross" => Right(io.sm8.core.rel.JoinKind.Cross)
-  case other => Left(ManifestError.ParseFailure(
-   s"joins[$name]: unknown kind '$other' (supported: inner, left, right, full, outer, cross)"))
+    case "inner" => Right(io.sm8.core.rel.JoinKind.Inner)
+    case "left"  => Right(io.sm8.core.rel.JoinKind.Left)
+    case "right" => Right(io.sm8.core.rel.JoinKind.Right)
+    case "full" | "outer" => Right(io.sm8.core.rel.JoinKind.Full)
+    case "cross" => Right(io.sm8.core.rel.JoinKind.Cross)
+    case other => Left(ManifestError.ParseFailure(
+      s"joins[$name]: unknown kind '$other' (supported: inner, left, right, full, outer, cross)"))
   }
   val keys: List[(String, String)] = keysRaw.toList.flatMap {
-  case pair: java.util.List[_] if pair.size == 2 =>
-   List((pair.get(0).toString, pair.get(1).toString))
-  case _ => Nil // malformed pair entries are skipped; PR-M2's
-      // ModelValidator cross-references catch them
+    case pair: java.util.List[_] if pair.size == 2 =>
+      List((pair.get(0).toString, pair.get(1).toString))
+    case _ => Nil // malformed pairs skipped; ModelValidator cross-refs catch them
   }
-  kind.map(k => io.sm8.core.model.JoinSpec(name, rightModel, k, keys))
+  // Optional `estimated_rows` / `estimatedRows`. Absent -> None.
+  // Present-but-non-numeric or negative -> typed error (never
+  // silent). Non-integral decimal string ("1.5") rejected.
+  val estimated: Either[ManifestError, Option[Long]] =
+    stringField(m, "estimated_rows").orElse(stringField(m, "estimatedRows")) match {
+      case Some(raw) =>
+        scala.util.Try(raw.toLong) match {
+          case scala.util.Success(v) if v >= 0 => Right(Some(v))
+          case scala.util.Success(v) => Left(ManifestError.ParseFailure(
+            s"joins[$name]: estimated_rows must be >= 0, got $v"))
+          case scala.util.Failure(_) => Left(ManifestError.ParseFailure(
+            s"joins[$name]: estimated_rows '$raw' is not a non-negative integer"))
+        }
+      case None => Right(None)
+    }
+  for {
+    k <- kind
+    est <- estimated
+  } yield io.sm8.core.model.JoinSpec(name, rightModel, k, keys, est)
  }.foldLeft[Either[ManifestError, List[io.sm8.core.model.JoinSpec]]](Right(Nil)) { (accE, jE) =>
   for (acc <- accE; j <- jE) yield acc :+ j
  }
