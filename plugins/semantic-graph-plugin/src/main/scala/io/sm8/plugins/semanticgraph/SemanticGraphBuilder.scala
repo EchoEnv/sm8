@@ -109,6 +109,35 @@ final class SemanticGraph private[semanticgraph] (
       .sortBy { case (a, b) => (a.model, a.field, b.model, b.field) }
 
   /**
+   * The models that reference `targetModel` via a join edge.
+   *
+   * A join edge points FROM the left model's key field TO the
+   * right-hand model's key field, so a join referencing model X is
+   * an edge whose target vertex belongs to X and whose source vertex
+   * belongs to a DIFFERENT model. Same-model edges (calc-measure /
+   * dimension field refs) are excluded by construction: their source
+   * and target share the model name.
+   *
+   * Cross-model discovery (RFC 'Where a semantic graph earns its
+   * place'): answers "which models reference model X via a join" as
+   * a query over the same graph that powers join-path resolution
+   * and impact analysis.
+   *
+   * @param targetModel the model name whose referencing models to find
+   * @return            the sorted distinct source models with a join
+   *                    edge into `targetModel`
+   */
+  def referencingModels(targetModel: String): List[String] =
+    g.edgeSet.asScala.toList
+      .map(e => (g.getEdgeSource(e), g.getEdgeTarget(e)))
+      .collect {
+        case (from, to) if to.model == targetModel && from.model != targetModel =>
+          from.model
+      }
+      .distinct
+      .sorted
+
+  /**
    * The user-supplied cardinality estimate for a single
    * left-field -> right-field join edge.
    *
