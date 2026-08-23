@@ -370,6 +370,51 @@ class SemanticGraphBuilderSpec extends AnyFlatSpec with Matchers {
     g.edges should contain(node)
   }
 
+  it should "not surface the placeholder when the first alias of a duplicate pair lacks an estimate" in {
+    // P2 (final review): when the FIRST join for a key pair declares
+    // no estimate but a LATER alias does, the graph's first-wins edge
+    // carries the 1.0 placeholder. The pair must NOT be reported as
+    // estimated — joinCardinality returns None (no user-supplied
+    // value on the winning edge), never the placeholder.
+    val leftKey = Dimension("k", Expr.FieldRef("k"), Some(SealedDataType.Varchar))
+    val rightKey =
+      Dimension("k", Expr.FieldRef("k"), Some(SealedDataType.Varchar))
+    def build(n: String, joins: List[JoinSpec]): Model =
+      Model
+        .of(
+          name = n,
+          version = 1,
+          description = None,
+          dimensions = List(leftKey),
+          measures = List.empty,
+          defaultPolicies = ModelPolicyDefaults(
+            MaterializePolicy.None,
+            CachePolicy.NoCache,
+            AuditPolicy.NoAudit
+          ),
+          source = SourceRef.byName("in-memory", n),
+          status = ModelStatus.Published,
+          filters = List.empty,
+          calculatedMeasures = List.empty,
+          joins = joins
+        )
+        .toOption
+        .get
+    val left = build(
+      "left",
+      List(
+        JoinSpec("j1", "right", JoinKind.Inner, List("k" -> "k")), // no estimate
+        JoinSpec("j2", "right", JoinKind.Inner, List("k" -> "k"), estimatedRows = Some(200L))
+      )
+    )
+    val right = build("right", List.empty)
+    val g = SemanticGraphBuilder.buildAcross(List(left, right))
+    val from = GraphNode("left", "k")
+    val to = GraphNode("right", "k")
+    g.joinCardinality(from, to) shouldBe None
+    g.joinCardinalities shouldBe empty
+  }
+
   // ---- Parity test (the v1.1 acceptance criterion #7) ----
 
   "SemanticGraphBuilder + QueryBuilder.detectCalcCycles" should
