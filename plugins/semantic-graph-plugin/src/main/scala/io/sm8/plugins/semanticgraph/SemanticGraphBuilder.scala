@@ -1,0 +1,198 @@
+/*
+ * SM8 Semantic Graph Builder (PR-149, ADR-008-AI).
+ *
+ * Per ADR-008-AI v1.1:
+ *   - NO cache. Built per request (JGraphT DefaultDirectedWeightedGraph
+ *     is not thread-safe per its Javadoc).
+ *   - Typed EngineError.UnsupportedCapability on cycle (not meta-string).
+ *   - danglingRightNodes exposed as typed List[GraphNode].
+ *
+ * Per  SS1 (closure-safety): the graph is pure data derived from
+ * already-validated Model(s); no Spark types captured; no closures
+ * crossing the executor boundary.
+ *
+ * Per  SS1 ("single source of
+ * truth"): the calc-measure + dimension + join walker reuses the SAME
+ * `Calculator.measureNamesOf` + `Calculator.fieldNamesOf` walkers that
+ * `QueryBuilder.detectCalcCycles` already trusts (verified at
+ * sm8-core/src/main/scala/io/sm8/core/query/QueryBuilder.scala:272-276).
+ */
+package io.sm8.plugins.semanticgraph
+
+import io.sm8.core.expr.Calculator
+import io.sm8.core.model.{CalculatedMeasure, JoinSpec, Model}
+
+import scala.collection.mutable
+import scala.jdk.CollectionConverters._
+
+import org.jgrapht.alg.cycle.CycleDetector
+import org.jgrapht.alg.shortestpath.DijkstraShortestPath
+import org.jgrapht.graph.DefaultDirectedWeightedGraph
+import org.jgrapht.graph.DefaultWeightedEdge
+import org.jgrapht.graph.concurrent.AsSynchronizedGraph
+
+/**
+ * A node in the semantic graph: a field belonging to a named model.
+ *
+ * `Product with Serializable` is auto-derived from the case class;
+ * required for any future capture in a context.meta value (the
+ * Context.meta is a `Map[String, Any]` whose values cross the
+ * Restate journal boundary; per the project serialization contract,
+ * every value must be Serializable).
+ */
+final case class GraphNode(model: String, field: String)
+
+/**
+ * Engine-portable semantic graph over one or more validated `Model`s.
+ *
+ * Edges:
+ *  - calc-measure -> referenced field/measure (weight 0, same model)
+ *  - dimension    -> field it derives from (weight 0, same model)
+ *  - join column  -> join column on the right-hand model (weight = 1,
+ *    or a caller-supplied cost, e.g. estimated row count)
+ *
+ * Built per request (no cache, per ADR-008-AI v1.1 fix 1). The
+ * underlying JGraphT graph is wrapped in `AsSynchronizedGraph` for
+ * additional defense — at no measurable cost for typical model sizes.
+ *
+ * NOT thread-isolated: per ADR-008-AI v1.1 the proposal dropped the
+ * cache. Callers that share a graph across threads should re-build.
+ *
+ * @param g the synchronized graph (constructed via the companion factory)
+ * @param loadedModelNames the set of model names that were passed in
+ */
+final class SemanticGraph private[semanticgraph] (
+    private val g: AsSynchronizedGraph[GraphNode, DefaultWeightedEdge],
+    loadedModelNames: Set[String]
+) {
+
+  /**
+   * Shortest join path between two fields, possibly across models.
+   * Returns `None` if no path exists. Wraps JGraphT's
+   * `DijkstraShortestPath` (O(V log V + E) per call).
+   */
+  def joinPath(from: GraphNode, to: GraphNode): Option[List[GraphNode]] = {
+    val path =
+      new DijkstraShortestPath[GraphNode, DefaultWeightedEdge](g).getPath(from, to)
+    Option(path).map(p => p.getVertexList.asScala.toList)
+  }
+
+  /**
+   * True if the calc-measure / dimension dependency graph has a cycle.
+   *
+   * Per ADR-008-AI v1.1: this check duplicates `QueryBuilder.detectCalcCycles`
+   * on purpose — it's a pre-flight duplicate that runs BEFORE any
+   * Connector work, exposing the result via `context.meta` as a typed
+   * `EngineError.UnsupportedCapability`.
+   */
+  def hasCycle: Boolean = new CycleDetector[GraphNode, DefaultWeightedEdge](g)
+    .detectCycles()
+
+  /**
+   * Right-model references that did not resolve to a loaded Model
+   * (cross-catalog case). Surfaced as a typed `List[GraphNode]` via
+   * `context.meta` when non-empty (per ADR-008-AI v1.1 fix 3).
+   */
+  def danglingRightNodes: List[GraphNode] = {
+    val buf = mutable.ListBuffer.empty[GraphNode]
+    g.vertexSet.asScala.foreach { v =>
+      if (!loadedModelNames.contains(v.model)) buf += v
+    }
+    buf.toList.distinct
+  }
+}
+
+/**
+ * Companion factory: build a typed semantic graph over one or many
+ * validated `Model`s.
+ *
+ * Per ADR-008-AI v1.1: NO cache. Each `build*` call constructs a fresh
+ * graph (sub-millisecond for realistic model sizes; per
+ * `scala-perf-testing-mindset` the cache buys nothing and adds a
+ * thread-safety footgun).
+ */
+object SemanticGraphBuilder {
+
+  /**
+   * Build a graph over a single model: calc-measure deps + dimension
+   * field refs. No join edges (those need the right-hand model too —
+   * use `buildAcross` for that).
+   */
+  def build(model: Model): SemanticGraph = buildAcross(model :: Nil)
+
+  /**
+   * Build a graph over multiple models, including join edges between
+   * them. `models` should already be `Model.of(...)`-validated.
+   */
+  def buildAcross(models: List[Model]): SemanticGraph = {
+    val byName: Map[String, Model] = models.map(m => m.name -> m).toMap
+
+    val raw = new DefaultDirectedWeightedGraph[GraphNode, DefaultWeightedEdge](
+      classOf[DefaultWeightedEdge]
+    )
+    val g = new AsSynchronizedGraph(raw)
+
+    def addNode(n: GraphNode): Unit = if (!g.containsVertex(n)) g.addVertex(n)
+
+    def addEdge(a: GraphNode, b: GraphNode, w: Double): Unit = {
+      addNode(a)
+      addNode(b)
+      val e = g.addEdge(a, b)
+      if (e != null) g.setEdgeWeight(e, w)
+    }
+
+    // Per scala-bug-hunting-mindset: a `Dimension` whose `expr` is a
+    // `FieldRef` of the SAME name produces a self-loop
+    // (`dimAmount -> "amount" -> dimAmount`). JGraphT's
+    // `CycleDetector.detectCycles()` would report this as a cycle,
+    // but the dimension IS that field — the self-loop is intentional
+    // (a dimension DERIVED from its own field is a no-op), not a
+    // cycle. The Core's `QueryBuilder.detectCalcCycles` only walks
+    // the calc-measure DAG and would not flag this case, so we
+    // match its semantics here.
+    //
+    // A calc-measure that references ITSELF (e.g. `bad = bad + 1`)
+    // IS a real cycle and MUST be reported.
+    def addDimEdge(a: GraphNode, b: GraphNode, w: Double): Unit =
+      if (a == b) () else addEdge(a, b, w)
+
+    models.foreach { model =>
+      // Calculated measures -> whatever they reference (reuses the
+      // SAME walkers QueryBuilder.detectCalcCycles already trusts).
+      model.calculatedMeasures.foreach { c: CalculatedMeasure =>
+        val refs = Calculator.measureNamesOf(c.expr) ++
+          Calculator.fieldNamesOf(c.expr)
+        refs.foreach(r =>
+          addEdge(GraphNode(model.name, c.name), GraphNode(model.name, r), 0)
+        )
+      }
+
+      // Dimensions -> the fields their expr touches. Use `addDimEdge`
+      // (NOT `addEdge`) so that self-referential dimensions
+      // (`dimAmount -> FieldRef("amount")` where the dim IS that
+      // field) don't trip the cycle detector. See addDimEdge comment.
+      model.dimensions.foreach { d =>
+        Calculator.fieldNamesOf(d.expr).foreach(r =>
+          addDimEdge(GraphNode(model.name, d.name), GraphNode(model.name, r), 0)
+        )
+      }
+
+      // Joins -> edges to the right-hand model's key columns.
+      // Weighted 1 by default; swap in a real cardinality estimate
+      // once one is available (feeds broadcast-plugin / skew-plugin).
+      // Per ADR-008-AI v1.1 fix 3: dangling right-model references
+      // are surfaced via `danglingRightNodes` rather than crashing.
+      model.joins.foreach { js: JoinSpec =>
+        js.keys.foreach { case (leftKey, rightKey) =>
+          addEdge(
+            GraphNode(model.name, leftKey),
+            GraphNode(js.rightModel, rightKey),
+            1.0
+          )
+        }
+      }
+    }
+
+    new SemanticGraph(g, byName.keySet)
+  }
+}

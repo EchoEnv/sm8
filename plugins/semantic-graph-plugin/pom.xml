@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!--
+    SM8 semantic-graph Hook Plugin (PR-149, ADR-008-AI).
+
+    Per ADR-008-AI v1.1 (review fixes applied):
+      - No cache (fix 1: JGraphT DefaultDirectedWeightedGraph is not
+        thread-safe; per-request build only).
+      - Typed EngineError.UnsupportedCapability on cycle (fix 2:
+        scala-error-handling-mindset — errors are data, not Strings).
+      - Dangling right-nodes surfaced as typed List[GraphNode] in
+        context.meta (fix 3).
+      - Per-module enforce-no-spark block present (fix 4).
+      - Depends on org.jgrapht:jgrapht-core:1.5.2 (pure JVM, no Spark
+        transitive deps; per the parent pom enforcer check).
+  -->
+
+  <parent>
+    <groupId>io.sm8</groupId>
+    <artifactId>sm8-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <relativePath>../../pom.xml</relativePath>
+  </parent>
+
+  <artifactId>semantic-graph-plugin_2.13</artifactId>
+  <packaging>jar</packaging>
+
+  <name>SM8 semantic-graph Plugin</name>
+  <description>SM8 Hook Plugin: PreResolve hook that pre-flights the Model's calc-measure / dimension / join graph before any Connector work.</description>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.sm8</groupId>
+      <artifactId>sm8-core_2.13</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.jgrapht</groupId>
+      <artifactId>jgrapht-core</artifactId>
+      <version>1.5.2</version>
+    </dependency>
+    <dependency>
+      <groupId>org.scalatest</groupId>
+      <artifactId>scalatest_${scala.binary.version}</artifactId>
+      <version>${scalatest.version}</version>
+      <scope>test</scope>
+    </dependency>
+
+    <!--
+      PR-D: Hook + Plugin conformance unification. Extends the
+      unified contract bases (HookContractSpec, PluginContractSpec)
+      shipped in sm8-core's test-jar artifact (classifier=tests).
+      Per ADR-007: structural inheritance from the unified contract
+      is what closes the RFC §13 DoD letter-vs-spirit gap.
+    -->
+    <dependency>
+      <groupId>io.sm8</groupId>
+      <artifactId>sm8-core_2.13</artifactId>
+      <version>${project.version}</version>
+      <type>test-jar</type>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin><groupId>net.alchim31.maven</groupId><artifactId>scala-maven-plugin</artifactId></plugin>
+      <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-compiler-plugin</artifactId></plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-enforcer-plugin</artifactId>
+        <executions><execution><id>enforce-no-spark</id><goals><goal>enforce</goal></goals></execution></executions>
+        <configuration>
+          <rules>
+            <bannedDependencies><excludes><exclude>org.apache.spark:*</exclude></excludes></bannedDependencies>
+          </rules>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.scalatest</groupId>
+        <artifactId>scalatest-maven-plugin</artifactId>
+        <executions><execution><id>test</id><goals><goal>test</goal></goals><phase>test</phase></execution></executions>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-source-plugin</artifactId>
+        <executions><execution><id>attach-sources</id><goals><goal>jar-no-fork</goal></goals></execution></executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>
