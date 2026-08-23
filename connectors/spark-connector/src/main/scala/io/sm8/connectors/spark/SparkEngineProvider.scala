@@ -108,8 +108,9 @@ final class SparkEngineProvider(
  // can unpersist() them at JVM exit (per the cache-plugin
  // long-lived-model intent). ConcurrentHashMap for thread-safe
  // put/remove with no per-call allocation.
+@transient
  private val persistedFrames: java.util.concurrent.ConcurrentHashMap[java.lang.Long, org.apache.spark.sql.Dataset[_]] =
- new java.util.concurrent.ConcurrentHashMap()
+   new java.util.concurrent.ConcurrentHashMap()
  private val persistedSeq: java.util.concurrent.atomic.AtomicLong =
  new java.util.concurrent.atomic.AtomicLong(0L)
 
