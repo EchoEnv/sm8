@@ -185,6 +185,41 @@ class SemanticGraphBuilderSpec extends AnyFlatSpec with Matchers {
     g.danglingRightNodes shouldBe empty
   }
 
+  // Per ADR-008-AI v1.1 + the architect re-review: a Dimension whose
+  // `expr` is a `FieldRef` of its own name (a self-referential dimension)
+  // is a no-op (the dim IS that field), not a cycle. The `addDimEdge`
+  // guard at `SemanticGraphBuilder.scala:175-185` skips this self-loop.
+  // Without the guard, JGraphT's `CycleDetector` would report
+  // `(amount) -> (amount)` as a cycle. Regression test for that guard.
+  it should "NOT flag a self-referential Dimension as a cycle (addDimEdge guard)" in {
+    val selfRefDim = Dimension(
+      name = "amount",
+      expr = Expr.FieldRef("amount"),
+      dataType = Some(SealedDataType.Int)
+    )
+    val model = Model
+      .of(
+        name = "self",
+        version = 1,
+        description = None,
+        dimensions = List(selfRefDim),
+        measures = List.empty,
+        defaultPolicies = ModelPolicyDefaults(
+          MaterializePolicy.None,
+          CachePolicy.NoCache,
+          AuditPolicy.NoAudit
+        ),
+        source = SourceRef.byName("in-memory", "x"),
+        status = ModelStatus.Published,
+        filters = List.empty,
+        calculatedMeasures = List.empty,
+        joins = List.empty
+      )
+      .toOption
+      .get
+    SemanticGraphBuilder.build(model).hasCycle shouldBe false
+  }
+
   "SemanticGraphBuilder.buildAcross" should
     "report no dangling right-nodes when all joined models are loaded" in {
     val (left, right) = joinedModels
@@ -203,6 +238,45 @@ class SemanticGraphBuilderSpec extends AnyFlatSpec with Matchers {
     val g = SemanticGraphBuilder.build(danglingModel)
     val path = g.joinPath(GraphNode("lonely", "k"), GraphNode("ghost_model", "k"))
     path shouldBe defined
+  }
+
+  // Per the data-eng re-review: a 3-model chain A -> B -> C should
+  // produce a 3-vertex joinPath when asked from A.k to C.k.
+  it should "find a 3-vertex joinPath across a 3-model chain (A -> B -> C)" in {
+    def keyDim(name: String): Dimension =
+      Dimension(name, Expr.FieldRef(name), Some(SealedDataType.Varchar))
+    def chainModel(
+        n: String,
+        joinTarget: Option[String]
+    ): Model =
+      Model
+        .of(
+          name = n,
+          version = 1,
+          description = None,
+          dimensions = List(keyDim("k")),
+          measures = List.empty,
+          defaultPolicies = ModelPolicyDefaults(
+            MaterializePolicy.None,
+            CachePolicy.NoCache,
+            AuditPolicy.NoAudit
+          ),
+          source = SourceRef.byName("in-memory", n),
+          status = ModelStatus.Published,
+          filters = List.empty,
+          calculatedMeasures = List.empty,
+          joins = joinTarget.toList.map { t =>
+            JoinSpec("j", t, JoinKind.Inner, List("k" -> "k"))
+          }
+        )
+        .toOption
+        .get
+    val a = chainModel("a", Some("b"))
+    val b = chainModel("b", Some("c"))
+    val c = chainModel("c", None)
+    val g = SemanticGraphBuilder.buildAcross(List(a, b, c))
+    val path = g.joinPath(GraphNode("a", "k"), GraphNode("c", "k"))
+    path.map(_.map(_.model)) shouldBe Some(List("a", "b", "c"))
   }
 
   // ---- Parity test (the v1.1 acceptance criterion #7) ----

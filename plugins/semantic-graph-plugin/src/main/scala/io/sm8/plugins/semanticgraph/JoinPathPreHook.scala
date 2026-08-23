@@ -37,7 +37,7 @@ import io.sm8.sdk.{Context, HookStage, PreHook}
  * Priority 120 — first-party range (100-899), runs after core (0-99)
  * validation, before any Connector-specific resolve work.
  */
-final class JoinPathPreHook extends PreHook {
+final class JoinPathPreHook extends PreHook with java.io.Serializable {
   override val name: String = "semantic-graph-precheck"
   override val priority: Int = 120
   override val stage: HookStage = HookStage.PreResolve
