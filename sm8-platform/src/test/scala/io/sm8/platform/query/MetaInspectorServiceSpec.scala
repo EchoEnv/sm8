@@ -1,17 +1,13 @@
 /*
- * SM8 Platform — MetaInspectorServiceSpec (PR-152, ADR-008-AI follow-up).
+ * SM8 Platform — MetaInspectorServiceSpec.
  *
- * Per the architect's 2026-08-23 design review
- * (`docs/review/graph-display-design-review.md`): the transport
- * lib's `MetaInspectorService` is a GENERIC `context.meta` reader.
- * The wire DTOs (`MetaRequest` + `MetaResponse`) carry no
- * plugin-specific knowledge. This spec exercises the wire shape
- * and the typed projection (`value: Map[String, Any]`).
- *
- * Per  SS1 (smallest correct
- * test footprint): the engineFn is stubbed to return a fixed
- * `Map[String, Any]`. No Restate runtime, no Docker, no
- * Testcontainers — same pattern as `QueryServiceSpec`.
+ * Exercises the wire shape of the transport layer's
+ * `MetaInspectorService`: the service is a GENERIC `context.meta`
+ * reader, so the spec is independent of any specific plugin's
+ * value schema. The wire DTOs (`MetaRequest` + `MetaResponse`)
+ * carry no plugin-specific knowledge; the plugin owns the
+ * value schema, the transport only commits to "round-trip via
+ * Jackson with `DefaultScalaModule`".
  */
 package io.sm8.platform.query
 

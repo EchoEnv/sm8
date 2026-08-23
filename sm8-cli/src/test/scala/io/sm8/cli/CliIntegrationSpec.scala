@@ -761,11 +761,10 @@ class CliIntegrationSpec
     // resolveToken() reading from sys.env in priority order.
   }
 
-  // PR-151 (ADR-008-AI follow-up): `sm8 inspect <key>` calls the
-  // generic `MetaInspectorService` (Restate wire:
-  // `POST /MetaInspectorService/getMeta` with `{"key": <key>}` body).
-  // The CLI is generic over the key string; it does NOT know the
-  // value schema.
+  // `sm8 inspect <key>` posts to the generic transport-layer
+  // meta-inspector (`POST /MetaInspectorService/getMeta` with
+  // `{"key": <key>}` body). The CLI is generic over the key
+  // string; it does not know the value schema.
   describe("`inspect` command") {
     it("POSTs the key to /MetaInspectorService/getMeta and prints the value") {
       val key = "io.sm8.plugins.semanticgraph:graph-snapshot"
