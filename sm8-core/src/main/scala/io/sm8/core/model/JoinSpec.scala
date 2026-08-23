@@ -44,7 +44,14 @@ package io.sm8.core.model
 import io.sm8.core.rel.JoinKind
 
 final case class JoinSpec(
- name:  String,
- rightModel: String,
- kind:  JoinKind,
- keys:  List[(String, String)]) extends Product with Serializable
+  name:  String,
+  rightModel: String,
+  kind:  JoinKind,
+  keys:  List[(String, String)],
+  // Optional user-supplied cardinality estimate (row count) for
+  // this join. The semantic graph annotates the join edge with it;
+  // broadcast/skew consult it (decision-only; no Spark config yet).
+  // `None` = no estimate declared — the graph weight falls back to
+  // the 1.0 placeholder.
+  estimatedRows: Option[Long] = None
+) extends Product with Serializable

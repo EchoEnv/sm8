@@ -84,6 +84,64 @@ class ModelLoaderM1Spec extends AnyFunSuite with Matchers {
     out.left.toOption.get.toString should include ("diagonal")
   }
 
+  test("joins: estimated_rows parses to JoinSpec.estimatedRows") {
+    val yaml = base +
+      """joins:
+        |  - name: j1
+        |    rightModel: c
+        |    kind: inner
+        |    estimated_rows: 5000
+        |    keys:
+        |      - [a, b]
+        |""".stripMargin
+    val out = ModelLoader.fromString(yaml)
+    out.isRight shouldBe true
+    out.toOption.get.joins.head.estimatedRows shouldBe Some(5000L)
+  }
+
+  test("joins: absent estimated_rows yields None (backward compat)") {
+    val yaml = base +
+      """joins:
+        |  - name: j1
+        |    rightModel: c
+        |    kind: inner
+        |    keys:
+        |      - [a, b]
+        |""".stripMargin
+    val out = ModelLoader.fromString(yaml)
+    out.toOption.get.joins.head.estimatedRows shouldBe None
+  }
+
+  test("joins: negative estimated_rows is a typed ParseFailure (never silent)") {
+    val yaml = base +
+      """joins:
+        |  - name: j1
+        |    rightModel: c
+        |    kind: inner
+        |    estimated_rows: -5
+        |    keys:
+        |      - [a, b]
+        |""".stripMargin
+    val out = ModelLoader.fromString(yaml)
+    out.isLeft shouldBe true
+    out.left.toOption.get.toString should include ("estimated_rows")
+  }
+
+  test("joins: non-numeric estimated_rows is a typed ParseFailure (never silent)") {
+    val yaml = base +
+      """joins:
+        |  - name: j1
+        |    rightModel: c
+        |    kind: inner
+        |    estimated_rows: "many"
+        |    keys:
+        |      - [a, b]
+        |""".stripMargin
+    val out = ModelLoader.fromString(yaml)
+    out.isLeft shouldBe true
+    out.left.toOption.get.toString should include ("estimated_rows")
+  }
+
   test("joins: absent block yields Nil (backward compat)") {
     val out = ModelLoader.fromString(base)
     out.toOption.get.joins shouldBe Nil

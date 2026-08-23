@@ -279,6 +279,51 @@ class SemanticGraphBuilderSpec extends AnyFlatSpec with Matchers {
     path.map(_.map(_.model)) shouldBe Some(List("a", "b", "c"))
   }
 
+  it should "expose a join cardinality estimate when a join declares one" in {
+    val leftKey = Dimension("k", Expr.FieldRef("k"), Some(SealedDataType.Varchar))
+    val rightKey =
+      Dimension("k", Expr.FieldRef("k"), Some(SealedDataType.Varchar))
+    def build(n: String, est: Option[Long]): Model =
+      Model
+        .of(
+          name = n,
+          version = 1,
+          description = None,
+          dimensions = List(leftKey),
+          measures = List.empty,
+          defaultPolicies = ModelPolicyDefaults(
+            MaterializePolicy.None,
+            CachePolicy.NoCache,
+            AuditPolicy.NoAudit
+          ),
+          source = SourceRef.byName("in-memory", n),
+          status = ModelStatus.Published,
+          filters = List.empty,
+          calculatedMeasures = List.empty,
+          joins = if (n == "left")
+            List(JoinSpec("j", "right", JoinKind.Inner, List("k" -> "k"),
+              estimatedRows = est))
+            else List.empty
+        )
+        .toOption
+        .get
+    val left = build("left", Some(5000L))
+    val right = build("right", None)
+    val g = SemanticGraphBuilder.buildAcross(List(left, right))
+    g.joinCardinality(GraphNode("left", "k"), GraphNode("right", "k")) shouldBe
+      Some(5000L)
+    g.joinCardinalities shouldBe Map(
+      (GraphNode("left", "k"), GraphNode("right", "k")) -> 5000L
+    )
+  }
+
+  it should "report no cardinality for a join without an estimate" in {
+    val (left, right) = joinedModels
+    val g = SemanticGraphBuilder.buildAcross(List(left, right))
+    g.joinCardinality(GraphNode("left", "k"), GraphNode("right", "k")) shouldBe None
+    g.joinCardinalities shouldBe empty
+  }
+
   // ---- Parity test (the v1.1 acceptance criterion #7) ----
 
   "SemanticGraphBuilder + QueryBuilder.detectCalcCycles" should

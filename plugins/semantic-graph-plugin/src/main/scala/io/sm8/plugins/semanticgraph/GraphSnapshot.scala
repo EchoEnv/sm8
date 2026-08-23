@@ -45,11 +45,16 @@ final case class GraphSnapshot(
     hasCycle: Boolean,
     cycleError: Option[EngineError],
     danglingRightNodes: List[GraphNode],
-    // PR-161: impact analysis — the reverse-closure of every
-    // node (i.e. every node that transitively depends on this
-    // node). Answers "which calculated measures break if this
-    // dimension changes?" via the meta-inspector.
-    dependents: Map[GraphNode, List[GraphNode]] = Map.empty
+    // Impact analysis — the reverse-closure of every node (i.e.
+    // every node that transitively depends on this node). Answers
+    // "which calculated measures break if this dimension changes?"
+    // via the meta-inspector.
+    dependents: Map[GraphNode, List[GraphNode]] = Map.empty,
+    // Join cardinality — the user-declared row-count estimate per
+    // join edge (keyed by edge endpoints). Consulted by the
+    // broadcast/skew decision path; only joins that declared an
+    // estimate appear here.
+    joinCardinalities: Map[(GraphNode, GraphNode), Long] = Map.empty
 ) {
   /**
    * Projects the snapshot to a `Map[String, Any]` for the wire
@@ -68,7 +73,16 @@ final case class GraphSnapshot(
           "dependents" -> deps.map(d => Map("model" -> d.model, "field" -> d.field)))
     }.toList
       .sortBy(m => (m("node").asInstanceOf[Map[String, Any]]("model").toString,
-                     m("node").asInstanceOf[Map[String, Any]]("field").toString))
+                     m("node").asInstanceOf[Map[String, Any]]("field").toString)),
+    "joinCardinalities" -> joinCardinalities.map { case ((from, to), est) =>
+      Map("from" -> Map("model" -> from.model, "field" -> from.field),
+          "to"   -> Map("model" -> to.model,   "field" -> to.field),
+          "estimatedRows" -> est)
+    }.toList
+      .sortBy(m => (m("from").asInstanceOf[Map[String, Any]]("model").toString,
+                     m("from").asInstanceOf[Map[String, Any]]("field").toString,
+                     m("to").asInstanceOf[Map[String, Any]]("model").toString,
+                     m("to").asInstanceOf[Map[String, Any]]("field").toString))
   )
 }
 

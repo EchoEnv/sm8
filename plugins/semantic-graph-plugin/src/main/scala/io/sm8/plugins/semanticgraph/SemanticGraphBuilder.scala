@@ -54,10 +54,19 @@ import org.jgrapht.graph.concurrent.AsSynchronizedGraph
  *
  * @param g the synchronized graph (constructed via the companion factory)
  * @param loadedModelNames the set of model names that were passed in
+ * @param joinEstimates the user-supplied cardinality estimates per
+ *                      join edge (absent joins are not keyed)
  */
 final class SemanticGraph private[semanticgraph] (
     private val g: AsSynchronizedGraph[GraphNode, DefaultWeightedEdge],
-    loadedModelNames: Set[String]
+    loadedModelNames: Set[String],
+    // The user-supplied cardinality estimates for join edges, keyed
+    // by edge endpoints. Only joins whose `JoinSpec.estimatedRows` is
+    // present appear here; absent joins are not keyed (the graph falls
+    // back to the 1.0 placeholder weight). Pure data — `Map` of
+    // case-class keys — so it serializes cleanly across the Restate
+    // journal boundary like the rest of the snapshot.
+    private val joinEstimates: Map[(GraphNode, GraphNode), Long]
 ) {
 
   /**
@@ -114,6 +123,37 @@ final class SemanticGraph private[semanticgraph] (
       .sortBy { case (a, b) => (a.model, a.field, b.model, b.field) }
 
   /**
+   * The user-declared cardinality estimate for a single
+   * left-field -> right-field join edge.
+   *
+   * A join whose `JoinSpec.estimatedRows` is set has an estimate
+   * here; an absent estimate returns `None` (callers fall back to
+   * the placeholder — costs nothing to guess).
+   *
+   * @param from the left-hand field node of the join edge
+   * @param to   the right-hand field node of the join edge
+   * @return    the user-declared row-count estimate, or `None`
+   */
+  def joinCardinality(from: GraphNode, to: GraphNode): Option[Long] =
+    joinEstimates.get((from, to))
+
+  /**
+   * All user-declared join cardinality estimates, keyed by the
+   * join edge endpoints.
+   *
+   * Projected into `GraphSnapshot.joinCardinalities` for the
+   * meta-inspector, so broadcast/skew and a human can see what
+   * the planner will actually consult. Sorted for determinism
+   * (test assertions).
+   *
+   * @return sorted map of join-edge endpoints -> estimate
+   */
+  def joinCardinalities: Map[(GraphNode, GraphNode), Long] =
+    joinEstimates.toList
+      .sortBy { case ((a, b), _) => (a.model, a.field, b.model, b.field) }
+      .toMap
+
+  /**
    * The reverse-closure: every node that transitively depends on
    * `node` (i.e. every node reachable by following incoming edges
    * backward from `node`).
@@ -122,6 +162,7 @@ final class SemanticGraph private[semanticgraph] (
    * break if this dimension changes?" — answered by calling
    * `dependents(dimensionNode)`.
    *
+   * @param node the node whose dependents to compute
    * @return the sorted list of nodes that transitively depend on
    *         the given node (the node itself is NOT included)
    */
@@ -257,9 +298,8 @@ object SemanticGraphBuilder {
         )
       }
 
-      // Joins -> edges to the right-hand model's key columns.
-      // Weighted 1 by default; swap in a real cardinality estimate
-      // once one is available (feeds broadcast-plugin / skew-plugin).
+      // Weighted by the user-declared cardinality estimate when
+      // present, else the 1.0 placeholder (nothing to guess).
       // Per ADR-008-AI v1.1 fix 3: dangling right-model references
       // are surfaced via `danglingRightNodes` rather than crashing.
       model.joins.foreach { js: JoinSpec =>
@@ -267,12 +307,26 @@ object SemanticGraphBuilder {
           addEdge(
             GraphNode(model.name, leftKey),
             GraphNode(js.rightModel, rightKey),
-            1.0
+            js.estimatedRows.getOrElse(1L).toDouble
           )
         }
       }
     }
 
-    new SemanticGraph(g, byName.keySet)
+    // Collect the user-supplied estimates for the join edges (only
+    // joins that declared one; the graph already stores the weight,
+    // this map is the read-optimized projection for the observer).
+    val joinEstimates: Map[(GraphNode, GraphNode), Long] =
+      models.flatMap { model =>
+        model.joins.flatMap { js =>
+          js.estimatedRows.toList.map { est =>
+            js.keys.map { case (leftKey, rightKey) =>
+              (GraphNode(model.name, leftKey), GraphNode(js.rightModel, rightKey)) -> est
+            }
+          }
+        }
+      }.flatten.toMap
+
+    new SemanticGraph(g, byName.keySet, joinEstimates)
   }
 }
