@@ -114,6 +114,41 @@ final class SemanticGraph private[semanticgraph] (
       .sortBy { case (a, b) => (a.model, a.field, b.model, b.field) }
 
   /**
+   * The reverse-closure: every node that transitively depends on
+   * `node` (i.e. every node reachable by following incoming edges
+   * backward from `node`).
+   *
+   * Used for impact analysis: "which calculated measures / models
+   * break if this dimension changes?" — answered by calling
+   * `dependents(dimensionNode)`.
+   *
+   * @return the sorted list of nodes that transitively depend on
+   *         the given node (the node itself is NOT included)
+   */
+  def dependents(node: GraphNode): List[GraphNode] = {
+    val result = scala.collection.mutable.LinkedHashSet.empty[GraphNode]
+    // `incomingEdgesOf(v)` returns edges POINTING TO v (target = v).
+    // `getEdgeSource` on those edges returns the nodes that
+    // transitively depend on `node` (via these incoming edges).
+    // The walk does a BFS: frontier -> next = sources-of-incoming-edges
+    // for each node in frontier -> recurse on next.
+    val initialSources =
+      g.incomingEdgesOf(node).asScala.map(g.getEdgeSource).toSet -- Set(node)
+    result ++= initialSources
+    def walk(frontier: Set[GraphNode], seen: Set[GraphNode]): Unit =
+      if (frontier.nonEmpty) {
+        val next = frontier.flatMap { n =>
+          g.incomingEdgesOf(n).asScala.map(g.getEdgeSource)
+        } -- seen -- Set(node)
+        result ++= next
+        walk(next, seen ++ next)
+      }
+    walk(initialSources, initialSources)
+    result.toList.sortBy(n => (n.model, n.field))
+  }
+
+
+  /**
    * The right-model references that did not resolve to a loaded
    * model (the cross-catalog case).
    *
@@ -191,8 +226,15 @@ object SemanticGraphBuilder {
       if (e != null) g.setEdgeWeight(e, w)
     }
 
-    def addDimEdge(a: GraphNode, b: GraphNode, w: Double): Unit =
+    // The self-loop skip still adds the endpoint vertices (the
+    // dimension IS that field — it should be discoverable via
+    // dependents()). Without addNode, JGraphT's incomingEdgesOf
+    // would throw "no such vertex" for self-referential dims.
+    def addDimEdge(a: GraphNode, b: GraphNode, w: Double): Unit = {
+      addNode(a)
+      addNode(b)
       if (a == b) () else addEdge(a, b, w)
+    }
 
     models.foreach { model =>
       // Calculated measures -> whatever they reference (reuses the

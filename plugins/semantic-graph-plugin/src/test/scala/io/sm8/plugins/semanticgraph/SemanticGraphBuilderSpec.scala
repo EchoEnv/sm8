@@ -306,4 +306,87 @@ class SemanticGraphBuilderSpec extends AnyFlatSpec with Matchers {
     val coreResult = QueryBuilder.detectCalcCycles(simpleModel.calculatedMeasures)
     coreResult shouldBe a[Right[_, _]]
   }
+  // -- Impact analysis: dependents() (PR-161) --
+  //
+  // dependents(node) returns every node that transitively depends
+  // on `node` (the reverse-closure). Used for impact analysis:
+  // "which calculated measures break if this dimension changes?"
+  //
+  // Graph edge semantics: the calc-measure walker creates edge
+  // `(calc-name) -> (ref)` where `ref` is a field/measure the calc
+  // references. So `dependents(d)` returns every calc-measure
+  // that (transitively) references `d`.
+
+  it should "dependents() returns the direct reverse-closure of a node" in {
+    // Model where `total` (calc-measure) reads field `amount`:
+    //   Edge: total -> amount
+    //   dependents(amount) = {total}
+    val model = Model
+      .of(
+        name = "dependents_model",
+        version = 1,
+        description = None,
+        dimensions = List(
+          Dimension(name = "amount", expr = Expr.FieldRef("amount"), dataType = Some(SealedDataType.Int))
+        ),
+        measures = List.empty,
+        defaultPolicies = ModelPolicyDefaults(MaterializePolicy.None, CachePolicy.NoCache, AuditPolicy.NoAudit),
+        source = SourceRef.byName("in-memory", "x"),
+        status = ModelStatus.Published,
+        filters = List.empty,
+        calculatedMeasures = List(
+          CalculatedMeasure(
+            name = "total",
+            expr = Expr.Add(Expr.FieldRef("amount"), Expr.Literal(LiteralValue.LongValue(0L), SealedDataType.Int))
+          )
+        ),
+        joins = List.empty
+      )
+      .toOption
+      .get
+    val g = SemanticGraphBuilder.build(model)
+    val deps = g.dependents(GraphNode("dependents_model", "amount"))
+    deps should contain (GraphNode("dependents_model", "total"))
+    deps.size shouldBe 1
+  }
+
+  it should "dependents() returns the transitive reverse-closure" in {
+    // Model where:
+    //   - calc-measure `b` reads field `c` (edge: b -> c)
+    //   - calc-measure `a` reads calc-measure `b` (edge: a -> b)
+    // dependents(c) should include BOTH b (direct) and a (transitive).
+    val model = Model
+      .of(
+        name = "deep",
+        version = 1,
+        description = None,
+        dimensions = List(
+          Dimension(name = "c", expr = Expr.FieldRef("c"), dataType = Some(SealedDataType.Int))
+        ),
+        measures = List.empty,
+        defaultPolicies = ModelPolicyDefaults(MaterializePolicy.None, CachePolicy.NoCache, AuditPolicy.NoAudit),
+        source = SourceRef.byName("in-memory", "x"),
+        status = ModelStatus.Published,
+        filters = List.empty,
+        calculatedMeasures = List(
+          CalculatedMeasure(
+            name = "b",
+            expr = Expr.Add(Expr.FieldRef("c"), Expr.Literal(LiteralValue.LongValue(0L), SealedDataType.Int))
+          ),
+          CalculatedMeasure(
+            name = "a",
+            expr = Expr.Add(Expr.MeasureRef("b"), Expr.Literal(LiteralValue.LongValue(0L), SealedDataType.Int))
+          )
+        ),
+        joins = List.empty
+      )
+      .toOption
+      .get
+    val g = SemanticGraphBuilder.build(model)
+    val deps = g.dependents(GraphNode("deep", "c"))
+    deps should contain (GraphNode("deep", "b"))
+    deps should contain (GraphNode("deep", "a"))
+    // `c` itself should NOT be in its own dependents.
+    deps should not contain (GraphNode("deep", "c"))
+  }
 }
