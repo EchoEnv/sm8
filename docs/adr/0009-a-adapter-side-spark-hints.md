@@ -1,7 +1,7 @@
 # ADR-009-a: Adapter-side join strategy from JoinSpec.estimatedRows — seed the Spark broadcast byte-threshold
 
 | Field | Value |
-| **Status** | **v1.1 — revised (2 dual reviews; v1.0 rejected: wrong seam anchor + ambiguity no-op/Cross-regression + unit mislabel)** |
+| **Status** | **v0.1 — approved (2 dual reviews incorporated; draft corrected: wiring-axis named, anchored at the live lowerJoin path, arm semantics)** |
 | **Date** | 2026-08-23 |
 | **Module** | `connectors/spark-connector` (`SparkEngineProvider.query` request layer + `MinimalRelOpLowerer.lowerJoin` byte gate) + `sm8-core` (`JoinSpec.estimatedRows`) |
 | **Supersedes scope** | RFC §2 'Reuse for planning' — 'Feeding broadcast-plugin / skew-plugin' concretized adapter-side |
@@ -25,8 +25,7 @@ The spark-connector **already** broadcasts via a real byte gate (`MinimalRelOpLo
 
 | Version | Date | Change |
 |---|---|---|
-| v1.0 | 2026-08-23 | Initial draft — wrong: not anchor to adapter's `default I` (user chose Option A); ambiguous seed axis |
-| v1.1 | 2026-08-23 | Revised: named the byte-axis wiring exactly, removed `preferredStrategy` seeding, anchored at the LIVE `lowerJoin` path + request layer, corrected the unit mislabel (rows vs bytes) |
+| v0.1 | 2026-08-23 | Initial (v0.1.0 stage) — corrected after 2 dual reviews: wiring-axis named (bytes, not strategy), `preferredStrategy` never seeded (Cross-safe), anchored at the live `lowerJoin` path + request layer, estimate = arm (runtime bytes authoritative) |
 
 ---
 
