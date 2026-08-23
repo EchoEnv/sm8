@@ -519,6 +519,24 @@ final class MinimalRelOpLowerer(
   case "cross" => leftDf.crossJoin(rightDfEff)
   case _  => leftDf.join(rightDfEff, joinExpr, joinType)
   }
- } yield joined
+  // Base-column-wins invariant (mirrors the legacy `applyJoins`
+  // path): when BOTH sides carry the same join-key column name, the
+  // joined DF would hold TWO columns of that name and every later
+  // unqualified reference becomes ambiguous. Drop the RIGHT-side
+  // key column so the left (source-of-truth) column wins.
+  //
+  // Restricted to Inner/Left (the cases where the left side is
+  // authoritative): for Right/Full joins the RIGHT side is the
+  // driving side and its key column is the one the write target
+  // retains — dropping it would NULL out the join key on the very
+  // rows the join exists to keep (right-only rows). For Cross
+  // (unconditional Cartesian product) and distinct-named keys there
+  // is no name collision to resolve, so no drop.
+  shouldDedup: Boolean = (joinType == "inner" || joinType == "left")
+  dropKeys: Seq[String] =
+    if (shouldDedup) keys.map(_._2) else Nil
+  joinedDeduped: org.apache.spark.sql.DataFrame =
+  dropKeys.foldLeft(joined) { (df, rk) => df.drop(rightDfEff.col(rk)) }
+ } yield joinedDeduped
  }
 }
