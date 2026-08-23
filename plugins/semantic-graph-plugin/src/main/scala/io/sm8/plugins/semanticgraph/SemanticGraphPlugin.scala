@@ -32,17 +32,24 @@ import io.sm8.sdk.{Engine, Plugin}
  *
  * Registers `JoinPathPreHook` (pre-resolve validator) and
  * `GraphPostResolveObserver` (post-resolve observer) on the
- * engine's hook manager. Idempotent per the plugins.md Rule 1
- * ("must be idempotent-safe to call once at startup"). No
- * connection establishment here — that's the connector's job
- * (architecture-spec plugins.md Rule 1).
+ * engine's hook manager. No connection establishment here —
+ * that's the connector's job (architecture-spec plugins.md
+ * Rule 1).
+ *
+ * Idempotency note: this `setup` method itself does NOT
+ * dedupe — calling it twice would register each hook twice.
+ * The idempotency boundary is `Engine.use(plugin)` (in the
+ * deployment module), which registers a `Plugin` instance
+ * exactly once per JVM. The convention is to call `setup`
+ * exactly once at startup, from inside `Engine.use`.
  */
 final class SemanticGraphPlugin extends Plugin {
   /**
    * Registers the pre-resolve validator and the post-resolve
    * observer on the engine's hook manager.
    *
-   * Idempotent per the plugins.md Rule 1.
+   * Idempotency is enforced at the caller (see the class-level
+   * Scaladoc); this method must be called exactly once.
    *
    * @param engine the engine on which to register the hooks
    */
