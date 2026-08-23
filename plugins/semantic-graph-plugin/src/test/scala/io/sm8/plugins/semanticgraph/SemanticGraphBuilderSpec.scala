@@ -279,6 +279,71 @@ class SemanticGraphBuilderSpec extends AnyFlatSpec with Matchers {
     path.map(_.map(_.model)) shouldBe Some(List("a", "b", "c"))
   }
 
+  it should "report the models referencing a target model via a join (cross-model discovery)" in {
+    def keyDim(name: String): Dimension =
+      Dimension(name, Expr.FieldRef(name), Some(SealedDataType.Varchar))
+    def chainModel(
+        n: String,
+        joinTarget: Option[String]
+    ): Model =
+      Model
+        .of(
+          name = n,
+          version = 1,
+          description = None,
+          dimensions = List(keyDim("k")),
+          measures = List.empty,
+          defaultPolicies = ModelPolicyDefaults(
+            MaterializePolicy.None,
+            CachePolicy.NoCache,
+            AuditPolicy.NoAudit
+          ),
+          source = SourceRef.byName("in-memory", n),
+          status = ModelStatus.Published,
+          filters = List.empty,
+          calculatedMeasures = List.empty,
+          joins = joinTarget.toList.map { t =>
+            JoinSpec("j", t, JoinKind.Inner, List("k" -> "k"))
+          }
+        )
+        .toOption
+        .get
+    val a = chainModel("a", Some("b"))
+    val b = chainModel("b", Some("c"))
+    val c = chainModel("c", None)
+    val g = SemanticGraphBuilder.buildAcross(List(a, b, c))
+    g.referencingModels("c") shouldBe List("b")
+    g.referencingModels("b") shouldBe List("a")
+    g.referencingModels("a") shouldBe List.empty
+  }
+
+  it should "exclude same-model edges from cross-model discovery" in {
+    // A calc-measure edge stays in the same model; referencingModels
+    // must never surface a model as referencing itself.
+    val model = Model
+      .of(
+        name = "single",
+        version = 1,
+        description = None,
+        dimensions = List.empty,
+        measures = List.empty,
+        defaultPolicies = ModelPolicyDefaults(
+          MaterializePolicy.None,
+          CachePolicy.NoCache,
+          AuditPolicy.NoAudit
+        ),
+        source = SourceRef.byName("in-memory", "s"),
+        status = ModelStatus.Published,
+        filters = List.empty,
+        calculatedMeasures = List.empty,
+        joins = List.empty
+      )
+      .toOption
+      .get
+    val g = SemanticGraphBuilder.build(model)
+    g.referencingModels("single") shouldBe List.empty
+  }
+
   it should "expose a join cardinality estimate when a join declares one" in {
     val leftKey = Dimension("k", Expr.FieldRef("k"), Some(SealedDataType.Varchar))
     val rightKey =
