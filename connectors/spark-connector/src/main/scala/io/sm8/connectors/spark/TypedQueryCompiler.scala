@@ -93,7 +93,7 @@ import org.apache.spark.sql.functions
  * no ThreadLocal). The `SparkSession` is the only captured ref, and
  * it IS Serializable in Spark 3.5+.
  */
-final class TypedQueryCompiler private (private val spark: org.apache.spark.sql.SparkSession) {
+final class TypedQueryCompiler private (private val spark: org.apache.spark.sql.SparkSession) extends java.io.Serializable {
 
   // Per  SS3 (long-lived state): only
   // the `spark` ref is captured. It's the constructor-injected
