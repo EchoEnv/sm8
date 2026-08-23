@@ -188,6 +188,20 @@ final class SparkEngineProvider(
  // thunk.
  val resolver = new SparkSourceResolver(spark)
  val compileSteps: io.sm8.core.engine.EngineContext => Either[EngineError, org.apache.spark.sql.DataFrame] = { eCtx =>
+  // ADR-009-a v0.1: seed the broadcast byte-threshold from the
+  // model's join estimates. When the caller set no explicit
+  // `broadcastRightBelowBytes`, a model that declares ANY join
+  // `estimatedRows` arms the adapter's broadcast byte gate with the
+  // default budget (10 MiB). The estimate is an ARM (presence), not
+  // a numeric value: the runtime `sizeInBytes` check in the lowerer
+  // remains authoritative, so a large side is never physically
+  // broadcast (OOM-safe). Caller/hook-set hints (explicit
+  // `broadcastRightBelowBytes`) always win over the seed; the
+  // `preferredStrategy` axis is untouched (the (Cross, Some)
+  // rejection guard is never triggered). Read from the final eCtx
+  // (post-hooks) so a PreExecute hook may still override.
+  val effectiveCtx: io.sm8.core.engine.EngineContext =
+    SparkEngineProvider.seedBroadcastThreshold(spark, eCtx, model)
   // PR-33 (ADR-008-R SSfilterPushdown typed-DSL wire-up): the
   // full pipeline now uses `resolveWithPushdown` (per PR-28) +
   // the canonical `compileRelOp` overload (per PR-32) + the
@@ -220,13 +234,13 @@ final class SparkEngineProvider(
   // overload validates the model against the resolved source's
   // schema BEFORE lowering.
   df0  <- new PortableQueryCompiler(spark).compileRelOp(
-      model, relOp, eCtx, scan, Some(preFilteredDf))
+      model, relOp, effectiveCtx, scan, Some(preFilteredDf))
   // PR-33: the new `TypedQueryCompiler.apply(df, request, ctx,
   // preFilteredDf)` overload SUPPRESSES the in-memory
   // `whereFiltersOp` when the pre-filtered DF is supplied
   // (the filter was already pushed at the source).
   df  <- TypedQueryCompiler(spark).apply(
-      df0, request, eCtx, Some(preFilteredDf))
+      df0, request, effectiveCtx, Some(preFilteredDf))
   } yield df
  }
  // PR-3b (ADR-008-P §C1): wrap the compileSteps thunk in the optional
@@ -527,7 +541,7 @@ final class SparkEngineProvider(
  *
  * silent): every step surfaces as `Left(EngineError.*)`.
  */
- private def compileModelToDataFrame(
+ private[spark] def compileModelToDataFrame(
   model: Model,
   request: QueryRequest,
   ctx:  EngineContext): Either[EngineError, org.apache.spark.sql.DataFrame] = {
@@ -575,7 +589,10 @@ final class SparkEngineProvider(
   // `ModelValidator.validateAgainstSchema` call that was here
   // in PR-27 -- the validator is now baked into the canonical
   // entry point (per RFC SS3 layer ownership).
-  df0  <- new PortableQueryCompiler(spark).compileRelOp(model, relOp, ctx, scan, Some(preFilteredDf))
+  // ADR-009-a v0.1 seed (shared helper): a model declaring a join
+  // estimate arms the broadcast byte-gate when no explicit hint is set.
+  seedCtx = SparkEngineProvider.seedBroadcastThreshold(spark, ctx, model)
+  df0  <- new PortableQueryCompiler(spark).compileRelOp(model, relOp, seedCtx, scan, Some(preFilteredDf))
   df  <- TypedQueryCompiler(spark).apply(df0, request, ctx)
  } yield df
  }
@@ -662,4 +679,68 @@ final class SparkEngineProvider(
   ResultValue.StringV(cell.toString)
  }
  }
+}
+
+
+/**
+ * Spark Engine Provider companion.
+ *
+ * Holds the ADR-009-a seeding constant: the default byte budget used
+ * to arm the adapter's broadcast gate when a model declares a join
+ * estimate. Mirrors Spark's own `autoBroadcastJoinThreshold` default
+ * (10 MiB) -- an explicit  `JoinHints.broadcastRightBelowBytes` from
+ * the caller always overrides this seed; absent either, Spark's own
+ * heuristic governs.
+ */
+object SparkEngineProvider {
+  val BroadcastSeedDefaultBytes: Long = 10L * 1024L * 1024L
+
+  /**
+   * ADR-009-a v0.1: arm the adapter's broadcast byte-gate with the
+   * default budget when the model declares any join `estimatedRows`
+   * and the caller set no explicit `broadcastRightBelowBytes`.
+   *
+   * The estimate is an ARM (presence), not a value: the runtime
+   * `sizeInBytes` check stays authoritative, so a large side is
+   * never physically broadcast. Caller/hook-set hints always win
+   * over the seed; `preferredStrategy` is untouched (the Cross
+   * + strategy rejection guard is never triggered).
+   *
+   * @param eCtx the possibly-hint-bearing engine context
+   * @param model the query model (join estimates consulted)
+   * @return the context with a seeded broadcast threshold if armed
+   */
+  def seedBroadcastThreshold(
+    spark: org.apache.spark.sql.SparkSession,
+    eCtx:  io.sm8.core.engine.EngineContext,
+    model: io.sm8.core.model.Model
+  ): io.sm8.core.engine.EngineContext = {
+    // Default the seed to the operator's SESSION-configured
+    // autoBroadcastJoinThreshold when set, else the 10 MiB fallback —
+    // per ADR-009-a ("defaults to Spark's autoBroadcastJoinThreshold").
+    // Reading the session value (not a hard constant) means an
+    // operator's tuned OOM headroom is respected.
+    val sessionThreshold: Long =
+      try {
+        // Spark renders the threshold with a 'b' suffix (e.g.
+        // "10485760b") — strip it before parsing. Any parse failure
+        // falls back to the default rather than breaking the query.
+        val raw = spark.conf.get("spark.sql.autoBroadcastJoinThreshold")
+        val v = raw.stripSuffix("b").stripSuffix("B").toLong
+        // -1 is Spark's "disable the auto-broadcast heuristic" sentinel;
+        // treat it as "no session threshold" (fall back to default)
+        // rather than arming a zero/negative budget.
+        if (v > 0L) v else BroadcastSeedDefaultBytes
+      } catch {
+        case _: NoSuchElementException => BroadcastSeedDefaultBytes
+        case _: NumberFormatException  => BroadcastSeedDefaultBytes
+      }
+    val seeded: Option[Long] = eCtx.joinHints.broadcastRightBelowBytes.orElse(
+      if (model.joins.exists(_.estimatedRows.isDefined))
+        Some(sessionThreshold)
+      else None
+    )
+    if (seeded == eCtx.joinHints.broadcastRightBelowBytes) eCtx
+    else eCtx.copy(joinHints = eCtx.joinHints.copy(broadcastRightBelowBytes = seeded))
+  }
 }
