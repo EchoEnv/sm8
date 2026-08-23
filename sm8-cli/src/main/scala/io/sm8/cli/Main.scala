@@ -21,6 +21,7 @@ import scala.jdk.CollectionConverters._
   *   "sm8 describe <model>                show a model's dimensions/measures/filters
   *   sm8 query <model> [options]         run a semantic query, print a table
   *   sm8 explain <model> [options]       show the semantic plan (no execution)
+  *   sm8 inspect <key>                   read a context.meta key (generic)
   * }}}
   *
   * == Global options ==
@@ -61,6 +62,7 @@ object Main {
     case ("query" :: rest)      => withGlobalConfig(rest) { (cfg, rem) => safeRun(cmdQuery(cfg, rem, explain = false)) }
     case ("explain" :: rest)    => withGlobalConfig(rest) { (cfg, rem) => safeRun(cmdQuery(cfg, rem, explain = true)) }
     case ("audit-tail" :: rest) => withGlobalConfig(rest) { (cfg, rem) => safeRun(cmdAuditTail(cfg, rem)) }
+    case ("inspect" :: rest)    => withGlobalConfig(rest) { (cfg, rem) => safeRun(cmdInspect(cfg, rem)) }
     case other :: _ =>
       System.err.println(s"sm8: unknown command '$other'. Run 'sm8 --help'."); 2
   }
@@ -297,6 +299,40 @@ object Main {
       System.err.println("sm8 describe: too many arguments. Usage: sm8 describe <model>"); 2
   }
 
+  // PR-151 (ADR-008-AI follow-up): `sm8 inspect <key>` calls the
+  // generic `MetaInspectorService` (per the architect's
+  // 2026-08-23 design review). The CLI knows the key string
+  // (e.g. `io.sm8.plugins.semanticgraph:graph-snapshot`); it
+  // does NOT know the value schema. The transport layer's
+  // `MetaInspectorService` is the seam.
+  //
+  // Per  SS1 (consume the
+  // generic transport layer): the CLI uses `Client.postJson`
+  // (already in place) with the Restate wire path
+  // `/MetaInspectorService/getMeta` and a `{"key": <key>}`
+  // body.
+  private def cmdInspect(cfg: Config, args: List[String]): Int = args match {
+    case Nil =>
+      System.err.println("sm8 inspect: missing <key>. Usage: sm8 inspect <key>"); 2
+    case key :: Nil =>
+      val body = s"""{"key":${mapper.writeValueAsString(key)}}"""
+      val resp = Client.postJson(cfg, "/MetaInspectorService/getMeta", body)
+      if (cfg.json) { println(resp.body); return 0 }
+      val root = resp.parseJson
+      if (root.errorPath(cfg)) return 1
+      val data = root.dataPath
+      val present = data.field("present").booleanValue()
+      if (!present) {
+        System.err.println(s"sm8 inspect: key '$key' not set on the most recent request")
+        return 4
+      }
+      val value = data.field("value")
+      println(s"Key:   $key")
+      println(s"Value: ${mapper.writeValueAsString(value)}")
+      0
+    case _ =>
+      System.err.println("sm8 inspect: too many arguments. Usage: sm8 inspect <key>"); 2
+  }
   private def printDescribe(d: JsonNode): Unit = {
     println(s"Model:        ${d.field("model").text}")
     println(s"Version:      ${d.field("version").text}")
