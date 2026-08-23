@@ -55,3 +55,39 @@
 1. Pre-existing header noise in ModelLoader.scala (lines 25/45/48) — a later sweep could rewrite that header without the "Plan line 289 (Step 10...)" / "per user directive" citations (scala2-scaladoc rule 5). Out of scope for this PR's diff region.
 2. `consult` thresholds are per-call parameters; a future PR wiring them from config (or from real catalog stats) is the natural follow-on — no action in this PR.
 3. When the subagent pool regains quota (MiniMax token reset), a fresh independent pass can re-run the identical reviewer briefs; this inline pass used the same evidence base (codegraph + RFC + ADR + full reactor).
+---
+
+# Review Round 2 — P3 fix verification (commit d4eccea) + new P2
+
+Both final reviewers (DeepSeek-forced) APPROVED the P3 fix but independently found the same P2:
+`estimatedPairs` was collected in a SEPARATE pass from any estimate-declaring join, so for duplicate
+key-pair aliases where the FIRST join lacks an estimate and a LATER one declares one, the first-wins
+edge carried the 1.0 placeholder while the pair was still marked estimated — `joinCardinality`
+reported `Some(1L)` (the placeholder surfacing as a user estimate). Patch-introduced regression vs
+the original map code (which reported the declared value). Consumers unaffected (broadcast/skew read
+`model.joins` directly); impact limited to the meta-inspector wire.
+
+# Review Round 3 — P2 fix verification (commit 820a74b)
+
+Fix: `estimatedPairs` + `seenPairs` built inside the same first-wins edge loop; membership gated on
+`firstSeen && estimatedRows.isDefined`. Regression test added (mixed-alias → None).
+
+| Reviewer | Verdict | Confidence | Findings |
+|---|---|---|---|
+| VerifyFixDataEng163 | **APPROVE** | 0.9 | 0 |
+| VerifyFixArchitect163 | **APPROVE** | 0.93 | 0 |
+
+Architect's explicit conclusions:
+- None-vs-later-estimate: returning `None` is the correct reading of ADR-008-AJ Decision 3 — the
+  graph edge is the single source of truth; the winning edge carries the placeholder; reporting the
+  later alias's estimate would fabricate a value no edge carries.
+- "Cannot diverge" verified across: same-pair-across-models, same-model duplicate joins, multi-key
+  joins, dangling right models. No counterexample.
+- Final PR verdict: **merge-ready across all three commits** (46b76d5 feature, d4eccea P3 fix,
+  820a74b P2 fix).
+
+Residual (pre-existing, out of patch scope, named not as a finding): a join key-tuple colliding with
+an existing dimension edge (weight 0) could surface `Some(0)` via the inspector; consumers read
+`model.joins` directly and are unaffected; predates this PR.
+
+Final state: 1001 tests pass (full reactor), plugin 18/18, scaladoc noise CLEAN.
