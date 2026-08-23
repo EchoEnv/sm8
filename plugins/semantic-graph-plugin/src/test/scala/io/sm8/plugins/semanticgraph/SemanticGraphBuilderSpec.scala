@@ -324,6 +324,52 @@ class SemanticGraphBuilderSpec extends AnyFlatSpec with Matchers {
     g.joinCardinalities shouldBe empty
   }
 
+
+  it should "keep joinCardinality consistent with edge weights for duplicate key-pair joins" in {
+    // Two differently-named joins aliasing the SAME (leftKey, rightKey)
+    // pair with different estimates must not drift: the graph keeps
+    // the FIRST edge's weight (JGraphT addEdge is a no-op on an
+    // existing pair) and the exposure must report the same number.
+    val leftKey = Dimension("k", Expr.FieldRef("k"), Some(SealedDataType.Varchar))
+    val rightKey =
+      Dimension("k", Expr.FieldRef("k"), Some(SealedDataType.Varchar))
+    def build(n: String, joins: List[JoinSpec]): Model =
+      Model
+        .of(
+          name = n,
+          version = 1,
+          description = None,
+          dimensions = List(leftKey),
+          measures = List.empty,
+          defaultPolicies = ModelPolicyDefaults(
+            MaterializePolicy.None,
+            CachePolicy.NoCache,
+            AuditPolicy.NoAudit
+          ),
+          source = SourceRef.byName("in-memory", n),
+          status = ModelStatus.Published,
+          filters = List.empty,
+          calculatedMeasures = List.empty,
+          joins = joins
+        )
+        .toOption
+        .get
+    val left = build(
+      "left",
+      List(
+        JoinSpec("j1", "right", JoinKind.Inner, List("k" -> "k"), estimatedRows = Some(100L)),
+        JoinSpec("j2", "right", JoinKind.Inner, List("k" -> "k"), estimatedRows = Some(200L))
+      )
+    )
+    val right = build("right", List.empty)
+    val g = SemanticGraphBuilder.buildAcross(List(left, right))
+    val node = (GraphNode("left", "k"), GraphNode("right", "k"))
+    // The edge keeps the first-wins weight; the exposure must agree.
+    g.joinCardinality(node._1, node._2) shouldBe Some(100L)
+    g.joinCardinalities shouldBe Map(node -> 100L)
+    g.edges should contain(node)
+  }
+
   // ---- Parity test (the v1.1 acceptance criterion #7) ----
 
   "SemanticGraphBuilder + QueryBuilder.detectCalcCycles" should

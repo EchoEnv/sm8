@@ -27,16 +27,6 @@ import org.jgrapht.graph.DefaultWeightedEdge
 import org.jgrapht.graph.concurrent.AsSynchronizedGraph
 
 /**
- * A node in the semantic graph: a field belonging to a named model.
- *
- * `Product with Serializable` is auto-derived from the case class;
- * required for any future capture in a context.meta value (the
- * Context.meta is a `Map[String, Any]` whose values cross the
- * Restate journal boundary; per the project serialization contract,
- * every value must be Serializable).
- */
-
-/**
  * Engine-portable semantic graph over one or more validated `Model`s.
  *
  * Edges:
@@ -54,19 +44,15 @@ import org.jgrapht.graph.concurrent.AsSynchronizedGraph
  *
  * @param g the synchronized graph (constructed via the companion factory)
  * @param loadedModelNames the set of model names that were passed in
- * @param joinEstimates the user-supplied cardinality estimates per
- *                      join edge (absent joins are not keyed)
+ * @param estimatedPairs the join-edge endpoint pairs that carry a
+ *                       user-supplied estimate (a membership predicate,
+ *                       distinct from the edge weight — the placeholder
+ *                       1.0 and a real estimate of 1 row share a weight)
  */
 final class SemanticGraph private[semanticgraph] (
     private val g: AsSynchronizedGraph[GraphNode, DefaultWeightedEdge],
     loadedModelNames: Set[String],
-    // The user-supplied cardinality estimates for join edges, keyed
-    // by edge endpoints. Only joins whose `JoinSpec.estimatedRows` is
-    // present appear here; absent joins are not keyed (the graph falls
-    // back to the 1.0 placeholder weight). Pure data — `Map` of
-    // case-class keys — so it serializes cleanly across the Restate
-    // journal boundary like the rest of the snapshot.
-    private val joinEstimates: Map[(GraphNode, GraphNode), Long]
+    private val estimatedPairs: Set[(GraphNode, GraphNode)]
 ) {
 
   /**
@@ -123,34 +109,50 @@ final class SemanticGraph private[semanticgraph] (
       .sortBy { case (a, b) => (a.model, a.field, b.model, b.field) }
 
   /**
-   * The user-declared cardinality estimate for a single
+   * The user-supplied cardinality estimate for a single
    * left-field -> right-field join edge.
    *
-   * A join whose `JoinSpec.estimatedRows` is set has an estimate
-   * here; an absent estimate returns `None` (callers fall back to
-   * the placeholder — costs nothing to guess).
+   * The number comes from the graph edge weight (the edge is the
+   * single source of truth; join edges are the only non-zero-weight
+   * edges), but only endpoint pairs declared with an estimate are
+   * reported. The placeholder weight `1.0` and a real estimate of
+   * 1 row are indistinguishable by weight alone, so membership in
+   * `estimatedPairs` gates the answer — the predicate is derived in
+   * the same loop that adds the edges, so it cannot drift from the
+   * graph.
    *
    * @param from the left-hand field node of the join edge
    * @param to   the right-hand field node of the join edge
-   * @return    the user-declared row-count estimate, or `None`
+   * @return    the user-declared row-count estimate, or `None` when
+   *            the pair is not an estimated join edge
    */
   def joinCardinality(from: GraphNode, to: GraphNode): Option[Long] =
-    joinEstimates.get((from, to))
+    if (estimatedPairs.contains((from, to)))
+      g.getAllEdges(from, to).asScala.headOption.map(g.getEdgeWeight(_).toLong)
+    else None
 
   /**
    * All user-declared join cardinality estimates, keyed by the
    * join edge endpoints.
    *
-   * Projected into `GraphSnapshot.joinCardinalities` for the
-   * meta-inspector, so broadcast/skew and a human can see what
-   * the planner will actually consult. Sorted for determinism
-   * (test assertions).
+   * The values come from the edge weights; the key set is the
+   * estimated-pairs predicate. For a (from, to) pair with multiple
+   * edges (duplicate key-pair joins), the first edge's weight
+   * wins, matching the edge builder's first-wins. Snapshotted into
+   * `GraphSnapshot.joinCardinalities` for the meta-inspector.
+   * Sorted for determinism (test assertions).
    *
    * @return sorted map of join-edge endpoints -> estimate
    */
   def joinCardinalities: Map[(GraphNode, GraphNode), Long] =
-    joinEstimates.toList
+    estimatedPairs.toList.flatMap { case (a, b) =>
+      g.getAllEdges(a, b).asScala.headOption.map { e =>
+        ((a, b), g.getEdgeWeight(e).toLong)
+      }
+    }.toMap
+      .toList
       .sortBy { case ((a, b), _) => (a.model, a.field, b.model, b.field) }
+      .toMap
       .toMap
 
   /**
@@ -313,20 +315,19 @@ object SemanticGraphBuilder {
       }
     }
 
-    // Collect the user-supplied estimates for the join edges (only
-    // joins that declared one; the graph already stores the weight,
-    // this map is the read-optimized projection for the observer).
-    val joinEstimates: Map[(GraphNode, GraphNode), Long] =
+    // The estimated-pairs predicate: endpoint pairs the model
+    // declared an estimate for (not the value — that lives in the
+    // edge weight). Built first-wins from the same joins that added
+    // the edges, so it can never diverge from the graph.
+    val estimatedPairs: Set[(GraphNode, GraphNode)] =
       models.flatMap { model =>
-        model.joins.flatMap { js =>
-          js.estimatedRows.toList.map { est =>
-            js.keys.map { case (leftKey, rightKey) =>
-              (GraphNode(model.name, leftKey), GraphNode(js.rightModel, rightKey)) -> est
-            }
+        model.joins.withFilter(_.estimatedRows.isDefined).flatMap { js =>
+          js.keys.map { case (leftKey, rightKey) =>
+            (GraphNode(model.name, leftKey), GraphNode(js.rightModel, rightKey))
           }
         }
-      }.flatten.toMap
+      }.toSet
 
-    new SemanticGraph(g, byName.keySet, joinEstimates)
+    new SemanticGraph(g, byName.keySet, estimatedPairs)
   }
 }
