@@ -40,7 +40,6 @@ import org.jgrapht.graph.concurrent.AsSynchronizedGraph
  * Restate journal boundary; per the project serialization contract,
  * every value must be Serializable).
  */
-final case class GraphNode(model: String, field: String)
 
 /**
  * Engine-portable semantic graph over one or more validated `Model`s.
@@ -87,6 +86,25 @@ final class SemanticGraph private[semanticgraph] (
    */
   def hasCycle: Boolean = new CycleDetector[GraphNode, DefaultWeightedEdge](g)
     .detectCycles()
+
+  /**
+   * The deduplicated vertex set of the graph. Exposed for the
+   * `GraphPostResolveObserver` hook to project into a wire-stable
+   * `GraphSnapshot`. Sorted for determinism (test assertions).
+   */
+  def vertices: List[GraphNode] =
+    g.vertexSet.asScala.toList.sortBy(n => (n.model, n.field))
+
+  /**
+   * The directed-edge set of the graph. Exposed for the
+   * `GraphPostResolveObserver` hook to project into a wire-stable
+   * `GraphSnapshot`. Each tuple is `(from, to)`. Sorted for
+   * determinism.
+   */
+  def edges: List[(GraphNode, GraphNode)] =
+    g.edgeSet.asScala.toList
+      .map(e => (g.getEdgeSource(e), g.getEdgeTarget(e)))
+      .sortBy { case (a, b) => (a.model, a.field, b.model, b.field) }
 
   /**
    * Right-model references that did not resolve to a loaded Model

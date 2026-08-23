@@ -29,7 +29,15 @@ import io.sm8.sdk.{Engine, Plugin}
  */
 final class SemanticGraphPlugin extends Plugin {
   override def setup(engine: Engine): Unit = {
-    val hook = new JoinPathPreHook
-    engine.hooks.registerPreHook(hook.stage, hook, hook.priority)
+    // PR-149: pre-resolve validator (cycle + dangling pre-flight)
+    val pre = new JoinPathPreHook
+    engine.hooks.registerPreHook(pre.stage, pre, pre.priority)
+    // PR-150: post-resolve observer (publishes the graph snapshot
+    // to context.meta for out-of-band consumers; per the
+    // architect's 2026-08-23 design review, the transport layer
+    // sees a generic meta-inspector, not a graph-specific
+    // endpoint).
+    val post = new GraphPostResolveObserver
+    engine.hooks.registerPostHook(post.stage, post, post.priority)
   }
 }
