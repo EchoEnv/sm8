@@ -171,6 +171,12 @@ final class SparkEngineProvider(
   reason = "SparkSession is null",
   message = "SparkEngineProvider.query called with null SparkSession"))
  }
+ // ADR-009-c v0.5: per-query session. spark.newSession() shares the
+ // base SparkContext and forks a fresh SessionState with its own
+ // SQLConf. The clone is never .stop()ed (that would tear down the
+ // shared SparkContext). The reference goes out of scope and the
+ // SessionState is GC-reclaimable.
+ val querySession: org.apache.spark.sql.SparkSession = spark.newSession()
  // PR-M4 (GAP 5 -- the most critical): the IR-extension path
  // (PR-H/I/J/K/L) is now LIVE in production. Steps:
  // 1. Resolve the primary source via `SparkSourceResolver` (PR-M3).
@@ -487,6 +493,20 @@ final class SparkEngineProvider(
  * `QueryBuilder.build` (cycle in calculatedMeasures, unresolved
  * source, etc.) is rendered as the plan prefix plus a typed error
  * line -- never a thrown exception.
+ *
+ * ADR-009-c v0.5: explain() acquires its own per-query session
+ * (null-safe per §4b; the null-spark provider path must not
+ * throw at lazy-init). The per-query session threads the per-query
+ * skew factor + broadcast seeds into `compileModelToDataFrame`.
+ *
+ * @param model the model whose IR is built + compiled + printed
+ * @param request the request (used for `where` / `limit` in the
+ *                  Spark physical plan render)
+ * @param ctx the engine context (carries `joinHints` etc.)
+ * @return Right with the SM8 IR plan + (when a live Spark
+ *         session is available) the extended Spark physical
+ *         plan; Left is never produced here (errors are
+ *         surfaced as plan footers, per PR-27 contract)
  */
  override def explain(
   model: Model,
