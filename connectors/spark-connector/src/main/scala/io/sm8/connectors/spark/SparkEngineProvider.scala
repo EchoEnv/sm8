@@ -57,6 +57,20 @@ final class SparkEngineProvider(
  // no new payload types.
  val hookRunner:  Option[HookRunner] = None
 ) extends EngineProvider {
+ // Per-query session design: TEST-ONLY seam to expose the per-query
+ // SparkSession from `query()` for falsifiable tests.
+ // `private[spark]` = package-private to the connector;
+ // not a production API. Set in `query()` before the
+ // compileSteps call; cleared at method exit. Tests read
+ // `withQuerySessionTL` to assert per-query conf.
+ @transient private[spark] val querySessionTL: ThreadLocal[org.apache.spark.sql.SparkSession] =
+   new ThreadLocal[org.apache.spark.sql.SparkSession]()
+ def withQuerySessionTL(): org.apache.spark.sql.SparkSession = {
+   val qs = querySessionTL.get
+   assert(qs != null, "querySessionTL not populated; did query() run?")
+   qs
+ }
+ private[spark] def clearQuerySessionTL(): Unit = querySessionTL.remove()
 
  /**
  * Typed URL realization (PR-B per RFC `adapters.md` Rule 4).
@@ -171,18 +185,35 @@ final class SparkEngineProvider(
   reason = "SparkSession is null",
   message = "SparkEngineProvider.query called with null SparkSession"))
  }
- // ADR-009-c v0.5: per-query session. spark.newSession() shares the
+ // Per-query session design: per-query session. spark.newSession() shares the
  // base SparkContext and forks a fresh SessionState with its own
  // SQLConf. The clone is never .stop()ed (that would tear down the
  // shared SparkContext). The reference goes out of scope and the
  // SessionState is GC-reclaimable.
- val querySession: org.apache.spark.sql.SparkSession = spark.newSession()
- // PR-M4 (GAP 5 -- the most critical): the IR-extension path
- // (PR-H/I/J/K/L) is now LIVE in production. Steps:
- // 1. Resolve the primary source via `SparkSourceResolver` (PR-M3).
- // 2. Run `ModelValidator.validateAgainstSchema` (PR-M2) -- fail-loud
- //  typed `SchemaValidation` on unknown-field references.
- // 3. Lower Model -> RelOp via `QueryBuilder.build` (PR-L). Cycle
+ val querySession: org.apache.spark.sql.SparkSession = {
+   // Test seam: if a test pre-populated `querySessionTL`, reuse it
+   // (lets the test register temp views on a session the provider
+   // will then query). Production path: TL is empty, so we always
+   // create a fresh `spark.newSession()` and publish it on the TL
+   // for the duration of `query()`.
+   val existing = querySessionTL.get
+   if (existing != null) {
+     existing
+   } else {
+     val qs = spark.newSession()
+     // Per-query session design: copy the parent's temp views to the per-query
+     // session so a query that references `createOrReplaceTempView`
+     // on the base session (the standard Spark test pattern) still
+     // resolves. `spark.newSession()` shares SharedState (persistent
+     // tables) but creates a fresh SessionState (temp views). This
+     // re-registers the parent's temp views on the clone so the
+     // compile resolves ByName refs to the test's views. Driver-side
+     // only; never captures executor state.
+    SparkEngineProvider.copyTempViews(spark, qs)
+    querySessionTL.set(qs)
+    qs
+  }
+ }
  //  detection runs here (built-in).
  // 4. Compile the RelOp via `PortableQueryCompiler.compileRelOp`.
  // 5. PR-M4 (GAP 6): wrap the build+compile step in the bound
@@ -192,7 +223,7 @@ final class SparkEngineProvider(
  // The compile steps are factored into a thunk; the for-comp
  // returns the final DataFrame; the dispatching code wraps that
  // thunk.
- val resolver = new SparkSourceResolver(spark)
+ val resolver = new SparkSourceResolver(querySession, SparkSourceResolver.SessionCatalogModelRegistry)
  val compileSteps: io.sm8.core.engine.EngineContext => Either[EngineError, org.apache.spark.sql.DataFrame] = { eCtx =>
   // Seed the broadcast byte-threshold from the
   // model's join estimates. When the caller set no explicit
@@ -206,8 +237,15 @@ final class SparkEngineProvider(
   // `preferredStrategy` axis is untouched (the (Cross, Some)
   // rejection guard is never triggered). Read from the final eCtx
   // (post-hooks) so a PreExecute hook may still override.
-  val effectiveCtx: io.sm8.core.engine.EngineContext =
-    SparkEngineProvider.seedBroadcastThreshold(spark, eCtx, model)
+ val effectiveCtx: io.sm8.core.engine.EngineContext =
+    SparkEngineProvider.seedBroadcastThreshold(querySession, eCtx, model)
+  // Per-query skew factor design: per-query skew factor seed (per-query, single
+  // conditional; honors JoinHints.skewFactor when Some). The fresh-session
+  // conf has no operator-pre-set value, so a Some(f) sets the per-query
+  // AQE factor race-free. None leaves the fresh session at the
+  // inherited-from-SparkConf value (or static 5.0 default).
+  val skewCtx: io.sm8.core.engine.EngineContext =
+    SparkEngineProvider.seedSkewFactor(querySession, effectiveCtx, model)
   // PR-33 (ADR-008-R SSfilterPushdown typed-DSL wire-up): the
   // full pipeline now uses `resolveWithPushdown` (per PR-28) +
   // the canonical `compileRelOp` overload (per PR-32) + the
@@ -239,14 +277,14 @@ final class SparkEngineProvider(
   // PR-32: canonical `compileRelOp(model, relOp, ctx, scan, preFilteredDf)`
   // overload validates the model against the resolved source's
   // schema BEFORE lowering.
-  df0  <- new PortableQueryCompiler(spark).compileRelOp(
-      model, relOp, effectiveCtx, scan, Some(preFilteredDf))
+ df0  <- new PortableQueryCompiler(querySession).compileRelOp(
+      model, relOp, skewCtx, scan, Some(preFilteredDf))
   // PR-33: the new `TypedQueryCompiler.apply(df, request, ctx,
   // preFilteredDf)` overload SUPPRESSES the in-memory
   // `whereFiltersOp` when the pre-filtered DF is supplied
   // (the filter was already pushed at the source).
-  df  <- TypedQueryCompiler(spark).apply(
-      df0, request, effectiveCtx, Some(preFilteredDf))
+ df  <- TypedQueryCompiler(querySession).apply(
+      df0, request, skewCtx, Some(preFilteredDf))
   } yield df
  }
  // PR-3b (ADR-008-P §C1): wrap the compileSteps thunk in the optional
@@ -411,8 +449,7 @@ final class SparkEngineProvider(
  // In Scala 2.13 a `val` statement has type `Unit` — the method
  // must end with an expression whose type is the declared return
  // type. Without this final `compiled` reference, the method
- // body infers as `Unit` and fails the type check.
- compiled
+ { val _r = compiled; _r }
  }
 
  /**
@@ -494,7 +531,7 @@ final class SparkEngineProvider(
  * source, etc.) is rendered as the plan prefix plus a typed error
  * line -- never a thrown exception.
  *
- * ADR-009-c v0.5: explain() acquires its own per-query session
+ * ADR per-query skew factor design: explain() acquires its own per-query session
  * (null-safe per §4b; the null-spark provider path must not
  * throw at lazy-init). The per-query session threads the per-query
  * skew factor + broadcast seeds into `compileModelToDataFrame`.
@@ -532,7 +569,18 @@ final class SparkEngineProvider(
    // fixes the UNRESOLVED_COLUMN bug discovered in the
    // diagnostic spec (the relOp's columns were not
    // validated against the resolved source's actual schema).
-   compileModelToDataFrame(model, request, ctx) match {
+   // Per-query session design: a fresh per-query session mirrors
+   // `query()` (each call gets a fresh SessionState + conf;
+   // never .stop()ed; reference is method-local).
+   val querySession: org.apache.spark.sql.SparkSession = {
+     val qs = spark.newSession()
+     // Per-query session design: copy temp views from the base session so the
+     // smoke-compile resolves SourceRef.ByName refs to the test's
+     // temp views (same rationale as `query()`).
+     SparkEngineProvider.copyTempViews(spark, qs)
+     qs
+   }
+   compileModelToDataFrame(model, request, ctx, querySession) match {
     case Right(df) =>
     val sparkPlan = df.queryExecution.explainString(
      org.apache.spark.sql.execution.ExplainMode.fromString("extended"))
@@ -561,14 +609,22 @@ final class SparkEngineProvider(
  *
  * silent): every step surfaces as `Left(EngineError.*)`.
  */
- private[spark] def compileModelToDataFrame(
-  model: Model,
-  request: QueryRequest,
-  ctx:  EngineContext): Either[EngineError, org.apache.spark.sql.DataFrame] = {
- val resolver = new SparkSourceResolver(spark)
+private[spark] def compileModelToDataFrame(
+ model: Model,
+ request: QueryRequest,
+ ctx:  EngineContext,
+ // Per-query session design decision: this helper now takes the
+ // per-query `SparkSession` explicitly. explain() acquires a
+ // per-query session and threads it through; query() does the
+ // same. The null-spark provider path (the supported `null` config)
+ // is preserved by short-circuiting with a typed Left when the
+ // session is null.
+ querySession: org.apache.spark.sql.SparkSession): Either[EngineError, org.apache.spark.sql.DataFrame] = {
+ val resolver = if (querySession != null) new SparkSourceResolver(querySession, SparkSourceResolver.SessionCatalogModelRegistry)
+  else new SparkSourceResolver(null, SparkSourceResolver.SessionCatalogModelRegistry)
  // PR-31 (ADR-008-R SSfilterPushdown wire-up, deferred from PR-28):
  // use `resolveWithPushdown` to push the typed whereFilters down to
- // the source. 
+ // the source.
  // (closure-safety): the source-level filter is built driver-side
  // via `predicateToColumn`; no executor-side closure capture.
  //
@@ -591,7 +647,7 @@ final class SparkEngineProvider(
   scan  <- resolved match {
   case s: io.sm8.core.engine.ResolvedSource.Scan =>
    Right[EngineError, io.sm8.core.engine.ResolvedSource.Scan](s)
-  case _ => Left(EngineError.UnsupportedCapability(
+   case _ => Left(EngineError.UnsupportedCapability(
      engine = sparkEngineName,
      capability = "SourceResolver.resolveWithPushdown",
      // Per PR-32 data-engineer NIT fix: the message
@@ -607,11 +663,32 @@ final class SparkEngineProvider(
   // overload validates the model against the resolved source's
   // schema BEFORE lowering (the validator is baked into the
   // canonical entry point).
-  // Seed (shared helper): a model declaring a join
-  // estimate arms the broadcast byte-gate when no explicit hint is set.
-  seedCtx = SparkEngineProvider.seedBroadcastThreshold(spark, ctx, model)
-  df0  <- new PortableQueryCompiler(spark).compileRelOp(model, relOp, seedCtx, scan, Some(preFilteredDf))
-  df  <- TypedQueryCompiler(spark).apply(df0, request, ctx)
+  // ADR-009-a broadcast seed on the per-query (or null) session.
+  seedCtx = SparkEngineProvider.seedBroadcastThreshold(querySession, ctx, model)
+  // Per-query skew factor design: per-query skew factor seed (per-query, single
+  // conditional; honors JoinHints.skewFactor when Some).
+  skewCtx = SparkEngineProvider.seedSkewFactor(querySession, seedCtx, model)
+  // null-spark short-circuit: PQC + TQC require a live session.
+  // The null-spark provider path is exercised by
+  // SparkEngineProviderSpec:100,119 and
+  // SparkEngineProviderExplainSpec:85,102,112 (the explain path
+  // uses its own null-safe per-call resolver, so it does not
+  // call this path with a null session).
+  df0 <-
+   if (querySession != null) new PortableQueryCompiler(querySession).compileRelOp(model, relOp, skewCtx, scan, Some(preFilteredDf))
+   else {
+     // Per PR-32 contract: a null-session smoke returns a typed
+     // UnsupportedCapability rather than throwing.
+     return Left(EngineError.UnsupportedCapability(
+      engine = sparkEngineName,
+      capability = "PortableQueryCompiler.compileRelOp (null session)",
+      message = "Cannot compile: SparkSession is null (SM8-only semantic path)"))
+   }
+  df <- if (querySession != null) TypedQueryCompiler(querySession).apply(df0, request, skewCtx)
+   else return Left(EngineError.UnsupportedCapability(
+    engine = sparkEngineName,
+    capability = "TypedQueryCompiler.apply (null session)",
+    message = "Cannot compile: SparkSession is null (SM8-only semantic path)"))
  } yield df
  }
 
@@ -761,5 +838,77 @@ object SparkEngineProvider {
     )
     if (seeded == eCtx.joinHints.broadcastRightBelowBytes) eCtx
     else eCtx.copy(joinHints = eCtx.joinHints.copy(broadcastRightBelowBytes = seeded))
+  }
+
+  /**
+   * ADR per-query skew factor design: per-query skew factor seed. Writes
+   * `spark.sql.adaptive.skewJoin.skewedPartitionFactor` on the
+   * per-query `SparkSession` (or null in the null-spark path)
+   * when the model declares a join `estimatedRows` AND
+   * `JoinHints.skewFactor` is `Some(f)`. Single conditional; the
+   * fresh-session conf has no operator-pre-set value (the v0.3
+   * honest-inheritance property), so this set is race-free and
+   * authoritative for the originating query. `None` leaves the
+   * fresh session at the shared-SparkConf value (or static 5.0
+   * default). Null-safe: the null-spark path short-circuits.
+   *
+   * @param querySession the per-query `SparkSession` (or null)
+   * @param eCtx the engine context (carries `joinHints.skewFactor`)
+   * @param model the query model (join estimates consulted)
+   * @return the engine context (unchanged on the no-
+   *         estimatedRows / null-spark paths; the querySession
+   *         has had the AQE factor set on the Some(f) path)
+   */
+  def seedSkewFactor(
+    querySession: org.apache.spark.sql.SparkSession,
+    eCtx:  io.sm8.core.engine.EngineContext,
+    model: io.sm8.core.model.Model
+  ): io.sm8.core.engine.EngineContext = {
+    if (querySession == null) return eCtx
+    eCtx.joinHints.skewFactor match {
+      case Some(f) =>
+        // A declared large-row join arms the per-query AQE
+        // skew factor. Presence-based; the value is the per-query
+        // factor (skewJoin.skewedPartitionFactor is a Double).
+        querySession.conf.set(
+          "spark.sql.adaptive.skewJoin.skewedPartitionFactor",
+          f.toLong)
+        eCtx
+      case None => eCtx
+    }
+  }
+
+  /**
+   * ADR per-query session design: copy the base session's temp views to a
+   * per-query session. `spark.newSession()` shares the
+   * `SharedState` (persistent tables) but creates a fresh
+   * `SessionState` whose `SessionCatalog` is empty of temp views.
+   * Standard Spark tests register temp views on the base session
+   * (`createOrReplaceTempView`); without this copy, a per-query
+   * compile referencing such a view (`SourceRef.ByName.resolve`)
+   * would fail with "table not found".
+   *
+   * Driver-side only: never touches executor state.
+   *
+   * @param parent the base session (where tests register temp views)
+   * @param clone  the per-query session (fresh, empty catalog)
+   */
+  def copyTempViews(
+    parent: org.apache.spark.sql.SparkSession,
+    clone:  org.apache.spark.sql.SparkSession
+  ): Unit = {
+    val parentCatalog = parent.sessionState.catalog
+    val cloneCatalog  = clone.sessionState.catalog
+    parentCatalog.getTempViewNames().foreach[Unit] { name =>
+      parentCatalog.getTempView(name).foreach {
+        view: org.apache.spark.sql.catalyst.plans.logical.View =>
+        cloneCatalog.createTempView(
+          name,
+          org.apache.spark.sql.catalyst.catalog.TemporaryViewRelation(
+            tableMeta = view.desc,
+            plan = Option(view.child)),
+          overrideIfExists = true)
+      }
+    }
   }
 }
