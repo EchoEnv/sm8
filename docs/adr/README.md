@@ -28,6 +28,9 @@ their context, the options considered, and the consequences of the chosen path.
 | [0008-p](0008-p-post-review-followup.md) | Post-review follow-up plan (10 P0 + 11 P1 + 14 P2, 6 phases) | Implemented (awaiting PR-6 v0.1.0 tag cut) |
 | [0008-q](0008-q-sdk-redesign-rename-phantom-typed.md) | Post-ADR-008-P SDK redesign: `MCPEngine* → Engine*` rename + phantom-typed SDK + typed URL + `EngineLoader` (3 atomic PRs: PR-14 + PR-15 + PR-16) | Proposed |
 | [0008-r](0008-r-aggregation-groupby-having-limit-parts-window.md) | Aggregation, groupBy, having, limit, parts + window functions (3 atomic PRs: PR-17 + PR-18 + PR-19; closes ADR-008-L GAPs 5/7/8; per ADR-008-P §DE-P2-5) | Proposed |
+| [0009-a](0009-a-adapter-side-spark-hints.md) | Adapter-side join strategy from `JoinSpec.estimatedRows` — seed the Spark broadcast byte-threshold | Accepted |
+| [0009-b](0009-b-adaptive-skew-wiring.md) | AQE skew wiring — deferred (operator-precedence is non-negotiable on a shared session; per-query factor not expressible until ADR-009-c) | Superseded by ADR-009-c |
+| [0009-c](0009-c-per-query-clone-session.md) | Per-session-deployment follow-up: per-query `newSession()` so `JoinHints.skewFactor` binds per query | Implemented (PR-171, `0466841`) |
 
 ## Tools
 
