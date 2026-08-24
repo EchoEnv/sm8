@@ -71,7 +71,18 @@ final class SparkEngineProvider(
    qs
  }
  private[spark] def clearQuerySessionTL(): Unit = querySessionTL.remove()
-
+ // Per-query session design: post-query reference for tests that
+ // verify the per-query conf AFTER `query()` returns (the
+ // `querySessionTL` seam is cleared at exit; this one is not).
+ // Set in query()'s production branch; tests read
+ // `withLastQuerySession`. Production code never reads it.
+ @transient private[spark] val lastQuerySessionTL: ThreadLocal[org.apache.spark.sql.SparkSession] =
+   new ThreadLocal[org.apache.spark.sql.SparkSession]()
+ def withLastQuerySession(): org.apache.spark.sql.SparkSession = {
+   val qs = lastQuerySessionTL.get
+   assert(qs != null, "lastQuerySessionTL not populated; did query() run?")
+   qs
+ }
  /**
  * Typed URL realization (PR-B per RFC `adapters.md` Rule 4).
  *
@@ -190,15 +201,15 @@ final class SparkEngineProvider(
  // SQLConf. The clone is never .stop()ed (that would tear down the
  // shared SparkContext). The reference goes out of scope and the
  // SessionState is GC-reclaimable.
- val querySession: org.apache.spark.sql.SparkSession = {
-   // Test seam: if a test pre-populated `querySessionTL`, reuse it
-   // (lets the test register temp views on a session the provider
-   // will then query). Production path: TL is empty, so we always
-   // create a fresh `spark.newSession()` and publish it on the TL
-   // for the duration of `query()`.
-   val existing = querySessionTL.get
-   if (existing != null) {
-     existing
+ val createdQuerySessionHere: Boolean = querySessionTL.get == null
+ val querySession: org.apache.spark.sql.SparkSession =
+   if (!createdQuerySessionHere) {
+     // Test seam: if a test pre-populated `querySessionTL`, reuse it
+     // (lets the test register temp views on a session the provider
+     // will then query). The TL is NOT cleared on exit in this branch
+     // — the test owns the lifecycle (it calls clearQuerySessionTL
+     // in its finally).
+     querySessionTL.get
    } else {
      val qs = spark.newSession()
      // Per-query session design: copy the parent's temp views to the per-query
@@ -209,13 +220,12 @@ final class SparkEngineProvider(
      // re-registers the parent's temp views on the clone so the
      // compile resolves ByName refs to the test's views. Driver-side
      // only; never captures executor state.
-    SparkEngineProvider.copyTempViews(spark, qs)
-    querySessionTL.set(qs)
-    qs
-  }
- }
- //  detection runs here (built-in).
- // 4. Compile the RelOp via `PortableQueryCompiler.compileRelOp`.
+     SparkEngineProvider.copyTempViews(spark, qs)
+     querySessionTL.set(qs)
+     // Post-query reference for tests (not cleared at method exit).
+     lastQuerySessionTL.set(qs)
+     qs
+   }
  // 5. PR-M4 (GAP 6): wrap the build+compile step in the bound
  //  dispatcher (deferred -- O3+1).
  // 6. Apply request-level where + limit + collect + decode.
@@ -449,9 +459,8 @@ final class SparkEngineProvider(
  // In Scala 2.13 a `val` statement has type `Unit` — the method
  // must end with an expression whose type is the declared return
  // type. Without this final `compiled` reference, the method
- { val _r = compiled; _r }
+ { val _r = compiled; if (createdQuerySessionHere) clearQuerySessionTL(); _r }
  }
-
  /**
  * PR-9: extract the where/limit/collect/decode pipeline into a
  * helper method so the HIT-path and MISS-path branches in `query`
@@ -531,7 +540,7 @@ final class SparkEngineProvider(
  * source, etc.) is rendered as the plan prefix plus a typed error
  * line -- never a thrown exception.
  *
- * ADR per-query skew factor design: explain() acquires its own per-query session
+ * Per-query session design: explain() acquires its own per-query session
  * (null-safe per §4b; the null-spark provider path must not
  * throw at lazy-init). The per-query session threads the per-query
  * skew factor + broadcast seeds into `compileModelToDataFrame`.
@@ -841,7 +850,7 @@ object SparkEngineProvider {
   }
 
   /**
-   * ADR per-query skew factor design: per-query skew factor seed. Writes
+   * Per-query skew factor seed. Writes
    * `spark.sql.adaptive.skewJoin.skewedPartitionFactor` on the
    * per-query `SparkSession` (or null in the null-spark path)
    * when the model declares a join `estimatedRows` AND
@@ -865,21 +874,31 @@ object SparkEngineProvider {
     model: io.sm8.core.model.Model
   ): io.sm8.core.engine.EngineContext = {
     if (querySession == null) return eCtx
-    eCtx.joinHints.skewFactor match {
-      case Some(f) =>
-        // A declared large-row join arms the per-query AQE
-        // skew factor. Presence-based; the value is the per-query
-        // factor (skewJoin.skewedPartitionFactor is a Double).
-        querySession.conf.set(
-          "spark.sql.adaptive.skewJoin.skewedPartitionFactor",
-          f.toLong)
-        eCtx
-      case None => eCtx
-    }
+    // Per the documented arm: the AQE skew factor is seeded only
+    // when the model declares a join `estimatedRows` AND the
+    // caller passed `JoinHints.skewFactor = Some(f)`. Mirrors
+    // `seedBroadcastThreshold`'s presence-based check (the
+    // estimate is an ARM, not a value: the runtime sizeInBytes
+    // check stays authoritative). A model with no join estimates
+    // is NOT seeded even if `Some(f)` was passed — the caller
+    // asked for a factor they did not pair with a large-row
+    // declaration.
+    val hasEstimatedJoin: Boolean =
+      model.joins.exists(_.estimatedRows.isDefined)
+    if (hasEstimatedJoin) {
+      eCtx.joinHints.skewFactor match {
+        case Some(f) =>
+          querySession.conf.set(
+            "spark.sql.adaptive.skewJoin.skewedPartitionFactor",
+            f.toLong)
+          eCtx
+        case None => eCtx
+      }
+    } else eCtx
   }
 
   /**
-   * ADR per-query session design: copy the base session's temp views to a
+   * Per-query session design: copy the base session's temp views to a
    * per-query session. `spark.newSession()` shares the
    * `SharedState` (persistent tables) but creates a fresh
    * `SessionState` whose `SessionCatalog` is empty of temp views.

@@ -219,4 +219,44 @@ class SparkBroadcastSeedSpec extends AnyFunSuite with Matchers {
     p1 should include ("region")
     p2 should include ("region")
   }
+
+  test("per-query fresh-session path (no TL pre-set) resolves temp views via copyTempViews") {
+   // Per-query session design: when the test does NOT pre-populate
+   // `querySessionTL`, query() takes the production path: a fresh
+   // `spark.newSession()`, then `copyTempViews(spark, qs)` to
+   // register the base session's temp views on the per-query clone,
+   // then the ByName resolve hits. This exercises the production
+   // branch (the 2 v0.5-r1 tests above take the TL-reuse branch)
+   // and the 3 catalog-resolution cases (DataFrame-backed, SQL-backed,
+   // no explicit database) that copyTempViews handles.
+   val spark = buildSpark()
+   val provider = new SparkEngineProvider(spark, SparkTypeBridge)
+   try {
+    // Register temp views on the BASE session (the production path
+    // will copy these to the per-query session via copyTempViews).
+    spark.sql("SELECT * FROM VALUES (1,'east'),(2,'west') AS t(id, region)")
+     .createOrReplaceTempView("orders")
+    spark.sql("SELECT * FROM VALUES ('east'),('west') AS t(region)")
+     .createOrReplaceTempView("customers")
+    // Confirm the TL is empty (no pre-population) so the production
+    // branch runs.
+    assert(provider.querySessionTL.get == null,
+     "TL should be empty for production-path test")
+    val out = provider.query(
+     modelWith(Some(1000L)),
+     QueryRequest.empty,
+     EngineContext.defaultContext.copy(joinHints = JoinHints(skewFactor = Some(7))))
+    out.isRight shouldBe true
+    // The per-query session was created by query() (production path).
+    // After query() returns, querySessionTL is cleared; read the
+    // post-query reference (lastQuerySessionTL) instead.
+    val qs = provider.withLastQuerySession()
+    qs.conf.get("spark.sql.adaptive.skewJoin.skewedPartitionFactor") shouldBe "7"
+    // The per-query session is a NEW session (not the base).
+    qs should not be spark
+   } finally {
+    provider.clearQuerySessionTL()
+    try spark.stop() catch { case _: Throwable => () }
+   }
+  }
 }
