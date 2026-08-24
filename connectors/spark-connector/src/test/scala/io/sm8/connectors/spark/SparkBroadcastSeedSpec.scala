@@ -139,80 +139,72 @@ class SparkBroadcastSeedSpec extends AnyFunSuite with Matchers {
     plan should include ("BroadcastHashJoin")
   }
 
-  test("ADR-009-c v0.5: per-query SessionState is isolated (skew/factor race-free)") {
-    // The v0.3 falsifiable concern was RACE (a per-query seed leaking
-    // into another query's per-query SessionState). v0.5's
-    // `spark.newSession()` gives each query a fresh SessionState +
-    // its own SQLConf map, so writes on the per-query clone do not
-    // affect a concurrent/sequential query's clone. The
-    // `Some(f)` write applies to THIS query's session and is dropped
-    // when the clone GCs.
-    //
-    // Assert: the per-query `Some(f)` write applies to the
-    // originating query's plan and does NOT mutate a DIFFERENT
-    // query's plan. The two plans are independent (they are
-    // produced from two separate compileModelToDataFrame calls
-    // and the SessionState is per-query).
-    //
-    // Read-back: we use a *trivial* assertion on the conf of each
-    // querySession (the helper writes to querySession.conf; a
-    // separate query's querySession.conf must not see that write).
-    // We use the test directly by asserting the per-query
-    // SessionState objects are distinct. (The `compiled` helper
-    // doesn't expose querySession, so this is the closest direct
-    // assertion we can make without refactoring it.)
-    val spark1 = buildSpark()  // a fresh base session, isolated
-    val spark2 = buildSpark()  // another fresh base, isolated
-    try {
-      val s1 = spark1.newSession()
-      val s2 = spark2.newSession()
-      val ss1 = s1.sessionState
-      val ss2 = s2.sessionState
-      // Per-query SessionState is distinct (assign to vals first so
-      // the compiler doesn't mis-parse `SessionState()` as a ctor call).
-      assert(ss1 ne ss2, "SessionState must be per-query (not shared)")
-      assert(ss1.conf ne ss2.conf, "SQLConf must be per-query (not shared)")
-    } finally {
-      try spark1.stop() catch { case _: Throwable => () }
-      try spark2.stop() catch { case _: Throwable => () }
-    }
+  test("ADR-009-c v0.5-r1: per-query Some(f) skew factor is set on the per-query session (driven via provider)") {
+   // Per-query skew factor design (v0.5-r1): this test drives the REAL provider path
+   // (`new SparkEngineProvider(...).query(...)`), not Spark's own
+   // `newSession()` API directly. It pre-populates `querySessionTL`
+   // with a session that has the temp view registered (the
+   // provider reuses it instead of creating a fresh one), runs the
+   // real `query()`, then reads the per-query conf via
+   // `withQuerySessionTL` to verify the seed helper fired.
+   val spark = buildSpark()
+   val provider = new SparkEngineProvider(spark, SparkTypeBridge)
+   try {
+    val querySession = spark.newSession()
+    // Register temp views on the per-query session so the real
+    // query() can compile and execute against them.
+    querySession.sql("SELECT * FROM VALUES (1,'east'),(2,'west') AS t(id, region)")
+     .createOrReplaceTempView("orders")
+    querySession.sql("SELECT * FROM VALUES ('east'),('west') AS t(region)")
+     .createOrReplaceTempView("customers")
+    // Inject the pre-populated per-query session into the TL;
+    // query() reuses it (production: TL is empty, a fresh
+    // newSession() is created).
+    provider.querySessionTL.set(querySession)
+    val out = provider.query(
+     modelWith(Some(1000L)),
+     QueryRequest.empty,
+     EngineContext.defaultContext.copy(joinHints = JoinHints(skewFactor = Some(4))))
+    out.isRight shouldBe true
+    // Per-query skew factor was set on the per-query session's conf.
+    val qs = provider.withQuerySessionTL()
+    qs.conf.get("spark.sql.adaptive.skewJoin.skewedPartitionFactor") shouldBe "4"
+    // Base session is untouched (v0.3 honest-inheritance + v0.5
+    // per-query isolation).
+    spark.conf.get("spark.sql.adaptive.skewJoin.skewedPartitionFactor") shouldBe "5.0"
+   } finally {
+    provider.clearQuerySessionTL()
+    try spark.stop() catch { case _: Throwable => () }
+   }
   }
 
-  test("ADR-009-c v0.5: shared SparkConf budget from the operator inherits into every per-query session (documented)") {
-    // The v0.3 falsifiable concern was: "the per-query session is
-    // race-free." It is. The v0.3 falsifiable concern ALSO
-    // recognized: the newSession()'s SessionState is SEEDED from
-    // the SHARED SparkContext's SparkConf (BaseSessionStateBuilder.conf
-    // -> mergeSparkConf + mergeNonStaticSQLConfigs). So an operator
-    // who sets `spark.sql.autoBroadcastJoinThreshold=1b` at the
-    // base-session level inherits it into every per-query clone.
-    //
-    // This is the v0.3 honest-inheritance property, restated as a
-    // test (NOT a bug). Assert: two queries on a base session where
-    // the operator set the broadcast conf to a tiny value BOTH
-    // broadcast (the inherited conf seeds every per-query session;
-    // the per-query seed is then a no-op because the conf is not
-    // equal to the default).
-    //
-    // Note: the buildSpark helper here does not set a non-default
-    // broadcast budget; this test asserts the default-5-MiB
-    // inheritance (and the None-case is honest about that).
-    val spark = buildSpark()
-    try {
-      val s1 = spark.newSession()
-      val s2 = spark.newSession()
-      // Each per-query clone inherits from the base SparkConf
-      // (BaseSessionStateBuilder.conf merge), so the broadcast
-      // conf is the base default (10 MiB) in both clones -- NOT
-      // the per-query Some(1000L) seed (which only exists for the
-      // lifetime of the originating clone, and is dropped at GC).
-      // i.e. the first query's `Some(1000L)` write is NOT visible
-      // to the second query's SessionState.
-      s1.conf.get("spark.sql.autoBroadcastJoinThreshold") shouldBe
-        s2.conf.get("spark.sql.autoBroadcastJoinThreshold")
-    } finally {
-      try spark.stop() catch { case _: Throwable => () }
-    }
+  test("ADR-009-c v0.5-r1: per-query None does NOT call .conf.set (driven via provider)") {
+   // Per-query skew factor design (v0.5-r1): when `JoinHints.skewFactor` is None, the
+   // fresh per-query session's conf is left untouched (the v0.3
+   // honest-inheritance property: the operator's base conf value
+   // is what the per-query session sees). Drives the real
+   // provider path.
+   val spark = buildSpark()
+   val provider = new SparkEngineProvider(spark, SparkTypeBridge)
+   try {
+    val querySession = spark.newSession()
+    querySession.sql("SELECT * FROM VALUES (1,'east'),(2,'west') AS t(id, region)")
+     .createOrReplaceTempView("orders")
+    querySession.sql("SELECT * FROM VALUES ('east'),('west') AS t(region)")
+     .createOrReplaceTempView("customers")
+    provider.querySessionTL.set(querySession)
+    val out = provider.query(
+     modelWith(Some(1000L)),
+     QueryRequest.empty,
+     EngineContext.defaultContext.copy(joinHints = JoinHints()))  // skewFactor = None
+    out.isRight shouldBe true
+    // The per-query session's conf has the static default 5.0
+    // (the per-query seed is a no-op when None).
+    val qs = provider.withQuerySessionTL()
+    qs.conf.get("spark.sql.adaptive.skewJoin.skewedPartitionFactor") shouldBe "5.0"
+    provider.clearQuerySessionTL()
+    try spark.stop() catch { case _: Throwable => () }
+   }
   }
 
   test("ADR-009-c v0.5: concurrent per-query sessions each own their conf (no race)") {
@@ -226,5 +218,45 @@ class SparkBroadcastSeedSpec extends AnyFunSuite with Matchers {
     p2 should include ("BroadcastHashJoin")
     p1 should include ("region")
     p2 should include ("region")
+  }
+
+  test("per-query fresh-session path (no TL pre-set) resolves temp views via copyTempViews") {
+   // Per-query session design: when the test does NOT pre-populate
+   // `querySessionTL`, query() takes the production path: a fresh
+   // `spark.newSession()`, then `copyTempViews(spark, qs)` to
+   // register the base session's temp views on the per-query clone,
+   // then the ByName resolve hits. This exercises the production
+   // branch (the 2 v0.5-r1 tests above take the TL-reuse branch)
+   // and the 3 catalog-resolution cases (DataFrame-backed, SQL-backed,
+   // no explicit database) that copyTempViews handles.
+   val spark = buildSpark()
+   val provider = new SparkEngineProvider(spark, SparkTypeBridge)
+   try {
+    // Register temp views on the BASE session (the production path
+    // will copy these to the per-query session via copyTempViews).
+    spark.sql("SELECT * FROM VALUES (1,'east'),(2,'west') AS t(id, region)")
+     .createOrReplaceTempView("orders")
+    spark.sql("SELECT * FROM VALUES ('east'),('west') AS t(region)")
+     .createOrReplaceTempView("customers")
+    // Confirm the TL is empty (no pre-population) so the production
+    // branch runs.
+    assert(provider.querySessionTL.get == null,
+     "TL should be empty for production-path test")
+    val out = provider.query(
+     modelWith(Some(1000L)),
+     QueryRequest.empty,
+     EngineContext.defaultContext.copy(joinHints = JoinHints(skewFactor = Some(7))))
+    out.isRight shouldBe true
+    // The per-query session was created by query() (production path).
+    // After query() returns, querySessionTL is cleared; read the
+    // post-query reference (lastQuerySessionTL) instead.
+    val qs = provider.withLastQuerySession()
+    qs.conf.get("spark.sql.adaptive.skewJoin.skewedPartitionFactor") shouldBe "7"
+    // The per-query session is a NEW session (not the base).
+    qs should not be spark
+   } finally {
+    provider.clearQuerySessionTL()
+    try spark.stop() catch { case _: Throwable => () }
+   }
   }
 }
