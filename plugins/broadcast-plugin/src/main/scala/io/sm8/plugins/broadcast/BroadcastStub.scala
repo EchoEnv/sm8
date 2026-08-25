@@ -66,16 +66,47 @@ final class BroadcastStub extends Plugin with java.io.Serializable {
 }
 
 /**
- * PreExecute broadcast hook. Increments a counter per fire. The
- * real broadcast config set is deferred until Spark integration.
+ * PreExecute broadcast hook. The per-query value-consult
+ * decision: ARMS the broadcast seed when any join's estimated
+ * row count is at or below BroadcastThresholdRows (a small-row
+ * side fits the byte-gate). Writes the arm Boolean AND the
+ * threshold bytes to context.meta; the platform engineExecutor
+ * folds these into EngineContext.decisionHints (typed transport
+ * per ADR-009-d v0.3). NO try/catch: a throwing consult
+ * propagates to EngineHookDispatcher's existing catch which
+ * constructs the 5-field HookFailed (sanitized message).
  */
 private final class BroadcastPreStubHook(counter: AtomicInteger)
     extends PreHook with java.io.Serializable {
-  override val name: String = "broadcast-stub"
-  override val priority: Int = 250
-  override def stage: HookStage = HookStage.PreExecute
-  override def run(context: Context): Context = {
-    counter.incrementAndGet()
-    context
+ // Value-consult decision: the inline rule in the spark connector
+ // ARMS any join with estimatedRows; this rule ARMS only when
+ // estimatedRows <= BroadcastThresholdRows. A model with est >
+ // threshold is DISARMED here but ARMED inline — the regimes
+ // differ, making the wiring observable.
+ private val BroadcastThresholdRows: Long = 10_000_000L
+ // Byte budget the connector should use when the oracle arms.
+ // Distinct from the row-count threshold above: the meta key
+ // `sm8.broadcast.thresholdBytes` is documented as BYTES (per
+ // DecisionHints scaladoc); writing a row-count value here would
+ // be misinterpreted as a byte budget and disarm most real joins.
+ // 10 MiB is the same default the spark connector seeds when no
+ // oracle is wired.
+ private val BroadcastThresholdBytes: Long = 10L * 1024L * 1024L
+
+ override val name: String = "broadcast-stub"
+ override val priority: Int = 250
+ override def stage: HookStage = HookStage.PreExecute
+
+ override def run(context: Context): Context = {
+  counter.incrementAndGet()
+  val model: io.sm8.core.model.Model = context.request match {
+   case ehr: io.sm8.core.engine.EngineHookRequest => ehr.model
+   case _ => return context
   }
+  val arm: Boolean = model.joins.exists(_.estimatedRows.exists(_ <= BroadcastThresholdRows))
+  context.copy(
+   meta = context.meta +
+    ("sm8.broadcast.arm" -> arm) +
+    ("sm8.broadcast.thresholdBytes" -> BroadcastThresholdBytes))
+ }
 }

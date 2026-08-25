@@ -24,8 +24,7 @@
  */
 package io.sm8.connectors.spark
 
-import io.sm8.core.engine.{EngineContext, EngineIdentity, JoinHints, QueryRequest, ResolvedSource}
-import io.sm8.core.expr.Expr
+import io.sm8.core.engine.{DecisionHints, EngineContext, EngineIdentity, JoinHints, QueryRequest, ResolvedSource}
 import io.sm8.core.model._
 import io.sm8.core.rel.JoinKind
 import io.sm8.core.query.QueryBuilder
@@ -81,30 +80,40 @@ class SparkBroadcastSeedSpec extends AnyFunSuite with Matchers {
         estimatedRows = est)),
     ).toOption.get
 
-  private def compiled(model: Model, hints: JoinHints): String = {
-    val spark = buildSpark()
-    try {
-      spark.sql("SELECT * FROM VALUES (1,'east'),(2,'west') AS t(id, region)")
-        .createOrReplaceTempView("orders")
-      spark.sql("SELECT * FROM VALUES ('east'),('west') AS t(region)")
-        .createOrReplaceTempView("customers")
-      // Drive the real seed contract: the seed helper + the
-      // lowerer's byte-gate. The helper is what query()/explain()
-      // use; passing its output into the shared RelOp compile path
-      // exercises the exact seeded broadcast decision.
-      val resolver = new SparkSourceResolver(
-        spark, SparkSourceResolver.SessionCatalogModelRegistry)
-      val relOpE = QueryBuilder.build(model, resolver, identity)
-      relOpE.left.foreach(e => fail(s"build failed: $e"))
-      val relOp = relOpE.toOption.get
-      val ctx = EngineContext.defaultContext.copy(joinHints = hints)
-      val seededCtx = SparkEngineProvider.seedBroadcastThreshold(spark, ctx, model)
-      val compiledE = new PortableQueryCompiler(spark)
-        .compileRelOp(relOp, seededCtx, None)
-      compiledE.left.foreach(e => fail(s"compile failed: $e"))
-      val df = compiledE.toOption.get
-      df.queryExecution.executedPlan.toString
-    } finally spark.stop()
+  private def compiled(model: Model, hints: JoinHints, eCtxOverride: EngineContext = EngineContext.defaultContext): String = {
+   // ADR-009-d v0.3: the helper now accepts a full EngineContext so
+   // the oracle tests can inject decisionHints (the typed transport
+   // for the plugin's PreExecute hook decision). Default = the
+   // existing inline-fallback path (decisionHints = None); the
+   // oracle tests pass an EngineContext with decisionHints =
+   // Some(...) to exercise the oracle-wins semantics.
+   val spark = buildSpark()
+   try {
+     spark.sql("SELECT * FROM VALUES (1,'east'),(2,'west') AS t(id, region)")
+       .createOrReplaceTempView("orders")
+     spark.sql("SELECT * FROM VALUES ('east'),('west') AS t(region)")
+       .createOrReplaceTempView("customers")
+     // Drive the real seed contract: the seed helper + the
+     // lowerer's byte-gate. The helper is what query()/explain()
+     // use; passing its output into the shared RelOp compile path
+     // exercises the exact seeded broadcast decision.
+     val resolver = new SparkSourceResolver(
+       spark, SparkSourceResolver.SessionCatalogModelRegistry)
+     val relOpE = QueryBuilder.build(model, resolver, identity)
+     relOpE.left.foreach(e => fail(s"build failed: $e"))
+     val relOp = relOpE.toOption.get
+     val baseCtx = EngineContext.defaultContext.copy(joinHints = hints)
+     val ctx = eCtxOverride match {
+       case c if c == EngineContext.defaultContext => baseCtx
+       case other                                => other.copy(joinHints = baseCtx.joinHints)
+     }
+     val seededCtx = SparkEngineProvider.seedBroadcastThreshold(spark, ctx, model)
+     val compiledE = new PortableQueryCompiler(spark)
+       .compileRelOp(relOp, seededCtx, None)
+     compiledE.left.foreach(e => fail(s"compile failed: $e"))
+     val df = compiledE.toOption.get
+     df.queryExecution.executedPlan.toString
+   } finally spark.stop()
   }
 
   test("seed: a declared join estimate arms the broadcast hint (BroadcastHashJoinExec)") {
@@ -246,10 +255,7 @@ class SparkBroadcastSeedSpec extends AnyFunSuite with Matchers {
      modelWith(Some(1000L)),
      QueryRequest.empty,
      EngineContext.defaultContext.copy(joinHints = JoinHints(skewFactor = Some(7))))
-    out.isRight shouldBe true
-    // The per-query session was created by query() (production path).
-    // After query() returns, querySessionTL is cleared; read the
-    // post-query reference (lastQuerySessionTL) instead.
+     out.isRight shouldBe true
     val qs = provider.withLastQuerySession()
     qs.conf.get("spark.sql.adaptive.skewJoin.skewedPartitionFactor") shouldBe "7"
     // The per-query session is a NEW session (not the base).
@@ -259,4 +265,194 @@ class SparkBroadcastSeedSpec extends AnyFunSuite with Matchers {
     try spark.stop() catch { case _: Throwable => () }
    }
   }
+  test("ADR-009-d v0.3: oracle-armed broadcast — model with small estimate + decisionHints broadcastArmed=Some(true) → BroadcastHashJoinExec") {
+   // ADR per-query decision oracle: the plugin's PreExecute hook
+   // arms broadcast via the typed DecisionHints(broadcastArmed =
+   // Some(true)) channel; the spark connector's seed helper
+   // consumes the oracle arm + threshold bytes instead of the
+   // inline presence rule. The seeded byte gate is the ONLY
+   // mechanism (Spark's autoBroadcast is off at -1).
+   val ctx = EngineContext.defaultContext.copy(
+     decisionHints = Some(DecisionHints(
+       broadcastArmed          = Some(true),
+       broadcastThresholdBytes = Some(10L * 1024 * 1024))))
+   val plan = compiled(modelWith(Some(1_000L)), JoinHints(), ctx)
+   plan should include ("BroadcastHashJoin")
+  }
+
+  test("ADR-009-d v0.3: oracle-disarmed broadcast — decisionHints broadcastArmed=Some(false) overrides inline presence on model with large estimate → SortMergeJoinExec") {
+   // Per-query decision oracle: oracle Some(false) DISARMS even
+   // though the inline presence rule would arm (the model has a
+   // join with estimatedRows). The two regimes DISAGREE on this
+   // model; the oracle wins. Falsifiable proof of P1-A divergence.
+   val ctx = EngineContext.defaultContext.copy(
+     decisionHints = Some(DecisionHints(
+       broadcastArmed          = Some(false),
+       broadcastThresholdBytes = Some(10L * 1024 * 1024))))
+   val plan = compiled(modelWith(Some(100_000_000L)), JoinHints(), ctx)
+   plan should include ("SortMergeJoin")
+   plan shouldNot include ("BroadcastHashJoin")
+  }
+
+  test("ADR-009-d v0.3: no-oracle broadcast — model with large estimate + decisionHints=None → inline presence rule ARMS → BroadcastHashJoinExec") {
+   // No oracle wired: the seed helper falls back to the inline
+   // presence rule (`model.joins.exists(_.estimatedRows.isDefined)`),
+   // which ARMS because the model has a join with estimatedRows.
+   // This is the disagreement case: inline ARMS, oracle (if wired)
+   // would DISARM.
+   val plan = compiled(modelWith(Some(100_000_000L)), JoinHints())
+   plan should include ("BroadcastHashJoin")
+  }
+
+  test("ADR-009-d v0.3: oracle-disagreement on small-estimate model — oracle Some(false) wins over inline presence → SortMergeJoinExec") {
+   // Identical model (small estimate), the two regimes disagree:
+   // inline arms (presence = true), oracle disarms (Some(false)).
+   // The oracle wins — falsifiable proof of decisionHints priority.
+   val ctx = EngineContext.defaultContext.copy(
+     decisionHints = Some(DecisionHints(
+       broadcastArmed          = Some(false),
+       broadcastThresholdBytes = Some(10L * 1024 * 1024))))
+   val plan = compiled(modelWith(Some(1_000L)), JoinHints(), ctx)
+   plan should include ("SortMergeJoin")
+   plan shouldNot include ("BroadcastHashJoin")
+  }
+
+  test("ADR-009-d v0.3: oracle-armed skew — JoinHints.skewFactor=Some(f) + decisionHints skewArmed=Some(true) → per-query conf has f") {
+   // Per-query session design: drives the real provider path so
+   // we can read the per-query conf via withLastQuerySession. The
+   // oracle arms; seedSkewFactor writes f.toLong on the per-query
+   // session.
+   val spark = buildSpark()
+   val provider = new SparkEngineProvider(spark, SparkTypeBridge)
+   try {
+    val querySession = spark.newSession()
+    querySession.sql("SELECT * FROM VALUES (1,'east'),(2,'west') AS t(id, region)")
+     .createOrReplaceTempView("orders")
+    querySession.sql("SELECT * FROM VALUES ('east'),('west') AS t(region)")
+     .createOrReplaceTempView("customers")
+    provider.querySessionTL.set(querySession)
+    val eCtx = EngineContext.defaultContext.copy(
+     joinHints      = JoinHints(skewFactor = Some(9)),
+     decisionHints  = Some(DecisionHints(skewArmed = Some(true))))
+    val out = provider.query(modelWith(Some(1_000L)), QueryRequest.empty, eCtx)
+    out.isRight shouldBe true
+    val qs = provider.withQuerySessionTL()
+    qs.conf.get("spark.sql.adaptive.skewJoin.skewedPartitionFactor") shouldBe "9"
+    provider.clearQuerySessionTL()
+    try spark.stop() catch { case _: Throwable => () }
+   }
+  }
+
+  test("ADR-009-d v0.3: oracle-disarmed skew — decisionHints skewArmed=Some(false) suppresses seed even with JoinHints.skewFactor=Some(f)") {
+   // Per-query decision oracle: oracle Some(false) suppresses the
+   // skew seed even when the caller passed JoinHints.skewFactor =
+   // Some(f). Falsifiable proof of oracle priority for skew.
+   val spark = buildSpark()
+   val provider = new SparkEngineProvider(spark, SparkTypeBridge)
+   try {
+    val querySession = spark.newSession()
+    querySession.sql("SELECT * FROM VALUES (1,'east'),(2,'west') AS t(id, region)")
+     .createOrReplaceTempView("orders")
+    querySession.sql("SELECT * FROM VALUES ('east'),('west') AS t(region)")
+     .createOrReplaceTempView("customers")
+    provider.querySessionTL.set(querySession)
+    val eCtx = EngineContext.defaultContext.copy(
+     joinHints      = JoinHints(skewFactor = Some(9)),
+     decisionHints  = Some(DecisionHints(skewArmed = Some(false))))
+    val out = provider.query(modelWith(Some(1_000L)), QueryRequest.empty, eCtx)
+    out.isRight shouldBe true
+    val qs = provider.withQuerySessionTL()
+    // Oracle disarms; seedSkewFactor is a no-op even though
+    // JoinHints.skewFactor = Some(9) was passed.
+    qs.conf.get("spark.sql.adaptive.skewJoin.skewedPartitionFactor") shouldBe "5.0"
+    provider.clearQuerySessionTL()
+    try spark.stop() catch { case _: Throwable => () }
+   }
+  }
+
+  test("ADR-009-d v0.3: no-oracle skew — model with large estimate + JoinHints.skewFactor=Some(f) + decisionHints=None → inline rule writes f") {
+   // No oracle wired: the inline rule (model.joins.exists +
+   // JoinHints.skewFactor = Some(f)) writes f.toLong on the
+   // per-query session.
+   val spark = buildSpark()
+   val provider = new SparkEngineProvider(spark, SparkTypeBridge)
+   try {
+    val querySession = spark.newSession()
+    querySession.sql("SELECT * FROM VALUES (1,'east'),(2,'west') AS t(id, region)")
+     .createOrReplaceTempView("orders")
+    querySession.sql("SELECT * FROM VALUES ('east'),('west') AS t(region)")
+     .createOrReplaceTempView("customers")
+    provider.querySessionTL.set(querySession)
+    val out = provider.query(
+     modelWith(Some(100_000_000L)),
+     QueryRequest.empty,
+     EngineContext.defaultContext.copy(joinHints = JoinHints(skewFactor = Some(11))))
+    out.isRight shouldBe true
+    val qs = provider.withQuerySessionTL()
+    qs.conf.get("spark.sql.adaptive.skewJoin.skewedPartitionFactor") shouldBe "11"
+    provider.clearQuerySessionTL()
+    try spark.stop() catch { case _: Throwable => () }
+   }
+  }
+
+  test("ADR-009-d v0.3: oracle-disagreement on small-estimate model — oracle Some(false) skew wins over inline rule → conf stays at default") {
+   // Identical model (small estimate), the two regimes disagree
+   // on the skew path: inline arms on JoinHints.skewFactor =
+   // Some(13), oracle disarms. Oracle wins — no conf.set; per-query
+   // conf stays at the inherited default 5.0.
+   val spark = buildSpark()
+   val provider = new SparkEngineProvider(spark, SparkTypeBridge)
+   try {
+    val querySession = spark.newSession()
+    querySession.sql("SELECT * FROM VALUES (1,'east'),(2,'west') AS t(id, region)")
+     .createOrReplaceTempView("orders")
+    querySession.sql("SELECT * FROM VALUES ('east'),('west') AS t(region)")
+     .createOrReplaceTempView("customers")
+    provider.querySessionTL.set(querySession)
+    val eCtx = EngineContext.defaultContext.copy(
+     joinHints      = JoinHints(skewFactor = Some(13)),
+     decisionHints  = Some(DecisionHints(skewArmed = Some(false))))
+    val out = provider.query(modelWith(Some(1_000L)), QueryRequest.empty, eCtx)
+    out.isRight shouldBe true
+    val qs = provider.withQuerySessionTL()
+    qs.conf.get("spark.sql.adaptive.skewJoin.skewedPartitionFactor") shouldBe "5.0"
+    provider.clearQuerySessionTL()
+    try spark.stop() catch { case _: Throwable => () }
+   }
+  }
+
+ test("ADR-009-d v0.3: skew-axis divergence at the (10M, 1B) window — single estimate (100M) proves inline-vs-oracle disagreement on the skew path") {
+  // Per-query decision oracle: a single estimate value (100M rows)
+  // that sits in the window where the inline presence rule ARMS
+  // (estimatedRows.isDefined == true) but the SkewStub's value-
+  // consult rule DISARMS (100M < 1B threshold). The skew axis
+  // mirrors the broadcast axis at est=100M but with the OPPOSITE
+  // arms: the spark connector must respect the plugin's disarm
+  // even though the inline rule would arm. Falsifiable proof of
+  // the same-shape divergence on both axes.
+  val spark = buildSpark()
+  val provider = new SparkEngineProvider(spark, SparkTypeBridge)
+  try {
+   val querySession = spark.newSession()
+   querySession.sql("SELECT * FROM VALUES (1,'east'),(2,'west') AS t(id, region)")
+    .createOrReplaceTempView("orders")
+   querySession.sql("SELECT * FROM VALUES ('east'),('west') AS t(region)")
+    .createOrReplaceTempView("customers")
+   provider.querySessionTL.set(querySession)
+   val eCtx = EngineContext.defaultContext.copy(
+    joinHints      = JoinHints(skewFactor = Some(15)),
+    decisionHints  = Some(DecisionHints(skewArmed = Some(false))))
+   val out = provider.query(modelWith(Some(100_000_000L)), QueryRequest.empty, eCtx)
+   out.isRight shouldBe true
+   val qs = provider.withQuerySessionTL()
+   // SkewStub disarms at est=100M (< 1B threshold). Inline rule
+   // ARMS (presence=true + Some(f)=15). Connector respects the
+   // oracle: conf stays at the inherited 5.0 default.
+   qs.conf.get("spark.sql.adaptive.skewJoin.skewedPartitionFactor") shouldBe "5.0"
+   provider.clearQuerySessionTL()
+   try spark.stop() catch { case _: Throwable => () }
+  }
+ }
+
 }
+

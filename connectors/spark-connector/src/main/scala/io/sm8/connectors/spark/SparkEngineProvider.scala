@@ -383,15 +383,14 @@ final class SparkEngineProvider(
  // 3. Bare-deploy (no runner): compileSteps runs once directly;
  //  pipeline runs as before. (Pre-PR-9 behavior minus the
  //  unused runner wiring.)
- val compiled: Either[EngineError, PortableQueryResult] =
+val compiled: Either[EngineError, PortableQueryResult] =
+ try {
   hookRunner match {
   case Some(runner) =>
    runner.run(initialCtx, { runCtx =>
    runCtx.meta.get("engineContext") match {
     case Some(eCtx: EngineContext) =>
     compileSteps(eCtx).map { df =>
-     // Stash the compiled DataFrame in `Context.meta` for
-     // the outer code to extract on the MISS path.
      runCtx.copy(meta = runCtx.meta + ("compiledDf" -> df))
     }
     case _ =>
@@ -403,30 +402,10 @@ final class SparkEngineProvider(
    }).flatMap { finalCtx =>
    finalCtx.result match {
     case Some(EngineHookResult(cachedPqr)) =>
-    // HIT path: a PreExecute hook (e.g. cache-read) set
-    // `c.result` + `c.stop = true`. The cached PortableQueryResult
-    // IS the answer. Return it directly — no compile, no
-    // collect, no decode. This is the perf-cliff closure
-    // (PR-9 T2-3 + the e2e proof in
-    // `SparkEngineProviderHookRunnerSpec`).
     Right[EngineError, PortableQueryResult](cachedPqr)
     case _ =>
-    // MISS path: extract the DataFrame from `Context.meta`.
-    // a `Dataset[Row]` — the type parameter is erased at
-    // runtime. Use an `isInstanceOf` runtime check (the
-    // result is `Any`); the `applyPostCompilePipeline`
-    // signature requires `DataFrame`, so the cast is the
-    // boundary.
     finalCtx.meta.get("compiledDf") match {
      case Some(df) if df.isInstanceOf[org.apache.spark.sql.DataFrame] =>
-     // is `Dataset[Row]` — the Row type param is erased at
-     // runtime, so a type pattern `case df: DataFrame`
-     // binds `df` as `Any`. Use the `case. if`
-     // guard with `isInstanceOf` (runtime check) +
-     // `asInstanceOf` (the boundary cast). A wrong
-     // type here indicates the runner callback
-     // populated `compiledDf` with a non-DataFrame
-     // value (sm8-internal invariant).
      applyPostCompilePipeline(
       df.asInstanceOf[org.apache.spark.sql.DataFrame],
       request, schemaMetadata)
@@ -444,9 +423,6 @@ final class SparkEngineProvider(
    }
    }
   case None =>
-   // Bare-deploy shape: no dispatcher wired. compileSteps once
-   // + run the where/limit/collect/decode pipeline. Per
-   // 2-step chain — explicit match.
    compileSteps(ctx) match {
    case Right(df: org.apache.spark.sql.DataFrame) =>
     applyPostCompilePipeline(df, request, schemaMetadata)
@@ -454,13 +430,19 @@ final class SparkEngineProvider(
     Left[EngineError, PortableQueryResult](err)
    }
   }
- // the `val compiled` is the only side-effecting statement in the
- // method; the method's return value is the `compiled` Either.
- // In Scala 2.13 a `val` statement has type `Unit` — the method
- // must end with an expression whose type is the declared return
- // type. Without this final `compiled` reference, the method
- { val _r = compiled; if (createdQuerySessionHere) clearQuerySessionTL(); _r }
+ } finally {
+  // Per-query session design (v0.5-r1 invariant): clear the TL
+  // seam on EVERY exit — success, Left, or raw Throwable — so a
+  // throwing lambda inside `compiled`'s construction does NOT
+  // leak the per-query SparkSession on the worker thread.
+  // `createdQuerySessionHere` was set at method entry; we only
+  // clear what we created (a test pre-populated TL is the test's
+  // lifecycle).
+  if (createdQuerySessionHere) clearQuerySessionTL()
  }
+ compiled
+}
+
  /**
  * PR-9: extract the where/limit/collect/decode pipeline into a
  * helper method so the HIT-path and MISS-path branches in `query`
@@ -800,9 +782,10 @@ object SparkEngineProvider {
   val BroadcastSeedDefaultBytes: Long = 10L * 1024L * 1024L
 
   /**
-   * Arms the adapter's broadcast byte-gate with the
-   * default budget when the model declares any join `estimatedRows`
-   * and the caller set no explicit `broadcastRightBelowBytes`.
+   * Arms the adapter's broadcast byte-gate when the model declares
+   * any join `estimatedRows` (inline presence rule) OR when a
+   * plugin's PreExecute hook armed the broadcast oracle (typed
+   * transport via EngineContext.decisionHints per ADR-009-d v0.3).
    *
    * The estimate is an ARM (presence), not a value: the runtime
    * `sizeInBytes` check stays authoritative, so a large side is
@@ -810,10 +793,19 @@ object SparkEngineProvider {
    * over the seed; `preferredStrategy` is untouched (the Cross
    * + strategy rejection guard is never triggered).
    *
+   * Oracle precedence: when the broadcast oracle is present
+   * (Some(b)), the oracle's arm Boolean wins over the inline
+   * presence rule; when present, the oracle's threshold bytes
+   * win over the session autoBroadcastJoinThreshold default. None
+   * on either field preserves today's behavior (inline arm +
+   * session default).
+   *
    * @param spark the connected Spark session whose configured
-   *              auto-broadcast threshold seeds the gate
+   *              auto-broadcast threshold seeds the gate when no
+   *              oracle threshold is provided
    * @param eCtx the possibly-hint-bearing engine context
-   * @param model the query model (join estimates consulted)
+   * @param model the query model (join estimates consulted by the
+   *              inline presence rule)
    * @return the context with a seeded broadcast threshold if armed
    */
   def seedBroadcastThreshold(
@@ -821,11 +813,16 @@ object SparkEngineProvider {
     eCtx:  io.sm8.core.engine.EngineContext,
     model: io.sm8.core.model.Model
   ): io.sm8.core.engine.EngineContext = {
-    // Default the seed to the operator's session-configured
-    // autoBroadcastJoinThreshold when set, else the 10 MiB fallback.
-    // Reading the session value (not a hard constant) means an
-    // operator's tuned OOM headroom is respected.
-    val sessionThreshold: Long =
+    // Per-query decision oracle: prefer the plugin's arm + threshold
+    // bytes when present; fall back to the inline presence rule +
+    // the session default threshold. The two regimes differ on
+    // identical models with est > BroadcastThresholdRows (plugin
+    // disarms; inline arms) — observable divergence proves the
+    // wiring.
+    val broadcastOracle = eCtx.decisionHints
+    val oracleArm: Option[Boolean]    = broadcastOracle.flatMap(_.broadcastArmed)
+    val oracleThreshold: Option[Long] = broadcastOracle.flatMap(_.broadcastThresholdBytes)
+    val sessionThreshold: Long = oracleThreshold.getOrElse(
       try {
         // Spark renders the threshold with a 'b' suffix (e.g.
         // "10485760b") — strip it before parsing. Any parse failure
@@ -839,11 +836,12 @@ object SparkEngineProvider {
       } catch {
         case _: NoSuchElementException => BroadcastSeedDefaultBytes
         case _: NumberFormatException  => BroadcastSeedDefaultBytes
-      }
+      })
+    val armed: Boolean = oracleArm.getOrElse(
+      model.joins.exists(_.estimatedRows.isDefined)
+    )
     val seeded: Option[Long] = eCtx.joinHints.broadcastRightBelowBytes.orElse(
-      if (model.joins.exists(_.estimatedRows.isDefined))
-        Some(sessionThreshold)
-      else None
+      if (armed) Some(sessionThreshold) else None
     )
     if (seeded == eCtx.joinHints.broadcastRightBelowBytes) eCtx
     else eCtx.copy(joinHints = eCtx.joinHints.copy(broadcastRightBelowBytes = seeded))
@@ -853,17 +851,28 @@ object SparkEngineProvider {
    * Per-query skew factor seed. Writes
    * `spark.sql.adaptive.skewJoin.skewedPartitionFactor` on the
    * per-query `SparkSession` (or null in the null-spark path)
-   * when the model declares a join `estimatedRows` AND
-   * `JoinHints.skewFactor` is `Some(f)`. Single conditional; the
-   * fresh-session conf has no operator-pre-set value (the v0.3
-   * honest-inheritance property), so this set is race-free and
-   * authoritative for the originating query. `None` leaves the
-   * fresh session at the shared-SparkConf value (or static 5.0
-   * default). Null-safe: the null-spark path short-circuits.
+   * when (a) the model declares a join `estimatedRows` AND
+   * `JoinHints.skewFactor` is `Some(f)`, OR (b) a plugin's
+   * PreExecute hook armed the skew oracle (typed transport via
+   * EngineContext.decisionHints per ADR-009-d v0.3). Single
+   * conditional; the fresh-session conf has no operator-pre-set
+   * value (the honest-inheritance property), so this set is
+   * race-free and authoritative for the originating query.
+   * `None` leaves the fresh session at the shared-SparkConf
+   * value (or static 5.0 default). Null-safe: the null-spark
+   * path short-circuits.
+   *
+   * Oracle precedence: when the skew oracle is present
+   * (Some(b)), the oracle's arm Boolean wins over the inline
+   * presence rule. None on the oracle field preserves today's
+   * behavior (inline arm + JoinHints.skewFactor precondition).
    *
    * @param querySession the per-query `SparkSession` (or null)
-   * @param eCtx the engine context (carries `joinHints.skewFactor`)
-   * @param model the query model (join estimates consulted)
+   * @param eCtx the engine context (carries `joinHints.skewFactor`
+   *              and optionally `decisionHints.skewArmed` from a
+   *              plugin)
+   * @param model the query model (join estimates consulted by the
+   *              inline presence rule)
    * @return the engine context (unchanged on the no-
    *         estimatedRows / null-spark paths; the querySession
    *         has had the AQE factor set on the Some(f) path)
@@ -874,18 +883,25 @@ object SparkEngineProvider {
     model: io.sm8.core.model.Model
   ): io.sm8.core.engine.EngineContext = {
     if (querySession == null) return eCtx
-    // Per the documented arm: the AQE skew factor is seeded only
-    // when the model declares a join `estimatedRows` AND the
-    // caller passed `JoinHints.skewFactor = Some(f)`. Mirrors
-    // `seedBroadcastThreshold`'s presence-based check (the
-    // estimate is an ARM, not a value: the runtime sizeInBytes
-    // check stays authoritative). A model with no join estimates
-    // is NOT seeded even if `Some(f)` was passed — the caller
-    // asked for a factor they did not pair with a large-row
-    // declaration.
+    // Per-query decision oracle: prefer the plugin's skewArmed
+    // when present; fall back to the inline presence rule (which
+    // itself requires JoinHints.skewFactor = Some(f) to actually
+    // write). The two regimes differ on identical models —
+    // observable divergence proves the wiring. A model with no
+    // join estimates is NOT seeded even if the oracle (or a
+    // Some(f)) was supplied — the caller asked for a factor they
+    // did not pair with a large-row declaration.
     val hasEstimatedJoin: Boolean =
       model.joins.exists(_.estimatedRows.isDefined)
-    if (hasEstimatedJoin) {
+    val skewOracleArm: Option[Boolean] = eCtx.decisionHints.flatMap(_.skewArmed)
+    // Per the docstring above: no join estimates = no seed, even if
+    // the oracle armed. The AND keeps the no-join contract intact
+    // (caller asked for a factor they did not pair with a large-row
+    // declaration). The oracle still disarms (Some(false) wins) and
+    // still arms inline (Some(true) overrides no-estimate when at
+    // least one join declares an estimate).
+    val shouldArm: Boolean = hasEstimatedJoin && skewOracleArm.getOrElse(hasEstimatedJoin)
+    if (shouldArm) {
       eCtx.joinHints.skewFactor match {
         case Some(f) =>
           querySession.conf.set(

@@ -53,6 +53,23 @@
             <scope>test</scope>
         </dependency>
 
+        <!-- Broadcast + skew plugins (TEST scope only — platform is pure
+             transport; the tests register the plugin stubs to verify
+             the ADR-009-d v0.3 fold propagates decisionHints through
+             the engineExecutor thunk). -->
+        <dependency>
+            <groupId>io.sm8</groupId>
+            <artifactId>broadcast-plugin_2.13</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.sm8</groupId>
+            <artifactId>skew-plugin_2.13</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+
         <!-- ScalaTest for the engine-portable-path specs. JDK's built-in
              classes (java.util.Optional, java.util.List) cover the Java
              interop surface; no extra test deps needed for PR-C1. -->

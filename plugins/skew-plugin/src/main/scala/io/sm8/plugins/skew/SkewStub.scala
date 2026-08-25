@@ -64,16 +64,33 @@ final class SkewStub extends Plugin with java.io.Serializable {
 }
 
 /**
- * PreExecute skew hook. Increments a counter per fire. The real
- * AQE skew config is deferred until Spark integration.
+ * PreExecute skew hook. The per-query value-consult decision:
+ * ARMS the skew seed when any join's estimated row count meets
+ * or exceeds SkewThresholdRows (a few large keys dominate the
+ * join). Writes the arm Boolean to context.meta; the platform
+ * engineExecutor folds it into EngineContext.decisionHints
+ * (typed transport per ADR-009-d v0.3). NO try/catch: a
+ * throwing consult propagates to EngineHookDispatcher's
+ * existing catch which constructs the 5-field HookFailed.
  */
 private final class SkewPreStubHook(counter: AtomicInteger)
     extends PreHook with java.io.Serializable {
+ // Value-consult decision: the inline rule in the spark connector
+ // ARMS any join with estimatedRows; this rule ARMS only when
+ // estimatedRows >= SkewThresholdRows (large-row join).
+  private val SkewThresholdRows: Long = 1_000_000_000L
+
   override val name: String = "skew-stub"
   override val priority: Int = 250
   override def stage: HookStage = HookStage.PreExecute
+
   override def run(context: Context): Context = {
     counter.incrementAndGet()
-    context
+    val model: io.sm8.core.model.Model = context.request match {
+      case ehr: io.sm8.core.engine.EngineHookRequest => ehr.model
+      case _ => return context
+    }
+    val arm: Boolean = model.joins.exists(_.estimatedRows.exists(_ >= SkewThresholdRows))
+    context.copy(meta = context.meta + ("sm8.skew.arm" -> arm))
   }
 }
