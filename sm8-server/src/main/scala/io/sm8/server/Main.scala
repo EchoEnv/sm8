@@ -223,6 +223,8 @@ object Main {
       providers:    List[EngineProvider],
       engineName:   Option[String],
       connectorUrl: Option[String] = None,
+      plugins:      Seq[io.sm8.sdk.Plugin] = Nil,
+      metaInspectorEngineFn: Option[() => Map[String, Any]] = None,
   ): Either[String, (EngineRegistry, HttpTransport, List[EngineProvider])] = {
     val realized = realize(providers, connectorUrl)
     val available = realized.filter(_.available)
@@ -238,7 +240,13 @@ object Main {
       else
         try {
           val registry = EngineRegistry(engines, default)
-          Right((registry, HttpTransport(model, registry, io.sm8.plugins.cache.InMemoryResultCache(maxEntries = 1)), available))
+          Right((registry, HttpTransport(
+            model,
+            registry,
+            io.sm8.plugins.cache.InMemoryResultCache(maxEntries = 1),
+            plugins,
+            metaInspectorEngineFn
+          ), available))
         } catch {
           case e: IllegalArgumentException => Left(e.getMessage)
         }
@@ -259,7 +267,25 @@ object Main {
           case Left(modelErr) =>
             System.err.println(s"sm8: model load failed: ${modelErr.toString}"); 1
           case Right(model) =>
-            wire(model, discoverProviders(Thread.currentThread().getContextClassLoader), cli.engine, cli.connectorUrl) match {
+            // Composite root (RFC §11a): load plugins via the ServiceLoader
+            // portal + append the deployment-local MetaCaptureObserver so
+            // the MetaInspectorService serves the most recent request's
+            // Context.meta. The plugins are threaded into HttpTransport,
+            // which registers them on QueryService.definition's dispatcher.
+            val latestMeta: java.util.concurrent.atomic.AtomicReference[Map[String, Any]] =
+              new java.util.concurrent.atomic.AtomicReference[Map[String, Any]](Map.empty)
+            val discovered: List[io.sm8.sdk.Plugin] =
+              new io.sm8.core.EngineImpl().discoverFromConfig()
+            val plugins: List[io.sm8.sdk.Plugin] =
+              discovered :+ new MetaCaptureObserver(latestMeta)
+            wire(
+              model,
+              discoverProviders(Thread.currentThread().getContextClassLoader),
+              cli.engine,
+              cli.connectorUrl,
+              plugins,
+              Some(() => latestMeta.get())
+            ) match {
               case Left(bootErr) =>
                 System.err.println(bootErr); 3
               case Right((_, transport, realized)) =>

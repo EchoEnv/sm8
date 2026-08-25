@@ -48,7 +48,27 @@ class MetaInspectorServiceSpec extends AnyFunSuite with Matchers {
     .toOption
     .get
 
-  private val emptyRegistry: EngineRegistry = EngineRegistry(Map.empty, "default")
+  /** Minimal engine so `EngineRegistry(Map(dflt))` satisfies its
+    * `require(default in engines)` invariant. The registry is only
+    * ever passed to `MetaInspectorService.definition` (the handler
+    * never selects an engine), so the stub is never invoked. */
+  private final class UnusedStubEngine extends io.sm8.core.engine.EngineProvider {
+    override val identity: io.sm8.core.engine.EngineIdentity =
+      io.sm8.core.engine.EngineIdentity("default", "0.0.0", "0.0.0")
+    override val available: Boolean = true
+    override def query(
+        model: io.sm8.core.model.Model,
+        request: io.sm8.core.engine.QueryRequest,
+        ctx: io.sm8.core.engine.EngineContext
+    ): io.sm8.core.engine.EngineError Either io.sm8.core.engine.PortableQueryResult = ???
+    override def explain(
+        model: io.sm8.core.model.Model,
+        request: io.sm8.core.engine.QueryRequest,
+        ctx: io.sm8.core.engine.EngineContext
+    ): io.sm8.core.engine.EngineError Either String = ???
+  }
+
+  private val emptyRegistry: EngineRegistry = EngineRegistry(Map("default" -> new UnusedStubEngine), "default")
 
   // -- Tests --
 
