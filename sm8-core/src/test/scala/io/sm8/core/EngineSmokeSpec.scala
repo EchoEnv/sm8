@@ -94,4 +94,21 @@ class EngineSmokeSpec extends AnyFlatSpec with Matchers {
     err.connectorName shouldBe "nonexistent"
     err.error shouldBe a [io.sm8.core.engine.EngineError.EngineUnavailable]
   }
+
+  it should "surface an unknown request type as a typed ConnectorError(UnsupportedCapability), never pass-through" in {
+    val engine  = EngineImpl()
+    val request = new Request {} // not a ConnectorRequest — nothing can execute it
+    val result  = engine.run(request)
+    // Previously this passed through and the pipeline returned a stub
+    // empty ConnectorResult ("", empty, empty) — a silent success.
+    // The typed failure must travel in the Result envelope instead.
+    result shouldBe a [ConnectorError]
+    val err = result.asInstanceOf[ConnectorError]
+    err.connectorName shouldBe "-"
+    err.error shouldBe a [io.sm8.core.engine.EngineError.UnsupportedCapability]
+    val unsupported = err.error.asInstanceOf[io.sm8.core.engine.EngineError.UnsupportedCapability]
+    unsupported.engine shouldBe "pipeline"
+    unsupported.capability shouldBe "RequestType"
+    unsupported.message should include (request.getClass.getName)
+  }
 }

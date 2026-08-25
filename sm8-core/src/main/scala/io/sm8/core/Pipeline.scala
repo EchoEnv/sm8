@@ -71,10 +71,15 @@ object Stage {
  }
 
  /**
- * Execute — run the query against the chosen adapter(s). Step 3:
- * routes `ConnectorRequest` to the named Connector, builds a
- * `ConnectorResult`. Unknown connector names produce a stub
- * empty result (real typed error in Step 0).
+ * Execute — run the query against the chosen adapter(s). A
+ * `ConnectorRequest` is routed to the named Connector and becomes
+ * a `ConnectorResult`; failures are typed, never silent:
+ * an unregistered connector name yields
+ * `ConnectorError(name, EngineError.EngineUnavailable)`, and any
+ * other (unrecognized) request type yields
+ * `ConnectorError("-", EngineError.UnsupportedCapability)` — both
+ * in the Result envelope so callers pattern-match on the typed
+ * failure instead of mistaking empty rows for success.
  */
  case object Execute extends Stage {
   override def name: PipelineStage = PipelineStage.Execute
