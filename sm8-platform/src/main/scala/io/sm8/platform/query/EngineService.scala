@@ -68,7 +68,9 @@ import io.sm8.core.model.{FilterSpec, Model}
 import io.sm8.core.engine.EngineContext
 import io.sm8.core.engine.{ EngineHookRequest, EngineHookResult }
 import io.sm8.platform.query.hooks.EngineHookDispatcher
- import io.sm8.sdk.{Context, PipelineStage}
+import io.sm8.sdk.{Context, PipelineStage}
+
+import scala.util.control.NonFatal
 /**
  * Engine-portable path entry point. PR-C5a ships the engine
  * selection + QueryRequest build. The cache + execute segments
@@ -198,13 +200,7 @@ object EngineService {
    * that need a custom context (e.g. for tracing) pass it
    * explicitly.
    *
-   * @param model    the engine-portable model (used by the engine
-   *                 for compile)
-   * @param mcpReq   the engine-portable request from
-   *                 `buildMCPRequest`
-   * @param provider the selected engine provider from
-   *                 `selectEngine`
-   * @param ctx      the engine context (defaults to
+   * @param ctx          the engine context (defaults to
    *                 `EngineContext.defaultContext`)
    * @return         `Right(pqr)` on success; `Left(error)` on
    *                 engine error or runtime exception
@@ -218,25 +214,37 @@ object EngineService {
     try {
       provider.query(model, mcpReq, ctx)
     } catch {
-      case e: RuntimeException =>
-        // Per scala-error-handling: convert at the IO boundary.
-        // Legacy code threw `IllegalArgumentException` here,
-        // losing the typed error. The Scala version preserves it
-        // via `EngineError.ProviderInvocationFailed` — the closest
-        // variant for "engine execution failed unexpectedly".
-        //
-        // Per review pass #2 (DE-reviewer MAJOR #7): the `engine`
-        // field in `EngineError` is the engine identity (e.g.
-        // "spark", "trino"), not the model name. `EngineError`'s
-        // `toErrorDetail` formats `"<engine>"` as the error
-        // context, and downstream consumers filter errors by
-        // engine identity. Setting it to `model.name` broke
-        // error reporting — corrected to `provider.identity.name`.
+      // Per scala-error-handling: convert at the IO boundary.
+      // Legacy code threw `IllegalArgumentException` here,
+      // losing the typed error. The Scala version preserves it
+      // via `EngineError.ProviderInvocationFailed` — the closest
+      // variant for "engine execution failed unexpectedly".
+      //
+      // Only `NonFatal` is converted: an `Error` (OOM, ...) must
+      // propagate so a fatally-broken JVM fails loud, and an
+      // `InterruptedException` re-sets the thread's interrupt flag
+      // first so the cancellation is never lost (P1-S2).
+      //
+      // Per review pass #2 (DE-reviewer MAJOR #7): the `engine`
+      // field in `EngineError` is the engine identity (e.g.
+      // "spark", "trino"), not the model name. `EngineError`'s
+      // `toErrorDetail` formats `"<engine>"` as the error
+      // context, and downstream consumers filter errors by
+      // engine identity.
+      case e: InterruptedException =>
+        Thread.currentThread().interrupt()
         Left(EngineError.ProviderInvocationFailed(
           engine = provider.identity.name,
           name = provider.identity.name,
           reason = e.getClass.getSimpleName,
-          message = e.getMessage
+          message = Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
+        ))
+      case NonFatal(e) =>
+        Left(EngineError.ProviderInvocationFailed(
+          engine = provider.identity.name,
+          name = provider.identity.name,
+          reason = e.getClass.getSimpleName,
+          message = Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
         ))
     }
   }

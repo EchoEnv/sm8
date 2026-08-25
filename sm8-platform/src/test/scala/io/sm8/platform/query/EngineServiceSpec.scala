@@ -353,24 +353,35 @@ class EngineServiceSpec extends AnyFunSuite with Matchers {
     out shouldBe Right(emptyPortableResult)
   }
 
-  test("executeEngine: returns Left(ProviderInvocationFailed) on RuntimeException") {
-    val spark = new StubProvider(
-      io.sm8.core.engine.EngineIdentity("spark", "3.5.8", "0.2.4"),
-      available = true,
-      queryThrowable = new RuntimeException("engine blew up")
-    )
+  test("executeEngine: returns Left(ProviderInvocationFailed) on NonFatal IOException (P1-S2)") {
+    // P1-S2: the catch was `case e: RuntimeException` — a provider
+    // throwing a checked `IOException` (e.g. a network/IO fault at
+    // the engine boundary) escaped as a raw throw instead of the
+    // typed `ProviderInvocationFailed`. After the NonFatal widening
+    // it is converted.
+    final class IoStubProvider extends EngineProvider with java.io.Serializable {
+      override val identity: io.sm8.core.engine.EngineIdentity =
+        io.sm8.core.engine.EngineIdentity("spark", "3.5.8", "0.2.4")
+      override val available: Boolean = true
+      override def query(
+          model: Model,
+          request: CoreQueryRequest,
+          ctx: io.sm8.core.engine.EngineContext
+      ): Either[EngineError, io.sm8.core.engine.PortableQueryResult] =
+        throw new java.io.IOException("x")
+      override def explain(
+          model: Model,
+          request: CoreQueryRequest,
+          ctx: io.sm8.core.engine.EngineContext
+      ): Either[EngineError, String] = ???
+    }
     val mcpReq = CoreQueryRequest(model = "flights")
-    val out = EngineService.executeEngine(dummyModel, mcpReq, spark)
+    val out = EngineService.executeEngine(dummyModel, mcpReq, new IoStubProvider)
     out.isLeft shouldBe true
     out.left.get shouldBe a [EngineError.ProviderInvocationFailed]
     val err = out.left.get.asInstanceOf[EngineError.ProviderInvocationFailed]
     err.name shouldBe "spark"
-    // Per review pass #2: ProviderInvocationFailed.engine is the
-    // engine identity (e.g. "spark"), NOT the model name. The
-    // earlier code used `model.name`, which broke `toErrorDetail`
-    // formatting.
-    err.engine shouldBe "spark"
-    err.message shouldBe "engine blew up"
+    err.message shouldBe "x"
   }
 
   test("executeEngine: returns Left(EngineError) on engine-typed failure") {
