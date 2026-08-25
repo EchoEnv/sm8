@@ -161,4 +161,45 @@ class SparkEngineProviderReplaySafetySpec extends AnyFunSuite with Matchers {
       restored shouldBe a [SparkEngineProvider]
     } finally { spark.stop() }
   }
+
+  test("P1-SM-02: provider round-tripped through ObjectOutputStream re-inits @transient fields (no NPE on query)") {
+    // P1-SM-02: querySessionTL / lastQuerySessionTL / persistedFrames are
+    // @transient, so Java serialization left them null — a restored
+    // provider NPE'd on `querySessionTL.get` at the start of query().
+    // readResolve() reconstructs a fresh provider (initialized
+    // ThreadLocals + persist map) sharing the restored constructor state.
+    val spark = buildSpark()
+    try {
+      spark.sql("CREATE TEMPORARY VIEW sm8_replay_tbl AS SELECT 1 AS id, 'a' AS name")
+      val provider = new SparkEngineProvider(spark, SparkTypeBridge, "spark-3.5")
+      val bytes = {
+        val baos = new java.io.ByteArrayOutputStream()
+        val oos = new java.io.ObjectOutputStream(baos)
+        oos.writeObject(provider)
+        oos.close()
+        baos.toByteArray
+      }
+      // The round-trip SHALL return a fresh, fully-initialized instance.
+      val restored = {
+        val ois = new java.io.ObjectInputStream(new java.io.ByteArrayInputStream(bytes))
+        ois.readObject().asInstanceOf[SparkEngineProvider]
+      }
+      restored should not be theSameInstanceAs (provider)
+
+      // Re-init proof #1: persistedFrames was @transient — without
+      // readResolve this NPE'd on `persistedFrames.asScala`; with it,
+      // close() over an empty map is a no-op (dead SparkSession stop
+      // is also safe).
+      restored.close()
+
+      // Re-init proof #2: the ThreadLocals are fresh ThreadLocal
+      // instances. A null field would NPE on `.get`; a re-initialized
+      // field returns null and the seam's `assert` fires with the
+      // "not populated" message instead.
+      val tlNpe = intercept[AssertionError] {
+        restored.withQuerySessionTL()
+      }
+      tlNpe.getMessage should include ("querySessionTL not populated")
+    } finally { spark.stop() }
+  }
 }

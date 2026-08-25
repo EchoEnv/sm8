@@ -19,6 +19,7 @@
  */
 package io.sm8.core
 
+import io.sm8.core.engine.EngineError
 import io.sm8.sdk._
 
 /**
@@ -76,23 +77,35 @@ object Stage {
  * empty result (real typed error in Step 0).
  */
  case object Execute extends Stage {
- override def name: PipelineStage = PipelineStage.Execute
- override def run(env: StageEnv)(ctx: Context): Context = ctx.request match {
-  case ConnectorRequest(connectorName, query) =>
-  env.connectors.get(connectorName) match {
-   case Some(c) =>
-   val rows = c.query(query)
-   val sch = c.schema()
-   ctx.copy(result = Some(ConnectorResult(connectorName, sch, rows)))
-   case None =>
-   // Unknown connector — surface as a stub Result. Real
-   // typed errors (EngineError.EngineUnavailable) land
-   // in Step 0.
-   ctx.copy(result = Some(ConnectorResult(
-    connectorName, ConnectorSchema(Nil), ResultRows(Vector.empty))))
+  override def name: PipelineStage = PipelineStage.Execute
+  override def run(env: StageEnv)(ctx: Context): Context = ctx.request match {
+   case ConnectorRequest(connectorName, query) =>
+    env.connectors.get(connectorName) match {
+     case Some(c) =>
+      val rows = c.query(query)
+      val sch = c.schema()
+      ctx.copy(result = Some(ConnectorResult(connectorName, sch, rows)))
+     case None =>
+      // P1-A3-E4: an unregistered connector name must surface a
+      // typed failure, not a silent empty success.
+      ctx.copy(result = Some(ConnectorError(
+       connectorName,
+       EngineError.EngineUnavailable(
+        engine     = connectorName,
+        available  = Nil,
+        wasDefault = false,
+        message    = s"sm8: connector '$connectorName' is not registered"))))
+    }
+   case other =>
+    // Unknown request type — surface a typed NotImplemented-style
+    // failure instead of passing through unchanged.
+    ctx.copy(result = Some(ConnectorError(
+     "-",
+     EngineError.UnsupportedCapability(
+      engine     = "pipeline",
+      capability = "RequestType",
+      message    = s"sm8: unsupported request type ${other.getClass.getName}"))))
   }
-  case other => ctx // unknown request type — pass through unchanged
- }
  }
 
  /**
@@ -161,12 +174,12 @@ final class Pipeline(
  }
 
  finalCtx.result.getOrElse(
-  // No stage set a result — return a stub empty result. Real
-  // typed-error path lands in Step 0 (EngineError.NotImplemented).
+  // No stage set a result (e.g. a pre-hook short-circuited via
+  // Context.stop before Execute ran) — return a stub empty result.
   ConnectorResult(
-  connectorName = "",
-  schema  = ConnectorSchema(Nil),
-  rows   = ResultRows(Vector.empty)
+   connectorName = "",
+   schema  = ConnectorSchema(Nil),
+   rows    = ResultRows(Vector.empty)
   )
  )
  }

@@ -53,7 +53,7 @@ import io.sm8.core.schema.{Field, SealedDataType}
 import io.sm8.core.rel.JoinKind
 import io.sm8.core.model.JoinSpec
 import io.sm8.plugins.cache.CachePlugin
-import io.sm8.sdk.{Context, HookStage, PreHook}
+import io.sm8.sdk.{Context, HookStage, PreHook, Request}
 import io.sm8.platform.query.hooks.EngineHookDispatcher
 
 class EngineServiceRunQueryWithHooksSpec extends AnyFunSuite with Matchers {
@@ -188,6 +188,55 @@ class EngineServiceRunQueryWithHooksSpec extends AnyFunSuite with Matchers {
     )
     second.isRight shouldBe true
     spark.callCount.get() shouldBe 1   // unchanged — engine skipped
+  }
+
+  test("runQueryWithHooks: non-EngineHookRequest Context returns Left(ProviderInvocationFailed) without NonLocalReturnControl (P1-S3)") {
+    // P1-S3: the engineExecutor thunk used a non-local `return Left(...)`
+    // for a Context whose request is not an EngineHookRequest. It only
+    // worked because the dispatcher runs the thunk synchronously; the
+    // correct composition is a typed Either (no NonLocalReturnControl).
+    // Here a PreExecute hook replaces the request with a non-hook
+    // Request, forcing the executor onto the unexpected-type path.
+    final case class ForeignRequest(name: String) extends Request with Serializable
+
+    val spark = new StubProvider(
+      EngineIdentity("test-engine", "1.0", "1.0"),
+      available = true
+    )
+    val registry = makeRegistry(Map("test-engine" -> spark))
+    val engineImpl = new io.sm8.core.EngineImpl
+    engineImpl.use(new io.sm8.sdk.Plugin {
+      override def setup(engine: io.sm8.sdk.Engine): Unit = {
+        engine.hooks.registerPreHook(
+          HookStage.PreExecute,
+          new PreHook {
+            override val name: String = "swap-request"
+            override val priority: Int = 10
+            override def stage: HookStage = HookStage.PreExecute
+            override def run(c: Context): Context =
+              c.copy(request = ForeignRequest("not-a-hook-request"))
+          },
+          10
+        )
+      }
+    })
+    val dispatcher = EngineHookDispatcher(engineImpl.hooks)
+
+    val out = EngineService.runQueryWithHooks(
+      request    = QueryRequest("m", Nil, Nil, "", "test-engine"),
+      model      = dummyModel,
+      registry   = registry,
+      cache      = ResultCache.NoOp,
+      dispatcher = dispatcher
+    )
+
+    // Typed failure, NOT a thrown NonLocalReturnControl.
+    out.isLeft shouldBe true
+    val err = out.left.get
+    err shouldBe a [EngineError.ProviderInvocationFailed]
+    err.asInstanceOf[EngineError.ProviderInvocationFailed].reason shouldBe "UnexpectedRequestType"
+    // The engine must never be invoked on this path.
+    spark.callCount.get() shouldBe 0
   }
 
   test("runQueryWithHooks: missing engine in registry returns Left(EngineUnavailable)") {

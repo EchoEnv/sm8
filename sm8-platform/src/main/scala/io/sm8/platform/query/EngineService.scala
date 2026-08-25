@@ -68,7 +68,9 @@ import io.sm8.core.model.{FilterSpec, Model}
 import io.sm8.core.engine.EngineContext
 import io.sm8.core.engine.{ EngineHookRequest, EngineHookResult }
 import io.sm8.platform.query.hooks.EngineHookDispatcher
- import io.sm8.sdk.{Context, PipelineStage}
+import io.sm8.sdk.{Context, PipelineStage}
+
+import scala.util.control.NonFatal
 /**
  * Engine-portable path entry point. PR-C5a ships the engine
  * selection + QueryRequest build. The cache + execute segments
@@ -198,13 +200,7 @@ object EngineService {
    * that need a custom context (e.g. for tracing) pass it
    * explicitly.
    *
-   * @param model    the engine-portable model (used by the engine
-   *                 for compile)
-   * @param mcpReq   the engine-portable request from
-   *                 `buildMCPRequest`
-   * @param provider the selected engine provider from
-   *                 `selectEngine`
-   * @param ctx      the engine context (defaults to
+   * @param ctx          the engine context (defaults to
    *                 `EngineContext.defaultContext`)
    * @return         `Right(pqr)` on success; `Left(error)` on
    *                 engine error or runtime exception
@@ -218,25 +214,37 @@ object EngineService {
     try {
       provider.query(model, mcpReq, ctx)
     } catch {
-      case e: RuntimeException =>
-        // Per scala-error-handling: convert at the IO boundary.
-        // Legacy code threw `IllegalArgumentException` here,
-        // losing the typed error. The Scala version preserves it
-        // via `EngineError.ProviderInvocationFailed` — the closest
-        // variant for "engine execution failed unexpectedly".
-        //
-        // Per review pass #2 (DE-reviewer MAJOR #7): the `engine`
-        // field in `EngineError` is the engine identity (e.g.
-        // "spark", "trino"), not the model name. `EngineError`'s
-        // `toErrorDetail` formats `"<engine>"` as the error
-        // context, and downstream consumers filter errors by
-        // engine identity. Setting it to `model.name` broke
-        // error reporting — corrected to `provider.identity.name`.
+      // Per scala-error-handling: convert at the IO boundary.
+      // Legacy code threw `IllegalArgumentException` here,
+      // losing the typed error. The Scala version preserves it
+      // via `EngineError.ProviderInvocationFailed` — the closest
+      // variant for "engine execution failed unexpectedly".
+      //
+      // Only `NonFatal` is converted: an `Error` (OOM, ...) must
+      // propagate so a fatally-broken JVM fails loud, and an
+      // `InterruptedException` re-sets the thread's interrupt flag
+      // first so the cancellation is never lost (P1-S2).
+      //
+      // Per review pass #2 (DE-reviewer MAJOR #7): the `engine`
+      // field in `EngineError` is the engine identity (e.g.
+      // "spark", "trino"), not the model name. `EngineError`'s
+      // `toErrorDetail` formats `"<engine>"` as the error
+      // context, and downstream consumers filter errors by
+      // engine identity.
+      case e: InterruptedException =>
+        Thread.currentThread().interrupt()
         Left(EngineError.ProviderInvocationFailed(
           engine = provider.identity.name,
           name = provider.identity.name,
           reason = e.getClass.getSimpleName,
-          message = e.getMessage
+          message = Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
+        ))
+      case NonFatal(e) =>
+        Left(EngineError.ProviderInvocationFailed(
+          engine = provider.identity.name,
+          name = provider.identity.name,
+          reason = e.getClass.getSimpleName,
+          message = Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
         ))
     }
   }
@@ -375,10 +383,15 @@ object EngineService {
     // context.stop = true and the dispatcher skips this executor;
     // on MISS, the executor runs and writes back via PostExecute.
     val engineExecutor: Context => Either[EngineError, Context] = { ctx =>
-      val hookReq = ctx.request match {
-        case hookReq: EngineHookRequest => hookReq
+      // P1-S3: previously `case other => return Left(...)` used a
+      // non-local return inside the closure — it only worked because
+      // the dispatcher runs this thunk synchronously on the same
+      // thread; it would silently misbehave on any other thread.
+      // Compose via a typed Either + flatMap instead.
+      val hookReqE: Either[EngineError, EngineHookRequest] = ctx.request match {
+        case hookReq: EngineHookRequest => Right(hookReq)
         case other =>
-          return Left(EngineError.ProviderInvocationFailed(
+          Left(EngineError.ProviderInvocationFailed(
             engine = "<dispatcher>",
             name   = "EngineHookDispatcher",
             reason = "UnexpectedRequestType",
@@ -386,29 +399,31 @@ object EngineService {
               s"sm8: Context.request must be EngineHookRequest, got ${other.getClass.getName}"
           ))
       }
-      // Per-query decision oracle: the post-PreExecute Context.meta
-      // carries the broadcast + skew arm decisions (and the
-      // broadcast byte-gate threshold) from any registered plugin's
-      // hook. We fold them into a typed DecisionHints and pass as
-      // the 4th arg to executeEngine so the engine's seed helpers
-      // see eCtx.decisionHints instead of reading context.meta
-      // strings. None on each field means "no oracle; the adapter
-      // uses its inline fallback". The fold is naturally gated by
-      // "we only build decisionCtx when the executor fires" (a
-      // throwing oracle short-circuits the dispatcher before this
-      // thunk runs).
-      val decisionCtx: io.sm8.core.engine.EngineContext =
-        io.sm8.core.engine.EngineContext.defaultContext.copy(
-          decisionHints = Some(io.sm8.core.engine.DecisionHints(
-            broadcastArmed          = ctx.meta.get("sm8.broadcast.arm").collect { case b: Boolean => b },
-            skewArmed               = ctx.meta.get("sm8.skew.arm").collect { case b: Boolean => b },
-            broadcastThresholdBytes = ctx.meta.get("sm8.broadcast.thresholdBytes").collect { case l: Long => l }
-          ))
-        )
-      for {
-        provider <- selectEngine(model, request, registry)
-        pqr      <- executeEngine(model, hookReq.mcpRequest, provider, decisionCtx)
-      } yield ctx.copy(result = Some(EngineHookResult(pqr)))
+      hookReqE.flatMap { hookReq =>
+        // Per-query decision oracle: the post-PreExecute Context.meta
+        // carries the broadcast + skew arm decisions (and the
+        // broadcast byte-gate threshold) from any registered plugin's
+        // hook. We fold them into a typed DecisionHints and pass as
+        // the 4th arg to executeEngine so the engine's seed helpers
+        // see eCtx.decisionHints instead of reading context.meta
+        // strings. None on each field means "no oracle; the adapter
+        // uses its inline fallback". The fold is naturally gated by
+        // "we only build decisionCtx when the executor fires" (a
+        // throwing oracle short-circuits the dispatcher before this
+        // thunk runs).
+        val decisionCtx: io.sm8.core.engine.EngineContext =
+          io.sm8.core.engine.EngineContext.defaultContext.copy(
+            decisionHints = Some(io.sm8.core.engine.DecisionHints(
+              broadcastArmed          = ctx.meta.get("sm8.broadcast.arm").collect { case b: Boolean => b },
+              skewArmed               = ctx.meta.get("sm8.skew.arm").collect { case b: Boolean => b },
+              broadcastThresholdBytes = ctx.meta.get("sm8.broadcast.thresholdBytes").collect { case l: Long => l }
+            ))
+          )
+        for {
+          provider <- selectEngine(model, request, registry)
+          pqr      <- executeEngine(model, hookReq.mcpRequest, provider, decisionCtx)
+        } yield ctx.copy(result = Some(EngineHookResult(pqr)))
+      }
     }
     dispatcher
       .run(initialCtx, engineExecutor)

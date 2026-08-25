@@ -211,21 +211,29 @@ class SparkAggregationSpec extends AnyFunSuite with Matchers {
 
   // Category 2: Typed having (3 tests)
 
-  test("having: ComparisonOp.GT (region > 'd')") {
+  test("having: ComparisonOp.GE (amount >= 100) lowers to >= without MatchError (P1-SM8-01)") {
+    // P1-SM8-01 / B1: `ComparisonOp.GE` was the missing 6th arm of
+    // havingColumn — a `Having` with GE threw `MatchError` at runtime.
     val spark = buildSpark()
     try {
       val df = fixtureDF(spark)
       val req = QueryRequest(
         model      = "test",
         dimensions = Seq("region"),
-        having     = wrapHavings(Having[Region](Refs.region, ComparisonOp.GT,
-          Expr.Literal(LiteralValue.StringValue("d"), SealedDataType.Varchar))),
+        having     = wrapHavings(Having[Amount](Refs.amount, ComparisonOp.GE,
+          Expr.Literal(LiteralValue.DoubleValue(100.0), SealedDataType.Double))),
       )
+      // Before the fix this threw MatchError; now it returns a valid
+      // DataFrame plan containing `>=`.
       val result = TypedQueryCompiler(spark).apply(df, req, EngineContext.defaultContext)
       result.isRight shouldBe true
       val r = result.toOption.get
-      val regions = r.select("region").collect().map(_.getString(0)).toSet
-      regions shouldBe Set("east", "west")
+      val got = r.select("region", "amount").collect()
+        .map(row => (row.getString(0), row.getDouble(1))).toSet
+      // amount >= 100 → 100, 200, 300 (east) + 150 (west)
+      got shouldBe Set(
+        ("east", 100.0), ("east", 200.0), ("east", 300.0), ("west", 150.0)
+      )
     } finally spark.stop()
   }
 
@@ -433,4 +441,47 @@ class SparkAggregationSpec extends AnyFunSuite with Matchers {
       } finally spark.stop()
     }
   }
+
+  // -- P1-SM-04: Count over a non-ref expression counts non-null rows,
+  //    not all rows (the old inputCol narrowing silently dropped
+  //    Add(a, b) -> None -> COUNT(*) inflation). --
+  test("aggregateToColumn: Count over Add(a, b) counts non-null a+b rows, not all rows (P1-SM-04)") {
+    val spark = buildSpark()
+    try {
+      val nullSchema = StructType(Seq(
+        StructField("a", DoubleType, nullable = true),
+        StructField("b", DoubleType, nullable = true)
+      ))
+      val df = spark.createDataFrame(spark.sparkContext.parallelize(Seq(
+        Row(1.0, 2.0),       // a+b = 3.0, non-null -> counted
+        Row(1.0, null.asInstanceOf[java.lang.Double]), // a+b = null -> NOT counted
+        Row(null, 5.0),       // a+b = null -> NOT counted
+        Row(2.0, 3.0)        // a+b = 5.0, non-null -> counted
+      )), nullSchema)
+      val req = QueryRequest(
+        model    = "test",
+        dimensions  = Nil,
+        aggregateMeasures = Seq(TypedAggregateCall.of[Nothing](
+          name = "cnt",
+          fn   = AggregateFn.Count,
+          input = Some(Expr.Add(Expr.FieldRef("a"), Expr.FieldRef("b")))
+        )),
+        whereFilters = Nil,
+        having    = Nil,
+        partitionBy = Nil,
+        orderBy   = Nil,
+        window    = Nil,
+        limit     = None,
+        sortDirections = Nil
+      )
+      val result = TypedQueryCompiler(spark).apply(df, req, EngineContext.defaultContext)
+      result.isRight shouldBe true
+      val rows = result.toOption.get.collect()
+      // Before the fix this lowered to count(lit(1)) = 4 (all rows);
+      // after, Count on non-null a+b = 2.
+      rows.length shouldBe 1
+      rows.head.getLong(0) shouldBe 2L
+    } finally spark.stop()
+  }
+
 }

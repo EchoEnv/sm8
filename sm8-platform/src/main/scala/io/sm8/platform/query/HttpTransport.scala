@@ -79,16 +79,63 @@ import io.vertx.core.http.HttpServer
  * - `start(port)` binds + listens (awaits the bind future; returns
  *   the ACTUAL bound port — real for ephemeral `port = 0`).
  * - `stop()` shuts down the server via `HttpServer.close()`.
+ *
+ * @param model    the engine-portable model the server serves
+ * @param registry the engine registry used for engine selection
+ * @param cache    the result cache wired into the query service
+ * @param plugins  plugins whose hooks are registered on the query
+ *                 service's dispatcher (cache read/write, audit,
+ *                 row-cap, broadcast/skew oracle, materialize).
+ *                 Default `Nil` keeps the existing 3-arg call sites
+ *                 unchanged.
+ * @param metaInspectorEngineFn when defined, the `MetaInspectorService`
+ *                 is bound on the same endpoint so `sm8 inspect <key>`
+ *                 is served; the function returns the most recent
+ *                 request's `Context.meta` (the deployment module
+ *                 wires it to the hook pipeline).
  */
 final class HttpTransport(
     val model:    Model,
     val registry: EngineRegistry,
-    val cache:    ResultCache
+    val cache:    ResultCache,
+    val plugins:  Seq[io.sm8.sdk.Plugin] = Nil,
+    val metaInspectorEngineFn: Option[() => Map[String, Any]] = None
 ) {
 
   // The bound Vert.x HttpServer handle. Per scala-jvm-safemindset:
   // resource lifecycle — release via `stop()`.
   private var server: Option[HttpServer] = None
+
+  /** The composed Restate endpoint: `QueryService` (with the
+    * caller-supplied `plugins` registered on its hook dispatcher)
+    * plus `MetaInspectorService` when `metaInspectorEngineFn` is
+    * defined. Built once; `start` binds it. Exposed package-private
+    * so tests can introspect the bound services without binding a
+    * socket.
+    *
+    * The caller-supplied `plugins` are passed through so their
+    * hooks (cache read/write, audit, row-cap, broadcast/skew
+    * oracle, materialize) are registered on the dispatcher; if a
+    * `metaInspectorEngineFn` is provided, the MetaInspectorService
+    * is bound on the same endpoint so `sm8 inspect <key>` is
+    * served instead of a 404. */
+  private[query] lazy val endpoint: Endpoint = {
+    val baseEndpoint = Endpoint.builder()
+      .bind(QueryService.definition(
+        model    = model,
+        registry = registry,
+        cache    = cache,
+        plugins  = plugins,
+      ))
+    metaInspectorEngineFn match {
+      case Some(engineFn) =>
+        baseEndpoint
+          .bind(MetaInspectorService.definition(model, registry, engineFn))
+          .build()
+      case None =>
+        baseEndpoint.build()
+    }
+  }
 
   /**
    * Bind + start the HTTP server. Per scala-perf-testingmindset:
@@ -98,24 +145,13 @@ final class HttpTransport(
    * `IllegalStateException` (fail loud, per scala-jvm-safetymindset).
    *
    * @param port TCP port (default 8080 — Restate's default ingress
- *              port; `0` = ephemeral)
+   *             port; `0` = ephemeral)
    * @return    the ACTUAL bound TCP port (`actualPort()`)
    */
   def start(port: Int = 8080): Int = {
     if (server.isDefined) throw new IllegalStateException(
       "sm8: HTTP transport already started"
     )
-    // Compose the existing `QueryService.definition(...)` (per the
-    // canonical pattern). NoOp cache here; the production wiring
-    // would inject a real cache.
-    val endpoint: Endpoint = Endpoint.builder()
-      .bind(QueryService.definition(
-        model    = model,
-        registry = registry,
-        cache    = cache,
-        plugins  = Nil,
-      ))
-      .build()
     // Per Restate SDK 2.1.1 + Vert.x 4.5.x: `fromEndpoint(endpoint)`
     // returns an UN-listening Vert.x HttpServer; `.listen(port)` is
     // what actually binds the socket. Await the future so bind
@@ -149,9 +185,16 @@ final class HttpTransport(
 
 object HttpTransport {
 
-  /** Factory for the canonical wiring. Per karphyaguidsmindset
-    * "smallest correct core": 3-arg ctor is the minimal contract —
-    * the caller (deployment module) wires the cache. */
-  def apply(model: Model, registry: EngineRegistry, cache: ResultCache): HttpTransport =
-    new HttpTransport(model, registry, cache)
+  /** Factory for the canonical wiring. The caller (deployment
+    * module) supplies the cache, plugins, and meta inspector; the
+    * new params default to the existing behaviour so existing 3-arg
+    * call sites are unchanged. */
+  def apply(
+      model:    Model,
+      registry: EngineRegistry,
+      cache:    ResultCache,
+      plugins:  Seq[io.sm8.sdk.Plugin] = Nil,
+      metaInspectorEngineFn: Option[() => Map[String, Any]] = None
+  ): HttpTransport =
+    new HttpTransport(model, registry, cache, plugins, metaInspectorEngineFn)
 }

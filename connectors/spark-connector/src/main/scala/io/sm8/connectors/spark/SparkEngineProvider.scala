@@ -164,6 +164,30 @@ final class SparkEngineProvider(
  case _: Throwable => ()
  }
 
+ /** P1-SM-02: re-initialize `@transient` fields after Java
+ * deserialization. `querySessionTL`, `lastQuerySessionTL`, and
+ * `persistedFrames` are deliberately `@transient` (a SparkSession
+ * must not be held in a ThreadLocal across journal replays), but
+ * serialization then leaves them `null`, so a provider restored
+ * from bytes NPEs on the first `query()` (`querySessionTL.get`)
+ * or `close()` (`persistedFrames.asScala`).
+ *
+ * Returning a fresh instance carrying the deserialized
+ * non-transient constructor state (spark, bridge,
+ * sparkEngineName, hookRunner) gives the replacement fully
+ * initialized ThreadLocals + persist-map. All per-call state is
+ * dropped, which is correct: the per-query session design never
+ * shares sessions across calls.
+ *
+ * @throws java.io.ObjectStreamException if the replacement cannot
+ *         be constructed
+ * @return a fully-initialized provider sharing the restored
+ *         constructor state
+ */
+ @throws[java.io.ObjectStreamException]
+ private def readResolve(): Object =
+  new SparkEngineProvider(spark, bridge, sparkEngineName, hookRunner)
+
  // PR-M4 (GAP 5 — the most critical): the IR-extension path
  // (PR-H/I/J/K/L) was inert in production — `query` called
  // `PortableQueryCompiler.compile(model, ctx)` directly, bypassing
