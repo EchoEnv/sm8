@@ -49,6 +49,8 @@ import io.sm8.sdk.{
   PreHook
 }
 
+import scala.util.control.NonFatal
+
 /**
  * Pure hook dispatcher around the engine-portable Execute stage.
  *
@@ -111,6 +113,11 @@ final class EngineHookDispatcher private (hooks: HookManager) extends io.sm8.sdk
    * hook identity (name + priority + stage) + the underlying message.
    * The hook `message` is sanitized via `Option(e.getMessage).getOrElse(...)`
    * to avoid JVM-internal variable-name leaks.
+   *
+   * Only `NonFatal` throws are wrapped: an `Error` (OOM, ...) must
+   * propagate to the `executeEngine` boundary, and an
+   * `InterruptedException` re-sets the thread's interrupt flag first
+   * so the cancellation is never lost.
    */
   private def firePre(stage: PipelineStage, ctx: Context): Either[EngineError, Context] = {
     val hookStage: HookStage = preStageFor(stage)
@@ -119,7 +126,16 @@ final class EngineHookDispatcher private (hooks: HookManager) extends io.sm8.sdk
       acc.flatMap { c =>
         if (c.stop) Right(c)
         else try Right(h.run(c)) catch {
-          case e: Throwable => Left(EngineError.HookFailed(
+          case e: InterruptedException =>
+            Thread.currentThread().interrupt()
+            Left(EngineError.HookFailed(
+              engine = "<dispatcher>",
+              name = h.name,
+              priority = p,
+              stage = hookStage.toString,
+              message = Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
+            ))
+          case NonFatal(e) => Left(EngineError.HookFailed(
             engine = "<dispatcher>",
             name = h.name,
             priority = p,
@@ -155,7 +171,16 @@ final class EngineHookDispatcher private (hooks: HookManager) extends io.sm8.sdk
       acc.flatMap { c =>
         if (c.stop && !h.runsOnStop) Right(c)
         else try Right(h.run(c)) catch {
-          case e: Throwable => Left(EngineError.HookFailed(
+          case e: InterruptedException =>
+            Thread.currentThread().interrupt()
+            Left(EngineError.HookFailed(
+              engine = "<dispatcher>",
+              name = h.name,
+              priority = p,
+              stage = hookStage.toString,
+              message = Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
+            ))
+          case NonFatal(e) => Left(EngineError.HookFailed(
             engine = "<dispatcher>",
             name = h.name,
             priority = p,

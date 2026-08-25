@@ -262,15 +262,25 @@ class EngineHookDispatcherSpec extends AnyFunSuite with Matchers {
     err.asInstanceOf[io.sm8.core.engine.EngineError.HookFailed].message should include ("simulated")
   }
 
-  test("dispatcher: PostHook that throws returns typed EngineError.HookFailed") {
+  test("dispatcher: PreExecute hook throwing OutOfMemoryError PROPAGATES (never Left(HookFailed))") {
+    // P1-E1: the dispatcher's catch was `case e: Throwable` — an
+    // `OutOfMemoryError` from a hook was swallowed into a typed Left
+    // while the JVM was fatally broken. After the NonFatal narrowing
+    // it must propagate to the caller unchanged.
     val plugin = new FailingHookPlugin(
-      pluginName = "failing-post",
-      hookStage = HookStage.PostExecute,
+      pluginName = "oom-pre",
+      hookStage = HookStage.PreExecute,
       register = engine => {
-        engine.hooks.registerPostHook(
-          HookStage.PostExecute,
-          new FailingPostHook("failing-post", 60),
-          60
+        engine.hooks.registerPreHook(
+          HookStage.PreExecute,
+          new PreHook {
+            override val name: String = "oom-pre"
+            override val priority: Int = 50
+            override def stage: HookStage = HookStage.PreExecute
+            override def run(c: Context): Context =
+              throw new OutOfMemoryError("simulated OOM")
+          },
+          50
         )
       }
     )
@@ -279,6 +289,48 @@ class EngineHookDispatcherSpec extends AnyFunSuite with Matchers {
     val dispatcher = EngineHookDispatcher(engine.hooks)
 
     val provider = sampleProvider
+    val thrown = intercept[OutOfMemoryError] {
+      EngineService.runQueryWithHooks(
+        request    = QueryRequest("m", Nil, Nil, "", ""),
+        model      = sampleModel,
+        registry   = registryWith(provider),
+        cache      = ResultCache.NoOp,
+        dispatcher = dispatcher
+      )
+    }
+    thrown.getMessage should include ("simulated OOM")
+    provider.callCount.get() shouldBe 0
+  }
+
+  test("dispatcher: PreExecute hook throwing InterruptedException restores the interrupt flag") {
+    // P1-E1: `case e: Throwable` lost the thread's interrupt flag —
+    // after dispatch the thread appeared un-interrupted. The
+    // NonFatal path must re-set it so the cancellation is observed.
+    val plugin = new FailingHookPlugin(
+      pluginName = "interrupt-pre",
+      hookStage = HookStage.PreExecute,
+      register = engine => {
+        engine.hooks.registerPreHook(
+          HookStage.PreExecute,
+          new PreHook {
+            override val name: String = "interrupt-pre"
+            override val priority: Int = 50
+            override def stage: HookStage = HookStage.PreExecute
+            override def run(c: Context): Context =
+              throw new InterruptedException("simulated interrupt")
+          },
+          50
+        )
+      }
+    )
+    val engine = new io.sm8.core.EngineImpl
+    plugin.setup(engine)
+    val dispatcher = EngineHookDispatcher(engine.hooks)
+
+    val provider = sampleProvider
+    // Clear any pre-existing interrupt state so the assertion is
+    // about THIS dispatch, not leftover state.
+    Thread.interrupted()
     val result = EngineService.runQueryWithHooks(
       request    = QueryRequest("m", Nil, Nil, "", ""),
       model      = sampleModel,
@@ -288,8 +340,9 @@ class EngineHookDispatcherSpec extends AnyFunSuite with Matchers {
     )
 
     result.isLeft shouldBe true
-    val err = result.left.toOption.get
-    err shouldBe a [io.sm8.core.engine.EngineError.HookFailed]
-    err.asInstanceOf[io.sm8.core.engine.EngineError.HookFailed].name shouldBe "failing-post"
+    result.left.toOption.get shouldBe a [io.sm8.core.engine.EngineError.HookFailed]
+    // The flag must be re-set on the current thread.
+    Thread.interrupted() shouldBe true
+    provider.callCount.get() shouldBe 0
   }
 }
