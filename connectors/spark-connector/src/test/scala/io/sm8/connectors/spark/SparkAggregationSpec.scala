@@ -211,21 +211,29 @@ class SparkAggregationSpec extends AnyFunSuite with Matchers {
 
   // Category 2: Typed having (3 tests)
 
-  test("having: ComparisonOp.GT (region > 'd')") {
+  test("having: ComparisonOp.GE (amount >= 100) lowers to >= without MatchError (P1-SM8-01)") {
+    // P1-SM8-01 / B1: `ComparisonOp.GE` was the missing 6th arm of
+    // havingColumn — a `Having` with GE threw `MatchError` at runtime.
     val spark = buildSpark()
     try {
       val df = fixtureDF(spark)
       val req = QueryRequest(
         model      = "test",
         dimensions = Seq("region"),
-        having     = wrapHavings(Having[Region](Refs.region, ComparisonOp.GT,
-          Expr.Literal(LiteralValue.StringValue("d"), SealedDataType.Varchar))),
+        having     = wrapHavings(Having[Amount](Refs.amount, ComparisonOp.GE,
+          Expr.Literal(LiteralValue.DoubleValue(100.0), SealedDataType.Double))),
       )
+      // Before the fix this threw MatchError; now it returns a valid
+      // DataFrame plan containing `>=`.
       val result = TypedQueryCompiler(spark).apply(df, req, EngineContext.defaultContext)
       result.isRight shouldBe true
       val r = result.toOption.get
-      val regions = r.select("region").collect().map(_.getString(0)).toSet
-      regions shouldBe Set("east", "west")
+      val got = r.select("region", "amount").collect()
+        .map(row => (row.getString(0), row.getDouble(1))).toSet
+      // amount >= 100 → 100, 200, 300 (east) + 150 (west)
+      got shouldBe Set(
+        ("east", 100.0), ("east", 200.0), ("east", 300.0), ("west", 150.0)
+      )
     } finally spark.stop()
   }
 

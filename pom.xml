@@ -272,5 +272,45 @@
         </plugins>
       </build>
     </profile>
+
+    <!-- Strict sealed-pattern-match profile: -Pstrict-patmat adds
+         `-Xlint:strict-unsealed-patmat` so a missing sealed-trait
+         arm (e.g. a new ComparisonOp without a lowering case)
+         emits a build-time exhaustivity warning instead of only
+         failing with a runtime MatchError. Opt-in by design.
+
+         NOTE: deliberately NOT paired with `-Xfatal-warnings`: the
+         spark-connector currently carries several unrelated
+         pre-existing warnings (deprecated JavaConverters/varargs
+         arrays, two pre-existing non-exhaustive matches in
+         MinimalRelOpLowerer), so a blanket fatal-warnings would
+         fail the module regardless of the sealed-pattern fix. Once
+         those are cleaned, add `-Xfatal-warnings` here to upgrade
+         the warning to a hard build error.
+
+         Per scala-bug-hunting-mindset "exhaustive matches":
+         compiler-checked exhaustivity is the durable fix for the
+         P1-SM8-01 class of bug (missing ComparisonOp.GE arm).
+         Scala 2.13.5+ supports the flag. -->
+    <profile>
+      <id>strict-patmat</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>net.alchim31.maven</groupId>
+            <artifactId>scala-maven-plugin</artifactId>
+            <configuration>
+              <scalaVersion>${scala.version}</scalaVersion>
+              <args>
+                <arg>-deprecation</arg>
+                <arg>-feature</arg>
+                <arg>-unchecked</arg>
+                <arg>-Xlint:strict-unsealed-patmat</arg>
+              </args>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
   </profiles>
 </project>

@@ -428,9 +428,17 @@ final class TypedQueryCompiler private (private val spark: org.apache.spark.sql.
     if (cols.isEmpty) df.groupBy(dimCols: _*).count()
     else df.groupBy(dimCols: _*).agg(cols.head, cols.tail: _*)
   }
+
   /** Convert a typed `Having[D]` to a Spark `Column` predicate.
-    * Per  SS3: exhaustive over the
-    * 6-case `ComparisonOp` ADT (compiler-checked). */
+    * Matches all 6 `ComparisonOp` arms (EQ/NE/LT/LE/GE/GT) so a
+    * `Having` with `GE` no longer throws `MatchError` at runtime.
+    * The optional `-Xlint:strict-unsealed-patmat` Maven profile
+    * (parent pom) makes a future missing arm a build failure.
+    *
+    * @param h the typed having predicate
+    * @return  `Right(Column)` for the comparison; `Left(EngineError)`
+    *          if the value expr fails to lower
+    */
   private def havingColumn(h: Having[Nothing]): Either[EngineError, Column] = {
     val left = functions.col(h.dimension.name)
     val rightE = PortableExprCompiler.toColumn(h.value)
@@ -440,6 +448,7 @@ final class TypedQueryCompiler private (private val spark: org.apache.spark.sql.
         case ComparisonOp.NE => left =!= right
         case ComparisonOp.LT => left < right
         case ComparisonOp.LE => left <= right
+        case ComparisonOp.GE => left >= right
         case ComparisonOp.GT => left > right
       }
     }
