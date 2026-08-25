@@ -25,12 +25,24 @@
  *
  * Per scala-data-driven-refactor-mindset "sealed-trait dispatch":
  * the only branching in this file is the match on `Left`/`Right`
-import io.sm8.core.engine.{ EngineHookRequest, EngineHookResult }
-import io.sm8.sdk.{Context, HookManager, HookStage, PipelineStage, PostHook, PreHook}
- * fail-fast. The dispatcher does NOT wrap them — they propagate
- * to the caller's `Either` via the engine-call boundary. Plugin
- * authors who want non-fatal hooks must `try/catch` inside the
- * hook function.
+ * and the `try/catch` in `firePre`/`firePost`.
+ *
+ * Hook-throw contract (the same promise as `run`'s scaladoc and the
+ * inline comment on `firePre`): every hook throw seen here is either
+ * wrapped or deliberately propagated — never swallowed.
+ *
+ * - A `NonFatal` throw (a `RuntimeException`, a checked exception,
+ *   etc.) is caught and returned as `Left(EngineError.HookFailed)`,
+ *   with the hook's identity (name + priority + stage) and a
+ *   sanitized message, so the caller can pattern-match on which
+ *   hook failed.
+ * - An `InterruptedException` takes the same path, but the thread's
+ *   interrupt flag is RE-SET first so the cancellation signal is
+ *   never lost.
+ * - A fatal `Error` (OOM, ...) is NOT caught here — it must
+ *   propagate to `EngineService.executeEngine`, which likewise only
+ *   converts `NonFatal`, so a fatally-broken JVM fails loud instead
+ *   of being swallowed into a typed error.
  *
  * Per scala-jvm-safety-mindset "null is a liar": the
  * dispatcher accepts a non-null `HookManager` at construction
@@ -75,11 +87,16 @@ final class EngineHookDispatcher private (hooks: HookManager) extends io.sm8.sdk
    * (or after the short-circuit). They may mutate the result
    * (observer plugins record state; mutator plugins cap rows).
    *
-   * Per RFC §9 fail-fast: hook throws are NOT caught here — they
-   * propagate to the caller's `EngineService.executeEngine`
-   * boundary, which converts them to `EngineError` via the
-   * `RuntimeException`-catching block already present there.
-   */
+ * Hook-throw contract (same as the file header and the inline
+ * comment on `firePre`): a `NonFatal` throw from any Pre/Post hook
+ * is caught here and returned as `Left(EngineError.HookFailed)`;
+ * an `InterruptedException` takes the same path but re-sets the
+ * thread's interrupt flag first so the cancellation is never lost.
+ * A fatal `Error` (OOM, ...) is NOT caught — it propagates to
+ * `EngineService.executeEngine`, which converts only `NonFatal`
+ * to `EngineError.ProviderInvocationFailed`, so a fatally-broken
+ * JVM fails loud instead of being swallowed.
+ */
   def run(
       initial: Context,
       execute: Context => Either[EngineError, Context]

@@ -3,7 +3,7 @@
  *
  * Test categories per ADR-008-R §"Decision":
  *   1. Typed aggregateMeasures (5 tests -- Sum, Count, Avg, CountDistinct, Min+Max)
- *   2. Typed having (3 tests -- GT, EQ, LE)
+ *   2. Typed having (6 tests -- GT, GE, EQ, NE, LE, LT)
  *   3. Typed orderBy + partitionBy (2 tests)
  *   4. No-op (1 test -- legacy 19 callers)
  *
@@ -209,7 +209,7 @@ class SparkAggregationSpec extends AnyFunSuite with Matchers {
     } finally spark.stop()
   }
 
-  // Category 2: Typed having (3 tests)
+  // Category 2: Typed having (6 tests)
 
   test("having: ComparisonOp.GE (amount >= 100) lowers to >= without MatchError (P1-SM8-01)") {
     // P1-SM8-01 / B1: `ComparisonOp.GE` was the missing 6th arm of
@@ -234,6 +234,70 @@ class SparkAggregationSpec extends AnyFunSuite with Matchers {
       got shouldBe Set(
         ("east", 100.0), ("east", 200.0), ("east", 300.0), ("west", 150.0)
       )
+    } finally spark.stop()
+  }
+
+  test("having: ComparisonOp.GT (amount > 100)") {
+    val spark = buildSpark()
+    try {
+      val df = fixtureDF(spark)
+      val req = QueryRequest(
+        model      = "test",
+        dimensions = Seq("region"),
+        having     = wrapHavings(Having[Amount](Refs.amount, ComparisonOp.GT,
+          Expr.Literal(LiteralValue.DoubleValue(100.0), SealedDataType.Double))),
+      )
+      val result = TypedQueryCompiler(spark).apply(df, req, EngineContext.defaultContext)
+      result.isRight shouldBe true
+      val r = result.toOption.get
+      val got = r.select("region", "amount").collect()
+        .map(row => (row.getString(0), row.getDouble(1))).toSet
+      // amount > 100 → 200, 300 (east) + 150 (west)
+      got shouldBe Set(
+        ("east", 200.0), ("east", 300.0), ("west", 150.0)
+      )
+    } finally spark.stop()
+  }
+
+  test("having: ComparisonOp.NE (id != 3)") {
+    val spark = buildSpark()
+    try {
+      val df = fixtureDF(spark)
+      val req = QueryRequest(
+        model      = "test",
+        dimensions = Seq("region"),
+        having     = wrapHavings(Having[Id](Refs.id, ComparisonOp.NE,
+          Expr.Literal(LiteralValue.LongValue(3L), SealedDataType.BigInt))),
+      )
+      val result = TypedQueryCompiler(spark).apply(df, req, EngineContext.defaultContext)
+      result.isRight shouldBe true
+      val r = result.toOption.get
+      val got = r.select("region", "id").collect()
+        .map(row => (row.getString(0), row.getLong(1))).toSet
+      // id != 3 → every row except (east, 3)
+      got shouldBe Set(
+        ("east", 1L), ("east", 2L), ("west", 4L), ("west", 5L), ("west", 6L)
+      )
+    } finally spark.stop()
+  }
+
+  test("having: ComparisonOp.LT (amount < 100)") {
+    val spark = buildSpark()
+    try {
+      val df = fixtureDF(spark)
+      val req = QueryRequest(
+        model      = "test",
+        dimensions = Seq("region"),
+        having     = wrapHavings(Having[Amount](Refs.amount, ComparisonOp.LT,
+          Expr.Literal(LiteralValue.DoubleValue(100.0), SealedDataType.Double))),
+      )
+      val result = TypedQueryCompiler(spark).apply(df, req, EngineContext.defaultContext)
+      result.isRight shouldBe true
+      val r = result.toOption.get
+      val got = r.select("region", "amount").collect()
+        .map(row => (row.getString(0), row.getDouble(1))).toSet
+      // amount < 100 → 50, 75 (west)
+      got shouldBe Set(("west", 50.0), ("west", 75.0))
     } finally spark.stop()
   }
 
