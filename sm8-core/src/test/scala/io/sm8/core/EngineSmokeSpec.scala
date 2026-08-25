@@ -83,10 +83,15 @@ class EngineSmokeSpec extends AnyFlatSpec with Matchers {
     result shouldBe a [ConnectorResult]
   }
 
-  it should "report an unknown connector name gracefully (no crash, stub result)" in {
+  it should "surface an unknown connector name as a typed ConnectorError (P1-A3-E4), never empty rows" in {
     val engine   = EngineImpl()
     val request  = ConnectorRequest(connectorName = "nonexistent", query = StubQuery(false))
     val result   = engine.run(request)
-    result shouldBe a [ConnectorResult]
+    // Previously this returned ConnectorResult("nonexistent", empty, empty)
+    // — a silent success; now it must be a typed EngineUnavailable.
+    result shouldBe a [ConnectorError]
+    val err = result.asInstanceOf[ConnectorError]
+    err.connectorName shouldBe "nonexistent"
+    err.error shouldBe a [io.sm8.core.engine.EngineError.EngineUnavailable]
   }
 }

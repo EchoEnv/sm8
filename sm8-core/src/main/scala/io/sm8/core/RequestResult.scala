@@ -12,6 +12,7 @@
  */
 package io.sm8.core
 
+import io.sm8.core.engine.EngineError
 import io.sm8.sdk.{ConnectorSchema, Request, Result, ResultRows, SemanticQuery}
 
 /**
@@ -25,11 +26,26 @@ final case class ConnectorRequest(
 
 /**
  * The result of executing a `ConnectorRequest`. Carries the
- * Connector's response rows + schema. Wraps both into the SDK's
+ * Connector's response rows + schema. Wraps both into the engine's
  * portable row + schema shapes.
  */
 final case class ConnectorResult(
  connectorName: String,
  schema: ConnectorSchema,
  rows: ResultRows
+) extends Result
+
+/**
+ * A typed failure surfaced by the pipeline instead of a silent empty
+ * success. Replaces the earlier unknown-connector stub
+ * (`ConnectorResult(name, empty schema, empty rows)`), which a typo'd
+ * connector name turned into an empty, successful result. An
+ * unknown connector is `EngineError.EngineUnavailable`; an unknown
+ * request type is `EngineError.UnsupportedCapability` — both travel
+ * in the Result envelope so callers observe the typed failure
+ * (P1-A3-E4).
+ */
+final case class ConnectorError(
+ connectorName: String,
+ error: EngineError
 ) extends Result
