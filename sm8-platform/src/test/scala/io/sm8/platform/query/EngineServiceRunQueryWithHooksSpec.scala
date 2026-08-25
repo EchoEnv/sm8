@@ -50,7 +50,10 @@ import io.sm8.core.model.{
   SourceRef
 }
 import io.sm8.core.schema.{Field, SealedDataType}
+import io.sm8.core.rel.JoinKind
+import io.sm8.core.model.JoinSpec
 import io.sm8.plugins.cache.CachePlugin
+import io.sm8.sdk.{Context, HookStage, PreHook}
 import io.sm8.platform.query.hooks.EngineHookDispatcher
 
 class EngineServiceRunQueryWithHooksSpec extends AnyFunSuite with Matchers {
@@ -90,7 +93,13 @@ class EngineServiceRunQueryWithHooksSpec extends AnyFunSuite with Matchers {
       var queryResult: Either[EngineError, PortableQueryResult] =
         Right(wiringPortable),
       var queryThrowable: RuntimeException = null,
-      val callCount: AtomicInteger = new AtomicInteger(0)
+      val callCount: AtomicInteger = new AtomicInteger(0),
+      // ADR per-query decision oracle: the stub captures the
+      // EngineContext it received so the tests can assert that
+      // EngineService folded the post-hook decision into
+      // ctx.decisionHints.
+      val capturedCtx: java.util.concurrent.atomic.AtomicReference[Option[EngineContext]] =
+        new java.util.concurrent.atomic.AtomicReference(None)
   ) extends EngineProvider {
 
     override def query(
@@ -99,6 +108,7 @@ class EngineServiceRunQueryWithHooksSpec extends AnyFunSuite with Matchers {
         ctx: EngineContext
     ): Either[EngineError, PortableQueryResult] = {
       callCount.incrementAndGet()
+      capturedCtx.set(Some(ctx))
       if (queryThrowable != null) throw queryThrowable
       queryResult
     }
@@ -180,17 +190,24 @@ class EngineServiceRunQueryWithHooksSpec extends AnyFunSuite with Matchers {
     spark.callCount.get() shouldBe 1   // unchanged — engine skipped
   }
 
-  test("runQueryWithHooks: engine unavailable → Left(EngineUnavailable)") {
-    val spark = new StubProvider(
+  test("runQueryWithHooks: missing engine in registry returns Left(EngineUnavailable)") {
+    // EngineRegistry requires the default to be available at
+    // startup. Put an available default in the map + request a
+    // non-default name ("ghost") that's not in the map at all ->
+    // select returns Left(EngineUnavailable).
+    val defaultProvider = new StubProvider(
       EngineIdentity("test-engine", "1.0", "1.0"),
       available = true
     )
-    val registry   = makeRegistry(Map("test-engine" -> spark), default = "test-engine")
+    val registry = EngineRegistry(
+      engines = Map("test-engine" -> defaultProvider),
+      default = "test-engine"
+    )
     val dispatcher = hookDispatcherWith(ResultCache.NoOp)
 
-    // Request asks for "missing" — registry's select returns Left.
+    // Request asks for "ghost" — not in the registry at all.
     val out = EngineService.runQueryWithHooks(
-      request    = QueryRequest("m", Nil, Nil, "", "missing"),
+      request    = QueryRequest("m", Nil, Nil, "", "ghost"),
       model      = dummyModel,
       registry   = registry,
       cache      = ResultCache.NoOp,
@@ -199,4 +216,200 @@ class EngineServiceRunQueryWithHooksSpec extends AnyFunSuite with Matchers {
     out.isLeft shouldBe true
     out.left.get shouldBe a [EngineError.EngineUnavailable]
   }
+  private val broadcastStubRegistry: (io.sm8.core.EngineImpl, EngineRegistry) = {
+    val engineImpl = new io.sm8.core.EngineImpl
+    engineImpl.use(new io.sm8.plugins.broadcast.BroadcastStub)
+    engineImpl.use(new io.sm8.plugins.skew.SkewStub)
+    val spark = new StubProvider(
+      EngineIdentity("test-engine", "1.0", "1.0"),
+      available = true
+    )
+    val registry = makeRegistry(Map("test-engine" -> spark))
+    (engineImpl, registry)
+  }
+
+  test("ADR-009-d v0.3: no-oracle path — EngineService.runQueryWithHooks folds empty decisionHints; inline fallback fires") {
+    // No BroadcastStub/SkewStub registered on the engine impl.
+    val engineImpl = new io.sm8.core.EngineImpl
+    val spark = new StubProvider(
+      EngineIdentity("test-engine", "1.0", "1.0"),
+      available = true
+    )
+    val registry = makeRegistry(Map("test-engine" -> spark))
+    val dispatcher = EngineHookDispatcher(engineImpl.hooks)
+    val out = EngineService.runQueryWithHooks(
+      request    = QueryRequest("m", Nil, Nil, "", "test-engine"),
+      model      = dummyModel,
+      registry   = registry,
+      cache      = ResultCache.NoOp,
+      dispatcher = dispatcher
+    )
+    out.isRight shouldBe true
+    val capturedCtx = spark.capturedCtx.get.getOrElse(fail("engine ctx was not captured"))
+    // No oracle: decisionHints is Some(DecisionHints(...all None...))
+    // (the fold ran; no plugin wrote any keys).
+    capturedCtx.decisionHints shouldBe defined
+    capturedCtx.decisionHints.get.broadcastArmed shouldBe None
+    capturedCtx.decisionHints.get.skewArmed shouldBe None
+    capturedCtx.decisionHints.get.broadcastThresholdBytes shouldBe None
+  }
+
+  test("ADR-009-d v0.3: oracle-wired path — BroadcastStub + SkewStub arm the decisionHints fields on the per-query EngineContext") {
+    // Both stubs registered: the post-PreExecute Context.meta
+    // carries the arm Booleans + threshold bytes; the fold
+    // populates EngineContext.decisionHints.
+    val (engineImpl, registry) = broadcastStubRegistry
+    val spark: StubProvider = registry.select("test-engine").fold(
+      _ => fail("registry did not return the test provider"),
+      p => p.asInstanceOf[StubProvider])
+    val dispatcher = EngineHookDispatcher(engineImpl.hooks)
+    val out = EngineService.runQueryWithHooks(
+      request    = QueryRequest("m", Nil, Nil, "", "test-engine"),
+      model      = dummyModel,
+      registry   = registry,
+      cache      = ResultCache.NoOp,
+      dispatcher = dispatcher
+    )
+    out.isRight shouldBe true
+    // The StubProvider captured the EngineContext that
+    // EngineService passed to engineExecutor (the fold
+    // populated decisionHints from the post-PreExecute Context.meta).
+    val capturedCtx: EngineContext = spark.capturedCtx.get.getOrElse(
+      fail("engine ctx was not captured by the stub provider"))
+    val hints = capturedCtx.decisionHints.getOrElse(
+      fail("decisionHints was not populated (the fold did not run)"))
+    hints.broadcastArmed shouldBe Some(false)
+  }
+  test("ADR-009-d v0.3: throwing-oracle path — a PreExecute hook that throws yields Left(EngineError.HookFailed) and the engine is NEVER invoked") {
+   // Per ADR-008-AF v1.0 + the v0.3 P1-C closure (dispatcher owns
+   // the 5-field HookFailed construction): a plugin hook that
+   // throws in PreExecute.run propagates to the dispatcher's
+   // existing catch — engineExecutor never runs, so the
+   // StubProvider's callCount stays at 0 and the capturedCtx
+   // stays at None (no ThreadLocal leak; no engine invocation).
+   val engineImpl = new io.sm8.core.EngineImpl
+   engineImpl.hooks.registerPreHook(
+     HookStage.PreExecute,
+     new ThrowingPreStubHook,
+     priority = 250)
+   val spark = new StubProvider(
+     EngineIdentity("test-engine", "1.0", "1.0"),
+     available = true)
+   val registry   = makeRegistry(Map("test-engine" -> spark))
+   val dispatcher = EngineHookDispatcher(engineImpl.hooks)
+   val out = EngineService.runQueryWithHooks(
+     request    = QueryRequest("m", Nil, Nil, "", "test-engine"),
+     model      = dummyModel,
+     registry   = registry,
+     cache      = ResultCache.NoOp,
+     dispatcher = dispatcher
+   )
+   // Left(HookFailed) with all 5 fields populated.
+   out.isLeft shouldBe true
+   val err = out.left.get
+   err shouldBe a [EngineError.HookFailed]
+   val hf = err.asInstanceOf[EngineError.HookFailed]
+   hf.engine   shouldBe "<dispatcher>"
+   hf.name     shouldBe "throwing-stub"
+   hf.priority shouldBe 250
+   hf.stage    shouldBe "PreExecute"
+   // Sanitized message (the dispatcher's Option(getMessage).getOrElse(...)
+   // rule — synthetic Throwable with a real .getMessage).
+   hf.message  shouldBe "boom"
+   // Engine never invoked; capturedCtx stays None (no ThreadLocal
+   // leak — EngineService never populated it for this query).
+   spark.callCount.get() shouldBe 0
+   spark.capturedCtx.get() shouldBe None
+  }
+
+  test("ADR-009-d v0.3: oracle-wired path with real join — estimatedRows=Some(1M) arms broadcast (≤10M) and disarms skew (<1B)") {
+   // F4 strengthen: the existing oracle-wired test (L254) used a
+   // no-joins model so both stubs computed arm=false. This test
+   // wires a model with one join whose estimatedRows = 1_000_000
+   // (small enough for the broadcast value-consult to arm; well
+   // below the 1B skew threshold so skew disarms). Falsifiable
+   // proof that the broadcast value-consult genuinely fires.
+   val modelWithSmallJoin: Model = dummyModel.copy(
+     joins = List(JoinSpec(
+       name        = "orders.customers",
+       rightModel  = "customers",
+       kind        = JoinKind.Inner,
+       keys        = List("region" -> "region"),
+       estimatedRows = Some(1_000_000L))))
+   val (engineImpl, registry) = broadcastStubRegistry
+   val spark: StubProvider = registry.select("test-engine").fold(
+     _ => fail("registry did not return the test provider"),
+     p => p.asInstanceOf[StubProvider])
+   val dispatcher = EngineHookDispatcher(engineImpl.hooks)
+   val out = EngineService.runQueryWithHooks(
+     request    = QueryRequest("m", Nil, Nil, "", "test-engine"),
+     model      = modelWithSmallJoin,
+     registry   = registry,
+     cache      = ResultCache.NoOp,
+     dispatcher = dispatcher
+   )
+   out.isRight shouldBe true
+   val capturedCtx: EngineContext = spark.capturedCtx.get.getOrElse(
+     fail("engine ctx was not captured by the stub provider"))
+   val hints = capturedCtx.decisionHints.getOrElse(
+     fail("decisionHints was not populated (the fold did not run)"))
+   // Broadcast value-consult: 1M <= 10M threshold → arm = true.
+   hints.broadcastArmed shouldBe Some(true)
+   // Skew value-consult: 1M < 1B threshold → arm = false.
+   hints.skewArmed shouldBe Some(false)
+  hints.broadcastThresholdBytes shouldBe Some(10L * 1024L * 1024L: Long)
+  }
+
+  test("ADR-009-d v0.3: oracle-wired path with real join — estimatedRows=Some(2B) arms skew (≥1B) and disarms broadcast (>10M)") {
+   // Mirror of the previous test with a join whose estimatedRows
+   // is well past BOTH thresholds: skew arms (2B >= 1B), broadcast
+   // disarms (2B > 10M).
+   val modelWithLargeJoin: Model = dummyModel.copy(
+     joins = List(JoinSpec(
+       name        = "orders.events",
+       rightModel  = "events",
+       kind        = JoinKind.Inner,
+       keys        = List("region" -> "region"),
+       estimatedRows = Some(2_000_000_000L))))
+   val (engineImpl, registry) = broadcastStubRegistry
+   val spark: StubProvider = registry.select("test-engine").fold(
+     _ => fail("registry did not return the test provider"),
+     p => p.asInstanceOf[StubProvider])
+   val dispatcher = EngineHookDispatcher(engineImpl.hooks)
+   val out = EngineService.runQueryWithHooks(
+     request    = QueryRequest("m", Nil, Nil, "", "test-engine"),
+     model      = modelWithLargeJoin,
+     registry   = registry,
+     cache      = ResultCache.NoOp,
+     dispatcher = dispatcher
+   )
+   out.isRight shouldBe true
+   val capturedCtx: EngineContext = spark.capturedCtx.get.getOrElse(
+     fail("engine ctx was not captured by the stub provider"))
+   val hints = capturedCtx.decisionHints.getOrElse(
+     fail("decisionHints was not populated (the fold did not run)"))
+   // Broadcast disarmed (2B > 10M).
+   hints.broadcastArmed shouldBe Some(false)
+   // Skew armed (2B >= 1B).
+   hints.skewArmed shouldBe Some(true)
+  hints.broadcastThresholdBytes shouldBe Some(10L * 1024L * 1024L: Long)
+  }
+}
+
+/**
+ * Test fixture: a PreExecute hook whose `run` always throws. Used
+ * to verify the dispatcher's throw-catch path produces a typed
+ * `EngineError.HookFailed` (v0.3 P1-C closure: NO try/catch in
+ * the hook; the dispatcher's existing catch is the single owner
+ * of the 5-field HookFailed construction). Per ADR-008-AF v1.0
+ * the dispatcher sanitizes the message via
+ * `Option(e.getMessage).getOrElse(...)`.
+ */
+private final class ThrowingPreStubHook
+    extends PreHook with java.io.Serializable {
+  override val name: String = "throwing-stub"
+  override val priority: Int = 250
+  override def stage: HookStage = HookStage.PreExecute
+  override def run(context: Context): Context =
+    throw new RuntimeException("boom")
 }

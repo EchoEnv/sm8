@@ -40,7 +40,14 @@ final case class EngineContext(
  auditPolicy:  AuditPolicy,
  joinHints:   JoinHints,
  timeout:   Duration,
- cancellation:  CancellationCapability) extends Product with Serializable
+ cancellation:  CancellationCapability,
+ // Per-query decision oracle: populated by the platform
+ // engineExecutor from the post-PreExecute Context.meta; None means
+ // no oracle (adapter uses its inline fallback). Typed transport
+ // for the plugin's decision (the decision LOGIC stays in
+ // plugins/*; only this typed value crosses the boundary). NOT in
+ // the SDK (Context/HookManager/Plugin are frozen).
+ decisionHints: Option[DecisionHints] = None) extends Product with Serializable
 
 object EngineContext {
 

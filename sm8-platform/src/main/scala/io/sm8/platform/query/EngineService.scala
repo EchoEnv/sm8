@@ -386,12 +386,30 @@ object EngineService {
               s"sm8: Context.request must be EngineHookRequest, got ${other.getClass.getName}"
           ))
       }
+      // Per-query decision oracle: the post-PreExecute Context.meta
+      // carries the broadcast + skew arm decisions (and the
+      // broadcast byte-gate threshold) from any registered plugin's
+      // hook. We fold them into a typed DecisionHints and pass as
+      // the 4th arg to executeEngine so the engine's seed helpers
+      // see eCtx.decisionHints instead of reading context.meta
+      // strings. None on each field means "no oracle; the adapter
+      // uses its inline fallback". The fold is naturally gated by
+      // "we only build decisionCtx when the executor fires" (a
+      // throwing oracle short-circuits the dispatcher before this
+      // thunk runs).
+      val decisionCtx: io.sm8.core.engine.EngineContext =
+        io.sm8.core.engine.EngineContext.defaultContext.copy(
+          decisionHints = Some(io.sm8.core.engine.DecisionHints(
+            broadcastArmed          = ctx.meta.get("sm8.broadcast.arm").collect { case b: Boolean => b },
+            skewArmed               = ctx.meta.get("sm8.skew.arm").collect { case b: Boolean => b },
+            broadcastThresholdBytes = ctx.meta.get("sm8.broadcast.thresholdBytes").collect { case l: Long => l }
+          ))
+        )
       for {
         provider <- selectEngine(model, request, registry)
-        pqr      <- executeEngine(model, hookReq.mcpRequest, provider)
+        pqr      <- executeEngine(model, hookReq.mcpRequest, provider, decisionCtx)
       } yield ctx.copy(result = Some(EngineHookResult(pqr)))
     }
-  
     dispatcher
       .run(initialCtx, engineExecutor)
       .flatMap { finalCtx =>
