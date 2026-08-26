@@ -69,6 +69,17 @@
             <version>${project.version}</version>
             <scope>test</scope>
         </dependency>
+        <!-- In-memory connector (TEST scope only — platform is pure
+             transport). The cross-engine spec routes a broadcast plugin
+             through the real runQueryWithHooks fold to the in-memory
+             reference engine and asserts it honors-or-rejects each
+             decided DecisionHints field (ADR-009-d addendum). -->
+        <dependency>
+            <groupId>io.sm8</groupId>
+            <artifactId>in-memory-connector_2.13</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
 
         <!-- ScalaTest for the engine-portable-path specs. JDK's built-in
              classes (java.util.Optional, java.util.List) cover the Java
@@ -153,6 +164,13 @@
             <plugin>
                 <groupId>org.scalatest</groupId>
                 <artifactId>scalatest-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>test</id>
+                        <goals><goal>test</goal></goals>
+                        <phase>test</phase>
+                    </execution>
+                </executions>
                 <configuration>
                     <suffixes>Spec</suffixes>
                     <reportsDirectory>${project.build.directory}/surefire-reports</reportsDirectory>
