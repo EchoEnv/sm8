@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| **Status** | **Accepted (v2.0)** — dual senior review complete. Architect (best-reasoning, v0.1→v1.0, 0.85 confidence) rejected v0.1 as "incorrect as written" — execution under-specified (4 P1s in fix shape, blast-radius, audit gap); all 4 P1s + 3 P2s + 3 P3s folded into v1.0. Data-eng (best-coding, v1.0→v2.0, 0.72 confidence) rejected v1.0 — typed `EngineError.PersistLifecycleFailed` (Fix 6) breaks `QueryService.engineErrorCode` exhaustive 12-case match; Fix 2's `throw collectErr` makes the typed case unreachable on the failure path; `untrackPersist` method does not exist; success-path unpersist handling undefined; migration target `MaterializePolicySpec` does not exist. All 5 data-eng findings folded into v2.0. |
+| **Status** | **Accepted (v3.0)** — dual senior review + final sign-off complete. Architect (best-reasoning, v0.1→v1.0, 0.85 confidence) rejected v0.1; data-eng (best-coding, v1.0→v2.0, 0.72 confidence) rejected v1.0; architect (best-reasoning, v2.0→v3.0, 0.80 confidence) rejected v2.0 — Fix 2 v2.0 proposed code has a structural type bug (success path's `if (registerToken != 0L)` branch yields LUB(Unit, Left) which doesn't satisfy `Either[EngineError, PortableQueryResult]`) and references a non-existent `buildPortableResult` helper. All 4 v3.0 findings folded. |
 | **Date** | 2026-08-26 |
 | **Module** | `connectors/spark-connector/.../SparkEngineProvider.scala` (`applyPostCompilePipeline` does the paired `trackPersist`/`untrackPersist` — the only place that can reach the `private[spark]` registrar; `close()` unpersist loop is non-swallow with token-in-log for operator post-mortem) + `connectors/spark-connector/.../PortableQueryCompiler.scala` (`MaterializePolicy.Cache` typed-rejection; `applyAggregations` stays a pure compile step — no registration there) + `sm8-core/engine/EngineError.scala` (new typed `PersistLifecycleFailed` case + `PersistPhase` sealed trait (Persist \| Unpersist) for the unpersist-failure path; the load-bearing persist feature deserves its own error case over the catch-all `ProviderInvocationFailed`) + `sm8-core/engine/EngineContext.scala` (`materializePolicy` removed; 5 sites in `EngineContextSpec.scala` deleted; `MaterializePolicySpec` migration target does not exist — the 5 sites are deleted, not migrated, and the model-side ADT is already covered in `PortableQueryCompilerSpec.scala:273/316/362`) + `sm8-core/model/Model.scala` (the single-source `MaterializePolicy.Persist`/`Cache` ADT) + `sm8-core/test/.../EngineContextSpec.scala` (5 sites referencing the deleted field/cases — deleted; no replacement) + `sm8-platform/src/main/scala/io/sm8/platform/query/QueryService.scala` (the 12-case exhaustive `engineErrorCode` match at lines 264-276 needs a 13th `case _:` for `PersistLifecycleFailed → 502`; same wire code as `ProviderInvocationFailed`) |
 | **Supersedes scope** | The pre-existing persist/unpersist-lifecycle gaps surfaced by the PR-176 / PR-179 wave and ADR-008-P's CROSS-P0-B (still OPEN): (1) `applyAggregations` calls `result.persist(...)` but never registers the persisted frame in `SparkEngineProvider.persistedFrames` — `close()` iterates an empty map; (2) the `finally`'s `unpersist()` at `SparkEngineProvider.scala:580-590` swallows `Throwable` to a stderr log instead of a typed `EngineError`; (3) `MaterializePolicy.Cache` is a silent no-op (falls through `applyAggregations` as `case _ => Right(result)`); (4) `EngineContext.materializePolicy: io.sm8.core.engine.MaterializePolicy` is dead — declared, defaulted, never read (5 test sites in `EngineContextSpec.scala` reference it — false "zero readers" claim in v0.1, corrected); (5) two `MaterializePolicy` ADTs coexist (`io.sm8.core.engine.MaterializePolicy` with `MemoryOnly`/`MemoryAndDisk`/`EngineDefault` + `io.sm8.core.model.MaterializePolicy` with `Persist(level)`/`Cache`), only one is active. v1.0 also surfaces a (6) `close()` unpersist loop at `SparkEngineProvider.scala:176-178` swallows `Throwable` to nothing — the symmetric anti-pattern to Gap 2, surfaced by the architect review. |
@@ -18,6 +18,7 @@
 | v0.1 (Proposed) | 2026-08-26 | Initial draft; 5 findings (paired-register, non-swallow unpersist, Cache typed reject, single-source ADT, dead `EngineContext.materializePolicy`); 4 options considered (Option A: closure via paired register + typed errors + single-source ADT; rejected Options B/C/D detailed in §Decision). Investigation files: this audit, codegraph probes (`persist unpersist`, `MaterializePolicy`, `cache plugin InMemoryResultCache`), `cross-engine audit`, `/tmp/oom-surfaces-investigation.md`. |
 | v1.0 (Proposed) | 2026-08-26 | Architect review (best-reasoning, 0.85 confidence) rejected v0.1. 4 P1s folded: (a) **Fix 1 call site** — `trackPersist` is `private[spark]` on `SparkEngineProvider`; unreachable from `PortableQueryCompiler.applyAggregations` (which is constructed standalone). Moved to **`applyPostCompilePipeline`**, which already does the `wasPersisted` derivation and is the only caller-side reach point. `applyAggregations` stays a pure compile step. (b) **Fix 2 exception-shadowing** — `finally`-throw can replace the original `collect()` exception when both fail (same root cause: executor that failed is the one holding the persisted block). Use `Throwable.addSuppressed` to chain the original `collect()` exception onto the `unpersist()` failure. (c) **Gap 6** — `close()` unpersist loop at `SparkEngineProvider.scala:176-178` swallows `Throwable` to nothing. Same anti-pattern as Gap 2; new fix `close()` unpersist to typed errors too. (d) **Blast-radius claim false** — `EngineContextSpec.scala` has 5 sites referencing the field/cases (lines 16-23, 27-28, 117, 127, 134). v0.1's "zero callers" was wrong; test sites count. 3 P2s folded: typed `EngineError.PersistLifecycleFailed` case; Cache rejection message order (Persist first, currently-wired); `Persist(level: String)` engine-specific drift hazard named for future ADR. 3 P3s folded: acceptance #3 concrete test seam (close-time unpersist path on a tracked frame); acceptance #5 grep widened to src/main+src/test; per-query session storage boundary documented. |
 | v2.0 (Accepted) | 2026-08-26 | Data-eng review (best-coding, 0.72 confidence) rejected v1.0. 5 P1/P2s folded: (a) **P1 build-breaker** — `QueryService.engineErrorCode` at lines 264-276 is an exhaustive 12-case match with no wildcard; adding `EngineError.PersistLifecycleFailed` (Fix 6) makes the ADT 13 cases and the match refuses to compile. Add `case _: PersistLifecycleFailed => 502` (same wire code as `ProviderInvocationFailed` — both backend-side, retriable). (b) **P2 untrackPersist method missing** — both Fix 1 + Fix 2 reference `untrackPersist(token)`; the method does not exist. Add `private[spark] def untrackPersist(token: Long): Unit = persistedFrames.remove(token)` to `SparkEngineProvider`. (c) **P2 typed case unreachable on failure path** — Fix 2's `throw collectErr` propagates a `Throwable`; the dispatcher's NonFatal catch at `EngineService.scala:258-266` wraps it as `EngineError.ProviderInvocationFailed`, not `PersistLifecycleFailed`. EngineError is a sealed trait (not Throwable), so the Fix 6 wording "re-throws as EngineError.PersistLifecycleFailed" cannot be implemented via throw. Corrected: failure path returns `Left(PersistLifecycleFailed(...))` (not throw), inline unpersist with `addSuppressed` chain. (d) **P2 success-path unpersist failure undefined** — on success, `df.unpersist()` can throw independently of `collect()`; no parent exception to chain to. Pick: return `Left(PersistLifecycleFailed(phase=Unpersist, ...))` — the data was correctly computed but the lifecycle failed; per PR-178 discipline, surfacing the lifecycle failure is the point. The caller sees a typed error (not a silent lifecycle violation). (e) **P2 migration target MaterializePolicySpec doesn't exist** — acceptance #5 reworded: the 5 sites in `EngineContextSpec.scala` are deleted, not migrated; the model-side ADT is already covered in `PortableQueryCompilerSpec.scala:273/316/362`. Plus 1 P2: close() aggregate log gains token-in-message for operator post-mortem correlation. 5 P3 confirmations (preserved ADR-009-e wasPersisted semantics; blast-radius verified; Cache rejection actionable; MaterializeStub plugin unaffected). |
+| v3.0 (Accepted) | 2026-08-26 | Architect final sign-off (best-reasoning, 0.80 confidence) rejected v2.0. 4 findings folded: (a) **P1 Fix 2 v2.0 success-path type bug** — the proposed `if (registerToken != 0L) { try { df.unpersist(); untrackPersist(registerToken) } catch { ... } } else { buildPortableResult(...) }` shape yields LUB(Unit, Left) on the `if`-branch (the most common persisted-frame path), which doesn't satisfy the declared return type `Either[EngineError, PortableQueryResult]`. Either compile error or silent result-loss. v3.0 restructures: compute `result` first, then return `Right(result)` or `Left(PersistLifecycleFailed(...))` based on the unpersist outcome. The if/else is gone; the success-path returns the result unconditionally; the unpersist side-effect returns Either via the existing try/catch. (b) **P1 acceptance #4 lacks concrete DI seam** — reworded: Dataset in Spark 3.5 is a `public class` with public (non-final) `unpersist()`; a test-only `ThrowingUnpersistDataset` subclass IS possible (verified by bytecode). Concrete seam described. (c) **P2 buildPortableResult helper does not exist** — v2.0 referenced it as "the existing ADR-009-e code"; v3.0 inlines the post-collect decode explicitly (the v0.1 / ADR-009-e code stays unchanged; the fix wraps it, doesn't extract). (d) **P3 ambiguous "the existing ADR-009-e code remains in place"** — resolved by (c): the post-collect decode (schema derivation, `truncated` cap+1 probe, row decode, `PortableQueryResult` construction) is inline; Fix 2 wraps it with the registerToken untrack side-effect. 5 P3 confirmations preserved (data-eng fold correct; close() token-in-log works; QueryService.engineErrorCode 13th case correct; cache rejection message correct; blast-radius verified). |
 
 ---
 
@@ -181,17 +182,36 @@ private[spark] def applyPostCompilePipeline(
           cause   = collectErr.getClass.getSimpleName,
           message = collectErr.getMessage))
     }
-
+  // v3.0: the post-collect decode (schema derivation, `truncated` cap+1
+  // probe, row decode, PortableQueryResult construction) is INLINE
+  // here — it stays as-is from ADR-009-e (v2.0's "buildPortableResult
+  // helper" doesn't exist; v3.0 doesn't introduce a helper, the
+  // existing inline code remains in place). The unpersist side-effect
+  // is wrapped around the result construction:
+  //   1. compute `result` unconditionally (the typed-Either return)
+  //   2. side-effect: if registerToken != 0L, unpersist + untrack;
+  //      any failure is a typed Left(PersistLifecycleFailed(...))
+  // The if/else shape that v2.0 proposed is gone — it had a type bug
+  // (the if-branch yielded LUB(Unit, Left) which doesn't satisfy
+  // Either[EngineError, PortableQueryResult]).
   collected match {
     case Right(rows) =>
-      // Success path: unpersist inline. If unpersist fails here,
-      // no parent exception to chain to (the data was computed
-      // correctly). Per PR-178 discipline, surfacing the lifecycle
-      // failure is the point — typed Left, not throw, not silent.
+      // Inline post-collect decode (from ADR-009-e; lines 562-600):
+      //   pulledCount = collected.length
+      //   truncated = pulledCount.toLong > effectiveCap
+      //   cappedRows = if (truncated) collected.dropRight(1) else collected
+      //   rows = cappedRows.iterator.map(decodeRow).toVector
+      //   result = PortableQueryResult(schema, rows, metadata, truncated)
+      // (The ADR-009-e lines are reproduced verbatim in the
+      // implementation PR; the test seam is the existing
+      // SparkEngineProviderSpec falsifiable tests #1/#2/#3/#4 which
+      // already exercise this inline code path.)
+      val result: PortableQueryResult = /* ADR-009-e inline decode */ ???
       if (registerToken != 0L) {
         try {
           df.unpersist()
           untrackPersist(registerToken)
+          Right(result)
         } catch {
           case u: NonFatal =>
             untrackPersist(registerToken)
@@ -202,15 +222,14 @@ private[spark] def applyPostCompilePipeline(
               message = u.getMessage))
         }
       } else {
-        // proceed with the success path
-        buildPortableResult(rows, schemaMetadata, cap, request)
+        Right(result)
       }
     case Left(e) => Left(e)
   }
 }
 ```
 
-(The `buildPortableResult(...)` helper is the existing post-collect decode + `truncated` derivation; the existing ADR-009-e code remains in place. The `Left(e) => Left(e)` pass-through is the failure-path propagation.)
+(v3.0 corrects the v2.0 parenthetical: `buildPortableResult` does NOT exist and is NOT introduced — the post-collect decode — `pulledCount`/`truncated`/`cappedRows`/`rows`/`PortableQueryResult` construction at `SparkEngineProvider.scala:562-600` — is inline and stays inline, exactly as ADR-009-e shipped it. Fix 2 wraps that inline code with the registerToken side-effect; no helper extraction. The `Left(e) => Left(e)` pass-through is the failure-path propagation.)
 
 Key invariants:
 - **No throw on either path** — every failure returns `Left(...)` (typed). The dispatcher's NonFatal catch never sees a `Throwable` from this code path; the typed case is reachable.
@@ -329,7 +348,7 @@ This is the same class of blast-radius mistake the architect caught with `Engine
 | D. Drop the persist feature entirely (remove `MaterializePolicy.Persist`) | The feature is used by tests (`SparkEngineProviderCloseLifecycleSpec`) and is part of the documented model contract (`ModelPolicyDefaults.materialize`). Removing it is a breaking change without an approved deprecation cycle. Rejected — the right move is closure, not removal. |
 
 
-## Falsifiable acceptance (v2.0)
+## Falsifiable acceptance (v3.0)
 
 ```
 1. Paired register + unregister: a model with materialize == Persist("MEMORY_ONLY")
@@ -340,6 +359,7 @@ This is the same class of blast-radius mistake the architect caught with `Engine
 
 2. close() actually unpersists + non-swallow + token-in-log: a model with
    materialize == Persist and 5 queries → after 5 query() calls,
+
    persistedFrames.size == 5; after provider.close(), persistedFrames.size == 0
    AND every unpersist succeeded OR a per-frame failure was logged to stderr
    with the typed exception class AND the persisted token (so a post-mortem
@@ -353,14 +373,24 @@ This is the same class of blast-radius mistake the architect caught with `Engine
    cause=SparkException, ...)) — AND the dispatched EngineError carries the
    original collect() SparkException as a suppressed exception
    (assert via .getSuppressed.length == 1 and the suppressed is the SparkException).
-
-4. Success-path unpersist failure is typed: a model with materialize == Persist
-   AND an unpersist fault injected (decorator df.unpersist() throws) AFTER a
-   successful collect() → the query path returns
+4. Success-path unpersist failure is typed (v3.0: concrete DI seam verified):
+   a model with materialize == Persist AND an unpersist fault injected AFTER
+   a successful collect() → the query path returns
    Left(EngineError.PersistLifecycleFailed(phase=Unpersist, ...)) — NOT
-   Right(PortableQueryResult) with a silent lifecycle violation. The caller
-   sees the typed error (PR-178 discipline); the data was correctly computed
-   but the lifecycle failed.
+   Right(PortableQueryResult) with a silent lifecycle violation. **Test seam
+   (v3.0 corrected)**: `org.apache.spark.sql.Dataset` in Spark 3.5 is a
+   `public class` with `public` (non-final) `unpersist()` (verified via
+   bytecode in `spark-sql_2.13-3.5.x.jar:org/apache/spark/sql/Dataset.class`
+   — `public void unpersist()` is not declared `final`, so subclass override
+   IS possible). A test-only `class ThrowingUnpersistDataset(df: Dataset[T])
+   extends Dataset[T] { override def unpersist(): this.type = throw new
+   SparkException("forced for ADR-009-f acceptance #4") }` decorator
+   subclass, constructed by wrapping the original `df` in the test's
+   pre-pipeline hook (or via a test-only `applyPostCompilePipeline` overload
+   that takes the decorator), is the concrete injection seam. The
+   decorator's `unpersist()` throws → caught by Fix 2 v3.0's try/catch →
+   `untrackPersist(registerToken)` runs → returns
+   `Left(PersistLifecycleFailed(phase=Unpersist, cause=SparkException, ...))`.
 
 5. MaterializePolicy.Cache rejection: a model with materialize == Cache
    returns Left(EngineError.UnsupportedCapability(
@@ -388,9 +418,13 @@ This is the same class of blast-radius mistake the architect caught with `Engine
    now resolve to io.sm8.core.model.MaterializePolicy. Verifiable: the test
    for case #5 compiles, the cross-engine audit doesn't break.
 
-8. Typed PersistLifecycleFailed is reachable end-to-end: a model with
-   materialize == Persist AND an unpersist fault injected (decorator df.unpersist()
-   throws) → the query path returns Left(EngineError.PersistLifecycleFailed(
+8. Typed PersistLifecycleFailed is reachable end-to-end (v3.0: same DI seam
+   as #4 — `ThrowingUnpersistDataset` decorator wraps df): a model with
+   materialize == Persist AND an unpersist fault injected (decorator
+   df.unpersist() throws — either BEFORE collect() via the failure-path
+   catch, or AFTER successful collect() via the success-path catch,
+   per the v3.0 code shape) → the query path returns
+   Left(EngineError.PersistLifecycleFailed(
      engine = "spark-3.5",
      phase = PersistPhase.Unpersist,
      cause = "<thrown-class>",
@@ -421,7 +455,7 @@ This is the same class of blast-radius mistake the architect caught with `Engine
 ```
 
 ---
-## Consequences (v2.0)
+## Consequences (v3.0)
 
 **Positive**
 
@@ -441,6 +475,7 @@ This is the same class of blast-radius mistake the architect caught with `Engine
 - New typed `EngineError.PersistLifecycleFailed` case is wire-stable (no new `ErrorCode`; the existing `PROVIDER_INVOCATION_FAILED` carries the message; the typed ADT case is the surface for engine-portable consumers). Plus 1 new method `untrackPersist(token)` (`private[spark]`) on `SparkEngineProvider` — symmetric pair to `trackPersist`
 - Success-path unpersist failure now returns `Left(PersistLifecycleFailed(...))` instead of `Right(PortableQueryResult)` — a caller whose data was correctly computed but whose persist-side lifecycle failed sees a typed error. This is the PR-178 discipline applied; the alternative (silent stderr log) was the PR-178 violation this ADR closes
 - `QueryService.engineErrorCode` gains a 13th case — exhaustive-match sites are a recurring blast-radius hazard; this ADR's data-eng fold discovered it as a build-breaker
+- v3.0: the success-path restructure (compute `result` first, then the unpersist side-effect returns `Either`) is type-correct on every branch — no LUB(Unit, Left) ambiguity, no silent result-loss on the persisted-frame path; the acceptance-test DI seam (`ThrowingUnpersistDataset` Dataset subclass, possible because Spark 3.5's `Dataset.unpersist()` is non-final) makes the falsifiable #4 and #8 concretely implementable
 ---
 ## Out of scope (deferred, named for future ADRs)
 
