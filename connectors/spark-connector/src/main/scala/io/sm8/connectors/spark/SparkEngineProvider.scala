@@ -201,7 +201,7 @@ override def close(): Unit = {
   // v3.4 (architect code-review P2): the previous shape wrapped
   // EVERYTHING — including the token-in-log foreach — in a single
   // outer `try { ... } catch { case NonFatal(_) => () }`. If
-  // `spark.stop()` (line 210) threw NonFatal (SparkException from
+  // `spark.stop()` (currently line 230) threw NonFatal (SparkException from
   // broken RPC, IllegalStateException if already stopped), the
   // outer catch swallowed it AND skipped the breadcrumb logging —
   // the exact silent-swallow class the ADR's Fix 2b was introduced
