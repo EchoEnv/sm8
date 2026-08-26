@@ -249,4 +249,25 @@ class CachedRowDecoderSpec extends AnyFunSuite with Matchers {
     out.right.get.fieldNames shouldBe List("name", "age")
     out.right.get.fieldTypes shouldBe List(RestateCachedRow.T_STRING, RestateCachedRow.T_LONG)
   }
+
+  test("round-trip: toRestateCachedRowFromPortable then fromRestateCachedRowAsPortable preserves truncated (ADR-009-e)") {
+    // ADR-009-e criterion #4: the cache journal must not turn a
+    // truncated result into a complete one. encodeC + decode must
+    // carry `truncated` verbatim in BOTH directions and BOTH values.
+    def roundTrip(truncated: Boolean): PortableQueryResult = {
+      val portable = PortableQueryResult(
+        schema = ResultSchema(List(Field.nonNull("name", SealedDataType.Varchar))),
+        rows   = Vector(ResultRow(
+          values = List(ResultValue.StringV("Alice")),
+          schema = ResultSchema(Nil)
+        )),
+        truncated = truncated
+      )
+      val encoded = CachedRowDecoder.toRestateCachedRowFromPortable(portable)
+      encoded shouldBe a [scala.util.Right[_, _]]
+      CachedRowDecoder.fromRestateCachedRowAsPortable(encoded.right.get)
+    }
+    roundTrip(truncated = true).truncated  shouldBe true
+    roundTrip(truncated = false).truncated shouldBe false
+  }
 }

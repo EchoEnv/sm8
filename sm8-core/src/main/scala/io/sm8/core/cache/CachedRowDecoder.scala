@@ -143,7 +143,10 @@ object CachedRowDecoder {
    schema = ResultSchema(Nil)
   )
   },
-  schema = ResultSchema(fields)
+  schema = ResultSchema(fields),
+  // ADR-009-e: the cache journal preserves the truncated flag so a
+  // cache HIT serves a capped result flagged, never as complete.
+  truncated = row.truncated
  )
  }
 
@@ -257,7 +260,9 @@ def toRestateCachedRowFromPortable(
    message = s"row $i has ${row.length} cells, expected $fieldCount"
   ))
   case None =>
-  Right(RestateCachedRow(fieldNames = fieldNames, fieldTypes = fieldTypes, rows = rows))
+  Right(RestateCachedRow(
+   fieldNames = fieldNames, fieldTypes = fieldTypes, rows = rows,
+   truncated = portable.truncated))
  }
 }
 
