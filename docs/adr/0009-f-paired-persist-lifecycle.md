@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| **Status** | **Accepted (v3.4) — implementation merged on `adr/009-f-paired-persist-lifecycle` (5 commits: 88950db Core+Platform Fix 6+6b, 08f00c0 Core Fix 4+5, cd10907 Fix 3 Cache, 806b8ef Fix 0+1+2+2b on `SparkEngineProvider`, 5224f38 close() restructure Fix 2b P2 fold); PR-180 open; data-eng final code review **APPROVED 0.9**; architect final code review **NEEDS-CHANGES 0.85** (P2 + P3 folded in 5224f38 + this docs commit; re-review pending after P2 fix). Full reactor green (14 modules, 241 spark-connector tests pass after restructure). v3.4 fold (this revision): architect P2 close() logging restructure (token-in-log breadcrumb now unconditional — Fix 2b contract honored in the spark.stop() failure case) + P3 stale comment correction. |
+| **Status** | **Accepted (v3.6) — implementation merged on `adr/009-f-paired-persist-lifecycle` (9 commits: 1750e6e docs v3.2; 88950db/08f00c0/cd10907/806b8ef implementation; e4a8e0f docs v3.3 data-eng fold; 5224f38 close() restructure; 1e4a8c6 docs v3.4 architect P2+P3 fold; e4d176d docs v3.5 architect re-review P3 fold); PR-180 open; data-eng **APPROVED 0.9**; architect **APPROVED 0.95** (post-P2 fix). Full reactor green (634/634 core + 241/241 spark-connector). v3.6 docs tightening (this revision): Fix 2 key-invariants bullet at line 303 + acceptance #3 corrected to describe the cause-priority falsifiable form (NOT `getSuppressed.length == 1`, which is infeasible against the typed Left — a sealed-trait case class cannot carry a Throwable). ADR is now self-consistent across key-invariants, acceptance criteria, and the actual implementation. |
 | **Date** | 2026-08-26 |
 | **Module** | `connectors/spark-connector/.../SparkEngineProvider.scala` (`applyPostCompilePipeline` does the paired `trackPersist`/`untrackPersist` — the only place that can reach the `private[spark]` registrar; `close()` unpersist loop is non-swallow with token-in-log for operator post-mortem) + `connectors/spark-connector/.../PortableQueryCompiler.scala` (`MaterializePolicy.Cache` typed-rejection; `applyAggregations` stays a pure compile step — no registration there) + `sm8-core/engine/EngineError.scala` (new typed `PersistLifecycleFailed` case + `PersistPhase` sealed trait (Persist \| Unpersist) for the unpersist-failure path; the load-bearing persist feature deserves its own error case over the catch-all `ProviderInvocationFailed`) + `sm8-core/engine/EngineContext.scala` (`materializePolicy` removed; 5 sites in `EngineContextSpec.scala` deleted; `MaterializePolicySpec` migration target does not exist — the 5 sites are deleted, not migrated, and the model-side ADT is already covered in `PortableQueryCompilerSpec.scala:273/316/362`) + `sm8-core/model/Model.scala` (the single-source `MaterializePolicy.Persist`/`Cache` ADT) + `sm8-core/test/.../EngineContextSpec.scala` (5 sites referencing the deleted field/cases — deleted; no replacement) + `sm8-platform/src/main/scala/io/sm8/platform/query/QueryService.scala` (the 12-case exhaustive `engineErrorCode` match at lines 264-276 needs a 13th `case _:` for `PersistLifecycleFailed → 502`; same wire code as `ProviderInvocationFailed`) |
 | **Supersedes scope** | The pre-existing persist/unpersist-lifecycle gaps surfaced by the PR-176 / PR-179 wave and ADR-008-P's CROSS-P0-B (still OPEN): (1) `applyAggregations` calls `result.persist(...)` but never registers the persisted frame in `SparkEngineProvider.persistedFrames` — `close()` iterates an empty map; (2) the `finally`'s `unpersist()` at `SparkEngineProvider.scala:580-590` swallows `Throwable` to a stderr log instead of a typed `EngineError`; (3) `MaterializePolicy.Cache` is a silent no-op (falls through `applyAggregations` as `case _ => Right(result)`); (4) `EngineContext.materializePolicy: io.sm8.core.engine.MaterializePolicy` is dead — declared, defaulted, never read (5 test sites in `EngineContextSpec.scala` reference it — false "zero readers" claim in v0.1, corrected); (5) two `MaterializePolicy` ADTs coexist (`io.sm8.core.engine.MaterializePolicy` with `MemoryOnly`/`MemoryAndDisk`/`EngineDefault` + `io.sm8.core.model.MaterializePolicy` with `Persist(level)`/`Cache`), only one is active. v1.0 also surfaces a (6) `close()` unpersist loop at `SparkEngineProvider.scala:176-178` swallows `Throwable` to nothing — the symmetric anti-pattern to Gap 2, surfaced by the architect review. |
@@ -25,6 +25,9 @@
 | v3.3 (Accepted) | 2026-08-26 | Data-eng final code review of PR-180 (4 atomic commits). Verdict **APPROVED 0.9**. Two P3s folded as documented trade-offs (NOT silently dropped — the code is correct, the test additions are infeasible in Spark 3.5 as a single-test both-fail scenario): (a) **P3 #1 acceptance #3 — `addSuppressed` chain not black-box testable**. Spark 3.5 derives `df.storageLevel` from the TOP-LEVEL logical operator; `Project(InMemoryRelation(...))` returns `StorageLevel.NONE` (the InMemoryRelation is inner). A both-fail scenario (collect() throws via a throwing UDF AND inline df.unpersist() throws via the `ThrowingUnpersistDataset` DI seam) cannot keep `registerToken != 0L` (the persist wraps an inner operator) AND reach the typed-Left branch simultaneously. The `addSuppressed` discipline is `case NonFatal(u) => collectErr.addSuppressed(u)` at `SparkEngineProvider.scala:640` — code-review-verifiable, not black-box testable. Acceptance #3 wording amended to "the production failure path applies `collectErr.addSuppressed(u)` on the inline unpersist failure — code-review-verifiable per line 640; not black-box testable in Spark 3.5 due to Project-over-InMemoryRelation `storageLevel == NONE` constraint". (b) **P3 #2 acceptance #2 — direct `trackPersist` test seam is meaningful**. The test exercises the close sweep via direct `trackPersist` calls because pipeline-registered frames leave the map empty per-query (the paired-untrack fires on every exit path). With no query in flight, the map holds the JVM-shutdown scenario's mid-flight tokens; the close path iterates the map identically regardless of how tokens arrived. ADR #2 wording stands. |
 
 | v3.4 (Accepted) | 2026-08-26 | Architect final code review of PR-180 (5 commits incl. v3.3 docs fold). Verdict **NEEDS-CHANGES 0.85**. Two findings folded: (a) **P2 close() outer try swallows the token-in-log breadcrumb on spark.stop() NonFatal**. The prior shape wrapped EVERYTHING — including the unpersistFailures.foreach stderr logging (Fix 2b's contract) — in a single outer `try { ... } catch { case NonFatal(_) => () }`. If `spark.stop()` threw NonFatal (SparkException from broken RPC channel, IllegalStateException if already stopped), the outer catch swallowed it AND skipped the breadcrumb logging — the exact silent-swallow class Fix 2b was introduced to close. **Fix**: restructured `close()` to three explicit phases — (1) unpersist attempts (per-frame try/catch builds unpersistFailures buffer); (2) unconditional `unpersistFailures.foreach { System.err.println(...) }` (stderr is a system call with no Spark dependency, so it cannot be affected by SparkSession teardown); (3) narrow `if (spark != null) try spark.stop() catch { case NonFatal(_) => () }` defense. The breadcrumb now always reaches stderr. (b) **P3 stale comment** at lines 201-203 described `case _: Throwable => ()` while the actual code used `case NonFatal(_) => ()` (PR-176 discipline). Corrected inline; the v3.4 commit (`5224f38`) folds both findings atomically. Full spark-connector suite 241/241 green after the restructure. Status: implementation merged, both reviewers' findings folded (data-eng 0.9 + architect 0.85→NEEDS-CHANGES→re-review pending after P2 fix). |
+
+| v3.6 (Accepted) | 2026-08-26 | Pre-merge docs tightening (architect re-review follow-up). The Fix 2 key-invariants bullet at line 303 claimed the `addSuppressed` chain is observable as `getSuppressed()(0)` — STALE. The chain lives on the LOCAL Throwable inside `applyPostCompilePipeline`; a sealed-trait case class cannot carry a Throwable, so the typed Left returns cause+message strings ONLY. v3.6 corrections: (a) Fix 2 key-invariants bullet at line 303 rewritten — the `addSuppressed` chain is documented as a LOCAL discipline, code-review-verifiable per line 640; the strongest observable regression net is cause-priority (`Left.cause == collectErr.className`, `Left.message includes collectErr.message`, `Left.message NOT includes unpersist-fault message`) — a contributor who swaps the `addSuppressed` for a swallow AND flips the Left's cause would fail a future black-box cause-priority test. (b) Acceptance #3 amended to name the cause-priority form as the v3.5 falsifiable artifact (replacing the previous v3.3 wording that mentioned `getSuppressed.length == 1`, which is infeasible against the returned value). Status header unchanged from v3.5; ADR is now self-consistent across the key-invariants, the acceptance criteria, and the actual implementation. |
+
 
 
 ---
@@ -300,7 +303,7 @@ class ThrowingUnpersistDataset(df: org.apache.spark.sql.DataFrame)
 
 Key invariants:
 - **No throw on either path** — every failure returns `Left(...)` (typed). The dispatcher's NonFatal catch never sees a `Throwable` from this code path; the typed case is reachable.
-- **`addSuppressed` chains the original exception** — the failure path's `collectErr` is the primary exception; the unpersist failure is its `getSuppressed()(0)`. The dispatcher / log-reader sees the root cause first.
+- **`addSuppressed` chains the original exception (LOCAL discipline, code-review-verifiable — see acceptance #3 v3.3 limitation)** — the failure path's `collectErr` is the primary Throwable; the unpersist failure is added via `collectErr.addSuppressed(u)` at `SparkEngineProvider.scala:640`. The chain lives on the LOCAL Throwable inside `applyPostCompilePipeline`; the typed `Left` returns cause+message strings ONLY (sealed-trait case class cannot carry a Throwable). The strongest observable regression net is cause-priority: the typed Left's `cause` MUST equal `collectErr.getClass.getSimpleName` and its `message` MUST include `collectErr.getMessage` (and MUST NOT include the unpersist-fault message) — a contributor who silently swaps `case NonFatal(u) => collectErr.addSuppressed(u)` for a swallow AND flips the Left's cause to the unpersist fault would fail any future black-box cause-priority test. In Spark 3.5, the both-fail scenario is not single-test black-box constructible (see acceptance #3 v3.3 amendment), so this discipline is currently code-review-verifiable only.
 - **`NonFatal` (not `Throwable`)** — per PR-176 discipline: `Error` (OOM, etc.) propagates uncaught; `InterruptedException` re-interrupts. `Fatal` unpersist failures at JVM-shutdown (rare but possible) are intentionally not silently typed.
 - **`untrackPersist` after success AND failure** — the tracked-frame map is empty on every exit; the close() sweep iterates zero entries when no query is in flight (correct invariant).
 
@@ -431,23 +434,30 @@ This is the same class of blast-radius mistake the architect caught with `Engine
    with the typed exception class AND the persisted token (so a post-mortem
    can correlate the log line to a specific persisted query).
 
-3. Non-swallow unpersist with exception-shadowing chain (v3.3: code-review-verifiable
-   only, not black-box testable in Spark 3.5): a model with materialize == Persist
+3. Non-swallow unpersist with exception-shadowing chain (v3.5: cause-priority
+   falsifiable, not `getSuppressed.length == 1`): a model with materialize == Persist
    AND a SparkException injected via a UDF that throws on every row → withLimit.collect()
    throws AND df.unpersist() throws (simulated by wrapping df in a decorator that throws
    on unpersist). The query path returns Left(EngineError.PersistLifecycleFailed(
-   phase=Unpersist, cause=SparkException, ...)) — AND the LOCAL collectErr Throwable
-   carries the unpersist fault as a suppressed exception (addSuppressed at
-   SparkEngineProvider.scala:640). **v3.3 limitation**: the suppressed chain lives
-   on the LOCAL Throwable (a sealed-trait case class cannot carry it); the typed
-   Left carries only cause+message strings. **v3.3 non-testability**: Spark 3.5
-   derives `df.storageLevel` from the TOP-LEVEL logical operator; a Project over an
-   InMemoryRelation returns `StorageLevel.NONE`, so a UDF-throwing-and-persisted frame
-   cannot keep `registerToken != 0L` AND reach the inline `df.unpersist()` fault path
-   in a single test scenario. The `case NonFatal(u) => collectErr.addSuppressed(u)`
-   discipline is CODE-REVIEW-VERIFIABLE — line 640 is the falsifiable artifact. The
-   local Throwable's suppressed chain is observable via a debugger / DI spy but not
-   via a black-box test in Spark 3.5.
+   phase=Unpersist, cause=SparkException, ...)). **Cause-priority regression net
+   (v3.5)**: the typed Left's `cause` MUST equal `collectErr.getClass.getSimpleName`
+   AND its `message` MUST include `collectErr.getMessage` AND MUST NOT include the
+   unpersist-fault message. The `addSuppressed` chain at `SparkEngineProvider.scala:640`
+   (`case NonFatal(u) => collectErr.addSuppressed(u)`) chains the unpersist fault
+   onto the LOCAL `collectErr` Throwable — the chain lives on a local Throwable,
+   not on the returned typed Left (a sealed-trait case class cannot carry a
+   Throwable; the typed Left carries cause+message strings only). The original
+   v3.0 wording's `getSuppressed.length == 1` assertion is INFEASIBLE against the
+   returned value — it describes a property of the local Throwable, not the
+   returned case class. **v3.5 non-testability (Spark 3.5)**: `df.storageLevel` is
+   derived from the TOP-LEVEL logical operator; a Project over an InMemoryRelation
+   returns `StorageLevel.NONE`, so a UDF-throwing-and-persisted frame cannot keep
+   `registerToken != 0L` AND reach the inline `df.unpersist()` fault path in a
+   single test scenario. The `addSuppressed` discipline is CODE-REVIEW-VERIFIABLE
+   per line 640; the cause-priority falsifiable form is documented for any future
+   test seam that can construct the both-fail scenario (e.g. Spark 4.x if it
+   changes the storageLevel derivation, or a Mockito spy on `withLimit` instead
+   of `df`).
 4. Success-path unpersist failure is typed (v3.0: concrete DI seam verified):
    a model with materialize == Persist AND an unpersist fault injected AFTER
    a successful collect() → the query path returns
