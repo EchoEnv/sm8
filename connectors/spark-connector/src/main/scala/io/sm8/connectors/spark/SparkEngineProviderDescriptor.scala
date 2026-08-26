@@ -19,12 +19,24 @@
  * (subtrait of `EngineProvider`) to provide typed-error realization.
  * The `realizeTyped` override wraps `SparkSession.builder().getOrCreate()`
  * exceptions into typed `ConnectionFailed` errors instead of silent `None`.
+ *
+ * P2 cluster (PR-176 NonFatal discipline by topic): both `realize` and
+ * `realizeTyped` narrow their catches to `NonFatal` so JVM `Error`
+ * subclasses (OOM, StackOverflow) propagate uncaught — matching the
+ * discipline established at `EngineImpl.scala:50` + `EngineService.scala:258-264`.
  */
 package io.sm8.connectors.spark
 
 import io.sm8.core.engine.{EngineError, EngineIdentity, EngineProvider, EngineUrl, TypedRealizationProvider}
 
-final class SparkEngineProviderDescriptor
+import scala.util.control.NonFatal
+
+// Not `final`: the P2 cluster regression tests (site 1) subclass this
+ // descriptor to override the `newSparkSession` seam and inject
+ // controlled `AnalysisException` / `OutOfMemoryError` failures,
+ // verifying the PR-176 NonFatal discipline narrowing. The descriptor
+ // remains an SPI entry point (ServiceLoader discovers it by class name).
+class SparkEngineProviderDescriptor
  extends TypedRealizationProvider {
 
  override lazy val identity: EngineIdentity =
@@ -35,19 +47,34 @@ final class SparkEngineProviderDescriptor
 
  override val available: Boolean = false
 
- /** PR-O4g (legacy): validate the URL before realizing. Returns
+/** PR-O4g (legacy): validate the URL before realizing. Returns
  * `None` on blank OR on `SparkSession.builder().getOrCreate()`
  * failure (silent). Use `realizeTyped` for typed-error realization.
+ *
+ * P2 cluster: catch is narrowed to `NonFatal` per PR-176 NonFatal
+ * discipline (cite by topic). JVM `Error` subclasses (OOM, StackOverflow)
+ * propagate uncaught — matching `EngineImpl.scala:50`. The legacy
+ * silent-`None` semantics on `NonFatal` are preserved for backward
+ * compatibility with PR-O4g callers; new code should use `realizeTyped`.
  */
- override def realize(url: String): Option[EngineProvider] =
+override def realize(url: String): Option[EngineProvider] =
  if (url == null || url.trim.isEmpty) None
  else try Some(new SparkEngineProvider(
-  spark   = org.apache.spark.sql.SparkSession.builder().master(url).getOrCreate(),
+  spark   = newSparkSession(url),
   bridge   = SparkTypeBridge,
   sparkEngineName = "spark-3.5",
   hookRunner  = None)) catch {
-  case _: Throwable => None
- }
+  case NonFatal(_) => None
+}
+
+/** P2 cluster (PR-176 NonFatal discipline by topic): test seam.
+ * Exposed `protected[spark]` so regression tests in this package
+ * can inject controlled exceptions (`AnalysisException`,
+ * `OutOfMemoryError`) to verify the narrowing discipline without
+ * depending on Spark's runtime master-resolution behavior.
+ * Production behavior is unchanged: `SparkSession.builder().master(master).getOrCreate()`. */
+protected[spark] def newSparkSession(master: String): org.apache.spark.sql.SparkSession =
+ org.apache.spark.sql.SparkSession.builder().master(master).getOrCreate()
 
  /** PR-15 (ADR-008-Q §C2): typed realization. Wraps
  * `SparkSession.builder().getOrCreate()` exceptions into typed
