@@ -79,6 +79,17 @@ import scala.util.control.NonFatal
  */
 object EngineService {
 
+  /** ADR-009-e: server-side materialization cap (deployment policy,
+   * RFC §3), in rows. The engine (connector) enforces this as the
+   * default cap on the driver `collect()` when a query passes no
+   * `request.limit`, flagging the result `truncated`. This value is
+   * deployment-side: callers cannot trip it off — a query's
+   * `request.limit` may only NARROW it (min), never widen it.
+   * Mirrors the connector's `SparkEngineProvider.DefaultResultCapRows`:
+   * the value lives here (platform/deployment layer); the connector
+   * reflects it as its enforcement default. */
+  val DefaultResultCapRows: Long = 1_000_000L
+
   /**
    * Match Java 11+ `String.isBlank()` semantics.
    *
@@ -258,11 +269,12 @@ object EngineService {
    * portable's rows + schema, converting each `ResultValue` to
    * its JVM type via `PortableCellCodec.toJavaValue` (from PR-C2).
    *
-   * Per the legacy: `truncated = false` is conservative — the
-   * engine returns ALL rows it computed (the cap is applied
-   * upstream by the engine provider). PR-C5b-extension can add
-   * `truncated` = `rows.size >= maxRows` when the engine reports
-   * a cap.
+   * ADR-009-e: `truncated` is forwarded VERBATIM from the engine-
+   * portable result. The engine (connector) applies the server-side
+   * cap and flags the result; the platform no longer hardcodes
+   * `false` (the old "engine applies the cap upstream" deferral).
+   * The CLI renders `(TRUNCATED)` from this platform JSON — the
+   * consumer already exists; the producer now forwards.
    *
    * @param portable the engine-portable result
    * @param request  the original wire DTO (used for `model.name`)
@@ -280,7 +292,7 @@ object EngineService {
       model     = Option(request.modelName).getOrElse("unknown"),
       measures  = fieldNames,
       rows      = rows,
-      truncated = false,
+      truncated = portable.truncated,
       rowCount  = rows.size.toLong
     )
   }
