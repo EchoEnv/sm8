@@ -11,23 +11,6 @@ import scala.concurrent.duration.Duration
   */
 class EngineContextSpec extends AnyFunSuite with Matchers {
 
-  // -- MaterializePolicy --
-
-  test("MaterializePolicy has 4 cases: None, MemoryOnly, MemoryAndDisk, EngineDefault") {
-    val all: Set[MaterializePolicy] = Set(
-      MaterializePolicy.None,
-      MaterializePolicy.MemoryOnly,
-      MaterializePolicy.MemoryAndDisk,
-      MaterializePolicy.EngineDefault,
-    )
-    all.size shouldBe 4
-  }
-
-  test("MaterializePolicy cases are distinct singletons") {
-    MaterializePolicy.None should not be MaterializePolicy.MemoryOnly
-    MaterializePolicy.MemoryOnly should not be MaterializePolicy.MemoryAndDisk
-  }
-
   // -- CachePolicy --
 
   test("CachePolicy has 4 cases: NoCache, ReadThrough, WriteThrough, ReadOnly") {
@@ -114,7 +97,6 @@ class EngineContextSpec extends AnyFunSuite with Matchers {
 
   test("EngineContext.defaultContext has sensible defaults") {
     val ctx = EngineContext.defaultContext
-    ctx.materializePolicy shouldBe MaterializePolicy.None
     ctx.cachePolicy shouldBe CachePolicy.NoCache
     ctx.auditPolicy shouldBe AuditPolicy.NoAudit
     ctx.joinHints shouldBe JoinHints()
@@ -122,16 +104,14 @@ class EngineContextSpec extends AnyFunSuite with Matchers {
     ctx.cancellation shouldBe CancellationCapability.Unsupported
   }
 
-  test("EngineContext holds all 6 fields with arbitrary values") {
+  test("EngineContext holds all 5 fields with arbitrary values") {
     val ctx = EngineContext(
-      materializePolicy = MaterializePolicy.MemoryAndDisk,
       cachePolicy       = CachePolicy.ReadThrough,
       auditPolicy       = AuditPolicy.EngineDefault,
       joinHints         = JoinHints(skewFactor = Some(5)),
       timeout           = Duration("30 seconds"),
       cancellation      = CancellationCapability.RemoteStatement("req-99"),
     )
-    ctx.materializePolicy shouldBe MaterializePolicy.MemoryAndDisk
     ctx.cachePolicy shouldBe CachePolicy.ReadThrough
     ctx.auditPolicy shouldBe AuditPolicy.EngineDefault
     ctx.joinHints.skewFactor shouldBe Some(5)

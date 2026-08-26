@@ -35,7 +35,6 @@ import scala.concurrent.duration.Duration
  *  `Any` placeholder in `Engine.execute(plan: Any,.)`
  */
 final case class EngineContext(
- materializePolicy: MaterializePolicy,
  cachePolicy:  CachePolicy,
  auditPolicy:  AuditPolicy,
  joinHints:   JoinHints,
@@ -57,40 +56,11 @@ object EngineContext {
  * audit"). The defaults here are placeholders that the caller
  * would typically override. */
  val defaultContext: EngineContext = EngineContext(
- materializePolicy = MaterializePolicy.None,
  cachePolicy  = CachePolicy.NoCache,
  auditPolicy  = AuditPolicy.NoAudit,
  joinHints   = JoinHints(),
  timeout   = Duration.Inf,
  cancellation  = CancellationCapability.Unsupported)
-}
-
-// -- MaterializePolicy: whether to persist intermediate results ---
-
-/** Engine-portable policy for materializing intermediate query results.
- * Different engines support different persistence modes (Spark
- * `MEMORY_ONLY` / `MEMORY_AND_DISK` / etc.; Trino in-memory caching;
- * Databricks Photon cache). The closed ADT forces the consumer to
- * pick from a known set; the adapter maps to its engine's form. */
-sealed trait MaterializePolicy extends Product with Serializable
-
-object MaterializePolicy {
- /** No materialization. Adapter executes the query end-to-end
- * without persisting intermediate results. */
- case object None extends MaterializePolicy
-
- /** Materialize in memory. Adapter maps to its engine's closest
- * in-memory cache form. */
- case object MemoryOnly extends MaterializePolicy
-
- /** Materialize in memory, spill to disk on overflow. Engine adapter
- * may reject if its engine doesn't support disk-spill (e.g. Trino
- * historically had limited disk-spill). */
- case object MemoryAndDisk extends MaterializePolicy
-
- /** Engine-defined default. Adapter picks the most appropriate form
- * for its engine. */
- case object EngineDefault extends MaterializePolicy
 }
 
 // -- CachePolicy: result-cache mode ---
