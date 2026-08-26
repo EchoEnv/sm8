@@ -46,6 +46,7 @@ import io.sm8.sdk.{Context, HookRunner, PipelineStage}
 
 import org.apache.spark.sql.SparkSession
 
+import scala.util.control.NonFatal
 final class SparkEngineProvider(
  val spark:   SparkSession,
  val bridge:   SparkTypeBridge.type,
@@ -167,20 +168,54 @@ final class SparkEngineProvider(
  tok
  }
 
+ /** ADR-009-f v3.2 Fix 0: symmetric pair to [[trackPersist]]. Releases
+  * the register-token so the close() sweep doesn't try to unpersist
+  * a frame that's already been paired-released. Thread-safe
+  * (ConcurrentHashMap.remove is lock-free; the returned Option is
+  * discarded — the frame is no longer the close()'s concern). The
+  * method is `private[spark]` to match `trackPersist`'s scope — only
+  * the connector's paired-lifecycle methods may reach it.
+  */
+ private[spark] def untrackPersist(token: Long): Unit =
+  persistedFrames.remove(token)
+
+ /** ADR-009-f v3.2 v3.1 test seam: observable size of the
+  * tracked-frame map. NOT a production API — exists so the
+  * paired-lifecycle acceptance tests can assert persistedFrames is
+  * empty after every query exit path (acceptance #1) and populated
+  * pre-close (acceptance #2). The internal map is `private`; this
+  * is the only sanctioned peek.
+  */
+ private[spark] def persistedFramesSize: Int = persistedFrames.size()
+
  /** PR-O4a + PR-O4e: lifecycle hook -- unpersist every tracked
  * DataFrame, then stop the constructor-frozen SparkSession.
- * Idempotent (SparkSession.stop is a no-op after the first call).
  */
  override def close(): Unit = try {
- import scala.collection.JavaConverters._
- persistedFrames.asScala.foreach { case (_, df) =>
-  try df.unpersist()
-  catch { case _: Throwable => () }
- }
- persistedFrames.clear()
- if (spark != null) spark.stop()
+  import scala.collection.JavaConverters._
+  import scala.collection.mutable.ListBuffer
+  // ADR-009-f v3.2 Fix 2b: at JVM-shutdown we surface unpersist
+  // failures via stderr-with-token (operators need a post-mortem
+  // breadcrumb). NonFatal per PR-176: Error subclasses (OOM,
+  // StackOverflow) propagate uncaught — the JVM is dying anyway.
+  // The outer `case _: Throwable => ()` keep remains as a defense
+  // against errors from `spark.stop()` (which we do not want to
+  // bubble from a shutdown hook).
+  val unpersistFailures = ListBuffer.empty[(java.lang.Long, Throwable)]
+  persistedFrames.asScala.foreach { case (tok, df) =>
+   try df.unpersist()
+   catch { case NonFatal(e) => unpersistFailures += ((tok, e)) }
+  }
+  persistedFrames.clear()
+  if (spark != null) spark.stop()
+  unpersistFailures.foreach { case (tok, e) =>
+   System.err.println(
+    s"sm8: SparkEngineProvider.close() unpersist failed " +
+    s"(token=$tok, engine=$sparkEngineName, " +
+    s"${e.getClass.getSimpleName}: ${e.getMessage})")
+  }
  } catch {
- case _: Throwable => ()
+ case NonFatal(_) => ()
  }
 
  /** P1-SM-02: re-initialize `@transient` fields after Java
@@ -532,8 +567,17 @@ val compiled: Either[EngineError, PortableQueryResult] =
   // persist). Deriving from withLimit made the finally's unpersist
   // a silent no-op on exactly the capped path this ADR makes the
   // default — the persisted frame leaked until provider.close().
-  val wasPersisted: Boolean =
-    !df.storageLevel.equals(org.apache.spark.storage.StorageLevel.NONE)
+  // ADR-009-f v3.2 Fix 1 + Fix 2: register the persisted frame at
+  // the TOP of the pipeline so the unregister-on-exit is
+  // deterministic. `registerToken == 0L` is the sentinel "nothing
+  // tracked" (no persistence was applied upstream). The token is
+  // the canonical gate on both success-path unpersist AND
+  // failure-path typed-Left return — `registerToken != 0L` means
+  // "we own a paired-lifecycle responsibility".
+  val registerToken: Long =
+    if (!df.storageLevel.equals(org.apache.spark.storage.StorageLevel.NONE))
+      trackPersist(df) // returns the unregister-token; held in this scope
+    else 0L // sentinel "nothing tracked"
   val filtered: org.apache.spark.sql.DataFrame =
     request.where.filter(_.nonEmpty) match {
       case Some(w) => df.filter(w)
@@ -567,45 +611,121 @@ val compiled: Either[EngineError, PortableQueryResult] =
   // Per ADR-009-e error-handling guardrail: do NOT wrap collect()
   // in a catch. Real Spark failures (SparkException, executor OOM)
   // propagate per the PR-176 NonFatal discipline; the dispatcher
-  // wraps only NonFatal. `truncated` is a VALUE, not an exception
-  // path.
-  val collected: Array[org.apache.spark.sql.Row] =
+  // ADR-009-f v3.2 Fix 2: paired persist/unpersist lifecycle with
+  // typed-Left (no Throwable swallow on any path). Two paths here:
+  //   1. `collect()` itself raises an exception — typed Left only
+  //      if a frame was tracked (registerToken != 0L); else re-throw
+  //      to preserve ADR-009-e's non-swallow contract (the existing
+  //      falsifiable test asserts a SparkException propagates).
+  //      addSuppressed chains any unpersist fault onto the original
+  //      collect() exception so the dispatcher/log sees the root
+  //      cause first.
+  //   2. `collect()` succeeds — inline decode to result, then
+  //      paired-unpersist IF a frame was tracked; any unpersist
+  //      fault surfaces as a typed Left(PersistLifecycleFailed) and
+  //      untrackPersist(token) still runs.
+  // NonFatal per PR-176: Error subclasses (OOM, StackOverflow)
+  // propagate uncaught; InterruptedException re-interrupts.
+  val collected: Either[EngineError, Array[org.apache.spark.sql.Row]] =
     try {
-      withLimit.collect()
-    } finally {
-      if (wasPersisted) {
-        // Unpersist the ORIGINAL persisted upstream frame (df),
-        // never withLimit — which is a fresh uncached plan and was
-        // never persisted (see wasPersisted derivation above).
-        try df.unpersist()
-        catch {
-          case e: Throwable =>
-            // Per scala-error-handling-mindset §4: do NOT swallow.
-            // unpersist failures indicate a real Spark executor
-            // state problem (NotSerializableException, OOM,
-            // SparkException from storage). We log to stderr (the
-            // canonical SM8 stderr channel per RFC §9). Real typed
-            // error on collect-failure is handled upstream.
-            System.err.println(s"sm8: SparkEngineProvider unpersist failed: ${e.getClass.getSimpleName}: ${e.getMessage}")
+      Right(withLimit.collect())
+    } catch {
+      case NonFatal(collectErr) =>
+        if (registerToken != 0L) {
+          // Failure path WITH a tracked frame: unpersist inline
+          // (no `finally` — typed Left returns). Chain any unpersist
+          // failure as suppressed so the dispatcher sees the
+          // original collect() error first.
+          try df.unpersist()
+          catch { case NonFatal(u) => collectErr.addSuppressed(u) }
+          untrackPersist(registerToken)
+          Left(EngineError.PersistLifecycleFailed(
+            engine  = sparkEngineName,
+            phase   = EngineError.PersistPhase.Unpersist,
+            cause   = collectErr.getClass.getSimpleName,
+            message = collectErr.getMessage))
+        } else {
+          // No tracked frame: not a lifecycle failure. Propagate
+          // per the ADR-009-e non-swallow contract.
+          throw collectErr
         }
-      }
     }
-  val pulledCount: Int = collected.length
-  // Truthful truncation: only when the probe found MORE than the
-  // effective cap. Drop the single probe row.
-  val truncated: Boolean = pulledCount.toLong > effectiveCap
-  val cappedRows: Array[org.apache.spark.sql.Row] =
-    if (truncated) collected.dropRight(1) else collected
-  val rows: Vector[ResultRow] = cappedRows.iterator.map { row =>
-    ResultRow(values = decodeRow(row, schema), schema = schema)
-  }.toVector
-  Right(PortableQueryResult(
-    schema = schema,
-    rows  = rows,
-    metadata = schemaMetadata,
-    truncated = truncated))
+  // v3.0: the post-collect decode is INLINE here (no helper
+  // extraction; lines mirror ADR-009-e verbatim). The unpersist
+  // side-effect wraps the result construction.
+  collected match {
+    case Right(rows) =>
+      val pulledCount: Int = rows.length
+      // Truthful truncation: only when the probe found MORE than
+      // the effective cap. Drop the single probe row.
+      val truncated: Boolean = pulledCount.toLong > effectiveCap
+      val cappedRows: Array[org.apache.spark.sql.Row] =
+        if (truncated) rows.dropRight(1) else rows
+      val resultRows: Vector[ResultRow] = cappedRows.iterator.map { row =>
+        ResultRow(values = decodeRow(row, schema), schema = schema)
+      }.toVector
+      val result: PortableQueryResult = PortableQueryResult(
+        schema = schema,
+        rows  = resultRows,
+        metadata = schemaMetadata,
+        truncated = truncated)
+      if (registerToken != 0L) {
+        try {
+          df.unpersist()
+          untrackPersist(registerToken)
+          Right(result)
+        } catch {
+          case NonFatal(u) =>
+            untrackPersist(registerToken)
+            Left(EngineError.PersistLifecycleFailed(
+              engine  = sparkEngineName,
+              phase   = EngineError.PersistPhase.Unpersist,
+              cause   = u.getClass.getSimpleName,
+              message = u.getMessage))
+        }
+      } else {
+        Right(result)
+      }
+    case Left(e) => Left(e)
   }
- /** PR-N1: walk the produced `RelOp` tree via the engine-portable
+ }
+
+/**
+ * TEST SEAM: Dataset subclass that throws on every `unpersist()` call.
+ * Defined here (in production) — NOT in the spec — because the
+ * production test-only overload ([[applyPostCompilePipeline]] with
+ * `forceUnpersistFault: Boolean`) must reference it from compiled
+ * production code. Scope is `private[spark]` so tests in the
+ * connector module reach it but no external module does.
+ * Production code MUST NOT use this class.
+ */
+private[spark] class ThrowingUnpersistDataset(df: org.apache.spark.sql.DataFrame)
+  extends org.apache.spark.sql.Dataset[org.apache.spark.sql.Row](
+    df.sparkSession, df.queryExecution.logical, org.apache.spark.sql.Encoders.row(df.schema)) {
+  override def unpersist(): this.type =
+    throw new org.apache.spark.SparkException(
+      "forced unpersist fault (ADR-009-f acceptance #4 / #8)")
+  override def unpersist(blocking: Boolean): this.type = unpersist()
+}
+
+/**
+ * Test-only overload: identical to the production pipeline but wraps
+ * the passed-in df's unpersist in a fault (ADR-009-f acceptance
+ * #4 / #8). NOT a production API; private[spark] like the pipeline
+ * itself. Calls the production overload with a [[ThrowingUnpersistDataset]]
+ * when the fault is requested.
+ */
+private[spark] def applyPostCompilePipeline(
+   df: org.apache.spark.sql.DataFrame,
+   request: QueryRequest,
+   schemaMetadata: Map[String, String],
+   cap: Long,
+   forceUnpersistFault: Boolean): Either[EngineError, PortableQueryResult] =
+ applyPostCompilePipeline(
+   if (forceUnpersistFault) new ThrowingUnpersistDataset(df) else df,
+   request, schemaMetadata, cap)
+
+/** PR-N1: walk the produced `RelOp` tree via the engine-portable
  * `QueryBuilder` + the core `RelOpPlanPrinter`. Output is a
  * multi-line indented plan: 1 header line (model name + engine
  * identity) + 1 line per RelOp node. Per RFC §3 ownership the
