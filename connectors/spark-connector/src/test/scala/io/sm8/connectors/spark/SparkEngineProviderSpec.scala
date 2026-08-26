@@ -153,4 +153,143 @@ class SparkEngineProviderSpec extends AnyFunSuite with Matchers {
       spark.stop()
     }
   }
+
+  // -- ADR-009-e: server-side materialization cap + persist fix --
+
+  /** Synthetic DataFrame with `n` rows of a single int column. */
+  private def frameN(spark: SparkSession, n: Int): org.apache.spark.sql.DataFrame = {
+    import spark.implicits._
+    spark.createDataset((1 to n).map(_.toLong)).toDF("v")
+  }
+
+  test("ADR-009-e: applyPostCompilePipeline caps a fixture larger than the cap (rows == cap, truncated == true)") {
+    // Acceptance #1 (SM-07 happy): no request.limit over a fixture
+    // larger than the cap → rows.size == cap and truncated == true.
+    val spark = SparkSession.builder().master("local[*]").appName("tCap").getOrCreate()
+    try {
+      val provider = new SparkEngineProvider(spark, SparkTypeBridge, "spark-3.5")
+      val df = frameN(spark, 5)
+      val out = provider.applyPostCompilePipeline(
+        df,
+        io.sm8.core.engine.QueryRequest(model = "cap-test", limit = None),
+        Map("engine.id" -> "spark-3.5"),
+        cap = 3L)
+      out.isRight shouldBe true
+      val result = out.toOption.get
+      result.rows.size shouldBe 3
+      result.truncated shouldBe true
+      // The row VALUES are the first 3 (the probe row is dropped).
+      result.rows.map(_.values.head).toSet shouldBe Set(
+        io.sm8.core.engine.ResultValue.IntV(1L),
+        io.sm8.core.engine.ResultValue.IntV(2L),
+        io.sm8.core.engine.ResultValue.IntV(3L))
+    } finally {
+      spark.stop()
+    }
+  }
+
+  test("ADR-009-e: applyPostCompilePipeline exact-cap fixture reports truncated == false (off-by-one probe)") {
+    // Acceptance #2: a fixture of EXACTLY cap rows returns
+    // truncated == false — the cap+1 probe found nothing to drop.
+    val spark = SparkSession.builder().master("local[*]").appName("tExactCap").getOrCreate()
+    try {
+      val provider = new SparkEngineProvider(spark, SparkTypeBridge, "spark-3.5")
+      val df = frameN(spark, 5)
+      val out = provider.applyPostCompilePipeline(
+        df,
+        io.sm8.core.engine.QueryRequest.empty,
+        Map("engine.id" -> "spark-3.5"),
+        cap = 5L)
+      out.isRight shouldBe true
+      val result = out.toOption.get
+      result.rows.size shouldBe 5
+      result.truncated shouldBe false
+    } finally {
+      spark.stop()
+    }
+  }
+
+  test("ADR-009-e: request.limit only NARROWS the cap; caller cannot widen it") {
+    // RFC §3: the cap is deployment policy. A caller requesting a
+    // larger limit than the cap is still capped (min).
+    val spark = SparkSession.builder().master("local[*]").appName("tNarrow").getOrCreate()
+    try {
+      val provider = new SparkEngineProvider(spark, SparkTypeBridge, "spark-3.5")
+      val df = frameN(spark, 7)
+      val out = provider.applyPostCompilePipeline(
+        df,
+        io.sm8.core.engine.QueryRequest(model = "m", limit = Some(100L)), // caller wants 100
+        Map("engine.id" -> "spark-3.5"),
+        cap = 4L)
+      out.isRight shouldBe true
+      val result = out.toOption.get
+      result.rows.size shouldBe 4
+      result.truncated shouldBe true
+    } finally {
+      spark.stop()
+    }
+  }
+
+  test("ADR-009-e: upstream persisted frame is unpersisted after a capped collect (wasPersisted fix, P2)") {
+    // Acceptance #5: materialize == Persist + a capped query →
+    // the upstream persisted frame is unpersisted after collect,
+    // NOT lingering until provider.close(). The old code derived
+    // wasPersisted from withLimit.storageLevel (== NONE after
+    // .limit()), so its unpersist was a no-op and the persisted
+    // frame leaked. The fix derives from the PASSED-IN df and
+    // unpersists it.
+    val spark = SparkSession.builder().master("local[*]").appName("tPersist").getOrCreate()
+    try {
+      val provider = new SparkEngineProvider(spark, SparkTypeBridge, "spark-3.5")
+      val df = frameN(spark, 6).persist(org.apache.spark.storage.StorageLevel.MEMORY_AND_DISK)
+      // Force caching (persist() is lazy until an action).
+      df.count()
+      // Precondition: the upstream frame is genuinely persisted.
+      // (Dataset.storageLevel is the persist marker — a DataFrame
+      // .persist() + materialized action reports the level here.)
+      df.storageLevel shouldBe org.apache.spark.storage.StorageLevel.MEMORY_AND_DISK
+      provider.applyPostCompilePipeline(
+        df,
+        io.sm8.core.engine.QueryRequest.empty,
+        Map("engine.id" -> "spark-3.5"),
+        cap = 2L)
+      // The fix unpersists the ORIGINAL df (not withLimit — the
+      // reviewers' P2 bug). The upstream frame's storage level is
+      // back to NONE after the capped collect; under the bug it
+      // stayed MEMORY_AND_DISK (lingering until provider.close()).
+      df.storageLevel shouldBe org.apache.spark.storage.StorageLevel.NONE
+    } finally {
+      spark.stop()
+    }
+  }
+
+  test("ADR-009-e: a SparkException from collect propagates — NOT reclassified as UnsupportedCapability (non-swallow)") {
+    // Acceptance #7: the cap path must NOT wrap collect() in a
+    // catch. A real Spark failure (a throwing executor, here via a
+    // UDF that fails at row-evaluation) surfaces as a
+    // SparkException thrown OUT of applyPostCompilePipeline — never
+    // converted to a typed Left/UnsupportedCapability. `truncated`
+    // is a VALUE, not an exception path (per the PR-176 NonFatal
+    // discipline — the engine/dispatcher wraps only NonFatal).
+    val spark = SparkSession.builder().master("local[*]").appName("tNonSwallow").getOrCreate()
+    try {
+      val provider = new SparkEngineProvider(spark, SparkTypeBridge, "spark-3.5")
+      val boom = (x: Long) => { throw new RuntimeException("boom"); 0L }
+      val throwingUdf = org.apache.spark.sql.functions.udf(boom)
+      val df = frameN(spark, 3).withColumn("bad", throwingUdf(org.apache.spark.sql.functions.col("v")))
+      // The UDF throws on every row → collect() must raise a
+      // SparkException (propagated), not return a typed Left.
+      val caught =
+        the [org.apache.spark.SparkException] thrownBy {
+          provider.applyPostCompilePipeline(
+            df,
+            io.sm8.core.engine.QueryRequest.empty,
+            Map("engine.id" -> "spark-3.5"),
+            cap = 2L)
+        }
+      caught.getMessage should not include "Window.UnpartitionedPercentOfTotal"
+    } finally {
+      spark.stop()
+    }
+  }
 }

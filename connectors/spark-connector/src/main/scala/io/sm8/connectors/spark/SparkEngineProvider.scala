@@ -55,7 +55,15 @@ final class SparkEngineProvider(
  // PreExecute hooks fire before compile (may set ctx.stop), PostExecute
  // after. Per ADR §C1: uses the existing `HookRunner` SDK Protocol;
  // no new payload types.
- val hookRunner:  Option[HookRunner] = None
+ val hookRunner:  Option[HookRunner] = None,
+ // ADR-009-e: server-side default row cap (deployment policy,
+ // RFC §3). Constructor-frozen — NOT a per-query EngineContext
+ // field, NOT caller-trip-able: the caller's request.limit may
+ // only NARROW the cap (min), never widen it. Defaults to the
+ // connector-level deployment constant; the platform
+ // (EngineService) declares its own DefaultResultCapRows as the
+ // deployment-side policy value.
+ val resultCapRows: Long = SparkEngineProvider.DefaultResultCapRows
 ) extends EngineProvider {
  // Per-query session design: TEST-ONLY seam to expose the per-query
  // SparkSession from `query()` for falsifiable tests.
@@ -432,7 +440,8 @@ val compiled: Either[EngineError, PortableQueryResult] =
      case Some(df) if df.isInstanceOf[org.apache.spark.sql.DataFrame] =>
      applyPostCompilePipeline(
       df.asInstanceOf[org.apache.spark.sql.DataFrame],
-      request, schemaMetadata)
+      request, schemaMetadata,
+      cap = resultCapRows)
      case Some(other) =>
      Left(EngineError.UnsupportedCapability(
       engine  = sparkEngineName,
@@ -449,7 +458,8 @@ val compiled: Either[EngineError, PortableQueryResult] =
   case None =>
    compileSteps(ctx) match {
    case Right(df: org.apache.spark.sql.DataFrame) =>
-    applyPostCompilePipeline(df, request, schemaMetadata)
+    applyPostCompilePipeline(df, request, schemaMetadata,
+      cap = resultCapRows)
    case Left(err: EngineError) =>
     Left[EngineError, PortableQueryResult](err)
    }
@@ -481,60 +491,102 @@ val compiled: Either[EngineError, PortableQueryResult] =
  * Per ADR-008-P §A3 (PR-1): paired persist/unpersist lifecycle
  * with typed errors. The persist() itself was already applied
  * upstream by `applyAggregations` when materialize==Persist; the
- * DataFrame carries that storageLevel. We read it, collect the
- * rows, unpersist in `finally`, surface typed errors on
+ * passed-in `df` carries that storageLevel. `wasPersisted` is
+ * derived from the PASSED-IN df BEFORE `.filter()`/`.limit()`
+ * (which build fresh uncached plans and reset storageLevel to
+ * NONE — the reviewers' P2 wasPersisted bug). We unpersist the
+ * persisted upstream frame in `finally`, surface typed errors on
  * collect/unpersist failure (no Throwable swallow).
+ *
+ * ADR-009-e: applies the server-side materialization cap via a
+ * cap+1 probe (`limit(min(cap, request.limit) + 1)` → `collect` →
+ * `truncated = collected.length > effectiveCap`, dropping the
+ * probe row). `collected.length` is O(1) on the materialized
+ * array — NO df.count() on the hot path.
  */
  private[spark] def applyPostCompilePipeline(
   df:    org.apache.spark.sql.DataFrame,
   request:   QueryRequest,
-  schemaMetadata: Map[String, String]): Either[EngineError, PortableQueryResult] = {
- val filtered: org.apache.spark.sql.DataFrame =
-  request.where.filter(_.nonEmpty) match {
-  case Some(w) => df.filter(w)
-  case None => df
-  }
- val withLimit: org.apache.spark.sql.DataFrame =
-  request.limit.fold(filtered)(l => filtered.limit(l.toInt))
- val schema: ResultSchema = ResultSchema(
-  withLimit.schema.fields.map { f =>
-  Field(
-   name  = f.name,
-   dataType = bridge.sparkTypeToSealedDataType(f.dataType),
-   nullable = f.nullable
+  schemaMetadata: Map[String, String],
+  // ADR-009-e: server-side materialization cap (deployment policy,
+  // RFC §3). The caller's `request.limit` may only NARROW it
+  // (min), never widen it — callers cannot trip the guard off.
+  cap:   Long = SparkEngineProvider.DefaultResultCapRows
+ ): Either[EngineError, PortableQueryResult] = {
+  // ADR-009-e fix (reviewers' P2): `wasPersisted` MUST be derived
+  // from the PASSED-IN `df` BEFORE applying filter/limit. Spark's
+  // `.filter()` / `.limit()` build NEW uncached logical plans, so
+  // `withLimit.storageLevel` is always StorageLevel.NONE even when
+  // the upstream aggregate frame was persisted (ADR-008-P paired
+  // persist). Deriving from withLimit made the finally's unpersist
+  // a silent no-op on exactly the capped path this ADR makes the
+  // default — the persisted frame leaked until provider.close().
+  val wasPersisted: Boolean =
+    !df.storageLevel.equals(org.apache.spark.storage.StorageLevel.NONE)
+  val filtered: org.apache.spark.sql.DataFrame =
+    request.where.filter(_.nonEmpty) match {
+      case Some(w) => df.filter(w)
+      case None => df
+    }
+  // Effective cap = min(policy cap, caller limit). The cap+1 probe
+  // pulls ONE row beyond the effective cap so `truncated` is
+  // truthful: a source returning EXACTLY effectiveCap rows reports
+  // truncated=false (no off-by-one). `collected.length` is O(1) on
+  // the materialized array — NO df.count(), NO extra Spark action
+  // (perf-mandated by the ADR).
+  val effectiveCap: Long = math.min(cap, request.limit.getOrElse(cap))
+  val withLimit: org.apache.spark.sql.DataFrame =
+    filtered.limit((effectiveCap + 1L).toInt)
+  val schema: ResultSchema = ResultSchema(
+    withLimit.schema.fields.map { f =>
+      Field(
+        name  = f.name,
+        dataType = bridge.sparkTypeToSealedDataType(f.dataType),
+        nullable = f.nullable
+      )
+    }.toList
   )
-  }.toList
- )
- val materialized: org.apache.spark.storage.StorageLevel = withLimit.storageLevel
- val wasPersisted: Boolean =
-  !materialized.equals(org.apache.spark.storage.StorageLevel.NONE)
- val collected: Array[org.apache.spark.sql.Row] =
-  try {
-  withLimit.collect()
-  } finally {
-  if (wasPersisted) {
-   try withLimit.unpersist()
-   catch {
-   case e: Throwable =>
-    // Per scala-error-handling-mindset §4: do NOT swallow.
-    // unpersist failures indicate a real Spark executor
-    // state problem (NotSerializableException, OOM,
-    // SparkException from storage). We log to stderr (the
-    // canonical SM8 stderr channel per RFC §9). Real
-    // typed error on collect-failure is handled by the
-    // catch above.
-    System.err.println(s"sm8: SparkEngineProvider unpersist failed: ${e.getClass.getSimpleName}: ${e.getMessage}")
-   }
+  // Per ADR-009-e error-handling guardrail: do NOT wrap collect()
+  // in a catch. Real Spark failures (SparkException, executor OOM)
+  // propagate per the PR-176 NonFatal discipline; the dispatcher
+  // wraps only NonFatal. `truncated` is a VALUE, not an exception
+  // path.
+  val collected: Array[org.apache.spark.sql.Row] =
+    try {
+      withLimit.collect()
+    } finally {
+      if (wasPersisted) {
+        // Unpersist the ORIGINAL persisted upstream frame (df),
+        // never withLimit — which is a fresh uncached plan and was
+        // never persisted (see wasPersisted derivation above).
+        try df.unpersist()
+        catch {
+          case e: Throwable =>
+            // Per scala-error-handling-mindset §4: do NOT swallow.
+            // unpersist failures indicate a real Spark executor
+            // state problem (NotSerializableException, OOM,
+            // SparkException from storage). We log to stderr (the
+            // canonical SM8 stderr channel per RFC §9). Real typed
+            // error on collect-failure is handled upstream.
+            System.err.println(s"sm8: SparkEngineProvider unpersist failed: ${e.getClass.getSimpleName}: ${e.getMessage}")
+        }
+      }
+    }
+  val pulledCount: Int = collected.length
+  // Truthful truncation: only when the probe found MORE than the
+  // effective cap. Drop the single probe row.
+  val truncated: Boolean = pulledCount.toLong > effectiveCap
+  val cappedRows: Array[org.apache.spark.sql.Row] =
+    if (truncated) collected.dropRight(1) else collected
+  val rows: Vector[ResultRow] = cappedRows.iterator.map { row =>
+    ResultRow(values = decodeRow(row, schema), schema = schema)
+  }.toVector
+  Right(PortableQueryResult(
+    schema = schema,
+    rows  = rows,
+    metadata = schemaMetadata,
+    truncated = truncated))
   }
-  }
- val rows: Vector[ResultRow] = collected.iterator.map { row =>
-  ResultRow(values = decodeRow(row, schema), schema = schema)
- }.toVector
- Right(PortableQueryResult(
-  schema = schema,
-  rows  = rows,
-  metadata = schemaMetadata))
- }
  /** PR-N1: walk the produced `RelOp` tree via the engine-portable
  * `QueryBuilder` + the core `RelOpPlanPrinter`. Output is a
  * multi-line indented plan: 1 header line (model name + engine
@@ -803,6 +855,15 @@ private[spark] def compileModelToDataFrame(
  * heuristic governs.
  */
 object SparkEngineProvider {
+  /** ADR-009-e: server-side default materialization cap (rows) for
+   * the driver `collect()`. Closes the silent driver-OOM (SM-07)
+   * when a caller passes no `request.limit`: the engine materializes
+   * at most this many rows and flags the result `truncated`. The
+   * value is deployment policy (RFC §3) — the platform's
+   * `EngineService.DefaultResultCapRows` mirrors it; callers can
+   * only NARROW it via request.limit, never widen or disable it. */
+  val DefaultResultCapRows: Long = 1_000_000L
+
   val BroadcastSeedDefaultBytes: Long = 10L * 1024L * 1024L
 
   /**
