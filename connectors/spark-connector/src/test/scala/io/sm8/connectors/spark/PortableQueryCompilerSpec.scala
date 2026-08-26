@@ -374,6 +374,66 @@ class PortableQueryCompilerSpec extends AnyFunSuite with Matchers {
     }
   }
 
+  test("PortableQueryCompiler.applyAggregations: MaterializePolicy.Cache returns typed Left(UnsupportedCapability) — actionable message (ADR-009-f Fix 3)") {
+    // ADR-009-f v3.2 Fix 3: the materialize path's `case _ =>
+    // Right(result)` is GONE for `Cache` — it is now a typed Left
+    // with an actionable message telling the contributor how to get
+    // actual caching (CachePolicy.ReadThrough via the cache-plugin)
+    // versus actual materialization (MaterializePolicy.Persist). This
+    // is the falsifiable assertion: a model with materialize = Cache
+    // MUST surface a typed error, NOT silently behave like None.
+    val spark = SparkSession.builder().master("local[1]").appName("tPersistCache").getOrCreate()
+    try {
+      val schema = new StructType(Array(
+        StructField("val", IntegerType, nullable = false),
+      ))
+      val rows = Array(org.apache.spark.sql.RowFactory.create(1: java.lang.Integer))
+      val df = spark.createDataFrame(java.util.Arrays.asList(rows: _*), schema)
+      val model = Model.of(
+        name    = "cache-materialize-model",
+        version = 1,
+        source  = SourceRef.ByName(table = "t"),
+        measures = List(
+          io.sm8.core.model.Measure(
+            name = "total",
+            expr = io.sm8.core.rel.AggregateCall(
+              fn = io.sm8.core.rel.AggregateFn.Sum,
+              input = Some(Expr.FieldRef("val")),
+              alias = "total",
+              distinct = false,
+              arguments = Nil,
+            ),
+          ),
+        ),
+        defaultPolicies = ModelPolicyDefaults(
+          materialize = MaterializePolicy.Cache,
+          cache       = io.sm8.core.model.CachePolicy.NoCache,
+          audit       = io.sm8.core.model.AuditPolicy.NoAudit,
+        ),
+        status = ModelStatus.Published,
+      ).toOption.get
+      val compiler = new PortableQueryCompiler(spark)
+      val out = compiler.applyAggregations(df, model)
+      out.isLeft shouldBe true
+      val err = out.left.toOption.get
+      err shouldBe a [EngineError.UnsupportedCapability]
+      err.engine shouldBe "spark-3.5"
+      // The capability name is the actionable identifier.
+      val cap = err.asInstanceOf[EngineError.UnsupportedCapability]
+      cap.capability shouldBe "MaterializePolicy.Cache"
+      // The message MUST name the right routing path: result caching
+      // is via CachePolicy.ReadThrough (NOT a typo like
+      // "MaterializePolicy.ReadThrough"). The PR-178 discipline says
+      // silent no-ops are contract violations — the message must be
+      // genuinely actionable.
+      cap.message should include ("For connector-side materialization")
+      cap.message should include ("CachePolicy.ReadThrough")
+      cap.message should not include "MaterializePolicy.ReadThrough"
+    } finally {
+      spark.stop()
+    }
+  }
+
   // ===== PR-O2 (ADR-008-O, P0-4): size-based broadcast-join hint =====
 
   test("PortableQueryCompiler.applyJoins: unset broadcastRightBelowBytes trusts Spark default") {

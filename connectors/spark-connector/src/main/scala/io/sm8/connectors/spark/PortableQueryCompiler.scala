@@ -513,6 +513,26 @@ final class PortableQueryCompiler(val spark: SparkSession)
      capability = "MaterializePolicy.Persist",
      message = s"Unknown Spark StorageLevel: '$level'. Expected one of: DISK_ONLY, DISK_ONLY_2, MEMORY_ONLY, MEMORY_ONLY_2, MEMORY_AND_DISK, MEMORY_AND_DISK_2, MEMORY_AND_DISK_SER, MEMORY_AND_DISK_SER_2, OFF_HEAP."))
     }
+   case io.sm8.core.model.MaterializePolicy.Cache =>
+    // ADR-009-f v3.2 Fix 3: Cache is NOT a silent no-op. The model
+    // declares `materialize = Cache` expecting "cache the aggregate",
+    // but the materialize path in this connector only knows how to
+    // `.persist(level)`. For result-caching at the query boundary,
+    // the model should declare a CachePolicy (ReadThrough/WriteThrough)
+    // routed through the cache-plugin — that is the actual cache
+    // mechanism and is a separate concern from materialize. The
+    // materialize-side Cache handoff (telling the cache-plugin "I just
+    // materialized this aggregate; please cache it") is a separate ADR
+    // and is not yet wired. Surface this as a typed Left so the
+    // contributor's expectation isn't silently ignored.
+    Left(EngineError.UnsupportedCapability(
+      engine  = "spark-3.5",
+      capability = "MaterializePolicy.Cache",
+      message = "MaterializePolicy.Cache is not yet wired to the cache-plugin persist handoff. " +
+                "For connector-side materialization, use MaterializePolicy.Persist(<storage-level>) " +
+                "(e.g. Persist(\"MEMORY_ONLY\")). For result caching, set ModelPolicyDefaults.cache = " +
+                "CachePolicy.ReadThrough(<cache-name>) — this routes through the cache-plugin, not " +
+                "the materialize path. The cache-handoff for materialize-side Cache is a separate ADR."))
    case _ =>
     Right(result)
    }
