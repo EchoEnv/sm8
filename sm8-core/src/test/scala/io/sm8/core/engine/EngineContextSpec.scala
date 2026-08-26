@@ -10,7 +10,6 @@ import org.scalatest.matchers.should.Matchers
 // carrying a required 'name: String'.
 import io.sm8.core.model.CachePolicy
 
-
 import scala.concurrent.duration.Duration
 
 /** Phase 2 contract: prove `EngineContext` + its 5 sub-ADTs work as

@@ -466,7 +466,7 @@ class EngineServiceRunQueryWithHooksSpec extends AnyFunSuite with Matchers {
    hints.broadcastArmed shouldBe Some(false)
    // Skew armed (2B >= 1B).
    hints.skewArmed shouldBe Some(true)
- hints.broadcastThresholdBytes shouldBe Some(10L * 1024L * 1024L: Long)
+   hints.broadcastThresholdBytes shouldBe Some(10L * 1024L * 1024L: Long)
   }
 
   // -- ADR-009-g v1.1 acceptance #4: dispatcher integration spec --
