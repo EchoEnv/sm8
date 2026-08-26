@@ -32,6 +32,8 @@ their context, the options considered, and the consequences of the chosen path.
 | [0009-b](0009-b-adaptive-skew-wiring.md) | AQE skew wiring — deferred (operator-precedence is non-negotiable on a shared session; per-query factor not expressible until ADR-009-c) | Superseded by ADR-009-c |
 | [0009-c](0009-c-per-query-clone-session.md) | Per-session-deployment follow-up: per-query `newSession()` so `JoinHints.skewFactor` binds per query | Implemented (PR-171, `0466841`) |
 | [0009-d](0009-d-broadcast-skew-decision-via-context-meta.md) | Broadcast + skew decision lives in the plugin's hook; spark connector consumes via `EngineContext.decisionHints` (v0.3 rebuilt after v0.1 + v0.2 were BLOCKED by dual review; resolves swallow-vs-throw + fold-placement + adds `broadcastThresholdBytes` to `DecisionHints`) | Implemented (PR-174, `0161b7b`) |
+
+| [0009-f](0009-f-paired-persist-lifecycle.md) | Paired persist lifecycle — typed registration (`trackPersist`), non-swallow unpersist, `MaterializePolicy.Cache` typed reject, single-source `MaterializePolicy` ADT (drops dead `EngineContext.materializePolicy` + unused `MemoryOnly`/`MemoryAndDisk`/`EngineDefault` cases); closes ADR-008-P CROSS-P0-B (still OPEN) + 4 sibling gaps surfaced by the v0.3 retrospective | Proposed (pending dual senior review) |
 ## Tools
 
 `adr-tools`, `log4brains`, and similar tools expect `./docs/adr/` at the repo root —
