@@ -191,32 +191,45 @@ final class SparkEngineProvider(
  /** PR-O4a + PR-O4e: lifecycle hook -- unpersist every tracked
  * DataFrame, then stop the constructor-frozen SparkSession.
  */
- override def close(): Unit = try {
+override def close(): Unit = {
   import scala.collection.JavaConverters._
   import scala.collection.mutable.ListBuffer
   // ADR-009-f v3.2 Fix 2b: at JVM-shutdown we surface unpersist
   // failures via stderr-with-token (operators need a post-mortem
   // breadcrumb). NonFatal per PR-176: Error subclasses (OOM,
   // StackOverflow) propagate uncaught — the JVM is dying anyway.
-  // The outer `case _: Throwable => ()` keep remains as a defense
-  // against errors from `spark.stop()` (which we do not want to
-  // bubble from a shutdown hook).
+  // v3.4 (architect code-review P2): the previous shape wrapped
+  // EVERYTHING — including the token-in-log foreach — in a single
+  // outer `try { ... } catch { case NonFatal(_) => () }`. If
+  // `spark.stop()` (line 210) threw NonFatal (SparkException from
+  // broken RPC, IllegalStateException if already stopped), the
+  // outer catch swallowed it AND skipped the breadcrumb logging —
+  // the exact silent-swallow class the ADR's Fix 2b was introduced
+  // to close. Restructured: unpersist attempts → log failures
+  // (UNCONDITIONAL, no outer wrapper) → narrow spark.stop() defense.
   val unpersistFailures = ListBuffer.empty[(java.lang.Long, Throwable)]
   persistedFrames.asScala.foreach { case (tok, df) =>
-   try df.unpersist()
-   catch { case NonFatal(e) => unpersistFailures += ((tok, e)) }
+    try df.unpersist()
+    catch { case NonFatal(e) => unpersistFailures += ((tok, e)) }
   }
   persistedFrames.clear()
-  if (spark != null) spark.stop()
+  // Log BEFORE spark.stop(): the breadcrumb must survive any
+  // downstream stop() failure. Writing to stderr is a system call
+  // with no Spark dependency, so it cannot be affected by the
+  // SparkSession teardown that follows.
   unpersistFailures.foreach { case (tok, e) =>
-   System.err.println(
-    s"sm8: SparkEngineProvider.close() unpersist failed " +
-    s"(token=$tok, engine=$sparkEngineName, " +
-    s"${e.getClass.getSimpleName}: ${e.getMessage})")
+    System.err.println(
+      s"sm8: SparkEngineProvider.close() unpersist failed " +
+      s"(token=$tok, engine=$sparkEngineName, " +
+      s"${e.getClass.getSimpleName}: ${e.getMessage})")
   }
- } catch {
- case NonFatal(_) => ()
- }
+  // Narrow defense: spark.stop() is best-effort at JVM-shutdown;
+  // a NonFatal failure must not abort the rest of the cleanup, but
+  // the unpersist logging above is already on stderr (done).
+  if (spark != null)
+    try spark.stop()
+    catch { case NonFatal(_) => () }
+}
 
  /** P1-SM-02: re-initialize `@transient` fields after Java
  * deserialization. `querySessionTL`, `lastQuerySessionTL`, and
