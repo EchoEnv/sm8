@@ -835,12 +835,21 @@ private[spark] def compileModelToDataFrame(
  // per-query `SparkSession` explicitly. explain() acquires a
  // per-query session and threads it through; query() does the
  // same. The null-spark provider path (the supported `null` config)
- // is preserved by short-circuiting with a typed Left when the
  // session is null.
  querySession: org.apache.spark.sql.SparkSession): Either[EngineError, org.apache.spark.sql.DataFrame] = {
- val resolver = if (querySession != null) new SparkSourceResolver(querySession, SparkSourceResolver.SessionCatalogModelRegistry)
-  else new SparkSourceResolver(null, SparkSourceResolver.SessionCatalogModelRegistry)
- // the source.
+ // P2 cluster: null-spark short-circuit BEFORE constructing a resolver that
+ // requires a live SparkSession. `resolveWithPushdown` is only on the
+ // concrete `SparkSourceResolver` (not the base `SourceResolver` trait),
+ // so a null session can't even reach the for-comprehension without a
+ // typed Left here. Per the supported `null` config (exercised by
+ // SparkEngineProviderSpec:100,119 + explain's null-smoke test).
+ if (querySession == null) Left(EngineError.UnsupportedCapability(
+  engine = sparkEngineName,
+  capability = "compileModelToDataFrame.nullSparkSession",
+  message = "No SparkSession available (null-spark provider configuration)."))
+ else {
+  val resolver = new SparkSourceResolver(querySession, SparkSourceResolver.SessionCatalogModelRegistry)
+  // the source.
  // (closure-safety): the source-level filter is built driver-side
  // via `predicateToColumn`; no executor-side closure capture.
  //
@@ -907,6 +916,7 @@ private[spark] def compileModelToDataFrame(
     message = "Cannot compile: SparkSession is null (SM8-only semantic path)"))
  } yield df
  }
+}
 // PR-N1: the resolver used by `explain` to produce the IR tree.
 // the same model registry / spark session as the compiler's path.
 //

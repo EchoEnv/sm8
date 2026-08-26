@@ -14,9 +14,9 @@
  * pattern. Other NonFatal failures propagate to
  * EngineService.executeEngine:258-264's NonFatal -> ProviderInvocationFailed
  * typed conversion; Error subclasses propagate to the caller per the
- * PR-176 discipline. The PortableQueryCompiler.scala:311,316 join-right
- * catches already narrow correctly — this site enforces the
- * single-convention rule across the file.
+ * PR-176 discipline. The `PortableQueryCompiler.scala:409` broadcast-size
+ * stats catch also narrows to `AnalysisException` (per the same
+ * convention) — this spec verifies all 3 IO-boundary catches in the file.
  */
 package io.sm8.connectors.spark
 

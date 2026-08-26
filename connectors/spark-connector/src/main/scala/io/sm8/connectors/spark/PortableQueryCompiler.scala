@@ -406,7 +406,7 @@ protected[spark] def readPathByPath(
    // Spark 3.5 returns sizeInBytes as BigInt; convert to Long.
    val rightBytes: Long = try {
     rDf.queryExecution.analyzed.stats.sizeInBytes.toLong
-   } catch { case _: Throwable => Long.MaxValue }
+   } catch { case _: org.apache.spark.sql.AnalysisException => Long.MaxValue }
    val shouldBroadcast: Boolean = ctx.joinHints.broadcastRightBelowBytes match {
     case Some(threshold) => rightBytes >= 0L && rightBytes <= threshold
     case None   => false // trust Spark's default heuristic
