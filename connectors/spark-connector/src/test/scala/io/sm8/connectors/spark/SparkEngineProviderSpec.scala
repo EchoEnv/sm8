@@ -292,4 +292,71 @@ class SparkEngineProviderSpec extends AnyFunSuite with Matchers {
       spark.stop()
     }
   }
+
+  // ===== ADR-009-e follow-up (P2): cross-module cap constant drift guard =====
+
+  test("ADR-009-e follow-up: EngineService.DefaultResultCapRows mirrors SparkEngineProvider.DefaultResultCapRows (F1, P2 drift guard)") {
+    val platformDefault: Long =
+      io.sm8.platform.query.EngineService.DefaultResultCapRows
+    val connectorDefault: Long = SparkEngineProvider.DefaultResultCapRows
+    withClue(s"platform=$platformDefault, connector=$connectorDefault — drift detected, ADR-009-e review P2 will re-surface. ") {
+      platformDefault shouldBe connectorDefault
+    }
+  }
+
+  // ===== ADR-009-e follow-up (P3): readResolve preserves resultCapRows =====
+
+
+  /** Round-trip a provider via Java serialization, then read the
+    * post-rehydration resultCapRows and assert it matches the original.
+    * Per PR-179 follow-up review: `readResolve` was missing the
+    * `resultCapRows` argument, silently resetting a custom cap to 1M
+    * across journal replays. */
+  test("ADR-009-e follow-up: readResolve preserves a non-default resultCapRows (F3, P3)") {
+    // null SparkSession per the spec's closure-safety pattern.
+    // readResolve is a pure construction + assignment path; no
+    // Spark call fires.
+    val custom = 42L
+    val original = new SparkEngineProvider(
+      spark   = null,
+      bridge  = SparkTypeBridge,
+      sparkEngineName = "spark-3.5",
+      hookRunner = None,
+      resultCapRows = custom)
+    val recovered = roundTripViaJavaSerialization(original)
+    withClue("readResolve dropped resultCapRows across serialization: ") {
+      recovered.resultCapRows shouldBe custom
+    }
+  }
+
+  /** Constructor `require` catches an out-of-range cap loudly at
+    * construction (F4 — the construction-time half). The misconfig
+    * fails here, not inside Spark's limit() with a confusing message. */
+  test("ADR-009-e follow-up: ctor require rejects resultCapRows > Int.MaxValue - 1 (F4, P3)") {
+    val tooBig = Int.MaxValue.toLong // +1 probe would overflow
+    val caught =
+      the [IllegalArgumentException] thrownBy {
+        new SparkEngineProvider(
+          spark   = null,
+          bridge  = SparkTypeBridge,
+          sparkEngineName = "spark-3.5",
+          hookRunner = None,
+          resultCapRows = tooBig)
+      }
+    caught.getMessage should include ("out of Spark limit range")
+  }
+
+  test("ADR-009-e follow-up: ctor require rejects resultCapRows <= 0 (F4, P3)") {
+    val caught =
+      the [IllegalArgumentException] thrownBy {
+        new SparkEngineProvider(
+          spark   = null,
+          bridge  = SparkTypeBridge,
+          sparkEngineName = "spark-3.5",
+          hookRunner = None,
+          resultCapRows = 0L)
+      }
+    caught.getMessage should include ("out of Spark limit range")
+  }
+
 }

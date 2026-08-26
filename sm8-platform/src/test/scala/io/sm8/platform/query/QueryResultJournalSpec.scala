@@ -143,4 +143,22 @@ class QueryResultJournalSpec extends AnyFunSuite with Matchers {
     q.truncated shouldBe false
     q.rowCount shouldBe 1L
   }
+
+  // ADR-009-e follow-up (P3): engine-set `truncated` survives
+  // `fromJournaled` even when `rows.size < maxRows`. The OR semantics
+  // (engine truth OR local maxRows heuristic) preserve the ADR's
+  // no-silent-drop invariant on the journal→wire boundary.
+  test("toQueryResultFromJournaled: journaled.truncated=true yields truncated=true even when rows.size < maxRows") {
+    val row = RestateCachedRow(
+      fieldNames = List("a"),
+      fieldTypes = List(RestateCachedRow.T_STRING),
+      rows       = (1 to 5).map(i => Array(s"row$i")).toList,
+      truncated  = true // engine flagged this result as capped
+    )
+    // 5 rows, maxRows=100_000 (default). rows.size < maxRows so the
+    // local heuristic yields false, but journaled.truncated=true wins
+    // via the OR — the engine was truth, the wire must honor it.
+    QueryResult.fromJournaled("m", row).truncated shouldBe true
+  }
+
 }

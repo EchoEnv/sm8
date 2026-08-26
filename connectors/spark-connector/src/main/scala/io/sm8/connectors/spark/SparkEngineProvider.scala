@@ -65,6 +65,17 @@ final class SparkEngineProvider(
  // deployment-side policy value.
  val resultCapRows: Long = SparkEngineProvider.DefaultResultCapRows
 ) extends EngineProvider {
+ // ADR-009-e follow-up (P3): bound the cap below Spark's Int range so the
+ // cap+1 probe at the `.limit()` call (which takes Int) never wraps to
+ // a negative value. The -1 keeps room for the +1 probe row. A cap of
+ // 2_000_000_000 is well above any realistic deployment value (the
+ // default is 1_000_000) — exceeding this is a misconfiguration that
+ // deserves a loud failure at construction, not a silent negative
+ // limit() that confuses the planner later.
+ require(
+  resultCapRows > 0L && resultCapRows <= Int.MaxValue.toLong - 1L,
+  s"SparkEngineProvider.resultCapRows=$resultCapRows is out of Spark limit range (must be 1..${Int.MaxValue.toLong - 1L})"
+ )
  // Per-query session design: TEST-ONLY seam to expose the per-query
  // SparkSession from `query()` for falsifiable tests.
  // `private[spark]` = package-private to the connector;
@@ -192,9 +203,9 @@ final class SparkEngineProvider(
  * @return a fully-initialized provider sharing the restored
  *         constructor state
  */
- @throws[java.io.ObjectStreamException]
- private def readResolve(): Object =
-  new SparkEngineProvider(spark, bridge, sparkEngineName, hookRunner)
+@throws[java.io.ObjectStreamException]
+private def readResolve(): Object =
+ new SparkEngineProvider(spark, bridge, sparkEngineName, hookRunner, resultCapRows)
 
  // PR-M4 (GAP 5 — the most critical): the IR-extension path
  // (PR-H/I/J/K/L) was inert in production — `query` called
@@ -535,8 +546,14 @@ val compiled: Either[EngineError, PortableQueryResult] =
   // the materialized array — NO df.count(), NO extra Spark action
   // (perf-mandated by the ADR).
   val effectiveCap: Long = math.min(cap, request.limit.getOrElse(cap))
-  val withLimit: org.apache.spark.sql.DataFrame =
-    filtered.limit((effectiveCap + 1L).toInt)
+ val withLimit: org.apache.spark.sql.DataFrame =
+  // ADR-009-e follow-up (P3): clamp the +1 probe row into Int range.
+  // `cap` is bounded above by `Int.MaxValue - 1L` (ctor require), and
+  // `request.limit` is policy-reachable as a Long, so the addition can
+  // still hit Int.MaxValue. math.min keeps the +1 probe row in range
+  // for any effectiveCap ≤ Int.MaxValue - 1L — the same ceiling the
+  // ctor enforces on the policy.
+  filtered.limit((math.min(effectiveCap, Int.MaxValue.toLong - 1L) + 1L).toInt)
   val schema: ResultSchema = ResultSchema(
     withLimit.schema.fields.map { f =>
       Field(
