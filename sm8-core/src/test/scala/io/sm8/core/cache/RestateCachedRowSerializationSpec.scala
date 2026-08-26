@@ -118,4 +118,20 @@ class RestateCachedRowSerializationSpec extends AnyFunSuite with Matchers {
     rowContent(executorSide.rows(0)) shouldBe Seq("1234.5678")
     executorSide.fieldTypes(0) shouldBe RestateCachedRow.T_DECIMAL
   }
+
+  test("RestateCachedRow: truncated=true survives the journal round-trip (ADR-009-e)") {
+    // ADR-009-e: the truncated flag is part of the journal wire
+    // contract. A capped result cached as RestateCachedRow must
+    // survive Java serialization with `truncated=true` so a cache
+    // HIT (Spark closure / Restate journal replay) does not serve
+    // the capped result as complete.
+    val original = RestateCachedRow(
+      fieldNames = List("carrier"),
+      fieldTypes = List(RestateCachedRow.T_STRING),
+      rows       = List(Array("AA")),
+      truncated  = true
+    )
+    val restored = roundTripViaJavaSerialization(original)
+    restored.truncated shouldBe true
+  }
 }

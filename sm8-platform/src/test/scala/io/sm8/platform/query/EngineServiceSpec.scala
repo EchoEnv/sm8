@@ -460,6 +460,19 @@ class EngineServiceSpec extends AnyFunSuite with Matchers {
     out.model shouldBe "requested_model"
   }
 
+  test("toQueryResultFromPortable: forwards truncated from portable (true + false — ADR-009-e)") {
+    // Acceptance #3: the engine flag reaches the platform wire
+    // JSON. true stays true; false stays false (nothing hardcodes
+    // it anymore).
+    val req = QueryRequest("m", Nil, Nil, "", "")
+    def fwd(t: Boolean): Boolean =
+      EngineService.toQueryResultFromPortable(
+        PortableQueryResult(schema = ResultSchema(Nil), rows = Vector.empty, truncated = t),
+        req).truncated
+    fwd(true)  shouldBe true
+    fwd(false) shouldBe false
+  }
+
   test("toQueryResultFromPortable: integration — executeEngine + toQueryResultFromPortable") {
     // The realistic pipeline: executeEngine returns Right(pqr);
     // toQueryResultFromPortable converts to the wire response.

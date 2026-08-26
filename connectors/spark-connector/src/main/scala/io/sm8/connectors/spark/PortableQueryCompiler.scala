@@ -582,6 +582,27 @@ final class PortableQueryCompiler(val spark: SparkSession)
   df:  DataFrame,
   model: Model,
   dimCols: Array[Column]): Either[EngineError, DataFrame] = {
+  // SM-08 (ADR-009-e): a zero-dimension window is a single-window
+  // whole-scan — one executor touches EVERY partition during
+  // execution, BEFORE any driver-side limit can run. Truncation
+  // cannot protect the executor, and the AQE skew factor is
+  // irrelevant with no partition to balance. Return early (compile-
+  // time typed rejection): there is no valid "truncated global
+  // percent-of-total". NO Spark job runs — the window plan is
+  // never built. (We only reach this method when a calculated
+  // measure references Expr.All — the entry condition in
+  // applyAggregations — so dimCols.isEmpty is the discriminating
+  // trigger; the explicit Expr.All check keeps the gate
+  // self-documenting.)
+  if (dimCols.isEmpty && collectAllReferences(model.calculatedMeasures).nonEmpty) {
+   return Left(EngineError.UnsupportedCapability(
+    engine = "spark-3.5",
+    capability = "Window.UnpartitionedPercentOfTotal",
+    message = "A window aggregation over an unpartitioned frame " +
+     "(zero dimensions + a calculated measure referencing Expr.All) scans every " +
+     "partition in a single executor before any limit can bound it; drive-side " +
+     "truncation cannot protect it. Add a dimension or drop the Expr.All reference."))
+  }
  val windowSpec =
   if (dimCols.isEmpty) Window.partitionBy()
   else Window.partitionBy(dimCols: _*)

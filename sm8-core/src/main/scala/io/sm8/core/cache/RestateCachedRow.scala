@@ -113,7 +113,13 @@ package io.sm8.core.cache
 final case class RestateCachedRow(
  fieldNames: List[String],
  fieldTypes: List[String],
- rows:  List[Array[String]]
+ rows:  List[Array[String]],
+ /** True when the source `PortableQueryResult` was capped by the
+ * engine (ADR-009-e). Preserved through the cache journal so a
+ * cache HIT serves the truncated flag verbatim — the "no silent
+ * drop" invariant holds on the cache path. Defaulted `false`
+ * keeps existing constructor sites compiling unchanged. */
+ truncated: Boolean = false
 ) extends Product with Serializable {
 
  require(fieldNames ne null, "fieldNames must be non-null")

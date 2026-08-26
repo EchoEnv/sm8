@@ -462,4 +462,91 @@ class PortableQueryCompilerSpec extends AnyFunSuite with Matchers {
     }
   }
 
+  // ===== SM-08 (ADR-009-e): unpartitioned Window gate =====
+
+  /** Model with a Sum measure + a calculated measure referencing
+    * Expr.All — the shape that reaches the window path. */
+  private def allCalcModel(
+      dims: List[io.sm8.core.model.Dimension]): Model =
+    Model.of(
+      name    = "sm08-model",
+      version = 1,
+      source  = SourceRef.ByName(table = "t"),
+      dimensions = dims,
+      measures = List(
+        io.sm8.core.model.Measure(
+          name = "total",
+          expr = io.sm8.core.rel.AggregateCall(
+            fn = io.sm8.core.rel.AggregateFn.Sum,
+            input = Some(Expr.FieldRef("val")),
+            alias = "total",
+            distinct = false,
+            arguments = Nil,
+          ),
+        ),
+      ),
+      calculatedMeasures = List(
+        io.sm8.core.model.CalculatedMeasure(
+          name = "pct",
+          expr = Expr.Divide(Expr.FieldRef("val"), Expr.All("total")),
+        ),
+      ),
+      defaultPolicies = ModelPolicyDefaults(
+        materialize = MaterializePolicy.None,
+        cache       = io.sm8.core.model.CachePolicy.NoCache,
+        audit       = io.sm8.core.model.AuditPolicy.NoAudit,
+      ),
+      status = ModelStatus.Published,
+    ).toOption.get
+
+  test("SM-08: zero-dimension + Expr.All calculated measure → Left(UnsupportedCapability(Window.UnpartitionedPercentOfTotal)); NO Spark job runs") {
+    // Acceptance #6: a calc measure referencing Expr.All with zero
+    // dimensions must be rejected at compile time — a single-window
+    // whole-scan the driver-side cap cannot bound. The plan is never
+    // built (left returned before any withColumn/collect).
+    val spark = SparkSession.builder().master("local[1]").appName("tSM08").getOrCreate()
+    try {
+      val schema = new StructType(Array(StructField("val", IntegerType, nullable = false)))
+      val rows   = Array(org.apache.spark.sql.RowFactory.create(1: java.lang.Integer))
+      val df     = spark.createDataFrame(java.util.Arrays.asList(rows: _*), schema)
+      val model  = allCalcModel(dims = List.empty)
+      val compiler = new PortableQueryCompiler(spark)
+      val out = compiler.applyAggregations(df, model)
+      out.isLeft shouldBe true
+      val err = out.left.get
+      err shouldBe a [EngineError.UnsupportedCapability]
+      err match {
+        case e: EngineError.UnsupportedCapability =>
+          e.capability shouldBe "Window.UnpartitionedPercentOfTotal"
+          e.engine shouldBe "spark-3.5"
+        case o => fail(s"expected UnsupportedCapability, got $o")
+      }
+    } finally {
+      spark.stop()
+    }
+  }
+
+  test("SM-08: the same model WITH a dimension still compiles (gate fires only on the empty-dims shape)") {
+    // The gate must not reject legitimate partitioned windows: a
+    // single dimension prevents the single-window whole-scan, so the
+    // model compiles to a Right (the window plan is built).
+    val spark = SparkSession.builder().master("local[1]").appName("tSM08dim").getOrCreate()
+    try {
+      val schema = new StructType(Array(
+        StructField("val", IntegerType, nullable = false),
+        StructField("grp", IntegerType, nullable = false),
+      ))
+      val rows = Array(
+        org.apache.spark.sql.RowFactory.create(1: java.lang.Integer, 1: java.lang.Integer),
+        org.apache.spark.sql.RowFactory.create(2: java.lang.Integer, 1: java.lang.Integer),
+      )
+      val df = spark.createDataFrame(java.util.Arrays.asList(rows: _*), schema)
+      val model = allCalcModel(dims = List(io.sm8.core.model.Dimension.field("grp", "grp")))
+      val compiler = new PortableQueryCompiler(spark)
+      val out = compiler.applyAggregations(df, model).map(_.count())
+      out.isRight shouldBe true
+    } finally {
+      spark.stop()
+    }
+  }
 }

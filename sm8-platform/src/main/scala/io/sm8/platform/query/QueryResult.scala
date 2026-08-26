@@ -88,7 +88,12 @@ object QueryResult {
       model     = if (modelName == null) "unknown" else modelName,
       measures  = journaled.fieldNames,
       rows      = rows,
-      truncated = rows.size >= maxRows,
+      // ADR-009-e follow-up (P3): OR the engine-set `journaled.truncated`
+      // (set when the engine capped the result on the driver collect path)
+      // with the local display-cap heuristic. The OR is conservative —
+      // either signal flips truncated=true. Fixes the silent-truncation
+      // class this ADR exists to eliminate on the journal→wire boundary.
+      truncated = journaled.truncated || rows.size >= maxRows,
       rowCount  = rows.size.toLong
     )
   }

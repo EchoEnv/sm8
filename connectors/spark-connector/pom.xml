@@ -71,6 +71,19 @@
       <scope>test</scope>
     </dependency>
 
+    <!-- ADR-009-e follow-up (F1, P2 drift guard): the test
+         `EngineService.DefaultResultCapRows mirrors
+         SparkEngineProvider.DefaultResultCapRows` lives in
+         SparkEngineProviderSpec. Test-scope dep only — main code
+         stays RFC-layered (sm8-platform must NOT be a runtime dep
+         of the connector). No cycle: sm8-platform does not
+         depend on this module. -->
+    <dependency>
+      <groupId>io.sm8</groupId>
+      <artifactId>sm8-platform_2.13</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+    </dependency>
     <dependency>
       <groupId>org.scalatest</groupId>
       <artifactId>scalatest_${scala.binary.version}</artifactId>

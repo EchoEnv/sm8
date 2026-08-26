@@ -29,8 +29,14 @@ package io.sm8.core.engine
 final case class PortableQueryResult(
  schema: ResultSchema,
  rows:  Vector[ResultRow],
- metadata: Map[String, String] = Map.empty) extends Product with Serializable {
-
+ metadata: Map[String, String] = Map.empty,
+ /** True iff the engine capped the result set at a server-side
+ * deployment policy (ADR-009-e). A truncated result is a
+ * CONSISTENT, flag-bearing answer — never a silent drop. The
+ * wire flag survives the cache journal so cache HITs preserve
+ * it (PR-178 extension). Defaulted `false` keeps the 9 existing
+ * constructor sites compiling unchanged. */
+ truncated: Boolean = false) extends Product with Serializable {
  /** Number of rows. Convenience for MCP / cache / audit. */
  def rowCount: Int = rows.size
 
