@@ -85,13 +85,15 @@ object EngineService {
    * `request.limit`, flagging the result `truncated`. This value is
    * deployment-side: callers cannot trip it off — a query's
    * `request.limit` may only NARROW it (min), never widen it.
-   *
-   * Per ADR-009-e follow-up (P2 — review): this is the SINGLE
-   * policy constant. The connector (`SparkEngineProvider.DefaultResultCapRows`)
-   * mirrors it as its enforcement default. Threading from platform
+   * Per ADR-009-e follow-up (P2 — review): this is the platform-side
+   * *deployment* view of the cap. The connector's enforcement default
+   * (`SparkEngineProvider.DefaultResultCapRows`) is the SINGLE policy
+   * constant — both sides hold the same value; threading from platform
    * into connector construction is explicitly deferred (no
-   * `EngineContext.maxRowsPolicy`); the drift-guard test
-   * (`CapConstantEqualitySpec`) fails the build if the two diverge. */
+   * `EngineContext.maxRowsPolicy`). The drift-guard test in
+   * `SparkEngineProviderSpec` ("EngineService.DefaultResultCapRows
+   * mirrors SparkEngineProvider.DefaultResultCapRows") fails the build
+   * if the two diverge. */
   val DefaultResultCapRows: Long = 1_000_000L
   /**
    * Match Java 11+ `String.isBlank()` semantics.

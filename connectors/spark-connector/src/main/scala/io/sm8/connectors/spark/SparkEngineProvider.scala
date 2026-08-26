@@ -548,11 +548,12 @@ val compiled: Either[EngineError, PortableQueryResult] =
   val effectiveCap: Long = math.min(cap, request.limit.getOrElse(cap))
  val withLimit: org.apache.spark.sql.DataFrame =
   // ADR-009-e follow-up (P3): clamp the +1 probe row into Int range.
-  // `cap` is bounded above by `Int.MaxValue - 1L` (ctor require), and
-  // `request.limit` is policy-reachable as a Long, so the addition can
-  // still hit Int.MaxValue. math.min keeps the +1 probe row in range
-  // for any effectiveCap ≤ Int.MaxValue - 1L — the same ceiling the
-  // ctor enforces on the policy.
+  // Defense-in-depth: the ctor `require` already bounds `cap` at
+  // `Int.MaxValue - 1L` (load-bearing gate — a misconfig fails there).
+  // This clamp also covers any future package-private caller of
+  // `applyPostCompilePipeline` that bypasses the ctor bound (e.g.
+  // test-only entry points), keeping the `+1` probe row in Int range
+  // for any `effectiveCap ≤ Int.MaxValue - 1L`.
   filtered.limit((math.min(effectiveCap, Int.MaxValue.toLong - 1L) + 1L).toInt)
   val schema: ResultSchema = ResultSchema(
     withLimit.schema.fields.map { f =>
