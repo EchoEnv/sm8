@@ -35,6 +35,10 @@ project/
 # Scala Build Server (Bloop) — generated per-IDE; not a project artifact
 .bloop/
 
+# Local-only omp advisor watchdog config (per-project; tuned for this repo's
+# reviewer roster — not a project artifact)
+.omp/
+
 # Coursier / sbt
 .cache/
 coursier/
