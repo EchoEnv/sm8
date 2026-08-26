@@ -384,11 +384,20 @@ object EngineService {
     // Build the initial Context once. All subsequent state is
     // `ctx.copy(...)` — immutable, no `var`, no shared mutable state.
     val hookRequest = EngineHookRequest(model, mcpReq, cacheKey)
+    // ADR-009-g Fix 4: fold model.defaultPolicies.cache into
+    // initialCtx.meta BEFORE dispatcher.run. EngineHookDispatcher.run
+    // (EngineHookDispatcher.scala:106-108) fires PreExecute hooks
+    // BEFORE the executor; the fold MUST live here, not in
+    // engineExecutor, for CacheReadPreHook (priority 50, PreExecute)
+    // to consult the value. The cache-plugin's CacheReadPreHook +
+    // CacheWritePostHook consult ctx.meta.get("sm8.cache.policy") and
+    // honor the per-case matrix (Fix 6): NoCache → both no-op,
+    // ReadThrough(name) → read-only, WriteThrough(name) → read + write.
     val initialCtx: Context = Context(
       stage   = PipelineStage.Execute,
       request = hookRequest,
       result  = None,
-      meta    = Map.empty,
+      meta    = Map("sm8.cache.policy" -> model.defaultPolicies.cache),
       stop    = false
     )
     // -- Executor: pure engine call; cache handled by CachePlugin hook --

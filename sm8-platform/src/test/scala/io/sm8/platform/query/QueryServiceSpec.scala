@@ -301,6 +301,15 @@ class QueryServiceSpec extends AnyFunSuite with Matchers {
     qr.rows(0) shouldBe List("Alice", 30L)
   }
 
+  // ADR-009-g Fix 6 update: the original test pre-populated the cache
+  // and called with a NoCache model — the pre-fix pre-hook fired
+  // unconditionally on every query and HIT'd on the populated entry,
+  // short-circuiting the engine. With the new gate, a NoCache model
+  // early-returns without consulting the cache, so the engine runs
+  // and NPEs on the null queryResult. The fix is to use a ReadThrough
+  // model: per Fix 6, ReadThrough HIT short-circuits via stop=true and
+  // the engine is skipped — preserving the test's INTENT (HIT bypasses
+  // the engine).
   test("QueryService: cache HIT path bypasses engine (via HandlerRunner)") {
     // Pre-populate the cache. The handler body should serve the
     // cached row without invoking the engine (the stub provider
@@ -328,7 +337,12 @@ class QueryServiceSpec extends AnyFunSuite with Matchers {
       "flights",
       dummyModel.version
     )
-    val qr = invoke(dummyModel, registry, cache, req)
+    // ADR-009-g: use a ReadThrough model so the pre-hook consults
+    // the cache (NoCache now early-returns; engine would NPE).
+    val rtModel = dummyModel.copy(
+      defaultPolicies = dummyModel.defaultPolicies.copy(cache = CachePolicy.ReadThrough("default"))
+    )
+    val qr = invoke(rtModel, registry, cache, req)
     qr.rows should have size 2
     qr.rows(0) shouldBe List("Alice", 30L)
   }
