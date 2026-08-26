@@ -147,4 +147,53 @@ final case class HookFailed(
   override def toErrorDetail: ErrorDetail =
     ErrorDetail(ErrorCode.PLUGIN_HOOK_FAILED, s"$name @ $stage (prio=$priority)", Some(engine))
 }
+
+/**
+ * Persist/unpersist lifecycle failure (per ADR-009-f v3.2).
+ *
+ * Surfaced by `SparkEngineProvider.applyPostCompilePipeline` when a
+ * tracked persisted frame's paired unpersist fails — either on the
+ * collect-failure path (paired with the original `collect()` exception
+ * via `Throwable.addSuppressed`) or on the success path (where the
+ * `Right(PortableQueryResult)` cannot be returned because the
+ * lifecycle-cleanup side-effect failed). NOT raised when `registerToken == 0L`
+ * — i.e. when no frame was actually persisted; the original failure
+ * propagates unchanged under the ADR-009-e non-swallow contract.
+ *
+ * Wire status code: `PROVIDER_INVOCATION_FAILED` (502) — the same wire
+ * code as `ProviderInvocationFailed` because both are backend-side,
+ * retryable after the executor storage is restored.
+ *
+ * The `phase` field discriminates `Persist` (the persist side-effect
+ * itself, currently unreachable but reserved for future persist-side
+ * failures) from `Unpersist` (the lifecycle-cleanup side-effect that
+ * actually fires today). The `cause` field carries the underlying
+ * exception class simple-name; `message` carries its textual detail.
+ */
+final case class PersistLifecycleFailed(
+  engine: String,
+  phase: PersistPhase,
+  cause: String,
+  message: String
+) extends EngineError {
+  override def toErrorDetail: ErrorDetail =
+    ErrorDetail(
+      ErrorCode.PROVIDER_INVOCATION_FAILED,
+      s"persist-lifecycle($phase): $cause — $message",
+      Some(engine))
+}
+
+/**
+ * Phase discriminator for `PersistLifecycleFailed`. Sealed so the
+ * wire-mapping compiler-enforces exhaustive matching. `Persist` is
+ * reserved (no current call site surfaces it; the persist side
+ * `.persist()` itself is a no-throw Spark call today); `Unpersist`
+ * is the path the v3.2 paired-lifecycle actually exercises when
+ * `df.unpersist()` fails.
+ */
+sealed trait PersistPhase extends Product with Serializable
+object PersistPhase {
+  case object Persist extends PersistPhase
+  case object Unpersist extends PersistPhase
+}
 }

@@ -274,6 +274,12 @@ object QueryService {
     case _: io.sm8.core.engine.EngineError.SourceSchemaChanged     => 409
     case _: io.sm8.core.engine.EngineError.AuditSinkUnavailable     => 503
     case _: io.sm8.core.engine.EngineError.FeatureDeferred          => 501
+    // ADR-009-f: paired persist/unpersist lifecycle failure. Same wire code
+    // as ProviderInvocationFailed (502) — both are backend-side, retriable
+    // after the executor storage is restored. The variation `phase` is
+    // preserved on the `ErrorDetail.message` and never reaches the wire
+    // status code; the status is the load-bearing contract.
+    case _: io.sm8.core.engine.EngineError.PersistLifecycleFailed   => 502
   }
 }
 

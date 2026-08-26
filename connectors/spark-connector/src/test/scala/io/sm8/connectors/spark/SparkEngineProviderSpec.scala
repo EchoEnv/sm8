@@ -293,6 +293,128 @@ class SparkEngineProviderSpec extends AnyFunSuite with Matchers {
     }
   }
 
+  // ===== ADR-009-f: paired persist lifecycle — typed registration, non-swallow unpersist =====
+
+  test("ADR-009-f #1: applyPostCompilePipeline paired-registers and unregisters a tracked persisted frame (acceptance #1)") {
+    // ADR-009-f v3.2 Fix 1: a df that was .persist()'d upstream carries
+    // a non-NONE storageLevel; the pipeline's `registerToken` is
+    // non-zero, the token is paired-released via untrackPersist on both
+    // success and failure paths. Falsifiable: persistedFramesSize must
+    // be 0 after the pipeline returns (paired-untrack fired), AND the
+    // df's storageLevel must be NONE (paired-unpersist fired).
+    val spark = SparkSession.builder().master("local[*]").appName("tAdr009fPair").getOrCreate()
+    try {
+      val provider = new SparkEngineProvider(spark, SparkTypeBridge, "spark-3.5")
+      val df = frameN(spark, 6).persist(org.apache.spark.storage.StorageLevel.MEMORY_ONLY)
+      df.count() // materialize the cache
+      // Preconditions: frame is genuinely persisted, registry is empty.
+      df.storageLevel shouldBe org.apache.spark.storage.StorageLevel.MEMORY_ONLY
+      provider.persistedFramesSize shouldBe 0
+      val out = provider.applyPostCompilePipeline(
+        df,
+        io.sm8.core.engine.QueryRequest.empty,
+        Map("engine.id" -> "spark-3.5"),
+        cap = 2L)
+      out.isRight shouldBe true
+      // The pair fired: registerToken was non-zero, df.unpersist()
+      // succeeded, untrackPersist(token) was called.
+      provider.persistedFramesSize shouldBe 0
+      df.storageLevel shouldBe org.apache.spark.storage.StorageLevel.NONE
+    } finally {
+      spark.stop()
+    }
+  }
+
+  test("ADR-009-f #2: close() unpersists every tracked DataFrame via the test seam (acceptance #2)") {
+    // Falsifiable pair: 5 frames registered via the public-private
+    // `trackPersist` API; close() iterates persistedFrames and calls
+    // df.unpersist() on each. Final observed: persistedFramesSize is 0
+    // AND every tracked df's storageLevel is NONE.
+    // (Direct trackPersist bypasses the pipeline's paired-untrack path
+    // — this exercises the JVM-shutdown sweep in isolation.)
+    val spark = SparkSession.builder().master("local[*]").appName("tAdr009fClose").getOrCreate()
+    try {
+      val provider = new SparkEngineProvider(spark, SparkTypeBridge, "spark-3.5")
+      val dfs = (1 to 5).map { i =>
+        frameN(spark, i + 1).persist(org.apache.spark.storage.StorageLevel.MEMORY_ONLY)
+      }
+      dfs.foreach(_.count()) // materialize
+      dfs.foreach { df => provider.trackPersist(df) }
+      provider.persistedFramesSize shouldBe 5
+      provider.close()
+      provider.persistedFramesSize shouldBe 0
+      dfs.foreach { df =>
+        df.storageLevel shouldBe org.apache.spark.storage.StorageLevel.NONE
+      }
+    } finally {
+      try spark.stop() catch { case _: Throwable => () }
+    }
+  }
+
+  test("ADR-009-f #4: success-path unpersist failure returns typed Left(PersistLifecycleFailed, Unpersist) (acceptance #4)") {
+    // The new test-only overload wraps df in a ThrowingUnpersistDataset;
+    // the pipeline's success path tries df.unpersist() → throws a
+    // SparkException → catches NonFatal → returns Left with the typed
+    // error. Both untrackPersist(token) AND the typed-Left return
+    // must fire (the untrack is reachable via the catch NonFatal branch
+    // and the success branch).
+    val spark = SparkSession.builder().master("local[*]").appName("tAdr009fSuccessFail").getOrCreate()
+    try {
+      val provider = new SparkEngineProvider(spark, SparkTypeBridge, "spark-3.5")
+      val df = frameN(spark, 4).persist(org.apache.spark.storage.StorageLevel.MEMORY_ONLY)
+      df.count()
+      val out = provider.applyPostCompilePipeline(
+        df,
+        io.sm8.core.engine.QueryRequest.empty,
+        Map("engine.id" -> "spark-3.5"),
+        cap = 10L,
+        forceUnpersistFault = true)
+      out.isLeft shouldBe true
+      val err = out.left.toOption.get
+      err shouldBe a [EngineError.PersistLifecycleFailed]
+      val plf = err.asInstanceOf[EngineError.PersistLifecycleFailed]
+      plf.phase shouldBe EngineError.PersistPhase.Unpersist
+      plf.engine shouldBe "spark-3.5"
+      plf.cause shouldBe "SparkException"
+      // The pair fired even on the unpersist-fault path: token
+      // released via untrackPersist in the NonFatal catch branch.
+      provider.persistedFramesSize shouldBe 0
+    } finally {
+      spark.stop()
+    }
+  }
+
+  test("ADR-009-f: registerToken == 0L preserves ADR-009-e non-swallow contract (acceptance #10)") {
+    // The acceptance #10 invariant: a frame WITHOUT an upstream
+    // .persist() (df.storageLevel == NONE → registerToken == 0L)
+    // continues to surface a collect() SparkException directly via
+    // `throw collectErr` — never reclassified as PersistLifecycleFailed.
+    // This is the regression guard for the v3.2 refinement (the typed
+    // Left is ONLY returned when a frame was actually tracked).
+    val spark = SparkSession.builder().master("local[*]").appName("tAdr009fNonSwallow").getOrCreate()
+    try {
+      val provider = new SparkEngineProvider(spark, SparkTypeBridge, "spark-3.5")
+      val boom = (x: Long) => { throw new RuntimeException("boom"); 0L }
+      val throwingUdf = org.apache.spark.sql.functions.udf(boom)
+      // No .persist() on this df — registerToken will be 0L.
+      val df = frameN(spark, 3).withColumn("bad", throwingUdf(org.apache.spark.sql.functions.col("v")))
+      val caught =
+        the [org.apache.spark.SparkException] thrownBy {
+          provider.applyPostCompilePipeline(
+            df,
+            io.sm8.core.engine.QueryRequest.empty,
+            Map("engine.id" -> "spark-3.5"),
+            cap = 2L)
+        }
+      caught.getMessage should not include "Window.UnpartitionedPercentOfTotal"
+      // Pair invariant: no persist was applied, registerToken was 0L,
+      // so persistedFrames was never touched.
+      provider.persistedFramesSize shouldBe 0
+    } finally {
+      spark.stop()
+    }
+  }
+
   // ===== ADR-009-e follow-up (P2): cross-module cap constant drift guard =====
 
   test("ADR-009-e follow-up: EngineService.DefaultResultCapRows mirrors SparkEngineProvider.DefaultResultCapRows (F1, P2 drift guard)") {

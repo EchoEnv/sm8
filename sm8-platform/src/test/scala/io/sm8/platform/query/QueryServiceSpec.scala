@@ -372,7 +372,11 @@ class QueryServiceSpec extends AnyFunSuite with Matchers {
   // adds a new EngineError variant without updating engineErrorCode
   // would crash at runtime with a MatchError; this test catches
   // that by checking each variant's HTTP status code.
-  test("engineErrorCode maps all 12 EngineError variants to HTTP status codes (no MatchError)") {
+  test("engineErrorCode maps all 13 EngineError variants to HTTP status codes (no MatchError)") {
+    // ADR-009-f: adding PersistLifecycleFailed made the ADT the 13th
+    // case. The match in QueryService.engineErrorCode is exhaustive
+    // over the sealed trait; this test catches any future drift in
+    // either direction (new variant without a case; wire-code change).
     val cases: Seq[(io.sm8.core.engine.EngineError, Int)] = Seq(
       (EngineError.EngineUnavailable("e", Nil, false, "m"), 503),
       (EngineError.QueryTimedOut("e", "cancel", "m"), 504),
@@ -385,7 +389,8 @@ class QueryServiceSpec extends AnyFunSuite with Matchers {
       (EngineError.DecimalOverflow("e", "1.0", 38, 10, "m"), 422),
       (EngineError.SourceSchemaChanged("e", "src", "m"), 409),
       (EngineError.AuditSinkUnavailable("e", "name", "m"), 503),
-      (EngineError.FeatureDeferred("e", "feature", "v1.0.0", "m"), 501)
+      (EngineError.FeatureDeferred("e", "feature", "v1.0.0", "m"), 501),
+      (EngineError.PersistLifecycleFailed("spark-3.5", EngineError.PersistPhase.Unpersist, "SparkException", "executor OOM"), 502),
     )
     cases.foreach { case (err, expected) =>
       // Use the same private method via reflection to avoid leaking
