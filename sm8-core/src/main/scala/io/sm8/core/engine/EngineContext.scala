@@ -2,6 +2,13 @@ package io.sm8.core.engine
 
 import scala.concurrent.duration.Duration
 
+// ADR-009-g Fix 2 + Fix 3: single-source CachePolicy ADT. The engine-side
+// ADT was deleted; EngineContext.cachePolicy now carries the model-side
+// io.sm8.core.model.CachePolicy. The fold (EngineService.runQueryWithHooks
+// initialCtx.meta construction) propagates model.defaultPolicies.cache to
+// the cache-plugin hooks via this imported type.
+import io.sm8.core.model.CachePolicy
+
 /** Engine-portable typed policies for query execution —
  * the engine-portable contract. Mirrors the design doc §4 "Engine contract".
  * The `EngineContext` carries the typed policies the caller asks the
@@ -63,27 +70,12 @@ object EngineContext {
  cancellation  = CancellationCapability.Unsupported)
 }
 
-// -- CachePolicy: result-cache mode ---
+// ADR-009-g Fix 2: the engine-side CachePolicy ADT (previously declared
+// here as a 4-case sealed trait: NoCache, ReadThrough, WriteThrough,
+// ReadOnly) is DELETED. The single-source ADT lives in
+// io.sm8.core.model.CachePolicy (3 cases: NoCache, ReadThrough(name),
+// WriteThrough(name)). All callers reference the model-side type.
 
-/** Engine-portable result-cache policy. */
-sealed trait CachePolicy extends Product with Serializable
-
-object CachePolicy {
- /** No caching. Each query executes fresh. */
- case object NoCache extends CachePolicy
-
- /** Read-through: cache hit returns immediately; cache miss
- * executes and populates. The canonical "memoize this query" form. */
- case object ReadThrough extends CachePolicy
-
- /** Write-through: cache populated after each successful execution;
- * reads bypass the cache. For batch-populating a cache. */
- case object WriteThrough extends CachePolicy
-
- /** Read-only: cache hits return immediately; cache misses execute
- * but do NOT populate. */
- case object ReadOnly extends CachePolicy
-}
 
 // -- AuditPolicy: where audit events go ---
 
