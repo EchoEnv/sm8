@@ -136,6 +136,20 @@ class EngineServiceRunQueryWithHooksSpec extends AnyFunSuite with Matchers {
     EngineHookDispatcher(engineImpl.hooks)
   }
 
+  /**
+   * ADR-009-g v1.1 acceptance #4 helper: builds a dispatcher with
+   * the cache plugin registered AND returns the plugin instance so
+   * the integration spec can introspect the counters (readFires,
+   * writeFires, hits, misses) directly. The plugin is captured in
+   * a local val, setup() is called once, then both are returned.
+   */
+  private def hookDispatcherAndPluginWith(cache: ResultCache): (EngineHookDispatcher, CachePlugin) = {
+    val engineImpl = new io.sm8.core.EngineImpl
+    val plugin     = new CachePlugin(cache)
+    plugin.setup(engineImpl)
+    (EngineHookDispatcher(engineImpl.hooks), plugin)
+  }
+
   // -- Tests --
 
   test("runQueryWithHooks: success path returns Right(QueryResult)") {
@@ -158,6 +172,13 @@ class EngineServiceRunQueryWithHooksSpec extends AnyFunSuite with Matchers {
     spark.callCount.get() shouldBe 1
   }
 
+  // ADR-009-g Fix 6 update: the original test used a NoCache model and
+  // asserted the post-hook wrote on first call (the pre-fix bug). With
+  // the gate, NoCache model + post-hook = no-op (no write). To preserve
+  // the test's INTENT (HIT short-circuits the engine on second call),
+  // the model is now WriteThrough — the per-case matrix specifies that
+  // WriteThrough MISS writes via the post-hook, so the cache is populated
+  // for the second call to HIT on.
   test("runQueryWithHooks: cache HIT short-circuits engine via PreExecute hook") {
     val spark = new StubProvider(
       EngineIdentity("test-engine", "1.0", "1.0"),
@@ -166,11 +187,15 @@ class EngineServiceRunQueryWithHooksSpec extends AnyFunSuite with Matchers {
     val registry = makeRegistry(Map("test-engine" -> spark))
     val cache    = new io.sm8.plugins.cache.InMemoryResultCache(maxEntries = 16)
     val dispatcher = hookDispatcherWith(cache)
+    // ADR-009-g: WriteThrough populates the cache on successful engine result.
+    val wtModel = dummyModel.copy(
+      defaultPolicies = dummyModel.defaultPolicies.copy(cache = CachePolicy.WriteThrough("default"))
+    )
 
-    // First call: MISS path. Engine runs, cache writes.
+    // First call: MISS path. Engine runs, cache writes via post-hook.
     val first = EngineService.runQueryWithHooks(
       request    = QueryRequest("m", Nil, Nil, "", "test-engine"),
-      model      = dummyModel,
+      model      = wtModel,
       registry   = registry,
       cache      = ResultCache.NoOp,
       dispatcher = dispatcher
@@ -181,7 +206,7 @@ class EngineServiceRunQueryWithHooksSpec extends AnyFunSuite with Matchers {
     // Second call: HIT path. PreExecute hook sets stop=true; engine skipped.
     val second = EngineService.runQueryWithHooks(
       request    = QueryRequest("m", Nil, Nil, "", "test-engine"),
-      model      = dummyModel,
+      model      = wtModel,
       registry   = registry,
       cache      = ResultCache.NoOp,
       dispatcher = dispatcher
@@ -441,7 +466,165 @@ class EngineServiceRunQueryWithHooksSpec extends AnyFunSuite with Matchers {
    hints.broadcastArmed shouldBe Some(false)
    // Skew armed (2B >= 1B).
    hints.skewArmed shouldBe Some(true)
-  hints.broadcastThresholdBytes shouldBe Some(10L * 1024L * 1024L: Long)
+ hints.broadcastThresholdBytes shouldBe Some(10L * 1024L * 1024L: Long)
+  }
+
+  // -- ADR-009-g v1.1 acceptance #4: dispatcher integration spec --
+  //
+  // The fold (model.defaultPolicies.cache → initialCtx.meta("sm8.cache.policy"))
+  // must reach the cache-plugin hooks. Per Fix 6 matrix:
+  //   model.cache      | PreExecute            | PostExecute
+  //   -----------------+-----------------------+-----------------
+  //   NoCache          | no-op                 | no-op
+  //   ReadThrough(name) | lookup; HIT stop=true | no-op (no write)
+  //                     | MISS increments readFires/misses
+  //   WriteThrough(name)| lookup; HIT stop=true | write (writeFires++)
+  //                     | MISS increments readFires/misses
+
+  /** Build a model whose `defaultPolicies.cache` carries `policy`. */
+  private def modelWithCache(policy: CachePolicy): Model = dummyModel.copy(
+    defaultPolicies = dummyModel.defaultPolicies.copy(cache = policy)
+  )
+
+  test("ADR-009-g v1.1 #4: ReadThrough(\"region-a\") MISS — fold reaches hook; pre-hook increments readFires/misses; post-hook no-ops") {
+    // Per Fix 6: ReadThrough + cache MISS → readFires++, misses++;
+    // executor runs; post-hook is a no-op (no write-through).
+    val spark = new StubProvider(
+      EngineIdentity("test-engine", "1.0", "1.0"),
+      available = true
+    )
+    val registry     = makeRegistry(Map("test-engine" -> spark))
+    val cache        = new io.sm8.plugins.cache.InMemoryResultCache(maxEntries = 16)
+    val (dispatcher, plugin) = hookDispatcherAndPluginWith(cache)
+    val model        = modelWithCache(CachePolicy.ReadThrough("region-a"))
+
+    val out = EngineService.runQueryWithHooks(
+      request    = QueryRequest("m", Nil, Nil, "", "test-engine"),
+      model      = model,
+      registry   = registry,
+      cache      = ResultCache.NoOp,
+      dispatcher = dispatcher
+    )
+    out.isRight shouldBe true
+    // Engine ran (the read-hook MISS path: pre-hook does NOT short-circuit).
+    spark.callCount.get() shouldBe 1
+    // Pre-hook fired (readFires++); cache MISS (misses++); no HIT (hits stays 0).
+    plugin.readFires.get()  shouldBe 1
+    plugin.misses.get()     shouldBe 1
+    plugin.hits.get()       shouldBe 0
+    // Post-hook is a no-op under ReadThrough (Fix 6: read-only-by-default).
+    plugin.writeFires.get() shouldBe 0
+    // The fold reached the hook: the pre-hook's gate consumed
+    // ctx.meta("sm8.cache.policy") = ReadThrough("region-a") and let
+    // it through to the cache-lookup branch.
+  }
+
+  test("ADR-009-g v1.1 #4: WriteThrough(\"region-a\") MISS — fold reaches hook; pre-hook increments readFires/misses; post-hook writes") {
+    // Per Fix 6: WriteThrough + cache MISS → readFires++, misses++;
+    // executor runs; post-hook writes (writeFires++).
+    val spark = new StubProvider(
+      EngineIdentity("test-engine", "1.0", "1.0"),
+      available = true
+    )
+    val registry     = makeRegistry(Map("test-engine" -> spark))
+    val cache        = new io.sm8.plugins.cache.InMemoryResultCache(maxEntries = 16)
+    val (dispatcher, plugin) = hookDispatcherAndPluginWith(cache)
+    val model        = modelWithCache(CachePolicy.WriteThrough("region-a"))
+
+    val out = EngineService.runQueryWithHooks(
+      request    = QueryRequest("m", Nil, Nil, "", "test-engine"),
+      model      = model,
+      registry   = registry,
+      cache      = ResultCache.NoOp,
+      dispatcher = dispatcher
+    )
+    out.isRight shouldBe true
+    spark.callCount.get() shouldBe 1
+    plugin.readFires.get()  shouldBe 1
+    plugin.misses.get()     shouldBe 1
+    plugin.hits.get()       shouldBe 0
+    // WriteThrough MISS: post-hook writes (writeFires++).
+    plugin.writeFires.get() shouldBe 1
+  }
+
+  test("ADR-009-g v1.1 #4: WriteThrough(\"region-a\") HIT — fold reaches hook; pre-hook short-circuits via stop=true; engine skipped") {
+    // Per Fix 6: WriteThrough + cache HIT → pre-hook short-circuits
+    // (stop=true); engine skipped; post-hook does NOT fire extra writes
+    // because runsOnStop=false (cache HIT already wrote when the entry
+    // was originally populated).
+    val spark = new StubProvider(
+      EngineIdentity("test-engine", "1.0", "1.0"),
+      available = true
+    )
+    val registry     = makeRegistry(Map("test-engine" -> spark))
+    val cache        = new io.sm8.plugins.cache.InMemoryResultCache(maxEntries = 16)
+    val (dispatcher, plugin) = hookDispatcherAndPluginWith(cache)
+    val model        = modelWithCache(CachePolicy.WriteThrough("region-a"))
+
+    // Prime the cache via a WriteThrough call: post-hook writes the entry.
+    val prime = EngineService.runQueryWithHooks(
+      request    = QueryRequest("m", Nil, Nil, "", "test-engine"),
+      model      = model,
+      registry   = registry,
+      cache      = ResultCache.NoOp,
+      dispatcher = dispatcher
+    )
+    prime.isRight shouldBe true
+    spark.callCount.get() shouldBe 1
+    plugin.readFires.get()  shouldBe 1
+    plugin.misses.get()     shouldBe 1
+    plugin.writeFires.get() shouldBe 1
+
+    // Second call: cache HIT. Pre-hook fires, lookup HIT, short-circuits.
+    val second = EngineService.runQueryWithHooks(
+      request    = QueryRequest("m", Nil, Nil, "", "test-engine"),
+      model      = model,
+      registry   = registry,
+      cache      = ResultCache.NoOp,
+      dispatcher = dispatcher
+    )
+    second.isRight shouldBe true
+    // Engine skipped on HIT (the pre-hook set stop=true).
+    spark.callCount.get() shouldBe 1
+    // Counter increments on the second call: readFires++ (the pre-hook ran),
+    // hits++ (lookup HIT); misses stays.
+    plugin.readFires.get() shouldBe 2
+    plugin.hits.get()      shouldBe 1
+    plugin.misses.get()    shouldBe 1
+    // Post-hook on HIT: runsOnStop=false, so writeFires stays at 1
+    // (the dispatcher skips post-hooks when afterPre.stop is true
+    // ONLY if the post-hook opted in via runsOnStop=true — the
+    // CacheWritePostHook has runsOnStop=false per ADR-008-P T1-D2).
+    plugin.writeFires.get() shouldBe 1
+  }
+
+  test("ADR-009-g v1.1 #4: NoCache — both hooks are no-ops; no readFires/misses/writeFires") {
+    // Per Fix 6: NoCache → pre-hook no-op (no cache lookup, no
+    // counter increments); post-hook no-op (no write-through).
+    val spark = new StubProvider(
+      EngineIdentity("test-engine", "1.0", "1.0"),
+      available = true
+    )
+    val registry     = makeRegistry(Map("test-engine" -> spark))
+    val cache        = new io.sm8.plugins.cache.InMemoryResultCache(maxEntries = 16)
+    val (dispatcher, plugin) = hookDispatcherAndPluginWith(cache)
+    val model        = modelWithCache(CachePolicy.NoCache)
+
+    val out = EngineService.runQueryWithHooks(
+      request    = QueryRequest("m", Nil, Nil, "", "test-engine"),
+      model      = model,
+      registry   = registry,
+      cache      = ResultCache.NoOp,
+      dispatcher = dispatcher
+    )
+    out.isRight shouldBe true
+    // Engine ran (the cache hook did NOT short-circuit).
+    spark.callCount.get() shouldBe 1
+    // All counters at zero — the gate ate the cache lookup.
+    plugin.readFires.get()  shouldBe 0
+    plugin.misses.get()     shouldBe 0
+    plugin.hits.get()       shouldBe 0
+    plugin.writeFires.get() shouldBe 0
   }
 }
 

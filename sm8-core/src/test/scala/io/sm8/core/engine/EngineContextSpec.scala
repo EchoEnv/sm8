@@ -3,6 +3,14 @@ package io.sm8.core.engine
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
+// ADR-009-g Fix 2: the engine-side CachePolicy ADT was deleted; the test
+// imports the single-source model-side ADT. The 4-cases test at line 16
+// becomes a 3-cases test against the model-side ADT (ReadOnly is gone).
+// The ReadThrough/WriteThrough references become case-class invocations
+// carrying a required 'name: String'.
+import io.sm8.core.model.CachePolicy
+
+
 import scala.concurrent.duration.Duration
 
 /** Phase 2 contract: prove `EngineContext` + its 5 sub-ADTs work as
@@ -13,14 +21,16 @@ class EngineContextSpec extends AnyFunSuite with Matchers {
 
   // -- CachePolicy --
 
-  test("CachePolicy has 4 cases: NoCache, ReadThrough, WriteThrough, ReadOnly") {
+  // ADR-009-g Fix 2: model-side ADT has 3 cases (NoCache, ReadThrough(name),
+  // WriteThrough(name)). The engine-side 4th case ReadOnly was deleted.
+  // ReadThrough/WriteThrough are case classes — they carry a required name.
+  test("CachePolicy has 3 cases: NoCache, ReadThrough, WriteThrough") {
     val all: Set[CachePolicy] = Set(
       CachePolicy.NoCache,
-      CachePolicy.ReadThrough,
-      CachePolicy.WriteThrough,
-      CachePolicy.ReadOnly,
+      CachePolicy.ReadThrough("default"),
+      CachePolicy.WriteThrough("default"),
     )
-    all.size shouldBe 4
+    all.size shouldBe 3
   }
 
   // -- AuditPolicy --
@@ -104,15 +114,18 @@ class EngineContextSpec extends AnyFunSuite with Matchers {
     ctx.cancellation shouldBe CancellationCapability.Unsupported
   }
 
+  // ADR-009-g Fix 2: the model-side ReadThrough is a case class with
+  // required 'name: String'. The case-object engine-side ReadThrough
+  // is gone — the migration adds the ("default") literal.
   test("EngineContext holds all 5 fields with arbitrary values") {
     val ctx = EngineContext(
-      cachePolicy       = CachePolicy.ReadThrough,
+      cachePolicy       = CachePolicy.ReadThrough("default"),
       auditPolicy       = AuditPolicy.EngineDefault,
       joinHints         = JoinHints(skewFactor = Some(5)),
       timeout           = Duration("30 seconds"),
       cancellation      = CancellationCapability.RemoteStatement("req-99"),
     )
-    ctx.cachePolicy shouldBe CachePolicy.ReadThrough
+    ctx.cachePolicy shouldBe CachePolicy.ReadThrough("default")
     ctx.auditPolicy shouldBe AuditPolicy.EngineDefault
     ctx.joinHints.skewFactor shouldBe Some(5)
     ctx.timeout shouldBe Duration("30 seconds")
