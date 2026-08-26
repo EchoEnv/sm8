@@ -15,7 +15,7 @@
 package io.sm8.connectors.inmemory
 
 import io.sm8.core.engine.{
-  EngineContext, EngineError, EngineIdentity, EngineProvider, EngineUrl,
+  DecisionHints, EngineContext, EngineError, EngineIdentity, EngineProvider, EngineUrl,
   PortableQueryResult, QueryRequest, ResultSchema, TypedRealizationProvider
 }
 import io.sm8.core.model.Model
@@ -42,11 +42,45 @@ final class InMemoryEngineProvider() extends TypedRealizationProvider {
   override def query(
       model: Model, request: QueryRequest, ctx: EngineContext
   ): Either[EngineError, PortableQueryResult] =
-    Right(PortableQueryResult(
-      schema = ResultSchema(Nil),
-      rows = Vector.empty,
-      metadata = Map("engine" -> "in-memory")
-    ))
+    decideUnsupported(ctx) match {
+      case Some(err) => Left(err)
+      case None =>
+        Right(PortableQueryResult(
+          schema = ResultSchema(Nil),
+          rows = Vector.empty,
+          metadata = Map("engine" -> "in-memory")
+        ))
+    }
+
+  /** ADR-009-d item 13 honor-or-reject: the platform fold populates
+    * `ctx.decisionHints` from any registered broadcast/skew plugin.
+    * In-memory has no native broadcast or skew join config, so it
+    * cannot consume a decided field; the platform's portability claim
+    * (any adapter reads the decision) is only sound if a decided-but-
+    * ignored field is impossible. A non-empty decision therefore
+    * surfaces as a typed `UnsupportedCapability` naming the first
+    * decided field (deterministic order: broadcastArmed,
+    * broadcastThresholdBytes, then skewArmed) rather than silently
+    * dropping it. Capability strings are the platform meta keys
+    * (`sm8.broadcast.arm` / `sm8.broadcast.thresholdBytes` /
+    * `sm8.skew.arm`) that produced each field. The empty (no-oracle)
+    * fold yields `None` and keeps the prior empty-success behavior. */
+  private def decideUnsupported(ctx: EngineContext): Option[EngineError] =
+    if (ctx == null) None
+    else ctx.decisionHints.flatMap { dh =>
+      val key =
+        if (dh.broadcastArmed.isDefined) "sm8.broadcast.arm"
+        else if (dh.broadcastThresholdBytes.isDefined) "sm8.broadcast.thresholdBytes"
+        else if (dh.skewArmed.isDefined) "sm8.skew.arm"
+        else ""
+      if (key.isEmpty) None
+      else Some(EngineError.UnsupportedCapability(
+        engine     = "in-memory-connector",
+        capability = key,
+        message    = s"sm8: in-memory engine cannot honor decided field '$key'; " +
+          "route to an engine with a native broadcast/skew config or drop the broadcast/skew plugin"
+      ))
+    }
 
   override def explain(
       model: Model, request: QueryRequest, ctx: EngineContext
