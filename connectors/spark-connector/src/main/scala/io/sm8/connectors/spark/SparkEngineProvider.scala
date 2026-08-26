@@ -840,8 +840,6 @@ private[spark] def compileModelToDataFrame(
  querySession: org.apache.spark.sql.SparkSession): Either[EngineError, org.apache.spark.sql.DataFrame] = {
  val resolver = if (querySession != null) new SparkSourceResolver(querySession, SparkSourceResolver.SessionCatalogModelRegistry)
   else new SparkSourceResolver(null, SparkSourceResolver.SessionCatalogModelRegistry)
- // PR-31 (ADR-008-R SSfilterPushdown wire-up, deferred from PR-28):
- // use `resolveWithPushdown` to push the typed whereFilters down to
  // the source.
  // (closure-safety): the source-level filter is built driver-side
  // via `predicateToColumn`; no executor-side closure capture.
@@ -909,14 +907,27 @@ private[spark] def compileModelToDataFrame(
     message = "Cannot compile: SparkSession is null (SM8-only semantic path)"))
  } yield df
  }
-
- // PR-N1: the resolver used by `explain` to produce the IR tree.
- // the same model registry / spark session as the compiler's path.
- private lazy val resolver: io.sm8.core.engine.SourceResolver = {
- val registry = sparkSourceRegistry.getOrElse(io.sm8.connectors.spark.ModelRegistry.NoopModelRegistry)
- new SparkSourceResolver(spark, registry)
+// PR-N1: the resolver used by `explain` to produce the IR tree.
+// the same model registry / spark session as the compiler's path.
+//
+// P2 cluster (PR-176 NonFatal discipline by topic): when `spark`
+// is null (the supported null-spark provider configuration —
+// exercised by SparkEngineProviderSpec:100,119 and the explain
+// path's null-smoke test), we MUST NOT construct a
+// `SparkSourceResolver(null, registry)` — the post-P2 narrow
+// catches (only `AnalysisException`) would let the
+// `spark.table(null)` NPE escape. Instead we hand back a stub
+// resolver that returns a typed `Left(UnsupportedCapability)` for
+// every call, matching the documented "no live SparkSession"
+// behavior (the explain footer prints the typed error).
+private lazy val resolver: io.sm8.core.engine.SourceResolver = {
+ if (spark == null) io.sm8.connectors.spark.SparkSourceResolver.nullSparkResolver(sparkEngineName)
+ else {
+  val registry = sparkSourceRegistry.getOrElse(io.sm8.connectors.spark.ModelRegistry.NoopModelRegistry)
+  new SparkSourceResolver(spark, registry)
  }
- private lazy val sparkSourceRegistry: Option[io.sm8.connectors.spark.ModelRegistry] = None
+}
+private lazy val sparkSourceRegistry: Option[io.sm8.connectors.spark.ModelRegistry] = None
 
  /** Decode a Spark `Row` to a `List[ResultValue]` aligned with `schema.fields`.
  *
