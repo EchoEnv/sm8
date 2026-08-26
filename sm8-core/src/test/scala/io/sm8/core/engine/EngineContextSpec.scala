@@ -4,9 +4,9 @@ import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
 // ADR-009-g Fix 2: the engine-side CachePolicy ADT was deleted; the test
-// imports the single-source model-side ADT. The 4-cases test at line 16
-// becomes a 3-cases test against the model-side ADT (ReadOnly is gone).
-// The ReadThrough/WriteThrough references become case-class invocations
+// imports the single-source model-side ADT. The 4-cases test became a
+// 3-cases test against the model-side ADT (ReadOnly is gone).
+// The ReadThrough/WriteThrough references are case-class invocations
 // carrying a required 'name: String'.
 import io.sm8.core.model.CachePolicy
 
