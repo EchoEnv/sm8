@@ -20,6 +20,8 @@ Hoist the `maven-enforcer-plugin` + `bannedDependencies=org.apache.spark:*` rule
 | v1.1 | 2026-08-22 | Review fixes — Maven <build><plugins> in parent does NOT auto-apply executions to children (only <pluginManagement> provides executions when child re-declares the plugin). The proposed hoist alone does not work. v1.1 takes a different approach: keep per-module blocks BUT add a parent <pluginManagement> entry + a doc comment + a `validate` step that scans all reactor modules for missing rules. |
 | v1.2 | 2026-08-27 | User requested removal of `dummy-spark-test-verifies-rule/` (the standalone executable verification harness for criterion #4). Both senior advisors (architect + data-engineer) confirmed removal is dependency-clean but flagged that criterion #4 loses its only executable verification. **Acceptance criterion #4 superseded** by a one-line positive smoke check (`mvn -pl sm8-core enforcer:enforce@enforce-no-spark`) that proves the rule is wired up and would fire on a violation; the rule's `<pluginManagement>` template + per-module blocks remain unchanged. Note: criterion #4 was a negative-falsifying test by design; the replacement is a positive regression check, which is a weaker guarantee — captured as a known coverage gap. |
 
+**v1.2 review note (not blocking):** the v1.1-era module counts in the body (e.g. L13 "7 non-spark-connector modules", L35 "7 modules each declare…", L6 header "8 child modules") predate the parent POM's growth to 14 modules (13 non-spark + 1 spark-connector). Left untouched in v1.2 because reconciling the count requires a separate audit of which plugin modules actually carry the `enforce-no-spark` per-module block today (a scope-creep concern unrelated to the dummy-dir removal). Captured here for the next ADR pass. |
+
 ---
 
 ## Context
@@ -223,7 +225,7 @@ A one-line positive check proves the `enforce-no-spark` execution is wired up an
 mvn -B -ntp -pl sm8-core enforcer:enforce@enforce-no-spark
 ```
 
-Expected: `BUILD SUCCESS`. If the rule were ever broken (e.g. someone removed `bannedDependencies` from sm8-core's `pom.xml`), this command would still pass because the goal resolves to a no-op — but a broader regression (`mvn -B -ntp validate`) that walks all reactor modules would catch the missing per-module block.
+**Caveat (read before relying on this):** `enforcer:enforce@<executionId>` proves the rule is *bound* to the module pom on a clean codebase. If a future contributor silently removed the `bannedDependencies` block from `sm8-core/pom.xml`, this command would no-op rather than fail (the goal resolves to a no-op when no matching execution is declared). It is a positive regression check, not a falsifying test. Pair it with `mvn -B -ntp validate` (which walks every reactor module) to catch a missing per-module block; that pairing is the recommended regression line for v1.2 onwards.
 
 ### Known coverage gap (v1.2)
 
@@ -236,6 +238,8 @@ Criterion #4 was a **negative-falsifying** test (a synthetic violation attempt t
 mvn -B -ntp -pl sm8-core,connectors/spark-connector,connectors/in-memory-connector,connectors/trino-connector,plugins/audit-plugin,plugins/cache-plugin,sm8-cli,sm8-server,sm8-platform test 2>&1 | grep -E 'Tests: succeeded|BUILD' | tail -10
 # 2. v1.2: positive smoke check (replaces the removed dummy-module negative test):
 mvn -B -ntp -pl sm8-core enforcer:enforce@enforce-no-spark 2>&1 | tail -5
+# 2b. v1.2: pair the smoke check with a reactor-wide validate to catch missing per-module blocks:
+mvn -B -ntp validate 2>&1 | tail -5
 # 3. Memory + disk under 90% throughout
 ```
 
