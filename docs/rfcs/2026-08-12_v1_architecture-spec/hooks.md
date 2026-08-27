@@ -1,6 +1,5 @@
 
-Claude finished the response
-That reframes it a lot — for that goal, the lightweight custom approach is the right call, not a compromise.
+# Hooks
 
 Why it fits well:
 
