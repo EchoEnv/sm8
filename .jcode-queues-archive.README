@@ -12,3 +12,5 @@ subagents via `swarm dm`. Archives are kept for audit/forensics; old ones
 can be pruned manually.
 
 See also `~/.jcode/scripts/resource-sentry.sh` for the disk/memory watchdog.
+
+Drain flow validated end-to-end on 2026-08-27.
