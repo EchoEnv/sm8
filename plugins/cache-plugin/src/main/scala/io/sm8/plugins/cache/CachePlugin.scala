@@ -226,9 +226,16 @@ private final class CacheWritePostHook(
               case Left(err) =>
                 // Per ADR-008-Z v1.1: the journal boundary is the typed-Left site.
                 // Treat the shape-mismatch as a silent cache miss (do not crash
-                // the workflow); the error is logged for diagnostics.
-                System.err.println(s"sm8: cache write skipped: $err")
-            }
+                // the workflow); the error is surfaced on the engine-portable
+                // channel for post-hooks, callers, and tests to observe.
+                //
+                // P2.5 fold-in (ADR-009-d ctx.meta fold pattern by topic):
+                // the typed Left is written to `ctx.meta("sm8.cache.write.error")`.
+                // The meta key is the primary signal; no stderr side-channel
+                // (per karpathy-guidelines "smallest correct change" — one
+                // diagnostic sink, not two).
+                context.copy(meta = context.meta + ("sm8.cache.write.error" -> err))
+              }
           case Some(CachePolicy.NoCache) | None | Some(CachePolicy.ReadThrough(_)) =>
             // NoCache (or fold absent / ReadThrough): NO write-through.
             // Per Fix 6 explicit policy matrix: ReadThrough is

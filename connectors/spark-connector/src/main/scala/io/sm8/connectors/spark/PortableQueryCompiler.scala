@@ -76,14 +76,21 @@ import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions.{
  avg, count, countDistinct, lit,
  max => sparkMax, min => sparkMin, sum => sparkSum,
-}
+ sumDistinct => sparkSumDistinct,
+ row_number => sparkRowNumber, rank => sparkRank, dense_rank => sparkDenseRank}
 
-final class PortableQueryCompiler(val spark: SparkSession)
+// Not `final`: the P2 cluster regression tests (site 4) subclass this
+ // compiler to override the `readTableByName` / `readTableByPath` /
+ // `readTableByPathFallback` seams and inject controlled failures
+ // (e.g. `InterruptedException`), verifying the PR-176 NonFatal
+ // discipline narrowing at the `resolveSource` IO boundaries. The
+ // compiler remains a public API entry point; the seams are
+ // package-private.
+class PortableQueryCompiler(val spark: SparkSession)
  extends java.io.Serializable {
 
  /**
  * The aggregate functions wired to Spark Columns in PR-K (the
- * legacy's v0.3.1 set). The remaining 10 of the 16 AggregateFn
  * cases (Stddev, Variance, Median, Percentile, ApproxPercentile,
  * First, Last) surface as typed `EngineError.FeatureDeferred` at
  * the compile boundary -- per ADR-008-H: never a silent no-op.
@@ -201,59 +208,85 @@ final class PortableQueryCompiler(val spark: SparkSession)
   capability = "ModelValidator.validateAgainstSchema",
   message = e.message)).flatMap(_ => compileRelOp(relOp, ctx, preFilteredDf))
 
- /** Aggregate -> DataFrame: for the GAP-5 minimum, we use the
+/** Aggregate -> DataFrame: for the GAP-5 minimum, we use the
  * `compileRelOpAggregateSubtree` helper that recursively walks
  * the relOp's child and uses the child's resulting DataFrame
  * as the base for the aggregate application. The existing
- * applyAggregations (which already supports both groupBy+agg
- * AND the window path via collectAllReferences) consumes the
- * model extracted from the relOp.
- *
- * we re-use the existing `applyAggregations` rather than write
- * a new RelOp->DataFrame aggregator. The model is reconstructed
- * from the relOp's aggregates (the IR carries the call shape). */
- private def resolveSource(
-  source: SourceRef): Either[EngineError, DataFrame] = source match {
+ */
+private def resolveSource(
+ source: SourceRef): Either[EngineError, DataFrame] = source match {
  case src: SourceRef.ByName =>
-  // Resolution strategy: try spark.table(.) first (handles
-  // both catalog tables AND session-scoped temp views); fall
-  // back to spark.read.table(src.table) for catalog tables.
+ // Resolution strategy: try spark.table(.) first (handles
+ // both catalog tables AND session-scoped temp views); fall
+ // back to spark.read.table(src.table) for catalog tables.
+ //
+ // P2 cluster (PR-176 NonFatal discipline by topic): both
+ // catches are narrowed to `AnalysisException` (the specific
+ // Spark exception raised when a table is not in the active
+ // catalog). The narrow discipline mirrors the canonical
+ // `MinimalRelOpLowerer.scala:194-211` pattern for spark-connector
+ // IO boundaries. Other `NonFatal` failures propagate to
+ // `EngineService.executeEngine:258-264`'s `NonFatal -> ProviderInvocationFailed`
+ // typed conversion; `Error` subclasses propagate to the caller
+ // per the PR-176 discipline.
+ try {
+ Right(readTableByName(src.table))
+ } catch {
+ case _: org.apache.spark.sql.AnalysisException =>
   try {
-  Right(spark.table(src.table))
+  Right(readTableByNameFallback(src.table))
   } catch {
-  case _: Exception =>
-   try {
-   Right(spark.read.table(src.table))
-   } catch {
-   case _: Exception =>
-    Left(EngineError.UnsupportedCapability(
-    engine = "spark-3.5",
-    capability = "SourceRef.ByName",
-    message = s"Spark table '${src.table}' not found."))
-   }
-  }
-
- case src: SourceRef.ByPath =>
-  try {
-  Right(
-   spark.read.format(src.format).options(src.options).load(src.path)
-  )
-  } catch {
-  case e: Exception =>
+  case _: org.apache.spark.sql.AnalysisException =>
    Left(EngineError.UnsupportedCapability(
    engine = "spark-3.5",
-   capability = "SourceRef.ByPath",
-   message = s"Spark path read failed: ${e.getMessage}"))
+   capability = "SourceRef.ByName",
+   message = s"Spark table '${src.table}' not found."))
   }
-
- case _: SourceRef.ByProvider =>
-  Left(EngineError.UnsupportedCapability(
-  engine = "spark-3.5",
-  capability = "SourceRef.ByProvider",
-  message = "SourceRef.ByProvider requires a registered ProviderRef closure (deferred to future PR)."))
  }
 
- // -- filter application --
+ case src: SourceRef.ByPath =>
+ // P2 cluster (PR-176 NonFatal discipline by topic): the
+ // catch is narrowed to `AnalysisException`, mirroring
+ // `MinimalRelOpLowerer.scala:213-218`. The single-convention
+ // rule (karpathy-app-design) requires all spark-connector
+ // IO-boundary catches to follow this pattern.
+ try {
+ Right(
+ readPathByPath(src.format, src.options, src.path)
+)
+ } catch {
+ case _: org.apache.spark.sql.AnalysisException =>
+ Left(EngineError.UnsupportedCapability(
+ engine = "spark-3.5",
+ capability = "SourceRef.ByPath",
+ message = s"Spark path read failed: AnalysisException (format='${src.format}', path='${src.path}')."))
+ }
+
+ case _: SourceRef.ByProvider =>
+ Left(EngineError.UnsupportedCapability(
+ engine = "spark-3.5",
+ capability = "SourceRef.ByProvider",
+ message = "SourceRef.ByProvider requires a registered ProviderRef closure (deferred to future PR)."))
+}
+
+// P2 cluster (PR-176 NonFatal discipline by topic): test seams.
+// Exposed `protected[spark]` so the regression tests in this package
+// can inject controlled failures (e.g. `InterruptedException`) without
+// depending on Spark's runtime catalog / filesystem behavior.
+// Production behavior is unchanged: `spark.table(name)` /
+// `spark.read.table(name)` / `spark.read.format(fmt).options(opts).load(path)`.
+protected[spark] def readTableByName(name: String): org.apache.spark.sql.DataFrame =
+ spark.table(name)
+protected[spark] def readTableByNameFallback(name: String): org.apache.spark.sql.DataFrame =
+ spark.read.table(name)
+protected[spark] def readPathByPath(
+ format: String,
+ options: Map[String, String],
+ path: String): org.apache.spark.sql.DataFrame = {
+ val reader = spark.read.format(format)
+ options.foldLeft(reader)((acc, kv) => acc.option(kv._1, kv._2)).load(path)
+}
+
 
  private def applyFilters(
   df:  DataFrame,
@@ -373,7 +406,7 @@ final class PortableQueryCompiler(val spark: SparkSession)
    // Spark 3.5 returns sizeInBytes as BigInt; convert to Long.
    val rightBytes: Long = try {
     rDf.queryExecution.analyzed.stats.sizeInBytes.toLong
-   } catch { case _: Throwable => Long.MaxValue }
+   } catch { case _: org.apache.spark.sql.AnalysisException => Long.MaxValue }
    val shouldBroadcast: Boolean = ctx.joinHints.broadcastRightBelowBytes match {
     case Some(threshold) => rightBytes >= 0L && rightBytes <= threshold
     case None   => false // trust Spark's default heuristic

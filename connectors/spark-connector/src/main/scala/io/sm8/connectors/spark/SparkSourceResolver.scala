@@ -32,7 +32,12 @@ import org.apache.spark.sql.types.StructField
 import io.sm8.core.rel.TypedPredicate
 import org.apache.spark.sql.Column
 import org.apache.spark.sql.functions.lit
-final class SparkSourceResolver(
+// Not `final`: the P2 cluster regression tests (site 3) subclass
+// this resolver to override the `loadTableByName` + `loadPathByPath`
+// seams and inject controlled failures (e.g. `InterruptedException`),
+// verifying the PR-176 NonFatal discipline narrowing. The resolver
+// remains a `SourceResolver` trait implementation (interface-only).
+class SparkSourceResolver(
  val spark: SparkSession,
  val registry: ModelRegistry = ModelRegistry.NoopModelRegistry) extends SourceResolver {
 
@@ -64,65 +69,74 @@ final class SparkSourceResolver(
 
  // -- private helpers --
 
- private def resolveByName(
-  src:  SourceRef.ByName,
-  identity: EngineIdentity): Either[EngineError, ResolvedSource] = {
- val tableName = src.table
- val dfOpt: Option[org.apache.spark.sql.DataFrame] =
-  try Some(spark.table(tableName)) catch {
-  case _: Exception => None
-  }
- dfOpt match {
-  case Some(df) =>
-  try {
-   val schema = scanSchema(df.schema.fields.toList)
-   Right(ResolvedSource.Scan(source = src, schema = schema))
-  } catch {
-   case e: Exception =>
-   Left(EngineError.UnsupportedCapability(
-    engine  = identity.name,
-    capability = "SourceRef.ByName.schema",
-    message = s"Schema read for table '$tableName' failed: ${e.getClass.getSimpleName}: ${e.getMessage}"))
-  }
-  case None =>
+
+private def resolveByName(
+ src:  SourceRef.ByName,
+ identity: EngineIdentity): Either[EngineError, ResolvedSource] = {
+val tableName = src.table
+// P2 cluster (PR-176 NonFatal discipline by topic): narrow the catch
+// to `AnalysisException` (the specific Spark exception raised when a
+// table is not in the active catalog). The narrow discipline mirrors
+// `MinimalRelOpLowerer.scala:213-216` (the canonical narrowing example
+// for spark-connector IO boundaries). Other `NonFatal` failures
+// (e.g. Spark RPC faults, executor OOM-on-init) propagate to
+// `EngineService.executeEngine:258-264`'s `NonFatal -> ProviderInvocationFailed`
+// typed conversion; `Error` subclasses propagate to the caller per
+// the PR-176 discipline.
+val dfOpt: Option[org.apache.spark.sql.DataFrame] =
+ try Some(loadTableByName(tableName)) catch {
+ case _: org.apache.spark.sql.AnalysisException => None
+ }
+dfOpt match {
+ case Some(df) =>
+ try {
+  val schema = scanSchema(df.schema.fields.toList)
+  Right(ResolvedSource.Scan(source = src, schema = schema))
+ } catch {
+  case e: Exception =>
   Left(EngineError.UnsupportedCapability(
    engine  = identity.name,
-   capability = "SourceRef.ByName.resolve",
-   message = s"Spark table '$tableName' not found in the active catalog."))
+   capability = "SourceRef.ByName.schema",
+   message = s"Schema read for table '$tableName' failed: ${e.getClass.getSimpleName}: ${e.getMessage}"))
  }
- }
+ case None =>
+ Left(EngineError.UnsupportedCapability(
+  engine  = identity.name,
+  capability = "SourceRef.ByName.resolve",
+  message = s"Spark table '$tableName' not found in the active catalog."))
+}
+}
 
- private def resolveByPath(
-  src:  SourceRef.ByPath,
-  identity: EngineIdentity): Either[EngineError, ResolvedSource] = {
- val dfOpt: Option[org.apache.spark.sql.DataFrame] =
-  try {
-  val reader = spark.read.format(src.format)
-  val withOpts = src.options.foldLeft(reader)((acc, kv) => acc.option(kv._1, kv._2))
-  Some(withOpts.load(src.path))
-  } catch {
-  case _: Exception => None
-  }
- dfOpt match {
-  case Some(df) =>
-  try {
-   val schema = scanSchema(df.schema.fields.toList)
-   Right(ResolvedSource.Scan(source = src, schema = schema))
-  } catch {
-   case e: Exception =>
-   Left(EngineError.UnsupportedCapability(
-    engine  = identity.name,
-    capability = "SourceRef.ByPath.schema",
-    message = s"Schema read for path '${src.path}' failed: ${e.getClass.getSimpleName}: ${e.getMessage}"))
-  }
-  case None =>
+private def resolveByPath(
+ src:  SourceRef.ByPath,
+ identity: EngineIdentity): Either[EngineError, ResolvedSource] = {
+// P2 cluster (PR-176 NonFatal discipline by topic): same narrow as
+// `resolveByName` above — catch only `AnalysisException` (the specific
+// Spark exception raised by an unreadable / malformed path). The
+// canonical example is `MinimalRelOpLowerer.scala:213-216`.
+val dfOpt: Option[org.apache.spark.sql.DataFrame] =
+ try Some(loadPathByPath(src.format, src.options, src.path)) catch {
+ case _: org.apache.spark.sql.AnalysisException => None
+ }
+dfOpt match {
+ case Some(df) =>
+ try {
+  val schema = scanSchema(df.schema.fields.toList)
+  Right(ResolvedSource.Scan(source = src, schema = schema))
+ } catch {
+  case e: Exception =>
   Left(EngineError.UnsupportedCapability(
    engine  = identity.name,
-   capability = "SourceRef.ByPath.resolve",
-   message = s"Spark path read failed: ${src.format} @ ${src.path}"))
+   capability = "SourceRef.ByPath.schema",
+   message = s"Schema read for path '${src.path}' failed: ${e.getClass.getSimpleName}: ${e.getMessage}"))
  }
- }
-
+ case None =>
+ Left(EngineError.UnsupportedCapability(
+  engine  = identity.name,
+  capability = "SourceRef.ByPath.resolve",
+  message = s"Spark path read failed: ${src.format} @ ${src.path}"))
+}
+}
  /** Map a Spark StructField list to the portable `Field` (name +
  * SealedDataType + nullable). 
  * mantra #3 (schema-drift verify at the boundary): the types
@@ -133,9 +147,24 @@ final class SparkSourceResolver(
   name  = f.name,
   dataType = sparkTypeToSealedDataType(f.dataType),
   nullable = f.nullable)
- }
+}
 
- // Reuse the existing bridge (single source of truth for Spark -> portable type mapping).
+// P2 cluster (PR-176 NonFatal discipline by topic): test seams.
+// Exposed `protected[spark]` so the regression tests in this package
+// can inject controlled failures (e.g. `InterruptedException`) without
+// depending on Spark's runtime catalog / filesystem behavior.
+// Production behavior is unchanged: `spark.table(name)` /
+// `spark.read.format(fmt).options(opts).load(path)`.
+protected[spark] def loadTableByName(name: String): org.apache.spark.sql.DataFrame =
+ spark.table(name)
+protected[spark] def loadPathByPath(
+ format: String,
+ options: Map[String, String],
+ path: String): org.apache.spark.sql.DataFrame = {
+ val reader = spark.read.format(format)
+ options.foldLeft(reader)((acc, kv) => acc.option(kv._1, kv._2)).load(path)
+}
+
  private val sparkTypeBridge = SparkTypeBridge
  private def sparkTypeToSealedDataType(
   t: org.apache.spark.sql.types.DataType
@@ -219,6 +248,39 @@ final class SparkSourceResolver(
  }
  }
 object SparkSourceResolver {
+
+ /** P2 cluster (PR-176 NonFatal discipline by topic): a
+ * `SourceResolver` that returns a typed `Left(UnsupportedCapability)`
+ * for every call. Used when the underlying `SparkSession` is null
+ * (the supported null-spark provider configuration, exercised by
+ * `SparkEngineProvider.lazy val resolver` and
+ * `compileModelToDataFrame`'s null-querySession path).
+ *
+ * Pre-P2 the call sites constructed `new SparkSourceResolver(null, ...)`
+ * and relied on the broad `case _: Exception => None` swallow to turn
+ * the resulting NPE into a typed `UnsupportedCapability` — silently
+ * absorbing any NonFatal. Post-P2 the narrow catch
+ * (`case _: AnalysisException => None`) lets the NPE escape. This
+ * factory keeps the null-spark contract observable (typed Left) while
+ * preserving the PR-176 NonFatal discipline at every IO boundary.
+ */
+ def nullSparkResolver(engineName: String): io.sm8.core.engine.SourceResolver =
+ new io.sm8.core.engine.SourceResolver {
+  override def resolve(
+   source: SourceRef,
+   identity: EngineIdentity): Either[EngineError, ResolvedSource] =
+   Left(EngineError.UnsupportedCapability(
+    engine  = engineName,
+    capability = "SparkSourceResolver.nullSparkResolver",
+    message = "No SparkSession available (null-spark provider configuration)."))
+  override def resolveModel(
+   name:  String,
+   identity: EngineIdentity): Either[EngineError, SourceRef] =
+   Left(EngineError.UnsupportedCapability(
+    engine  = engineName,
+    capability = "SparkSourceResolver.nullSparkResolver.resolveModel",
+    message = "No SparkSession available (null-spark provider configuration)."))
+ }
 
  /** Engine-portable registry that maps a model name to a
  * `SourceRef.ByName` pointing at the active Spark catalog /
