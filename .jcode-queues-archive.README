@@ -6,6 +6,9 @@ Each line is a JSON object written by `~/.jcode/bin/jcode-post-tool-review-queue
 when a `write|edit|apply_patch|multiedit` tool call succeeded in a watched cwd.
 
 The coordinator's `~/.jcode/bin/jcode-drain-review-queue` rotates pending
-events into timestamped files under `archive/` and forwards them to the
-advisor swarm. Archives are kept for audit/forensics; old ones can be
-pruned manually.
+events into timestamped files under `archive/` and prints a JSON dump so
+the coordinator agent (this jcode session) can forward it to advisor swarm
+subagents via `swarm dm`. Archives are kept for audit/forensics; old ones
+can be pruned manually.
+
+See also `~/.jcode/scripts/resource-sentry.sh` for the disk/memory watchdog.
