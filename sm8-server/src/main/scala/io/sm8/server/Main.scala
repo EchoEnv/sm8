@@ -199,8 +199,11 @@ object Main {
     * EngineProvider]]` per provider.
     *
     * Per scala-error-handlingmindset §1 + ADR-008-Q §C1: every
-    * provider gets a typed result. Per karpathy-guidelinesmindset
-    * §3 (surgical): NEW method; legacy `realize(...)` is unchanged.
+    * provider gets a typed result. Replaces the legacy 2-arg
+    * `realize(providers, connectorUrl)` (which silently downgraded
+    * to stubs when a connector URL was given); see audit findings
+    * C1 (audit 2026-08-27 @ becaaec) for the drift that motivated
+    * this typed contract.
     */
   def realize(
       classLoader: ClassLoader,
@@ -226,12 +229,37 @@ object Main {
       plugins:      Seq[io.sm8.sdk.Plugin] = Nil,
       metaInspectorEngineFn: Option[() => Map[String, Any]] = None,
   ): Either[String, (EngineRegistry, HttpTransport, List[EngineProvider])] = {
-    val realized = realize(providers, connectorUrl)
-    val available = realized.filter(_.available)
-    if (available.isEmpty)
-      Left("sm8: no EngineProvider discovered (add a connector JAR " +
-        "with META-INF/services/io.sm8.core.engine.EngineProvider)")
-    else {
+    // Per the audit (2026-08-27 [C1]): use the TYPED 5-arg realize so
+    // engine-realization failures surface as `EngineError.ConnectionFailed`
+    // / `EngineError.EngineUnavailable` / `EngineError.UrlParseFailure`
+    // at boot, NOT as the silent generic "no EngineProvider discovered."
+    // The classloader is passed in (instead of `Thread.currentThread`)
+    // so MainSpec can inject a deterministic loader.
+    val realizedEither: List[Either[EngineError, EngineProvider]] =
+      realize(
+        classLoader = Thread.currentThread().getContextClassLoader,
+        providers   = providers,
+        engineName  = engineName.getOrElse(""),
+        rawUrl      = connectorUrl
+      )
+    val realized: List[EngineProvider] = realizedEither.collect { case Right(p) => p }
+    val typedErrors: List[EngineError] = realizedEither.collect { case Left(e) => e }
+
+    if (realized.filter(_.available).isEmpty) {
+      // Surface the FIRST typed error if realization produced any;
+      // fall back to the legacy "no EngineProvider discovered" message
+      // only if no providers were even attempted (empty providers list
+      // from the caller). This restores the typed-error story that
+      // ADR-008-Q §C1 promised.
+      typedErrors.headOption match {
+        case Some(err) =>
+          Left(s"sm8: engine realization failed: ${err.message}")
+        case None =>
+          Left("sm8: no EngineProvider discovered (add a connector JAR " +
+            "with META-INF/services/io.sm8.core.engine.EngineProvider)")
+      }
+    } else {
+      val available = realized.filter(_.available)
       val engines: Map[String, EngineProvider] =
         available.map(p => p.identity.name -> p).toMap
       val default = engineName.getOrElse(available.map(_.identity.name).sorted.head)
@@ -246,7 +274,7 @@ object Main {
             io.sm8.plugins.cache.InMemoryResultCache(maxEntries = 1),
             plugins,
             metaInspectorEngineFn
-          ), available))
+          ), realized))
         } catch {
           case e: IllegalArgumentException => Left(e.getMessage)
         }
@@ -274,8 +302,15 @@ object Main {
             // which registers them on QueryService.definition's dispatcher.
             val latestMeta: java.util.concurrent.atomic.AtomicReference[Map[String, Any]] =
               new java.util.concurrent.atomic.AtomicReference[Map[String, Any]](Map.empty)
+            // Per the audit (2026-08-27 [C2]): use the `PluginDiscovery`
+            // factory (sm8-core) instead of `new EngineImpl().discoverFromConfig()`.
+            // sm8-server is the deployment layer; depending on the
+            // concrete `EngineImpl` class violates the layer discipline
+            // of `semantic-layer-engine-architecture.md` §3 (Core Boundary).
+            // The factory is the inward-facing seam that insulates this
+            // deployment wiring from future refactors of `EngineImpl`.
             val discovered: List[io.sm8.sdk.Plugin] =
-              new io.sm8.core.EngineImpl().discoverFromConfig()
+              io.sm8.core.PluginDiscovery.discoverFromConfig()
             val plugins: List[io.sm8.sdk.Plugin] =
               discovered :+ new MetaCaptureObserver(latestMeta)
             wire(
