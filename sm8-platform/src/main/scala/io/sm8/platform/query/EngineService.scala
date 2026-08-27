@@ -67,9 +67,7 @@ import io.sm8.core.engine.{ QueryRequest => CoreQueryRequest }
 import io.sm8.core.model.{FilterSpec, Model}
 import io.sm8.core.engine.EngineContext
 import io.sm8.core.engine.{ EngineHookRequest, EngineHookResult }
-import io.sm8.platform.query.hooks.EngineHookDispatcher
-import io.sm8.sdk.{Context, PipelineStage}
-
+import io.sm8.sdk.{Context, HookRunner, PipelineStage}
 import scala.util.control.NonFatal
 /**
  * Engine-portable path entry point. PR-C5a ships the engine
@@ -355,10 +353,10 @@ object EngineService {
    * @param model      the engine-portable model
    * @param registry   the engine-portable registry
    * @param cache      the result cache
-   * @param dispatcher the hook dispatcher (typically built once
-   *                   from `engine.hooks` after all plugins have
-   *                   registered). `EngineHookDispatcher.NoOp` for
-   *                   backward-compat (no hooks fire).
+   * @param dispatcher the hook runner (typically `HookRunnerOrchestration`
+   *                   wrapping `EngineHookDispatcher(engine.hooks)`,
+   *                   built once from `engine.hooks` after all
+   *                   plugins have registered).
    * @return           `Right(QueryResult)` on success;
    *                   `Left(EngineError)` on engine selection,
    *                   execution, or hook-dispatch failure.
@@ -368,7 +366,7 @@ object EngineService {
       model:      Model,
       registry:   EngineRegistry,
       cache:      ResultCache,
-      dispatcher: EngineHookDispatcher
+      dispatcher: HookRunner
   ): Either[EngineError, QueryResult] = {
     val mcpReq: CoreQueryRequest = buildMCPRequest(request)
     val version: Int           = model.version
