@@ -100,9 +100,42 @@ final class EngineHookDispatcher private (hooks: HookManager) extends io.sm8.sdk
   def run(
       initial: Context,
       execute: Context => Either[EngineError, Context]
-  ): Either[EngineError, Context] = {
-    val stage: PipelineStage = PipelineStage.Execute
+  ): Either[EngineError, Context] =
+    runStage(PipelineStage.Execute, initial, execute)
 
+  /**
+   * Per-stage hook dispatch. Internal entry point used by
+   * [[HookRunnerOrchestration]] (ADR-010-a v0.3) to drive the
+   * dispatcher across all 4 pipeline stages from the single
+   * [[io.sm8.sdk.HookRunner.run]] API.
+   *
+   * The dispatcher's 2-arg `run(initial, execute)` is preserved
+   * verbatim for backward-compat (it just delegates here with
+   * `PipelineStage.Execute`); this 3-arg form is `private[platform]`
+   * so the orchestrator can call it without exposing a public stage
+   * parameter (which would re-introduce the wrong-choice trap that
+   * ADR-010-a v0.3 closed).
+   *
+   * Fires the stage's Pre hooks in priority order; if any pre-hook
+   * sets `context.stop = true`, the executor is skipped and the
+   * accumulated `Context` flows through the stage's Post hooks (so
+   * audit/log/observer plugins still fire on the short-circuit path).
+   * Post hooks fire in priority order AFTER the executor (or after
+   * the short-circuit). They may mutate the result.
+   *
+   * @param stage   the pipeline stage to drive
+   * @param initial the starting Context
+   * @param execute the stage's executor thunk (no-op `identity`
+   *                for non-Execute stages when called by the
+   *                orchestrator)
+   * @return        the final Context (post-hooks mutated it) on
+   *                success; the original typed error on failure.
+   */
+  private[platform] def runStage(
+      stage: PipelineStage,
+      initial: Context,
+      execute: Context => Either[EngineError, Context]
+  ): Either[EngineError, Context] = {
     val afterPreE: Either[EngineError, Context] =
       firePre(stage, initial)
 
