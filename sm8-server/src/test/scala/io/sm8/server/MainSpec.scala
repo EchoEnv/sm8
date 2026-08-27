@@ -325,22 +325,32 @@ class MainSpec extends AnyFunSuite with Matchers {
   test("[H4] wire: typed ConnectionFailed surfaces at boot (not silent 'no EngineProvider')") {
     // Per audit [C1]: when realization produces a typed Left(ConnectionFailed),
     // Main.wire should surface THAT typed error, not the silent generic message.
-    // The test stub (`TestEngineProvider`) extends `TypedRealizationProvider`
-    // but does NOT override `realize(url)` so the default delegate maps
-    // `realize(url)=None` → `Left(ConnectionFailed)`. With a URL provided,
-    // realize returns all-Left, and `wire()` must surface the typed error.
+    //
+    // We pass engineName = "stub-spark" so the URL parser (StubEngineUrlParser
+    // is registered for that name) accepts the URL and the typed-realize path
+    // is actually exercised. Without the right engineName, the URL parser
+    // would fail first with `EngineUnavailable` and we'd be testing the
+    // parser-lookup branch, not the typed-realize branch. (Dual-review M-1.)
+    //
+    // The TestEngineProvider is a TypedRealizationProvider whose default
+    // `realize(url)` returns None, which the typed-realize path maps to
+    // EngineError.ConnectionFailed. wire() must surface that typed error as
+    // the boot-failure message (not the generic "no EngineProvider" silent
+    // fallback).
     val providers = Main.discoverProviders(getClass.getClassLoader)
     Main.wire(
       sampleModel(),
       providers,
-      engineName   = Some("test-engine"),
+      engineName   = Some("stub-spark"),
       connectorUrl = Some("local[1]")
     ) match {
       case Left(msg) =>
+        // The typed-realize wrapper is "engine realization failed: …" — its
+        // presence proves wire() chose the typed-error branch over the silent
+        // "no EngineProvider discovered" fallback.
         msg should include ("engine realization failed")
-        msg should include ("stub-spark")
       case Right(_) =>
-        fail("expected typed boot failure for stub-spark URL on test classpath")
+        fail(s"expected typed boot failure for stub-spark URL on test classpath, but wire() succeeded")
     }
   }
 

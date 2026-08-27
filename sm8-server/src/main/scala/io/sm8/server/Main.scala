@@ -199,8 +199,11 @@ object Main {
     * EngineProvider]]` per provider.
     *
     * Per scala-error-handlingmindset §1 + ADR-008-Q §C1: every
-    * provider gets a typed result. Per karpathy-guidelinesmindset
-    * §3 (surgical): NEW method; legacy `realize(...)` is unchanged.
+    * provider gets a typed result. Replaces the legacy 2-arg
+    * `realize(providers, connectorUrl)` (which silently downgraded
+    * to stubs when a connector URL was given); see audit findings
+    * C1 (audit 2026-08-27 @ becaaec) for the drift that motivated
+    * this typed contract.
     */
   def realize(
       classLoader: ClassLoader,
