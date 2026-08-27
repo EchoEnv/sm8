@@ -67,9 +67,7 @@ import io.sm8.core.engine.{ QueryRequest => CoreQueryRequest }
 import io.sm8.core.model.{FilterSpec, Model}
 import io.sm8.core.engine.EngineContext
 import io.sm8.core.engine.{ EngineHookRequest, EngineHookResult }
-import io.sm8.platform.query.hooks.EngineHookDispatcher
-import io.sm8.sdk.{Context, PipelineStage}
-
+import io.sm8.sdk.{Context, HookRunner, PipelineStage}
 import scala.util.control.NonFatal
 /**
  * Engine-portable path entry point. PR-C5a ships the engine
@@ -355,10 +353,10 @@ object EngineService {
    * @param model      the engine-portable model
    * @param registry   the engine-portable registry
    * @param cache      the result cache
-   * @param dispatcher the hook dispatcher (typically built once
-   *                   from `engine.hooks` after all plugins have
-   *                   registered). `EngineHookDispatcher.NoOp` for
-   *                   backward-compat (no hooks fire).
+   * @param dispatcher the hook runner (typically `HookRunnerOrchestration`
+   *                   wrapping `EngineHookDispatcher(engine.hooks)`,
+   *                   built once from `engine.hooks` after all
+   *                   plugins have registered).
    * @return           `Right(QueryResult)` on success;
    *                   `Left(EngineError)` on engine selection,
    *                   execution, or hook-dispatch failure.
@@ -368,7 +366,7 @@ object EngineService {
       model:      Model,
       registry:   EngineRegistry,
       cache:      ResultCache,
-      dispatcher: EngineHookDispatcher
+      dispatcher: HookRunner
   ): Either[EngineError, QueryResult] = {
     val mcpReq: CoreQueryRequest = buildMCPRequest(request)
     val version: Int           = model.version
@@ -454,29 +452,47 @@ object EngineService {
     dispatcher
       .run(initialCtx, engineExecutor)
       .flatMap { finalCtx =>
-        finalCtx.result match {
-          case Some(EngineHookResult(pqr)) =>
-            Right(toQueryResultFromPortable(pqr, request))
-          case Some(other) =>
-            // Per scala-error-handling-mindset: programmer error
-            // (the dispatcher's contract is "executor populates
-            // result on success"). Surface as a typed EngineError.
-            Left(EngineError.ProviderInvocationFailed(
-              engine = "<dispatcher>",
-              name   = "EngineHookDispatcher",
-              reason = "UnexpectedResultType",
-              message = s"sm8: dispatcher returned unexpected result type ${other.getClass.getName}"
-            ))
-          case None =>
-            // No result set — also a programmer error (dispatcher
-            // contract: pre+post hooks passed but executor didn't
-            // populate). Surface as typed EngineError.
-            Left(EngineError.ProviderInvocationFailed(
-              engine = "<dispatcher>",
-              name   = "EngineHookDispatcher",
-              reason = "NoResult",
-              message = "sm8: dispatcher pipeline completed without executor populating Context.result"
-            ))
+        // ADR-010-a v0.3 typed-error surfacing: a pre-hook that
+        // short-circuits via `Context.stop = true` may also write
+        // a typed `EngineError` to `ctx.meta` (the canonical
+        // example: `JoinPathPreHook.scala:50` sets the meta key
+        // `"semanticGraphError"` with the typed
+        // `EngineError.UnsupportedCapability("SemanticGraph.cycle", ...)`
+        // value). If such an error is present, surface it directly
+        // to the caller instead of falling through to the generic
+        // `ProviderInvocationFailed("NoResult")` path — the typed
+        // error is more informative and round-trips through the
+        // Restate terminal-error contract with its subtype preserved.
+        // Falls through to the existing `result`-match path when no
+        // typed error is in meta (no behavior change for the happy
+        // path).
+        finalCtx.meta.get("semanticGraphError") match {
+          case Some(e: EngineError) => Left(e)
+          case _ =>
+            finalCtx.result match {
+              case Some(EngineHookResult(pqr)) =>
+                Right(toQueryResultFromPortable(pqr, request))
+              case Some(other) =>
+                // Per scala-error-handling-mindset: programmer error
+                // (the dispatcher's contract is "executor populates
+                // result on success"). Surface as a typed EngineError.
+                Left(EngineError.ProviderInvocationFailed(
+                  engine = "<dispatcher>",
+                  name   = "EngineHookDispatcher",
+                  reason = "UnexpectedResultType",
+                  message = s"sm8: dispatcher returned unexpected result type ${other.getClass.getName}"
+                ))
+              case None =>
+                // No result set — also a programmer error (dispatcher
+                // contract: pre+post hooks passed but executor didn't
+                // populate). Surface as typed EngineError.
+                Left(EngineError.ProviderInvocationFailed(
+                  engine = "<dispatcher>",
+                  name   = "EngineHookDispatcher",
+                  reason = "NoResult",
+                  message = "sm8: dispatcher pipeline completed without executor populating Context.result"
+                ))
+            }
         }
       }
   }

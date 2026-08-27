@@ -80,7 +80,23 @@
             <version>${project.version}</version>
             <scope>test</scope>
         </dependency>
-
+        <!-- Semantic Graph Plugin (TEST scope only — the regression specs
+             for the 3 inert plugins exercise the orchestrator end-to-end
+             through the production entry point). -->
+        <dependency>
+            <groupId>io.sm8</groupId>
+            <artifactId>semantic-graph-plugin_2.13</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- Audit Plugin (TEST scope only — the AuditPostStubHookFiresSpec
+             verifies the orchestrator's PostFormat firing). -->
+        <dependency>
+            <groupId>io.sm8</groupId>
+            <artifactId>audit-plugin_2.13</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
         <!-- ScalaTest for the engine-portable-path specs. JDK's built-in
              classes (java.util.Optional, java.util.List) cover the Java
              interop surface; no extra test deps needed for PR-C1. -->

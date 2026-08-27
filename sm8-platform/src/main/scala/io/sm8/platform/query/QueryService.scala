@@ -59,9 +59,8 @@ import dev.restate.serde.jackson.JacksonSerdeFactory
 import io.sm8.core.engine.EngineRegistry
 import io.sm8.core.model.Model
 import io.sm8.core.{EngineImpl, HookManagerImpl}
-import io.sm8.platform.query.hooks.EngineHookDispatcher
+import io.sm8.platform.query.hooks.{EngineHookDispatcher, HookRunnerOrchestration}
 import io.sm8.sdk.Plugin
-
 /**
  * Hand-built Restate v2.x service definition for the engine-portable
  * `runQuery` entry point.
@@ -143,7 +142,7 @@ object QueryService {
     // portal (Step 7 / Step 9). For tests, pass `Nil`.
     val engine: EngineImpl = new EngineImpl
     plugins.foreach(engine.use)
-    val dispatcher: EngineHookDispatcher = EngineHookDispatcher(engine.hooks)
+    val dispatcher: HookRunnerOrchestration = HookRunnerOrchestration(EngineHookDispatcher(engine.hooks))
 
     val handlerRunner: HandlerRunner[QueryRequest, QueryResult] =
       HandlerRunner.of(
@@ -228,7 +227,7 @@ object QueryService {
       model: Model,
       registry: EngineRegistry,
       cache: ResultCache,
-      dispatcher: EngineHookDispatcher
+      dispatcher: HookRunnerOrchestration
   ): QueryResult = {
     EngineService.runQueryWithHooks(
       request, model, registry, cache, dispatcher
