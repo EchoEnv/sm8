@@ -452,29 +452,47 @@ object EngineService {
     dispatcher
       .run(initialCtx, engineExecutor)
       .flatMap { finalCtx =>
-        finalCtx.result match {
-          case Some(EngineHookResult(pqr)) =>
-            Right(toQueryResultFromPortable(pqr, request))
-          case Some(other) =>
-            // Per scala-error-handling-mindset: programmer error
-            // (the dispatcher's contract is "executor populates
-            // result on success"). Surface as a typed EngineError.
-            Left(EngineError.ProviderInvocationFailed(
-              engine = "<dispatcher>",
-              name   = "EngineHookDispatcher",
-              reason = "UnexpectedResultType",
-              message = s"sm8: dispatcher returned unexpected result type ${other.getClass.getName}"
-            ))
-          case None =>
-            // No result set — also a programmer error (dispatcher
-            // contract: pre+post hooks passed but executor didn't
-            // populate). Surface as typed EngineError.
-            Left(EngineError.ProviderInvocationFailed(
-              engine = "<dispatcher>",
-              name   = "EngineHookDispatcher",
-              reason = "NoResult",
-              message = "sm8: dispatcher pipeline completed without executor populating Context.result"
-            ))
+        // ADR-010-a v0.3 typed-error surfacing: a pre-hook that
+        // short-circuits via `Context.stop = true` may also write
+        // a typed `EngineError` to `ctx.meta` (the canonical
+        // example: `JoinPathPreHook.scala:50` sets the meta key
+        // `"semanticGraphError"` with the typed
+        // `EngineError.UnsupportedCapability("SemanticGraph.cycle", ...)`
+        // value). If such an error is present, surface it directly
+        // to the caller instead of falling through to the generic
+        // `ProviderInvocationFailed("NoResult")` path — the typed
+        // error is more informative and round-trips through the
+        // Restate terminal-error contract with its subtype preserved.
+        // Falls through to the existing `result`-match path when no
+        // typed error is in meta (no behavior change for the happy
+        // path).
+        finalCtx.meta.get("semanticGraphError") match {
+          case Some(e: EngineError) => Left(e)
+          case _ =>
+            finalCtx.result match {
+              case Some(EngineHookResult(pqr)) =>
+                Right(toQueryResultFromPortable(pqr, request))
+              case Some(other) =>
+                // Per scala-error-handling-mindset: programmer error
+                // (the dispatcher's contract is "executor populates
+                // result on success"). Surface as a typed EngineError.
+                Left(EngineError.ProviderInvocationFailed(
+                  engine = "<dispatcher>",
+                  name   = "EngineHookDispatcher",
+                  reason = "UnexpectedResultType",
+                  message = s"sm8: dispatcher returned unexpected result type ${other.getClass.getName}"
+                ))
+              case None =>
+                // No result set — also a programmer error (dispatcher
+                // contract: pre+post hooks passed but executor didn't
+                // populate). Surface as typed EngineError.
+                Left(EngineError.ProviderInvocationFailed(
+                  engine = "<dispatcher>",
+                  name   = "EngineHookDispatcher",
+                  reason = "NoResult",
+                  message = "sm8: dispatcher pipeline completed without executor populating Context.result"
+                ))
+            }
         }
       }
   }
