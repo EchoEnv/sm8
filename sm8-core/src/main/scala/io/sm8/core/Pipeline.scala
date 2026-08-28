@@ -143,8 +143,10 @@ object Stage {
 }
 
 /**
- * The 4-stage pipeline runner. Stateless — created fresh per
- * `Engine.run(request)` call.
+ * The 4-stage pipeline runner. Stateless — allocated ONCE per
+ * `EngineImpl` (held as a `val` field; see `EngineImpl.scala`).
+ * The Pipeline is safe to share across threads (no mutable state).
+ *
  * Pipeline stages are DATA (`Stage.All`), not control flow. The
  * runner is a single `foldLeft` — adding a stage is data, not code.
  */

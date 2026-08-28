@@ -1,11 +1,12 @@
 /*
  * SM8 Core — internal HookManager implementation.
- * The dispatch
- * list is derived (sorted on read) — no in-place mutation of dispatch
+ *
+ * Hooks are stored as priority+sequence entries; the dispatch list
+ * is derived (sorted on read) — no in-place mutation of dispatch
  * order.
  *
- * Per RFC §13 conformance PR : the `require(priority >= 0)`
- *  typed-origin range check via
+ * Per RFC §13 conformance PR: the `require(priority >= 0)` check is
+ * the typed-origin range check via
  * `io.sm8.sdk.HookOrigin.validate(origin, priority)`. Plugin authors
  * declare the origin of their plugin at registration time (default =
  * FirstParty, matching `io.sm8.plugins.*` reference plugins).
@@ -13,22 +14,23 @@
  * boundary (the SDK doc already declared this throw — the contract
  * is preserved).
  *
- *. The
- * hook storage map is a `mutable.Map` (same pattern as
+ * The hook storage map is a `mutable.Map` (same pattern as
  * `ConnectorRegistryImpl`; documented single-threaded use — register
  * at startup, dispatch at request time).
  *
+ * Hook throws abort the pipeline per RFC §9
  * fail-fast — NOT runtime errors to be wrapped in Either. The hook
  * author CHOSE to throw; the engine honors that choice by
  * propagating.
  *
- * the SDK trait `HookManager` signature gained one new overload per
- * direction (`registerPreHook` / `registerPostHook` with `HookOrigin`
- * arg, default-implemented to delegate to the int-only overload).
- * The int-only overload is preserved with identical semantics — so
- * downstream Plugins and third-party HookManagerImpl are unaffected
- * at the source level. Plugins that want strict origin enforcement
- * migrate to the 4-arg overload at their leisure.
+ * Binary compat note: the SDK trait `HookManager` signature gained
+ * one new overload per direction (`registerPreHook` / `registerPostHook`
+ * with `HookOrigin` arg, default-implemented to delegate to the
+ * int-only overload). The int-only overload is preserved with
+ * identical semantics — so downstream Plugins and third-party
+ * HookManagerImpl are unaffected at the source level. Plugins that
+ * want strict origin enforcement migrate to the 4-arg overload at
+ * their leisure.
  */
 package io.sm8.core
 
