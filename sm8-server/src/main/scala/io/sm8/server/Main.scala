@@ -67,7 +67,6 @@ import io.sm8.core.engine.{EngineError, EngineIdentity, EngineProvider, EngineRe
 import io.sm8.core.model.Model
 
 import io.sm8.platform.query.{HttpTransport, PlatformModelLoader}
-import io.sm8.plugins.cache.InMemoryResultCache
 
 import java.nio.file.{Path, Paths}
 import java.util.ServiceLoader
@@ -271,7 +270,7 @@ object Main {
           Right((registry, HttpTransport(
             model,
             registry,
-            io.sm8.plugins.cache.InMemoryResultCache(maxEntries = 1),
+            io.sm8.core.cache.ResultCache.NoOp,
             plugins,
             metaInspectorEngineFn
           ), realized))
