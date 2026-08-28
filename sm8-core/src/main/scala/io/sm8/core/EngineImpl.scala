@@ -3,16 +3,16 @@
  * Concrete implementation of the `io.sm8.sdk.Engine` trait. Lives in
  * `io.sm8.core` (internal — not SDK). Plugin authors get an Engine
  * via `EngineImpl()` or via a factory method in a future step.
- * Audit fixes (Step 3 audit):
+ * Audit fixes (Step 3 audit), per scala-jvm-safety-mindset:
  * - `seenPlugins` is now a `ConcurrentHashMap.newKeySet` (was
- *  `mutable.Set[Plugin]` — non-thread-safe; per
+ *   `mutable.Set[Plugin]` — non-thread-safe under concurrent `use()`)
  * - `catch (Throwable)` replaced with `NonFatal` so `Error`
- *  subclasses propagate; `InterruptedException` restores the
- *  interrupt flag (
+ *   subclasses propagate; `InterruptedException` restores the
+ *   interrupt flag (no swallowed shutdown signals)
  * - `Pipeline` is hoisted to a `val` field — was allocated per
- *  `run(request)` (hot path; Plugin authors ship
- * `META-INF/services/io.sm8.sdk.Plugin` (class name) +
- * `META-INF/sm8/plugin.properties` (groupId + artifactId).
+ *   `run(request)` (hot path; the Pipeline is stateless)
+ * Plugin authors ship `META-INF/services/io.sm8.sdk.Plugin` (class
+ * name) + `META-INF/sm8/plugin.properties` (groupId + artifactId).
  */
 package io.sm8.core
 
@@ -117,7 +117,7 @@ final class EngineImpl extends Engine {
  val stream = Option(getClass.getClassLoader).map(_.getResourceAsStream(resource)).orNull
  if (stream == null) {
   // No allowlist configured - behave like discoverAll().
-  // an error; the engine degrades to permissive discovery.
+  // This is NOT an error; the engine degrades to permissive discovery.
   discoverAll()
  } else {
   try {

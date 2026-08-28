@@ -379,7 +379,7 @@ class QueryServiceSpec extends AnyFunSuite with Matchers {
 
   // Regression test for the architect's HIGH finding in the 3rd-pass
   // cumulative-session-review: QueryService.engineErrorCode must
-  // handle all 12 EngineError variants. The sealed ADT check
+  // handle all 13 EngineError variants. The sealed ADT check
   // would normally catch this at compile time, but a non-exhaustive
   // match in the match itself is the cardinal violation of
   // scala-data-driven-refactor-mindset. A future contributor who

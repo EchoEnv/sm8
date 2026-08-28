@@ -42,4 +42,4 @@ Per `karpathy-app-design-mindset`: the transport library's job is "shape JSON in
 2. **`MetaInspectorService` (a generic `getMeta(key) -> MetaResponse`) lives in `sm8-platform`**.
 3. **The Observer hook (`GraphPostResolveObserver`, `PostResolve`, priority 120) lives in `plugins/semantic-graph-plugin`**.
 4. **No `graphFn` parameter exists anywhere in `sm8-platform`.**
-5. **`sm8-server` does not name the semantic-graph plugin.** Plugin loading is via `EngineImpl.discoverFromConfig()`.
+5. **`sm8-server` does not name the semantic-graph plugin.** Plugin loading is via `io.sm8.core.PluginDiscovery.discoverFromConfig()`.

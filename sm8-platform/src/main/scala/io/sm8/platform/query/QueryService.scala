@@ -257,7 +257,7 @@ object QueryService {
    * the engine itself rejected.
    *
    * Per scala-data-driven-refactor-mindset "sealed-trait dispatch":
-   * the match is exhaustive over the 12 EngineError variants —
+   * the match is exhaustive over the 13 EngineError variants —
    * the compiler enforces this if a new variant is added.
    */
   private def engineErrorCode(err: io.sm8.core.engine.EngineError): Int = err match {

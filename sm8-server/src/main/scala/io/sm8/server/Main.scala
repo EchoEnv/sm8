@@ -230,8 +230,9 @@ object Main {
   ): Either[String, (EngineRegistry, HttpTransport, List[EngineProvider])] = {
     // Per the audit (2026-08-27 [C1]): use the TYPED 5-arg realize so
     // engine-realization failures surface as `EngineError.ConnectionFailed`
-    // / `EngineError.EngineUnavailable` / `EngineError.UrlParseFailure`
-    // at boot, NOT as the silent generic "no EngineProvider discovered."
+    // or `EngineError.EngineUnavailable` at boot (URL parser failures map
+    // to `EngineUnavailable` — see `EngineUrlParser.lookup`), NOT as the
+    // silent generic "no EngineProvider discovered."
     // The classloader is passed in (instead of `Thread.currentThread`)
     // so MainSpec can inject a deterministic loader.
     val realizedEither: List[Either[EngineError, EngineProvider]] =
