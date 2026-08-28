@@ -18,10 +18,9 @@
  * `ConnectorRegistryImpl`; documented single-threaded use — register
  * at startup, dispatch at request time).
  *
- * Hook throws abort the pipeline per RFC §9
- * fail-fast — NOT runtime errors to be wrapped in Either. The hook
- * author CHOSE to throw; the engine honors that choice by
- * propagating.
+ * Hook throws abort the pipeline per RFC §9 (fail-fast) — NOT
+ * runtime errors to be wrapped in Either. The hook author CHOSE to
+ * throw; the engine honors that choice by propagating.
  *
  * Binary compat note: the SDK trait `HookManager` signature gained
  * one new overload per direction (`registerPreHook` / `registerPostHook`
