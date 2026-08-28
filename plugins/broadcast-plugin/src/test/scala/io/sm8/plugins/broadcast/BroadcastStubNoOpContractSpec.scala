@@ -1,10 +1,14 @@
 /*
- * SM8 BroadcastStub Plugin — No-op contract spec (PR-140 per ADR-008-AC).
+ * SM8 BroadcastStub Plugin — No-op contract spec.
  *
- * Asserts the no-op contract: the hook's `run(inputContext)` returns a
- * Context equal to the input (no behavioral change), and the counter is
- * incremented. This locks in the no-op invariant mechanically so future
- * contributors cannot accidentally add real behavior without a test signal.
+ * Asserts the no-op contract for the NON-`EngineHookRequest` branch:
+ * the hook's `run(inputContext)` returns a Context equal to the input
+ * (no behavioral change). For the active `EngineHookRequest` branch,
+ * the hook writes only the documented decision meta keys
+ * (`sm8.broadcast.arm` + `sm8.broadcast.thresholdBytes`) — it mutates
+ * neither `Context.stop` nor `Context.result`. This locks in the
+ * ADR-009-d invariant mechanically so future contributors cannot
+ * accidentally widen the write surface without a test signal.
  *
  * Per scala-data-driven-refactor-mindset: the "data is data" rule applies
  * to plugins too — a stub plugin must advertise itself as a stub.

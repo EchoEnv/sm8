@@ -51,7 +51,7 @@ import io.sm8.core.model.JoinSpec
 import io.sm8.core.schema.{Field, SealedDataType}
 import io.sm8.core.cache.ResultCache
 import io.sm8.platform.query.hooks.EngineHookDispatcher
-import io.sm8.connectors.inmemory.InMemoryEngineProvider
+import io.sm8.connectors.inmemory.InMemoryEngineProvider  // ADR-009-d: test-scope only — see sm8-platform/pom.xml `<scope>test</scope>` declaration. In-memory is the cheapest realizable cross-engine DecisionHints consumer (its provider has no remote to set up).
 
 class CrossEngineDecisionHintsConsumptionSpec extends AnyFunSuite with Matchers {
 

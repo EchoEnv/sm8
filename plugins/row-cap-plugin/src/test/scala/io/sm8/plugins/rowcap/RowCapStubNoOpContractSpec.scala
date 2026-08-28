@@ -1,5 +1,5 @@
 /*
- * SM8 RowCapStub Plugin — No-op contract spec (PR-140 per ADR-008-AC).
+ * SM8 RowCapStub Plugin — No-op contract spec.
  *
  * Asserts the no-op contract: the hook's `run(inputContext)` returns a
  * Context equal to the input (no behavioral change), and the counter is

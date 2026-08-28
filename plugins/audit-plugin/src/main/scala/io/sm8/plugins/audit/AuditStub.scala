@@ -2,8 +2,7 @@
  * SM8 audit Hook Plugin.
  *
  * registers a Post-hook at PostFormat. Real audit (SLF4J-sinked
- * structured event) lands in Step 7; for Step 9a we just log to
- * System.err and count fires.
+ * structured event) lands in Step 7; for Step 9a we just count fires.
  *
  */
 package io.sm8.plugins.audit
@@ -15,8 +14,8 @@ import io.sm8.sdk._
 /**
  * Audit Hook Plugin. Records each engine.run via a PostFormat hook.
  *
- * Per 
- * for Spark-closure safety (same pattern as Step 8 TrinoConnector fix).
+ * Per the Spark-closure-safety rule
+ * (same pattern as Step 8 TrinoConnector fix).
  */
 final class AuditStub extends Plugin with java.io.Serializable {
 
