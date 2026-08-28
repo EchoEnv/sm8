@@ -16,6 +16,17 @@
  * The Pipeline is internal (lives in `io.sm8.core`). Plugin authors
  * never construct a Pipeline directly — they go through
  * `Engine.run(request)`.
+ *
+ * PRODUCTION HOOK-ERROR PATH: in-tree `runPreHooks`/`runPostHooks` here
+ * intentionally do NOT wrap hook exceptions in `try/catch`; raw
+ * `RuntimeException` propagates per RFC §9 fail-fast. Production paths
+ * go through `sm8-platform`'s `EngineHookDispatcher` +
+ * `HookRunnerOrchestration`, which wrap throws as typed
+ * `Left(EngineError.HookFailed(...))` per ADR-0008-af
+ * (`EngineError.scala:140-149`). See ADR-0010-a for the dispatcher
+ * contract. The Pipeline here is the canonical in-tree fallback
+ * (RFC §5) and the 5 plugin test suites' seam; it is DORMANT in
+ * production. PR-194c (Round 1 Review A): no code change, doc only.
  */
 package io.sm8.core
 
