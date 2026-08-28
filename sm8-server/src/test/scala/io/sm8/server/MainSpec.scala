@@ -198,18 +198,18 @@ class MainSpec extends AnyFunSuite with Matchers {
     noException should be thrownBy { stub.close(); stub.close() }
   }
 
-  // ---- Main.realize() — reflection-based URL realization ----
+  // ---- Main.realize() — typed-realize URL realization ----
   //
   // Per RFC §3 + the user's "no spark types in the platform" directive:
-  // the platform holds ONLY a string. For each discovered provider that
-  // is not available, Main looks for a `(String) ctor` on the class.
-  // If found, it instantiates with the URL. The connector's (String)
-  // ctor builds the real session (Spark Connect, Trino URL, etc.).
+  // the platform holds ONLY a string. For each discovered provider,
+  // Main calls p.realize(url).getOrElse(p) — a typed-trait method
+  // (see ADR-008-Q §C1). If realize returns Left, the provider is
+  // kept as-is; if Right, the realized provider replaces it.
   //
   // The 3 realize() tests below use the existing TestEngineProvider
-  // (test classpath — has no (String) ctor) to verify the "no-ctor → keep
-  // stub" path. The "ctor → realized" path is exercised by the
-  // spark-connector's own discovery spec (real JVM + SparkSession).
+  // (test classpath) to verify the "unrealized → keep stub" path.
+  // The "realized" path is exercised by the spark-connector's own
+  // discovery spec (real JVM + SparkSession).
 
   test("realize: connectorUrl = None → no transformation") {
     val providers = Main.discoverProviders(getClass.getClassLoader)
@@ -230,10 +230,10 @@ class MainSpec extends AnyFunSuite with Matchers {
   test("realize: already-available provider is returned unchanged (no reflection)") {
     val providers = Main.discoverProviders(getClass.getClassLoader)
     // Mark the first as available (it isn't in the test classpath —
-    // TestEngineProvider is available=false=true per its impl).
+    // TestEngineProvider: available = true per its impl.
     val stub = providers.find(p => p.getClass.getName == "io.sm8.server.TestEngineProvider").get
     val realized = Main.realize(List(stub), Some("local[1]"))
-    // TestEngineProvider has no (String) ctor → returned as-is.
+    // TestEngineProvider.realize() returns None → returned as-is.
     realized.head should be theSameInstanceAs stub
   }
 
