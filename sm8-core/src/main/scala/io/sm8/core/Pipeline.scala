@@ -22,7 +22,10 @@
  * `RuntimeException` propagates per RFC §9 fail-fast. Production paths
  * go through `sm8-platform`'s `EngineHookDispatcher` +
  * `HookRunnerOrchestration`, which wrap throws as typed
- * `Left(EngineError.HookFailed(...))` per ADR-0008-af
+ * `Left(EngineError.HookFailed(...))` per ADR-0008-af (currently at
+ * v1.1 per the ADR's own revision-history table; updated to v1.1
+ * after reviewer feedback sanitized HookFailed.message with engineer =
+ * "<dispatcher>" literal)
  * (`EngineError.scala:140-149`). See ADR-0010-a for the dispatcher
  * contract. The Pipeline here is the canonical in-tree fallback
  * (RFC §5) and the 5 plugin test suites' seam; it is DORMANT in
