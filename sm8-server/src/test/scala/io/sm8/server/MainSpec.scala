@@ -198,17 +198,20 @@ class MainSpec extends AnyFunSuite with Matchers {
     noException should be thrownBy { stub.close(); stub.close() }
   }
 
-  // ---- Main.realize() — reflection-based URL realization ----
+  // ---- Main.realize() — legacy 2-arg Option-based realization ----
   //
   // Per RFC §3 + the user's "no spark types in the platform" directive:
-  // the platform holds ONLY a string. For each discovered provider that
-  // is not available, Main looks for a `(String) ctor` on the class.
-  // If found, it instantiates with the URL. The connector's (String)
-  // ctor builds the real session (Spark Connect, Trino URL, etc.).
+  // the platform holds ONLY a string. For each discovered provider,
+  // Main calls p.realize(url).getOrElse(p) — an Option-based trait
+  // method (NOT the ADR-008-Q §C1 typed-realize contract, which is the
+  // 5-arg overload at Main.scala:207 returning List[Either[EngineError,
+  // EngineProvider]]; tests for that contract live in the next section).
+  // If realize returns Some(realized), the realized provider replaces
+  // the stub; if None, the stub is kept as-is.
   //
   // The 3 realize() tests below use the existing TestEngineProvider
-  // (test classpath — has no (String) ctor) to verify the "no-ctor → keep
-  // stub" path. The "ctor → realized" path is exercised by the
+  // (test classpath) to verify the "realize → None → keep stub" path.
+  // The "realize → Some(realized)" path is exercised by the
   // spark-connector's own discovery spec (real JVM + SparkSession).
 
   test("realize: connectorUrl = None → no transformation") {
@@ -217,23 +220,23 @@ class MainSpec extends AnyFunSuite with Matchers {
     realized should contain theSameElementsAs providers
   }
 
-  test("realize: test-classpath providers (no String ctor) → kept as stubs") {
+  test("realize: test-classpath providers (realize() returns None) → kept as stubs") {
     val providers = Main.discoverProviders(getClass.getClassLoader)
     val realized = Main.realize(providers, Some("local[1]"))
     realized.size shouldBe providers.size
-    // Same instance identity: no reflection happened.
+    // Same instance identity: TestEngineProvider.realize() returned None.
     realized.zip(providers).foreach { case (r, p) =>
       r should be theSameInstanceAs p
     }
   }
 
-  test("realize: already-available provider is returned unchanged (no reflection)") {
+  test("realize: already-available provider is returned unchanged") {
     val providers = Main.discoverProviders(getClass.getClassLoader)
     // Mark the first as available (it isn't in the test classpath —
-    // TestEngineProvider is available=false=true per its impl).
+    // TestEngineProvider: available = true per its impl.
     val stub = providers.find(p => p.getClass.getName == "io.sm8.server.TestEngineProvider").get
     val realized = Main.realize(List(stub), Some("local[1]"))
-    // TestEngineProvider has no (String) ctor → returned as-is.
+    // TestEngineProvider.realize() returns None → returned as-is.
     realized.head should be theSameInstanceAs stub
   }
 
