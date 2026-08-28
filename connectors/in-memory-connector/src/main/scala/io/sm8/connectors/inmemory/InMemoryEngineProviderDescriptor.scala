@@ -31,13 +31,11 @@ class InMemoryEngineProviderDescriptor extends TypedRealizationProvider {
   override val identity: EngineIdentity =
     EngineIdentity(name = "in-memory", nativeVersion = "embedded", engineAdapterVersion = "0.1.0")
 
-  /** In-memory has no URL grammar — it's always realized. The descriptor
-    * stays unavailable (= false) until a caller explicitly instantiates
-    * an `InMemoryEngineProvider()`; ServiceLoader discovery yields an
-    * `available = true` instance via the no-arg constructor (matches the
-    * spark descriptor pattern where `available = false` because it has
-    * no SparkSession; here `available = true` because we have everything
-    * we need). */
+  /** In-memory has no URL grammar and no remote to set up, so the
+    * descriptor is `available = true` immediately after the no-arg
+    * constructor (matches the spark descriptor pattern where
+    * `available = false` because it has no SparkSession; here
+    * `available = true` because we have everything we need). */
   override val available: Boolean = true
 
   /** PR-O4g parity: the underlying provider is always realized, so
