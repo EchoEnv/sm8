@@ -8,7 +8,7 @@
  * Per [[scala-jvm-safetymindset]] step 1 (null is a liar): tests
  * cover null, empty, and populated cases for each conversion.
  */
-package io.sm8.sdk.restate
+package io.sm8.platform.jdk
 
 import java.util.Optional
 

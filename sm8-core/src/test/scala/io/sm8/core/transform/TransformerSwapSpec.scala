@@ -12,14 +12,13 @@
  * AtomicInteger (no `var`, thread-safe) to verify which Transformer
  * the Pipeline invoked.
  */
-package io.sm8.sdk.transform
+package io.sm8.core.transform
 
 import java.util.concurrent.atomic.AtomicInteger
 
 import io.sm8.core.{ConnectorRequest, EngineImpl}
 import io.sm8.sdk.{Context, Plugin, Transformer}
 import io.sm8.sdk.contract.{StubConfig, StubConnector, StubQuery}
-import io.sm8.sdk.transform.JsonTransformer
 
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers

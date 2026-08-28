@@ -16,7 +16,7 @@
  * `Refs` definition + non-Serializable enclosing local throws
  * `NotSerializableException` at executor startup.
  *
- * Per 
+ * Per the phantom-typed witness convention, the values
  * hold only Strings + the phantom `[M]` reference. No behavior, no state.
  */
 package io.sm8.plugins.cache

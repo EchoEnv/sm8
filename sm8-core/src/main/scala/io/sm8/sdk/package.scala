@@ -35,7 +35,4 @@ object `package` {
 
  // -- Engine-portable request (PR-K) --
  type ConnectorRequest = io.sm8.core.ConnectorRequest
-
- // -- Engine implementation (test-only; production uses ServiceLoader) --
- type EngineImpl = io.sm8.core.EngineImpl
 }

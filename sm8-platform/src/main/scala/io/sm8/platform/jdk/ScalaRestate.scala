@@ -1,5 +1,10 @@
 /*
- * SM8 SDK — ScalaRestate (Scala 2.13 conversion helpers for the Restate Java SDK).
+ * SM8 Platform — ScalaRestate (Scala 2.13 conversion helpers for the Restate Java SDK).
+ *
+ * Package moved from `io.sm8.sdk.restate` to `io.sm8.platform.jdk` per
+ * Round 1 / Review A finding (PR-194a). The SDK package must remain a
+ * types-only contract; these conversion helpers are runtime tooling
+ * for adapter authors and belong with the consuming adapters.
  *
  * patterns that actually repeat in the platform code, identified by
  * the audit of /tmp/semanticdf (e.g. /tmp/semanticdf/./QueryService.java
@@ -12,10 +17,12 @@
  * path. The reverse uses `Option.map(Optional.of)` — null-clean
  * (Optional.of(null) would throw NPE; that's a caller bug, not ours).
  *
- * sm8-core. The 3 platform modules (PR-A/PR-B/PR-C in the Steps 10-11
- * reframe) will depend on this. No SDK trait changes; no source break.
+ * sm8-platform/jdk. The 3 platform modules (PR-A/PR-B/PR-C in the
+ * Steps 10-11 reframe) use these helpers; the SDK stays pure-types.
+ * No SDK trait changes; no source break for consumers that updated
+ * their import to `io.sm8.platform.jdk.ScalaRestate`.
  */
-package io.sm8.sdk.restate
+package io.sm8.platform.jdk
 
 import java.util.{Optional, List, Map}
 

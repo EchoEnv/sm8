@@ -19,7 +19,7 @@
  * is the responsibility of a downstream Connector (or a future
  * built-in in a separate module that depends on Jackson).
  */
-package io.sm8.sdk.transform
+package io.sm8.core.transform
 
 import io.sm8.sdk.{Context, Transformer}
 

@@ -29,8 +29,7 @@ final case class RowCapConfig(maxRows: Int) {
  * `config.maxRows`. Step 9a first cut: shape-correct (counter
  * only); real capping lands with the typed Result shape (Step 0).
  *
- * Per 
- * for Spark-closure safety.
+ * Per the Spark-closure-safety rule.
  */
 final class RowCapStub(config: RowCapConfig) extends Plugin with java.io.Serializable {
 
