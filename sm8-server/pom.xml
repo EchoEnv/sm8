@@ -43,16 +43,6 @@
       <artifactId>sm8-platform_2.13</artifactId>
       <version>${project.version}</version>
     </dependency>
-    <!--
-      Cache plugin (default ResultCache impl). The deployment module
-      instantiates the default `InMemoryResultCache` and passes it to
-      `HttpTransport`. The transport library holds NO cache types.
-    -->
-    <dependency>
-      <groupId>io.sm8.plugins</groupId>
-      <artifactId>cache-plugin_2.13</artifactId>
-      <version>${project.version}</version>
-    </dependency>
     <dependency>
       <groupId>org.scalatest</groupId>
       <artifactId>scalatest_${scala.binary.version}</artifactId>
