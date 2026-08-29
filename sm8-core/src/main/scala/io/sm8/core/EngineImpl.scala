@@ -143,7 +143,8 @@ final class EngineImpl extends Engine {
  // instances directly (not `ServiceLoader.Provider[Plugin]` — that's
  // the JDK 9 API which is hidden by Scala's import). `next()` can
  // throw `ServiceConfigurationError` for malformed entries; we
- // catch it as `NonFatal`.
+ // catch it via a dedicated arm (PR-203) since NonFatal does not
+ // catch Error subclasses.
  val plugins = ServiceLoader.load(classOf[Plugin]).iterator().asScala
  val loaded = List.newBuilder[Plugin]
  plugins.foreach { plugin =>
@@ -158,12 +159,19 @@ final class EngineImpl extends Engine {
    System.err.println(
    s"[sm8] Plugin ${plugin.getClass.getName} skipped — no META-INF/sm8/plugin.properties")
   } catch {
-  case NonFatal(e) =>
-   // ServiceLoader can throw ServiceConfigurationError for
-   // malformed META-INF/services entries or class-loading
-   // failures. Surface as a warning; do NOT crash.
+  // PR-203 (audit follow-up B3): split into 2 cases. ServiceConfigurationError
+  // extends LinkageError (an Error subclass), which NonFatal does NOT catch —
+  // the prior single `case NonFatal(e)` arm never fired for SPI failures
+  // (malformed META-INF/services entries, class-loading failures) despite
+  // the inline comment claiming otherwise. Adding the dedicated SCE arm
+  // first makes the SPI failure handling actually work; NonFatal remains as
+  // a safety net for other unexpected runtime exceptions during the loop.
+  case e: java.util.ServiceConfigurationError =>
    System.err.println(
-   s"[sm8] Plugin ${plugin.getClass.getName} could not be loaded: ${e.getMessage}")
+   s"[sm8] Plugin ${plugin.getClass.getName} SPI failure (skipping): ${e.getMessage}")
+  case NonFatal(e) =>
+   System.err.println(
+   s"[sm8] Plugin ${plugin.getClass.getName} runtime error (skipping): ${e.getMessage}")
   }
  }
  loaded.result()
