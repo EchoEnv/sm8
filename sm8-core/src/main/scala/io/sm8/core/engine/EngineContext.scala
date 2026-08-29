@@ -1,7 +1,5 @@
 package io.sm8.core.engine
 
-import scala.concurrent.duration.Duration
-
 // ADR-009-g Fix 2 + Fix 3: single-source CachePolicy ADT. The engine-side
 // ADT was deleted; EngineContext.cachePolicy now carries the model-side
 // io.sm8.core.model.CachePolicy. The fold (EngineService.runQueryWithHooks
@@ -10,13 +8,25 @@ import scala.concurrent.duration.Duration
 import io.sm8.core.model.CachePolicy
 
 /** Engine-portable typed policies for query execution —
- * the engine-portable contract. Mirrors the design doc §4 "Engine contract".
- * The `EngineContext` carries the typed policies the caller asks the
- * engine to apply for a single query: materialize (persist
- * intermediate results), cache (result-cache mode), audit (where
- * audit events go), join hints (broadcast / skew), timeout, and
- * cancellation mechanism. The engine adapter adapts each policy
- * to its supported form (per the request-policy matrix in §4.5.3).
+ * the engine-portable contract. Per the design doc §4
+ * "Engine contract", `EngineContext` carries the typed policies
+ * + hints the caller asks the engine to apply for a single query:
+ * `cachePolicy` (cache mode), `joinHints` (broadcast / skew /
+ * strategy), `decisionHints` (per-query plugin oracle), and
+ * `cacheKey` (canonical cache key). The engine adapter adapts each
+ * policy to its supported form (per the request-policy matrix in
+ * §4.5.3).
+ *
+ * ==Field lifecycle (PR-199 cleanup)==
+ *
+ * Pre-PR-199 carried 7 fields including `auditPolicy`,
+ * `timeout`, `cancellation` — those were dead in production
+ * (zero consumers across connectors/, plugins/, sm8-platform/,
+ * sm8-core/) and have been removed per karpathy-guidelines
+ * "dead code is a smell". The cancelled `engine-side
+ * AuditPolicy` + `CancellationCapability` ADTs are removed
+ * alongside.
+ *
  * ==Why a typed ADT (not a String map)==
  * The design doc says: "These questions must not be answered by
  * string parameters in `EngineContext`." A closed ADT forces every
@@ -24,9 +34,9 @@ import io.sm8.core.model.CachePolicy
  * strings would let adapters accidentally invent policy names that
  * the consumer can't classify.
  * ==Why core (engine-portable)==
- * The policies are universal across query engines (every engine has
- * the notion of "cache mode" or "join hint"). The engine adapter
- * adapts them; the SHAPE is engine-portable.
+ * The remaining fields are universal across query engines (every
+ * engine has the notion of cache mode + join hints). The engine
+ * adapter adapts them; the SHAPE is engine-portable.
  * ==Data-driven mantra compliance==
  * - Pure data: sealed traits + final case classes (no behavior)
  * - Equality auto-derived
@@ -43,10 +53,7 @@ import io.sm8.core.model.CachePolicy
  */
 final case class EngineContext(
  cachePolicy:  CachePolicy,
- auditPolicy:  AuditPolicy,
  joinHints:   JoinHints,
- timeout:   Duration,
- cancellation:  CancellationCapability,
  // Per-query decision oracle: populated by the platform
  // engineExecutor from the post-PreExecute Context.meta; None means
  // no oracle (adapter uses its inline fallback). Typed transport
@@ -70,17 +77,16 @@ final case class EngineContext(
 
 object EngineContext {
 
- /** Default context for queries that don't specify any policies. Each
- * engine adapter is responsible for choosing sensible defaults
- * for each policy (e.g. "no materialize", "no cache", "best-effort
- * audit"). The defaults here are placeholders that the caller
- * would typically override. */
+ /**
+ * Default context for queries that don't specify any policies. The
+ * `cachePolicy = NoCache` default matches `model.defaultPolicies`
+ * in the absence of a model-supplied policy — the platform fold
+ * (EngineService.runQueryWithHooks) overrides this with the
+ * model's actual policy before the engine sees it.
+ */
  val defaultContext: EngineContext = EngineContext(
  cachePolicy  = CachePolicy.NoCache,
- auditPolicy  = AuditPolicy.NoAudit,
- joinHints   = JoinHints(),
- timeout   = Duration.Inf,
- cancellation  = CancellationCapability.Unsupported)
+ joinHints   = JoinHints())
 }
 
 // ADR-009-g Fix 2: the engine-side CachePolicy ADT (previously declared
@@ -89,21 +95,15 @@ object EngineContext {
 // io.sm8.core.model.CachePolicy (3 cases: NoCache, ReadThrough(name),
 // WriteThrough(name)). All callers reference the model-side type.
 
-
-// -- AuditPolicy: where audit events go ---
-
-/** Engine-portable audit-event destination policy. */
-sealed trait AuditPolicy extends Product with Serializable
-
-object AuditPolicy {
- /** No audit. Adapter skips audit emission. */
- case object NoAudit extends AuditPolicy
-
- /** Audit to the engine's default sink (typically an in-memory
- * ring buffer for the duration of the request, or a
- * server-configured Restate journal entry). */
- case object EngineDefault extends AuditPolicy
-}
+// PR-199 (Round 1 audit pre-existing HIGH cleanup): the engine-side
+// `AuditPolicy` sealed trait (2 cases: NoAudit, EngineDefault) +
+// the `CancellationCapability` sealed trait (4 cases: Cooperative,
+// SparkJobTag, RemoteStatement, Unsupported) were DEAD — zero
+// production consumers anywhere in the codebase. The `EngineContext` fields that
+// nominally carried them were never read; the runtime gate uses
+// the SDK's Restate journal retry, NonFatal discipline (PR-176),
+// and the platform's hook runner. Per karpathy-guidelines
+// "dead code is a smell", both ADTs are removed.
 
 // -- JoinHints: per-query optimization hints ---
 
@@ -135,29 +135,3 @@ object JoinStrategy {
  case object SortMerge extends JoinStrategy
 }
 
-// -- CancellationCapability: how the engine should be cancelled ---
-
-/** Engine-portable cancellation-mechanism ADT. The caller picks
- * one; the engine adapter uses it if it supports the requested
- * mechanism, or returns `EngineError.CancellationFailed` if not. */
-sealed trait CancellationCapability extends Product with Serializable
-
-object CancellationCapability {
- /** Cooperative cancellation: engine checks a flag between
- * pipeline stages. Universal support. */
- final case class Cooperative(requestId: String) extends CancellationCapability
-
- /** Spark job-tag cancellation: engine attaches the `requestId`
- * as a Spark job tag; the runtime cancels jobs with that tag.
- * Spark-specific but listed for parity. */
- final case class SparkJobTag(requestId: String) extends CancellationCapability
-
- /** Remote-statement cancellation: engine issues an async
- * cancel against the backend's statement handle. Trino uses
- * this for `io.trino.client.StatementClient.cancel()`. */
- final case class RemoteStatement(requestId: String) extends CancellationCapability
-
- /** Engine doesn't support cancellation for this request. The
- * caller is expected to bound the query with a finite timeout. */
- case object Unsupported extends CancellationCapability
-}

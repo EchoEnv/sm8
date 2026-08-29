@@ -10,12 +10,15 @@ import org.scalatest.matchers.should.Matchers
 // carrying a required 'name: String'.
 import io.sm8.core.model.CachePolicy
 
-import scala.concurrent.duration.Duration
-
-/** Phase 2 contract: prove `EngineContext` + its 5 sub-ADTs work as
-  * pure data. Each sub-ADT is a sealed trait with case objects or
-  * final case classes; no behavior; no engine coupling.
-  */
+/** Phase 2 contract: prove `EngineContext` + its sub-ADTs work as
+ * pure data. Each sub-ADT is a sealed trait with case objects or
+ * final case classes; no behavior; no engine coupling.
+ *
+ * PR-199: the engine-side `AuditPolicy` ADT + the
+ * `CancellationCapability` ADT + the `Duration` import were
+ * removed (dead fields per the pre-existing pre-PR-199
+ * audit). 6 tests that exercised these types are deleted.
+ */
 class EngineContextSpec extends AnyFunSuite with Matchers {
 
   // -- CachePolicy --
@@ -30,16 +33,6 @@ class EngineContextSpec extends AnyFunSuite with Matchers {
       CachePolicy.WriteThrough("default"),
     )
     all.size shouldBe 3
-  }
-
-  // -- AuditPolicy --
-
-  test("AuditPolicy has 2 cases: NoAudit, EngineDefault") {
-    val all: Set[AuditPolicy] = Set(
-      AuditPolicy.NoAudit,
-      AuditPolicy.EngineDefault,
-    )
-    all.size shouldBe 2
   }
 
   // -- JoinHints --
@@ -78,57 +71,21 @@ class EngineContextSpec extends AnyFunSuite with Matchers {
     all.size shouldBe 3
   }
 
-  // -- CancellationCapability --
-
-  test("CancellationCapability has 4 cases: Cooperative, SparkJobTag, RemoteStatement, Unsupported") {
-    val all: Set[CancellationCapability] = Set(
-      CancellationCapability.Cooperative("req-1"),
-      CancellationCapability.SparkJobTag("req-2"),
-      CancellationCapability.RemoteStatement("req-3"),
-      CancellationCapability.Unsupported,
-    )
-    all.size shouldBe 4
-  }
-
-  test("CancellationCapability.Cooperative carries requestId") {
-    CancellationCapability.Cooperative("req-42").requestId shouldBe "req-42"
-  }
-
-  test("CancellationCapability.SparkJobTag carries requestId") {
-    CancellationCapability.SparkJobTag("req-42").requestId shouldBe "req-42"
-  }
-
-  test("CancellationCapability.RemoteStatement carries requestId") {
-    CancellationCapability.RemoteStatement("req-42").requestId shouldBe "req-42"
-  }
-
   // -- EngineContext --
 
   test("EngineContext.defaultContext has sensible defaults") {
     val ctx = EngineContext.defaultContext
     ctx.cachePolicy shouldBe CachePolicy.NoCache
-    ctx.auditPolicy shouldBe AuditPolicy.NoAudit
     ctx.joinHints shouldBe JoinHints()
-    ctx.timeout shouldBe Duration.Inf
-    ctx.cancellation shouldBe CancellationCapability.Unsupported
   }
 
-  // ADR-009-g Fix 2: the model-side ReadThrough is a case class with
-  // required 'name: String'. The case-object engine-side ReadThrough
-  // is gone — the migration adds the ("default") literal.
-  test("EngineContext holds all 5 fields with arbitrary values") {
+  test("EngineContext holds cachePolicy + joinHints with arbitrary values") {
     val ctx = EngineContext(
-      cachePolicy       = CachePolicy.ReadThrough("default"),
-      auditPolicy       = AuditPolicy.EngineDefault,
-      joinHints         = JoinHints(skewFactor = Some(5)),
-      timeout           = Duration("30 seconds"),
-      cancellation      = CancellationCapability.RemoteStatement("req-99"),
+      cachePolicy = CachePolicy.ReadThrough("default"),
+      joinHints   = JoinHints(skewFactor = Some(5)),
     )
     ctx.cachePolicy shouldBe CachePolicy.ReadThrough("default")
-    ctx.auditPolicy shouldBe AuditPolicy.EngineDefault
     ctx.joinHints.skewFactor shouldBe Some(5)
-    ctx.timeout shouldBe Duration("30 seconds")
-    ctx.cancellation shouldBe CancellationCapability.RemoteStatement("req-99")
   }
 
   test("EngineContext equality: same data => equal") {
