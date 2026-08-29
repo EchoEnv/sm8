@@ -416,8 +416,7 @@ private def readResolve(): Object =
  // hook entry. The spark-connector passes a deterministic default
  // (`model.name | <mcpRequest>`) so the smoke test in
  // `SparkEngineProviderReplaySafetySpec` can verify cache-hit
- // behavior end-to-end. PR-3a will replace this default with
- // `EngineHookRequest.cacheKey = CachePlugin.computeKey(.)`.
+ // behavior end-to-end.
  // PR-197 (Round 1 audit HIGH-3): prefer the platform-canonical
  // cache key propagated via `EngineContext.cacheKey` (set by
  // `EngineService.runQueryWithHooks` via `CacheBridge.platformCacheKey`).

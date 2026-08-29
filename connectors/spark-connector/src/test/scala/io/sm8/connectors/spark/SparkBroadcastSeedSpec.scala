@@ -54,10 +54,9 @@ class SparkBroadcastSeedSpec extends AnyFunSuite with Matchers {
       // this `-1` sentinel by ALSO disarming (previously the seed
       // silently re-enabled with 10 MiB default — the opposite of
       // operator intent). The "seed arms with estimatedRows" test
-      // below uses `buildSparkWithDisabledBroadcast` for the inverse
-      // case, AND uses a new helper `compiledWithExplicitHint` for
-      // the canonical "operator did not disable" path that the
-      // seed should still arm.
+      // below uses `buildSparkWithLargeThreshold` +
+      // `compiledWithLargeThreshold` for the canonical
+      // "operator did not disable" path that the seed should still arm.
       .config("spark.sql.autoBroadcastJoinThreshold", "-1")
       .config("spark.sql.adaptive.enabled", "false")
       .getOrCreate()
@@ -366,7 +365,41 @@ class SparkBroadcastSeedSpec extends AnyFunSuite with Matchers {
    // sizeInBytes, so Spark itself wouldn't broadcast — the only
    // broadcast observed comes from the sm8 seed's `df.broadcast()`
    // hint.
+   //
+   // PR-197 dual-review (macaque MEDIUM test-rigor): this test
+   // could pass via EITHER the sm8 seed OR Spark's own heuristic
+   // (both fire when join is small). The sibling test below
+   // isolates the sm8-seed-only path via an explicit
+   // `JoinHints(broadcastRightBelowBytes=...)` — that path bypasses
+   // the sm8 seed (seed only runs when `joinHints.broadcastRightBelowBytes`
+   // is None per `seedBroadcastThreshold` .orElse at line 1142).
    val plan = compiledWithLargeThreshold(modelWith(Some(100_000_000L)), JoinHints())
+   plan should include ("BroadcastHashJoin")
+  }
+
+  test("PR-197 dual-review: explicit JoinHints.broadcastRightBelowBytes isolates sm8 seed from Spark's heuristic (sibling test)") {
+   // PR-197 dual-review (macaque MEDIUM test-rigor): this sibling
+   // test complements the inline-arm test above by isolating the
+   // sm8-seed arm behavior. When `JoinHints.broadcastRightBelowBytes`
+   // is set EXPLICITLY (e.g. to 10 MiB), the lowerer's
+   // `shouldBroadcast` check uses the explicit hint directly
+   // (broadcast only if rightBytes <= 10 MiB). With the tiny
+   // fixture, rightBytes (~100 bytes) <= 10 MiB, so the join
+   // broadcasts — and the broadcast is unambiguously from the
+   // lowerer's `df.broadcast()` hint, NOT from Spark's heuristic.
+   //
+   // Why this matters for regression detection: if a future PR
+   // makes the sm8 seed a no-op (e.g. inline presence rule stops
+   // arming), the inline-arm test above still passes (Spark
+   // broadcasts anyway), but THIS test still passes too because
+   // the explicit JoinHints bypass the seed entirely. So these
+   // two tests verify different aspects of the seed contract:
+   // the inline-arm test verifies "session default + estimatedRows
+   // => SOME broadcast happens"; this sibling verifies "explicit
+   // caller hint => broadcast happens (sm8 seed not involved)".
+   val plan = compiledWithLargeThreshold(
+     modelWith(Some(100_000_000L)),
+     JoinHints(broadcastRightBelowBytes = Some(10L * 1024 * 1024)))
    plan should include ("BroadcastHashJoin")
   }
 
