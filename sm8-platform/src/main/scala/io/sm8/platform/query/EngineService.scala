@@ -231,26 +231,54 @@ object EngineService {
       // Per scala-error-handling: convert at the IO boundary.
       // Legacy code threw `IllegalArgumentException` here,
       // losing the typed error. The Scala version preserves it
-      // via `EngineError.ProviderInvocationFailed` — the closest
+      // via `EngineError.ProviderInvocationFailed` — the catch-all
       // variant for "engine execution failed unexpectedly".
       //
-      // Only `NonFatal` is converted: an `Error` (OOM, ...) must
-      // propagate so a fatally-broken JVM fails loud, and an
-      // `InterruptedException` re-sets the thread's interrupt flag
-      // first so the cancellation is never lost (P1-S2).
+      // Specific cases run BEFORE the NonFatal catch-all so the
+      // engine-portable [[io.sm8.core.engine.EngineError.QueryTimedOut]]
+      // and [[io.sm8.core.engine.EngineError.CancellationFailed]] ADT
+      // variants actually surface when an engine adapter throws the
+      // canonical timeout / interruption signals. Without these arms,
+      // both variants would be unreachable at runtime — declared in
+      // the sealed `EngineError` hierarchy but never produced —
+      // defeating the typed-error design.
       //
-      // Per review pass #2 (DE-reviewer MAJOR #7): the `engine`
-      // field in `EngineError` is the engine identity (e.g.
-      // "spark", "trino"), not the model name. `EngineError`'s
-      // `toErrorDetail` formats `"<engine>"` as the error
-      // context, and downstream consumers filter errors by
-      // engine identity.
+      // Only the listed specific cases are converted: an unlisted
+      // `Error` (OOM, ...) must propagate so a fatally-broken JVM
+      // fails loud. `InterruptedException` re-sets the thread's
+      // interrupt flag first so the cancellation is never lost
+      // (P1-S2).
+      //
+      // The `engine` field is the engine identity (e.g. "spark",
+      // "trino"), not the model name. `EngineError.toErrorDetail`
+      // formats `"<engine>"` as the error context, and downstream
+      // consumers filter errors by engine identity.
+      case e: java.util.concurrent.TimeoutException =>
+        Left(EngineError.QueryTimedOut(
+          engine      = provider.identity.name,
+          cancelStatus = "timeout",
+          message     = Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
+        ))
+      case e: java.sql.SQLTimeoutException =>
+        // SQLTimeoutException extends SQLException; caught here
+        // before the NonFatal catch-all collapses it to
+        // ProviderInvocationFailed. Future-proofing only — the
+        // current TrinoEngineProvider is a stub that returns
+        // `Left(FeatureDeferred)` without touching the JDBC
+        // driver, so this arm is unreachable in production today.
+        // Remove this comment when a real Trino JDBC client
+        // (or a third connector that surfaces SQLTimeoutException)
+        // lands.
+        Left(EngineError.QueryTimedOut(
+          engine      = provider.identity.name,
+          cancelStatus = "sql-timeout",
+          message     = Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
+        ))
       case e: InterruptedException =>
         Thread.currentThread().interrupt()
-        Left(EngineError.ProviderInvocationFailed(
-          engine = provider.identity.name,
-          name = provider.identity.name,
-          reason = e.getClass.getSimpleName,
+        Left(EngineError.CancellationFailed(
+          engine  = provider.identity.name,
+          reason  = "interrupted",
           message = Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
         ))
       case NonFatal(e) =>
