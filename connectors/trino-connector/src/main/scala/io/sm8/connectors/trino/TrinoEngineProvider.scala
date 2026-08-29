@@ -16,11 +16,23 @@
  * typed-error realization. The `realizeTyped` override converts
  * the legacy `realize(url): Option` (silent None) into the typed
  * `Either[EngineError, EngineProvider]`.
+ *
+ * PR-202 (audit follow-up Bundle A4): adds `decideUnsupported`
+ * honor-or-reject for `ctx.decisionHints` (ADR-009-d item 13),
+ * mirroring the in-memory provider. Trino is a stub that returns
+ * `FeatureDeferred` on `query` regardless of the decision — a
+ * decided-but-ignored field is a more specific error (typed
+ * `UnsupportedCapability` named by the platform meta key) than the
+ * generic deferred stub error. The platform's portability claim
+ * (any adapter reads the decision) is only sound if a decided-but-
+ * ignored field is impossible. Mirroring `InMemoryEngineProvider`
+ * keeps the per-adapter behavior deterministic across the 3
+ * reference engines (in-memory / spark / trino).
  */
 package io.sm8.connectors.trino
 
 import io.sm8.core.engine.{
-  EngineContext, EngineError, EngineIdentity, EngineProvider, EngineUrl,
+  DecisionHints, EngineContext, EngineError, EngineIdentity, EngineProvider, EngineUrl,
   PortableQueryResult, QueryRequest, TypedRealizationProvider
 }
 import io.sm8.core.model.Model
@@ -74,9 +86,41 @@ final class TrinoEngineProvider private (
   override def query(
       model: Model, request: QueryRequest, ctx: EngineContext
   ): Either[EngineError, PortableQueryResult] =
-    Left(EngineError.FeatureDeferred(
-      engine = "trino", feature = "query", release = "post-v1.0.0",
-      message = "TrinoEngineProvider runtime lands with the Trino cluster"))
+    decideUnsupported(ctx) match {
+      case Some(err) => Left(err)
+      case None => Left(EngineError.FeatureDeferred(
+        engine = "trino", feature = "query", release = "post-v1.0.0",
+        message = "TrinoEngineProvider runtime lands with the Trino cluster"))
+    }
+
+  /** PR-202 (audit follow-up Bundle A4): ADR-009-d item 13
+    * honor-or-reject. Mirrors `InMemoryEngineProvider.decideUnsupported`
+    * exactly (same deterministic order broadcastArmed →
+    * broadcastThresholdBytes → skewArmed; same platform meta keys).
+    * Trino is a stub — runtime lands with the Trino cluster — so it
+    * cannot consume a decided field; the platform's portability claim
+    * is only sound if a decided-but-ignored field surfaces as a typed
+    * `UnsupportedCapability` (more specific than the generic
+    * `FeatureDeferred` the stub would otherwise emit on every query).
+    * Engine string is `"trino-connector"` to match the in-memory
+    * adapter's per-engine convention. The empty (no-oracle) fold
+    * yields `None` and keeps the prior `FeatureDeferred` behavior. */
+  private def decideUnsupported(ctx: EngineContext): Option[EngineError] =
+    if (ctx == null) None
+    else ctx.decisionHints.flatMap { dh =>
+      val key =
+        if (dh.broadcastArmed.isDefined) "sm8.broadcast.arm"
+        else if (dh.broadcastThresholdBytes.isDefined) "sm8.broadcast.thresholdBytes"
+        else if (dh.skewArmed.isDefined) "sm8.skew.arm"
+        else ""
+      if (key.isEmpty) None
+      else Some(EngineError.UnsupportedCapability(
+        engine     = "trino-connector",
+        capability = key,
+        message    = s"sm8: trino engine cannot honor decided field '$key'; " +
+          "route to an engine with a native broadcast/skew config or drop the broadcast/skew plugin"
+      ))
+    }
 
   override def explain(
       model: Model, request: QueryRequest, ctx: EngineContext
