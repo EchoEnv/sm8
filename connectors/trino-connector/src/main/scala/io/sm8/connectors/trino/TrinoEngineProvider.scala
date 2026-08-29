@@ -32,7 +32,7 @@
 package io.sm8.connectors.trino
 
 import io.sm8.core.engine.{
-  DecisionHints, EngineContext, EngineError, EngineIdentity, EngineProvider, EngineUrl,
+  DecisionHintsPolicy, EngineContext, EngineError, EngineIdentity, EngineProvider, EngineUrl,
   PortableQueryResult, QueryRequest, TypedRealizationProvider
 }
 import io.sm8.core.model.Model
@@ -93,34 +93,22 @@ final class TrinoEngineProvider private (
         message = "TrinoEngineProvider runtime lands with the Trino cluster"))
     }
 
-  /** PR-202 (audit follow-up Bundle A4): ADR-009-d item 13
-    * honor-or-reject. Mirrors `InMemoryEngineProvider.decideUnsupported`
-    * exactly (same deterministic order broadcastArmed →
-    * broadcastThresholdBytes → skewArmed; same platform meta keys).
-    * Trino is a stub — runtime lands with the Trino cluster — so it
-    * cannot consume a decided field; the platform's portability claim
-    * is only sound if a decided-but-ignored field surfaces as a typed
-    * `UnsupportedCapability` (more specific than the generic
-    * `FeatureDeferred` the stub would otherwise emit on every query).
-    * Engine string is `"trino-connector"` to match the in-memory
-    * adapter's per-engine convention. The empty (no-oracle) fold
-    * yields `None` and keeps the prior `FeatureDeferred` behavior. */
+  /** PR-204 (refactor): ADR-009-d item 13 honor-or-reject delegated
+    * to `DecisionHintsPolicy.honorOrReject` (sm8-core). Mirrors
+    * `InMemoryEngineProvider.decideUnsupported` exactly modulo the
+    * adapter-specific `engineField`/`engineDisplayName` parameters
+    * (per-engine convention; spark honors the decision natively and
+    * does NOT use this helper). The empty (no-oracle) fold yields
+    * `None` and keeps the prior `FeatureDeferred` behavior.
+    *
+    * History:
+    *   - PR-202: Trino started mirroring InMemory's
+    *     `decideUnsupported` 1:1 to close the cross-engine
+    *     inconsistency. The duplication was explicitly deferred.
+    *   - PR-204 (this refactor): extract the shared logic into
+    *     `DecisionHintsPolicy`. Observable behavior unchanged. */
   private def decideUnsupported(ctx: EngineContext): Option[EngineError] =
-    if (ctx == null) None
-    else ctx.decisionHints.flatMap { dh =>
-      val key =
-        if (dh.broadcastArmed.isDefined) "sm8.broadcast.arm"
-        else if (dh.broadcastThresholdBytes.isDefined) "sm8.broadcast.thresholdBytes"
-        else if (dh.skewArmed.isDefined) "sm8.skew.arm"
-        else ""
-      if (key.isEmpty) None
-      else Some(EngineError.UnsupportedCapability(
-        engine     = "trino-connector",
-        capability = key,
-        message    = s"sm8: trino engine cannot honor decided field '$key'; " +
-          "route to an engine with a native broadcast/skew config or drop the broadcast/skew plugin"
-      ))
-    }
+    DecisionHintsPolicy.honorOrReject(ctx, "trino-connector", "trino engine")
 
   override def explain(
       model: Model, request: QueryRequest, ctx: EngineContext
