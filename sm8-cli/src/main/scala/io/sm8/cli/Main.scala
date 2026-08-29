@@ -904,6 +904,7 @@ object Main {
         |  query <model> [opts]            run a semantic query, print a table
         |  explain <model> [opts]          show the semantic plan (no execution)
         |  audit-tail [opts]               show recent audit events (Restate, durable)
+        |  inspect <key>                   read a context.meta key (generic meta-inspector)
         |
         |query/explain options:
         |  -d, --dim <name>                dimension (repeatable)
@@ -927,10 +928,11 @@ object Main {
         |
         |examples:
         |  sm8 list
-        |  "sm8 describe flights
+        |  sm8 describe flights
         |  sm8 query flights -d carrier -m flight_count -o carrier:asc --limit 10
         |  sm8 explain flights -d carrier -m flight_count
         |  sm8 audit-tail --limit 5 --restate-url http://localhost:9080
+        |  sm8 inspect io.sm8.plugins.semanticgraph:graph-snapshot
         |""".stripMargin)
   }
 }

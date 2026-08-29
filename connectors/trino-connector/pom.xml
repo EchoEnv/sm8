@@ -56,15 +56,22 @@
     </dependency>
 
     <!--
-      Trino JDBC driver. Real client-server DB via the standard
-      java.sql API. Step 8 ships shape-correct integration; real
-      Trino SQL execution lands in a follow-up.
+      PR-198 (calf coverage review H1): the previously-listed
+      `io.trino:trino-jdbc:435` dependency is DELETED. It was
+      ~10 MB of dead weight — no production code under
+      `connectors/trino-connector/src/main/scala/` imports any
+      `io.trino.*` class. The matches in TrinoEngineProvider +
+      TrinoEngineProviderDescriptor are to the sm8-internal
+      `EngineUrl.Trino.jdbcUrl` field, not the `io.trino` package.
+      The shape-correct Trino integration test (TrinoEngineProviderSpec)
+      does not need the JDBC driver at compile time — only a runtime
+      dependency IF and WHEN the Trino SQL execution lands in a
+      follow-up. Per the project's explicit-deps invariant (every
+      Maven dep must correspond to a real import), this dep did not.
+      PR-198 dual-review fix: the original comment cited ADR-0010
+      which does not exist (ADR-0010-a is the HookRunner
+      orchestration ADR, unrelated); cite removed.
     -->
-    <dependency>
-      <groupId>io.trino</groupId>
-      <artifactId>trino-jdbc</artifactId>
-      <version>435</version>
-    </dependency>
 
     <dependency>
       <groupId>org.scalatest</groupId>
