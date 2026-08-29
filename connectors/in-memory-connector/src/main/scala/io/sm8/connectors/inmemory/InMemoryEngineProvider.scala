@@ -15,7 +15,7 @@
 package io.sm8.connectors.inmemory
 
 import io.sm8.core.engine.{
-  DecisionHints, EngineContext, EngineError, EngineIdentity, EngineProvider, EngineUrl,
+  DecisionHintsPolicy, EngineContext, EngineError, EngineIdentity, EngineProvider, EngineUrl,
   PortableQueryResult, QueryRequest, ResultSchema, TypedRealizationProvider
 }
 import io.sm8.core.model.Model
@@ -52,35 +52,24 @@ final class InMemoryEngineProvider() extends TypedRealizationProvider {
         ))
     }
 
-  /** ADR-009-d item 13 honor-or-reject: the platform fold populates
-    * `ctx.decisionHints` from any registered broadcast/skew plugin.
-    * In-memory has no native broadcast or skew join config, so it
-    * cannot consume a decided field; the platform's portability claim
-    * (any adapter reads the decision) is only sound if a decided-but-
-    * ignored field is impossible. A non-empty decision therefore
-    * surfaces as a typed `UnsupportedCapability` naming the first
-    * decided field (deterministic order: broadcastArmed,
-    * broadcastThresholdBytes, then skewArmed) rather than silently
-    * dropping it. Capability strings are the platform meta keys
-    * (`sm8.broadcast.arm` / `sm8.broadcast.thresholdBytes` /
-    * `sm8.skew.arm`) that produced each field. The empty (no-oracle)
-    * fold yields `None` and keeps the prior empty-success behavior. */
+  /** PR-204 (refactor): ADR-009-d item 13 honor-or-reject delegated
+    * to `DecisionHintsPolicy.honorOrReject` (sm8-core). See that
+    * file for the deterministic order + null short-circuit
+    * semantics. Engine field `"in-memory-connector"` + display name
+    * `"in-memory engine"` match the per-engine convention.
+    *
+    * History:
+    *   - PR-15: introduce typed `UnsupportedCapability` for the
+    *     in-memory engine's broadcast/skew inability.
+    *   - PR-200: add falsifiable spec coverage that routed real
+    *     EngineContext through `query(...)` (the prior spec passed
+    *     `null` for ctx, which short-circuited this branch).
+    *   - PR-202: cross-engine parity — Trino started mirroring this
+    *     logic (and that's when the duplication became obvious).
+    *   - PR-204 (this refactor): extract the shared logic into
+    *     `DecisionHintsPolicy`. Observable behavior unchanged. */
   private def decideUnsupported(ctx: EngineContext): Option[EngineError] =
-    if (ctx == null) None
-    else ctx.decisionHints.flatMap { dh =>
-      val key =
-        if (dh.broadcastArmed.isDefined) "sm8.broadcast.arm"
-        else if (dh.broadcastThresholdBytes.isDefined) "sm8.broadcast.thresholdBytes"
-        else if (dh.skewArmed.isDefined) "sm8.skew.arm"
-        else ""
-      if (key.isEmpty) None
-      else Some(EngineError.UnsupportedCapability(
-        engine     = "in-memory-connector",
-        capability = key,
-        message    = s"sm8: in-memory engine cannot honor decided field '$key'; " +
-          "route to an engine with a native broadcast/skew config or drop the broadcast/skew plugin"
-      ))
-    }
+    DecisionHintsPolicy.honorOrReject(ctx, "in-memory-connector", "in-memory engine")
 
   override def explain(
       model: Model, request: QueryRequest, ctx: EngineContext
