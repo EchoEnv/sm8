@@ -209,6 +209,27 @@ private final class CacheWritePostHook(
   //
   // The 'counter.incrementAndGet()' call was MOVED inside the
   // WriteThrough branch — it MUST NOT fire for NoCache or ReadThrough.
+  // PR-205 (Bundle D1 fix): the previous shape had `context.result match
+  // { ... }` followed by `context` as the LAST expression of the
+  // function body. In Scala, a `match` expression's value is the value
+  // of the matched arm's body — but here the outer match's `case _ =>`
+  // arm evaluates to `()`, so the whole match returned `Unit`. The
+  // `context` that came AFTER the match was returned as the function
+  // value, discarding ANY `context.copy(meta = ...)` produced inside
+  // the WriteThrough arm. Result: the P2.5 fold-in (sm8.cache.write.error
+  // meta key) was never observable to callers — the spec
+  // `CachePluginP25Spec` failed (line 100: false != true).
+  //
+  // Fix: move `context` inside every arm of the outer match so the
+  // match returns the updated context, and the function returns it.
+  // Each arm's value is now the updated context (or the unchanged
+  // context for the no-op branches).
+  //
+  // ADR-009-d ctx.meta fold pattern: the typed Left from the journal
+  // encode failure is written to `ctx.meta("sm8.cache.write.error")`.
+  // The meta key is the primary signal; no stderr side-channel (per
+  // karpathy-guidelines "smallest correct change" — one diagnostic
+  // sink, not two).
   override def run(context: Context): Context = {
     context.result match {
       case Some(EngineHookResult(pqr)) =>
@@ -223,28 +244,23 @@ private final class CacheWritePostHook(
                     cache.putJournaledWithModelAndVersion(hookReq.cacheKey, row, hookReq.model.name, hookReq.model.version)
                   case _ =>
                 }
+                context
               case Left(err) =>
                 // Per ADR-008-Z v1.1: the journal boundary is the typed-Left site.
                 // Treat the shape-mismatch as a silent cache miss (do not crash
                 // the workflow); the error is surfaced on the engine-portable
                 // channel for post-hooks, callers, and tests to observe.
-                //
-                // P2.5 fold-in (ADR-009-d ctx.meta fold pattern by topic):
-                // the typed Left is written to `ctx.meta("sm8.cache.write.error")`.
-                // The meta key is the primary signal; no stderr side-channel
-                // (per karpathy-guidelines "smallest correct change" — one
-                // diagnostic sink, not two).
                 context.copy(meta = context.meta + ("sm8.cache.write.error" -> err))
-              }
+            }
           case Some(CachePolicy.NoCache) | None | Some(CachePolicy.ReadThrough(_)) =>
             // NoCache (or fold absent / ReadThrough): NO write-through.
             // Per Fix 6 explicit policy matrix: ReadThrough is
             // read-only-by-default; the post-hook is a no-op. The
             // counter MUST NOT increment for NoCache or ReadThrough.
-            ()
+            context
         }
       case _ =>
+        context
     }
-    context
   }
 }
