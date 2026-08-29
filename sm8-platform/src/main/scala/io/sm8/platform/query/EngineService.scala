@@ -443,7 +443,7 @@ object EngineService {
         // target is `EngineContext.cachePolicy`. PR-197 added
         // `cacheKey` here; this PR completes the ADR-009-g intent by
         // also threading `model.defaultPolicies.cache` into the
-        // engine-context so the connector (or future audit / audit /
+        // engine-context so the connector (or future audit /
         // materialize plugins) can read it directly via ctx.cachePolicy
         // rather than re-parsing `Context.meta.get("sm8.cache.policy")`.
         //

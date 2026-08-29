@@ -664,8 +664,8 @@ class EngineServiceRunQueryWithHooksSpec extends AnyFunSuite with Matchers {
         )
         out.isRight shouldBe true
         // The engine fired (no short-circuit for the 3 policies
-        // we exercise — WriteThrough + NoCache both MISS, ReadThrough
-        // + MISS since the cache is empty).
+        // we exercise — NoCache is a no-op (no cache lookup);
+        // ReadThrough + WriteThrough both MISS since the cache is empty).
         spark.callCount.get() shouldBe 1
         // The fold reached the engine — capturedCtx is set inside
         // StubProvider.query().

@@ -96,9 +96,10 @@ object EngineContext {
 // WriteThrough(name)). All callers reference the model-side type.
 
 // PR-199 (Round 1 audit pre-existing HIGH cleanup): the engine-side
-// `AuditPolicy` sealed trait + the `CancellationCapability` sealed
-// trait (4 cases each) were DEAD — zero production consumers
-// anywhere in the codebase. The `EngineContext` fields that
+// `AuditPolicy` sealed trait (2 cases: NoAudit, EngineDefault) +
+// the `CancellationCapability` sealed trait (4 cases: Cooperative,
+// SparkJobTag, RemoteStatement, Unsupported) were DEAD — zero
+// production consumers anywhere in the codebase. The `EngineContext` fields that
 // nominally carried them were never read; the runtime gate uses
 // the SDK's Restate journal retry, NonFatal discipline (PR-176),
 // and the platform's hook runner. Per karpathy-guidelines
