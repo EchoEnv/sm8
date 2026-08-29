@@ -663,19 +663,22 @@ object Main {
         case e: java.net.http.HttpTimeoutException =>
           // PR-200: honor PR-176 NonFatal discipline — HttpTimeoutException
           // is an IOException subtype, but treat it as a distinct typed
-          // shape so the user sees "timeout" not "request failed".
+          // shape so the user sees "timed out" instead of the JVM-default
+          // `HttpTimeoutException: <msg>` rendering (pre-PR-200 the
+          // `case e: Exception` catch surfaced the full qualified name).
           System.err.println(s"sm8: request to $url timed out")
           Left(RestateConnectError(url, e))
         case e: java.io.IOException =>
           // PR-200 (audit follow-up M1): narrow from `case e: Exception`
           // to `IOException` — Restate's HTTP-client contract throws
           // IOException for transport errors (HttpTimeoutException,
-          // ConnectException, malformed-URI, etc.). Per
-          // `scala-error-handling` §4 + the per-spec convention
-          // (`loadTokenFromFile` at lines 236-243 catches only
-          // `IOException`), a CLI that wraps `Throwable` swallows
-          // `InterruptedException` (cancel signal) and any future
-          // `Error` (fatal). Interrupt is now caught separately below.
+          // ConnectException, malformed-URI, etc.). The prior
+          // `case e: Exception` catch also caught
+          // `InterruptedException` (extends `Exception`) and dropped
+          // the interrupt flag. The new arm below re-sets the flag
+          // so any subsequent `wait`/`sleep`/`blocking IO` exits
+          // promptly. Matches `EngineService.executeEngine:248-249`
+          // (PR-176 reference).
           System.err.println(s"sm8: request failed: ${e.getClass.getSimpleName}: ${e.getMessage}")
           Left(RestateConnectError(url, e))
         case e: InterruptedException =>
@@ -842,11 +845,12 @@ object Main {
           // PR-200 (audit follow-up M1): narrow from `case e: Exception`
           // to `IOException` — `java.net.http.HttpClient.send` only
           // throws `IOException` and its subtypes for transport
-          // errors. Catching `Exception` here silently swallows the
-          // cancel signal (`InterruptedException` is checked — but
-          // was being wrapped via the Throwable catch in the
-          // downstream exit-code path). Interrupt is now caught
-          // separately below.
+          // errors. The prior `case e: Exception` catch also caught
+          // `InterruptedException` (which extends `Exception`) and
+          // dropped the interrupt flag. The new arm below re-sets
+          // the flag so any subsequent `wait`/`sleep`/`blocking IO`
+          // exits promptly. Matches `EngineService.executeEngine:248-249`
+          // (PR-176 reference).
           System.err.println(s"sm8: request failed: ${e.getClass.getSimpleName}: ${e.getMessage}")
           throw new TransportFailure(req.uri.toString, e)
         case e: InterruptedException =>

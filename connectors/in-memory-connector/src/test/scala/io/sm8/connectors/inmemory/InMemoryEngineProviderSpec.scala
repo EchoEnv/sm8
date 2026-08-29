@@ -4,15 +4,23 @@
  * PR-200 (audit follow-up M4): extends the falsifiable spec coverage
  * for `decideUnsupported` — the existing 3 tests passed `null` for
  * `ctx`, which means the honor-or-reject branch was never exercised
- * by the spec (only by `InMemoryEngineReplaySafetySpec`). The
- * additions below route a real `EngineContext(decisionHints = …)`
- * through `query(...)` and assert that the adapter returns the
- * typed `UnsupportedCapability` named by the platform meta key —
- * proving the per-field decision (broadcastArmed,
- * broadcastThresholdBytes, skewArmed) is honored-or-rejected at the
- * adapter boundary. Per `scala-bug-hunting` §1, a falsifiable spec
- * must exercise the branch under test; passing `null` made the
- * test tautological.
+ * directly here. The only prior coverage was the cross-engine
+ * integration spec at `sm8-platform/src/test/scala/io/sm8/platform/
+ * query/CrossEngineDecisionHintsConsumptionSpec.scala:103-126`, which
+ * exercises `broadcastArmed → UnsupportedCapability("sm8.broadcast.arm")`
+ * END-TO-END via `EngineService.runQueryWithHooks` (NOT a direct
+ * `provider.query` call). The additions below are the first DIRECT
+ * unit coverage of `decideUnsupported`: they call `provider.query
+ * (model, request, ctx)` directly, bypassing the platform fold, and
+ * route a real `EngineContext(decisionHints = …)` through it.
+ *
+ * The 6 new tests (5 + 1 follow-up from PR-200 review) assert that
+ * the adapter returns the typed `UnsupportedCapability` named by the
+ * platform meta key (sm8.broadcast.arm / .thresholdBytes /
+ * sm8.skew.arm) per the deterministic order broadcastArmed →
+ * broadcastThresholdBytes → skewArmed. Per `scala-bug-hunting` §1,
+ * a falsifiable spec must exercise the branch under test; passing
+ * `null` made the original test tautological.
  */
 package io.sm8.connectors.inmemory
 
@@ -75,10 +83,33 @@ class InMemoryEngineProviderSpec extends AnyFunSuite with Matchers {
     // (Right with metadata = "in-memory"), NOT a typed error.
     val out = queryWithDecision(DecisionHints(broadcastArmed = Some(true)))
     out.isLeft shouldBe true
-    val err = out.swap.toOption.get
-    err shouldBe a[EngineError.UnsupportedCapability]
-    err.engine shouldBe "in-memory-connector"
-    err.asInstanceOf[EngineError.UnsupportedCapability].capability shouldBe "sm8.broadcast.arm"
+    out.swap.toOption.get match {
+      case uc: EngineError.UnsupportedCapability =>
+        uc.engine shouldBe "in-memory-connector"
+        uc.capability shouldBe "sm8.broadcast.arm"
+      case other =>
+        fail(s"expected UnsupportedCapability, got ${other.getClass.getSimpleName}: $other")
+    }
+  }
+
+  test("query with DecisionHints(broadcastArmed = Some(false)) also surfaces UnsupportedCapability (locks in `isDefined` behavior)") {
+    // PR-200 review MEDIUM-2: the implementation uses `dh.broadcastArmed
+    // .isDefined` (matches BOTH Some(true) AND Some(false)). Per
+    // DecisionHints.scala:8 semantics, Some(false) is "oracle
+    // disarmed" — arguably a no-op decision, not an unsupported one.
+    // This test LOCKS IN the current behavior so any future change to
+    // `.contains(true)` would surface here as a test diff, not a
+    // silent semantic shift. Smallest-correct-change per
+    // karpathy-guidelines — the implementation fix (Option B) is
+    // tracked as a separate follow-up.
+    val out = queryWithDecision(DecisionHints(broadcastArmed = Some(false)))
+    out.isLeft shouldBe true
+    out.swap.toOption.get match {
+      case uc: EngineError.UnsupportedCapability =>
+        uc.capability shouldBe "sm8.broadcast.arm"
+      case other =>
+        fail(s"expected UnsupportedCapability, got ${other.getClass.getSimpleName}: $other")
+    }
   }
 
   test("query with DecisionHints(broadcastThresholdBytes = Some(...)) returns typed UnsupportedCapability(\"sm8.broadcast.thresholdBytes\")") {
@@ -87,9 +118,12 @@ class InMemoryEngineProviderSpec extends AnyFunSuite with Matchers {
     // → skewArmed.
     val out = queryWithDecision(DecisionHints(broadcastThresholdBytes = Some(10L * 1024L * 1024L)))
     out.isLeft shouldBe true
-    out.swap.toOption.get
-      .asInstanceOf[EngineError.UnsupportedCapability]
-      .capability shouldBe "sm8.broadcast.thresholdBytes"
+    out.swap.toOption.get match {
+      case uc: EngineError.UnsupportedCapability =>
+        uc.capability shouldBe "sm8.broadcast.thresholdBytes"
+      case other =>
+        fail(s"expected UnsupportedCapability, got ${other.getClass.getSimpleName}: $other")
+    }
   }
 
   test("query with DecisionHints(skewArmed = Some(true)) returns typed UnsupportedCapability(\"sm8.skew.arm\")") {
@@ -97,9 +131,12 @@ class InMemoryEngineProviderSpec extends AnyFunSuite with Matchers {
     // broadcastThresholdBytes are None (last in the order).
     val out = queryWithDecision(DecisionHints(skewArmed = Some(true)))
     out.isLeft shouldBe true
-    out.swap.toOption.get
-      .asInstanceOf[EngineError.UnsupportedCapability]
-      .capability shouldBe "sm8.skew.arm"
+    out.swap.toOption.get match {
+      case uc: EngineError.UnsupportedCapability =>
+        uc.capability shouldBe "sm8.skew.arm"
+      case other =>
+        fail(s"expected UnsupportedCapability, got ${other.getClass.getSimpleName}: $other")
+    }
   }
 
   test("query with all DecisionHints None (default fold) returns empty PortableQueryResult") {
