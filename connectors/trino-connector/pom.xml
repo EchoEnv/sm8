@@ -66,8 +66,11 @@
       The shape-correct Trino integration test (TrinoEngineProviderSpec)
       does not need the JDBC driver at compile time — only a runtime
       dependency IF and WHEN the Trino SQL execution lands in a
-      follow-up. Per ADR-0010 ("clean core, explicit deps"), every
-      Maven dep must correspond to a real import; this dep did not.
+      follow-up. Per the project's explicit-deps invariant (every
+      Maven dep must correspond to a real import), this dep did not.
+      PR-198 dual-review fix: the original comment cited ADR-0010
+      which does not exist (ADR-0010-a is the HookRunner
+      orchestration ADR, unrelated); cite removed.
     -->
 
     <dependency>

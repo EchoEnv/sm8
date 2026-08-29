@@ -932,7 +932,7 @@ object Main {
         |  sm8 query flights -d carrier -m flight_count -o carrier:asc --limit 10
         |  sm8 explain flights -d carrier -m flight_count
         |  sm8 audit-tail --limit 5 --restate-url http://localhost:9080
-        |  sm8 inspect sm8.cache.policy
+        |  sm8 inspect io.sm8.plugins.semanticgraph:graph-snapshot
         |""".stripMargin)
   }
 }
