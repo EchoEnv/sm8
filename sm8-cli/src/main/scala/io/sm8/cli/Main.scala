@@ -660,8 +660,38 @@ object Main {
         case e: java.net.ConnectException =>
           System.err.println(s"sm8: could not connect to $url (is Restate running?)")
           Left(RestateConnectError(url, e))
-        case e: Exception =>
+        case e: java.net.http.HttpTimeoutException =>
+          // PR-200: honor PR-176 NonFatal discipline — HttpTimeoutException
+          // is an IOException subtype, but treat it as a distinct typed
+          // shape so the user sees "timed out" instead of the JVM-default
+          // `HttpTimeoutException: <msg>` rendering (pre-PR-200 the
+          // `case e: Exception` catch surfaced the full qualified name).
+          System.err.println(s"sm8: request to $url timed out")
+          Left(RestateConnectError(url, e))
+        case e: java.io.IOException =>
+          // PR-200 (audit follow-up M1): narrow from `case e: Exception`
+          // to `IOException` — Restate's HTTP-client contract throws
+          // IOException for transport errors (HttpTimeoutException,
+          // ConnectException, malformed-URI, etc.). The prior
+          // `case e: Exception` catch also caught
+          // `InterruptedException` (extends `Exception`) and dropped
+          // the interrupt flag. The new arm below re-sets the flag
+          // so any subsequent `wait`/`sleep`/`blocking IO` exits
+          // promptly. Matches `EngineService.executeEngine:248-249`
+          // (PR-176 reference).
           System.err.println(s"sm8: request failed: ${e.getClass.getSimpleName}: ${e.getMessage}")
+          Left(RestateConnectError(url, e))
+        case e: InterruptedException =>
+          // PR-200: a `SIGINT`/cancel during a Restate call must NOT
+          // be silently swallowed (it would corrupt future cancel
+          // detection — the JVM needs the interrupt flag set to
+          // break out of `Thread.sleep`, `wait`, blocking IO, etc.).
+          // Re-set the interrupt flag and surface as a connect error
+          // with the interrupt signal preserved. Matches the
+          // `EngineService.executeEngine` pattern (sm8-platform
+          // query path; PR-176 reference).
+          Thread.currentThread().interrupt()
+          System.err.println(s"sm8: request to $url cancelled")
           Left(RestateConnectError(url, e))
       }
     }
@@ -805,8 +835,31 @@ object Main {
           // CliIntegrationSpec exercises Main.run directly.
           System.err.println(s"sm8: could not connect to ${req.uri} (is the server running?)")
           throw new TransportFailure(req.uri.toString, e)
-        case e: Exception =>
+        case e: java.net.http.HttpTimeoutException =>
+          // PR-200: honor PR-176 NonFatal discipline — distinct typed
+          // exception so the user sees "timed out" not the generic
+          // "request failed" line. Matches the rest of the codebase.
+          System.err.println(s"sm8: request to ${req.uri} timed out")
+          throw new TransportFailure(req.uri.toString, e)
+        case e: java.io.IOException =>
+          // PR-200 (audit follow-up M1): narrow from `case e: Exception`
+          // to `IOException` — `java.net.http.HttpClient.send` only
+          // throws `IOException` and its subtypes for transport
+          // errors. The prior `case e: Exception` catch also caught
+          // `InterruptedException` (which extends `Exception`) and
+          // dropped the interrupt flag. The new arm below re-sets
+          // the flag so any subsequent `wait`/`sleep`/`blocking IO`
+          // exits promptly. Matches `EngineService.executeEngine:248-249`
+          // (PR-176 reference).
           System.err.println(s"sm8: request failed: ${e.getClass.getSimpleName}: ${e.getMessage}")
+          throw new TransportFailure(req.uri.toString, e)
+        case e: InterruptedException =>
+          // PR-200: preserve the cancel signal — re-set the interrupt
+          // flag so any subsequent `wait`/`sleep`/`blocking IO` exits
+          // promptly, then surface as the typed `TransportFailure`.
+          // Matches the `EngineService.executeEngine` pattern (PR-176).
+          Thread.currentThread().interrupt()
+          System.err.println(s"sm8: request to ${req.uri} cancelled")
           throw new TransportFailure(req.uri.toString, e)
       }
 
