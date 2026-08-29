@@ -50,8 +50,48 @@ class SparkBroadcastSeedSpec extends AnyFunSuite with Matchers {
       .config("spark.driver.bindAddress", "127.0.0.1")
       // Disable Spark's OWN autoBroadcast heuristic so the seed (the
       // ONLY force we're testing) is what decides the join strategy.
+      // PR-197 (Round 1 audit MED F-03): the sm8 seed now respects
+      // this `-1` sentinel by ALSO disarming (previously the seed
+      // silently re-enabled with 10 MiB default — the opposite of
+      // operator intent). The "seed arms with estimatedRows" test
+      // below uses `buildSparkWithDisabledBroadcast` for the inverse
+      // case, AND uses a new helper `compiledWithExplicitHint` for
+      // the canonical "operator did not disable" path that the
+      // seed should still arm.
       .config("spark.sql.autoBroadcastJoinThreshold", "-1")
+      .config("spark.sql.adaptive.enabled", "false")
       .getOrCreate()
+
+  // PR-197 (Round 1 audit MED F-03): the canonical `buildSpark`
+  // uses `autoBroadcastJoinThreshold = -1` to disable Spark's own
+  // broadcast heuristic — which (after the PR-197 fix) ALSO
+  // disarms the sm8 seed. For tests that want to exercise the
+  // "sm8 seed ARMS the broadcast hint" path, we need a session
+  // where broadcast is allowed (NOT -1) and the threshold is
+  // high enough that Spark itself doesn't broadcast the tiny
+  // test fixture. 100 MiB (=104857600) is well above the test
+  // fixture's actual sizeInBytes (~100 bytes).
+  private def buildSparkWithLargeThreshold(): SparkSession =
+    SparkSession.builder()
+      .master("local[1]")
+      .appName("SparkBroadcastSeedSpec-LargeThreshold")
+      .config("spark.sql.shuffle.partitions", "1")
+      .config("spark.ui.enabled", "false")
+      .config("spark.driver.host", "127.0.0.1")
+      .config("spark.driver.bindAddress", "127.0.0.1")
+      .config("spark.sql.autoBroadcastJoinThreshold", "104857600")
+      .config("spark.sql.adaptive.enabled", "false")
+      .getOrCreate()
+
+  /** PR-197 (Round 1 audit MED F-03): helper that runs the same
+   * compile pipeline as `compiled` but with a SparkSession that
+   * has `autoBroadcastJoinThreshold = 104857600` (100 MiB, NOT -1).
+   * Used for the ADR-009-d "inline presence rule ARMS" test,
+   * which requires the session to allow broadcast. */
+  private def compiledWithLargeThreshold(model: Model, hints: JoinHints, eCtxOverride: EngineContext = EngineContext.defaultContext): String = {
+    val spark = buildSparkWithLargeThreshold()
+    compiledWithSpark(spark, model, hints, eCtxOverride)
+  }
 
   // The canonical 5-arg compileRelOp validates the model against
   // this scan; it must match the model's declared source table.
@@ -88,6 +128,12 @@ class SparkBroadcastSeedSpec extends AnyFunSuite with Matchers {
    // oracle tests pass an EngineContext with decisionHints =
    // Some(...) to exercise the oracle-wins semantics.
    val spark = buildSpark()
+   compiledWithSpark(spark, model, hints, eCtxOverride)
+  }
+
+  /** Shared pipeline. PR-197 split this out so the build +
+   * compile + plan-stringify sequence is shared between tests. */
+  private def compiledWithSpark(spark: SparkSession, model: Model, hints: JoinHints, eCtxOverride: EngineContext): String = {
    try {
      spark.sql("SELECT * FROM VALUES (1,'east'),(2,'west') AS t(id, region)")
        .createOrReplaceTempView("orders")
@@ -116,11 +162,20 @@ class SparkBroadcastSeedSpec extends AnyFunSuite with Matchers {
    } finally spark.stop()
   }
 
-  test("seed: a declared join estimate arms the broadcast hint (BroadcastHashJoinExec)") {
-    // Spark auto-broadcast is OFF (-1); the ADR seed (default 10 MiB)
-    // is the ONLY mechanism that can produce a broadcast here.
+  test("seed: a declared join estimate arms the broadcast hint ONLY when operator has not disabled Spark broadcast") {
+    // PR-197 (Round 1 audit MED F-03): the previous shape (pre-PR-197)
+    // set `autoBroadcastJoinThreshold = -1` to disable Spark's own
+    // heuristic, then expected the sm8 seed (default 10 MiB) to be
+    // the ONLY mechanism producing broadcast. That test incidentally
+    // codified the buggy behavior: the seed silently re-enabled
+    // broadcast on operators who explicitly disabled it (the opposite
+    // of intent). After PR-197 the sm8 seed ALSO disarms when `-1`
+    // is set, so this test now asserts the corrected contract:
+    // when operator says `-1` AND a model has a join estimate,
+    // NO broadcast happens (the seed respects the disable).
     val plan = compiled(modelWith(Some(1000L)), JoinHints())
-    plan should include ("BroadcastHashJoin")
+    plan should include ("SortMergeJoin")
+    plan shouldNot include ("BroadcastHashJoin")
   }
 
   test("no-estimate model without explicit hint does NOT broadcast (SortMergeJoinExec)") {
@@ -221,10 +276,15 @@ class SparkBroadcastSeedSpec extends AnyFunSuite with Matchers {
     // session reads its own seed value back. Real concurrency is
     // single-threaded here; the falsifiable check is that each clone
     // has its own SessionState (no shared mutable conf).
+    // PR-197 (Round 1 audit MED F-03): with `buildSpark` setting
+    // `autoBroadcastJoinThreshold = -1` (Spark disable sentinel),
+    // the sm8 seed ALSO disarms, so the plan is SortMergeJoin
+    // regardless of the seed value (which is what we're testing —
+    // the seed value's effect would be a separate test).
     val p1 = compiled(modelWith(Some(100L)), JoinHints())
     val p2 = compiled(modelWith(Some(200L)), JoinHints())
-    p1 should include ("BroadcastHashJoin")
-    p2 should include ("BroadcastHashJoin")
+    p1 should include ("SortMergeJoin")
+    p2 should include ("SortMergeJoin")
     p1 should include ("region")
     p2 should include ("region")
   }
@@ -294,13 +354,19 @@ class SparkBroadcastSeedSpec extends AnyFunSuite with Matchers {
    plan shouldNot include ("BroadcastHashJoin")
   }
 
-  test("ADR-009-d v0.3: no-oracle broadcast — model with large estimate + decisionHints=None → inline presence rule ARMS → BroadcastHashJoinExec") {
-   // No oracle wired: the seed helper falls back to the inline
-   // presence rule (`model.joins.exists(_.estimatedRows.isDefined)`),
-   // which ARMS because the model has a join with estimatedRows.
-   // This is the disagreement case: inline ARMS, oracle (if wired)
-   // would DISARM.
-   val plan = compiled(modelWith(Some(100_000_000L)), JoinHints())
+  test("ADR-009-d v0.3: no-oracle broadcast — model with large estimate + decisionHints=None + session-default threshold → inline presence rule ARMS → BroadcastHashJoinExec") {
+   // PR-197 (Round 1 audit MED F-03): the previous shape set
+   // `autoBroadcastJoinThreshold = -1` to disable Spark's own
+   // heuristic. After the PR-197 fix, the sm8 seed ALSO disarms
+   // when `-1` is set — so this test must use a non-`-1` session
+   // threshold to exercise the "inline presence rule ARMS" path.
+   // We use `buildSparkWithLargeThreshold` (a non-`-1` high value)
+   // to isolate the seed's arm behavior. The session threshold
+   // (104857600 = 100 MiB) is way above the tiny test fixture's
+   // sizeInBytes, so Spark itself wouldn't broadcast — the only
+   // broadcast observed comes from the sm8 seed's `df.broadcast()`
+   // hint.
+   val plan = compiledWithLargeThreshold(modelWith(Some(100_000_000L)), JoinHints())
    plan should include ("BroadcastHashJoin")
   }
 
