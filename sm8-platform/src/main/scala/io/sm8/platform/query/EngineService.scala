@@ -435,8 +435,35 @@ object EngineService {
         // "we only build decisionCtx when the executor fires" (a
         // throwing oracle short-circuits the dispatcher before this
         // thunk runs).
+        // PR-199 (Round 1 audit pre-existing HIGH): the decisionCtx
+        // is the engine-portable carrier for per-query policy + hints.
+        // Per ADR-009-g v1.0 Fix 1 (intended but never landed in
+        // production — only the meta-fold at lines 387-393 / 398 was
+        // shipped via PR-182), the engine-portable cachePolicy fold
+        // target is `EngineContext.cachePolicy`. PR-197 added
+        // `cacheKey` here; this PR completes the ADR-009-g intent by
+        // also threading `model.defaultPolicies.cache` into the
+        // engine-context so the connector (or future audit / audit /
+        // materialize plugins) can read it directly via ctx.cachePolicy
+        // rather than re-parsing `Context.meta.get("sm8.cache.policy")`.
+        //
+        // Per scala-data-driven-refactor-mindset: the field is typed
+        // ADT (io.sm8.core.model.CachePolicy), not a String — closed
+        // set of cases (NoCache, ReadThrough(name), WriteThrough(name)),
+        // forcing every adapter to handle the full matrix.
+        //
+        // Note on the dead fields (auditPolicy / timeout / cancellation):
+        // PR-199 deletes these from EngineContext (see the
+        // EngineContext.scala diff + the spec migration in
+        // EngineContextSpec.scala). The decisionCtx is the only
+        // valid constructor site for these on the platform path, so
+        // updating both the case class AND this fold site is atomic.
         val decisionCtx: io.sm8.core.engine.EngineContext =
           io.sm8.core.engine.EngineContext.defaultContext.copy(
+            // PR-199: thread model.defaultPolicies.cache directly
+            // (per ADR-009-g v1.0 Fix 1; the meta-fold remains for
+            // plugin-side consult via Context.meta).
+            cachePolicy = model.defaultPolicies.cache,
             decisionHints = Some(io.sm8.core.engine.DecisionHints(
               broadcastArmed          = ctx.meta.get("sm8.broadcast.arm").collect { case b: Boolean => b },
               skewArmed               = ctx.meta.get("sm8.skew.arm").collect { case b: Boolean => b },

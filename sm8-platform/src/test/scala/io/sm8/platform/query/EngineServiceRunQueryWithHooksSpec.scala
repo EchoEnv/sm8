@@ -626,6 +626,56 @@ class EngineServiceRunQueryWithHooksSpec extends AnyFunSuite with Matchers {
     plugin.hits.get()       shouldBe 0
     plugin.writeFires.get() shouldBe 0
   }
+
+  // PR-199 (Round 1 audit pre-existing HIGH): the cachePolicy fold
+  // from `model.defaultPolicies.cache` into the per-query
+  // `EngineContext.cachePolicy` is the load-bearing fix (completes
+  // ADR-009-g v1.0 Fix 1 — the meta-fold shipped in PR-182 but the
+  // engine-context fold never landed). This test asserts the
+  // engine sees `ctx.cachePolicy == model.defaultPolicies.cache`
+  // for 3 distinct policy shapes (NoCache, ReadThrough(name),
+  // WriteThrough(name)). Per scala-impact-analysis-mindset this
+  // is the only verification needed — once the EngineContext field
+  // carries the model-side policy, downstream consumers (future
+  // plugins / connector implementations) can read it directly.
+  test("PR-199: runQueryWithHooks folds model.defaultPolicies.cache into EngineContext.cachePolicy (3 cases)") {
+    val cases: List[(String, CachePolicy)] = List(
+      ("NoCache",                              CachePolicy.NoCache),
+      ("ReadThrough(region-a)",                CachePolicy.ReadThrough("region-a")),
+      ("WriteThrough(prod)",                   CachePolicy.WriteThrough("prod"))
+    )
+    cases.foreach { case (label, policy) =>
+      withClue(s"[$label] ") {
+        val spark   = new StubProvider(
+          EngineIdentity("test-engine", "1.0", "1.0"),
+          available = true
+        )
+        val registry     = makeRegistry(Map("test-engine" -> spark))
+        val cache        = new io.sm8.plugins.cache.InMemoryResultCache(maxEntries = 16)
+        val dispatcher   = hookDispatcherWith(cache)
+        val model        = modelWithCache(policy)
+
+        val out = EngineService.runQueryWithHooks(
+          request    = QueryRequest("m", Nil, Nil, "", "test-engine"),
+          model      = model,
+          registry   = registry,
+          cache      = ResultCache.NoOp,
+          dispatcher = dispatcher
+        )
+        out.isRight shouldBe true
+        // The engine fired (no short-circuit for the 3 policies
+        // we exercise — WriteThrough + NoCache both MISS, ReadThrough
+        // + MISS since the cache is empty).
+        spark.callCount.get() shouldBe 1
+        // The fold reached the engine — capturedCtx is set inside
+        // StubProvider.query().
+        val captured = spark.capturedCtx.get()
+        captured shouldBe defined
+        // The load-bearing assertion: ctx.cachePolicy == model.defaultPolicies.cache
+        captured.get.cachePolicy shouldBe policy
+      }
+    }
+  }
 }
 
 /**
