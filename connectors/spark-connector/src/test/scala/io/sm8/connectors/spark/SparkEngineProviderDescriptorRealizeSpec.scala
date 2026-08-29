@@ -54,7 +54,7 @@ class SparkEngineProviderDescriptorRealizeSpec extends AnyFunSuite with Matchers
         "sm8-test: simulated SparkSession.builder().getOrCreate() failure",
         Map.empty[String, String]))
     descriptor.realize("local[1]") shouldBe None
- }
+  }
 
   test("realize: Error subclass from the Spark factory PROPAGATES (PR-176 NonFatal discipline)") {
     // PR-176 NonFatal discipline (cite by topic): the catch is
