@@ -56,13 +56,22 @@ class SparkEngineProviderDescriptor
  * propagate uncaught — matching `EngineImpl.scala:50`. The legacy
  * silent-`None` semantics on `NonFatal` are preserved for backward
  * compatibility with PR-O4g callers; new code should use `realizeTyped`.
+ *
+ * PR-197 (Round 1 audit HIGH-2): the realized provider's
+ * `identity.name` is now `"spark"` (the wire-stable engine name) rather
+ * than the adapter-version literal `"spark-3.5"`. This prevents the
+ * realized provider's identity from diverging from the URL parser's
+ * wire-stable name. The descriptor's own identity
+ * (`SparkEngineProviderDescriptor.identity`) still carries `"spark-3.5"`
+ * because the descriptor IS the adapter-version SPI entry point —
+ * distinct from the runtime-realized provider's identity.
  */
  override def realize(url: String): Option[EngineProvider] =
  if (url == null || url.trim.isEmpty) None
  else try Some(new SparkEngineProvider(
   spark   = newSparkSession(url),
   bridge   = SparkTypeBridge,
-  sparkEngineName = "spark-3.5",
+  sparkEngineName = "spark",
   hookRunner  = None)) catch {
   case NonFatal(_) => None
  }
@@ -99,7 +108,7 @@ class SparkEngineProviderDescriptor
   try Right(new SparkEngineProvider(
    spark   = newSparkSession(spark.master),
    bridge   = SparkTypeBridge,
-   sparkEngineName = "spark-3.5",
+   sparkEngineName = spark.engineName,
    hookRunner  = None)) catch {
    case NonFatal(e) =>
    val message = e match {

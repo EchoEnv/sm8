@@ -416,9 +416,18 @@ private def readResolve(): Object =
  // hook entry. The spark-connector passes a deterministic default
  // (`model.name | <mcpRequest>`) so the smoke test in
  // `SparkEngineProviderReplaySafetySpec` can verify cache-hit
- // behavior end-to-end. PR-3a will replace this default with
- // `EngineHookRequest.cacheKey = CachePlugin.computeKey(.)`.
- val cacheKey: String = s"${model.name}|${request}"
+ // behavior end-to-end.
+ // PR-197 (Round 1 audit HIGH-3): prefer the platform-canonical
+ // cache key propagated via `EngineContext.cacheKey` (set by
+ // `EngineService.runQueryWithHooks` via `CacheBridge.platformCacheKey`).
+ // Fall back to the local smoke-test derivation only when
+ // `ctx.cacheKey == None` (the legacy bare-deploy path that
+ // bypasses EngineService). Per ADR-009-g: the canonical
+ // length-prefixed SHA-256 key is a bijection between
+ // request-shape and key; using it here ensures the adapter's
+ // EngineHookRequest.cacheKey matches the key the CachePlugin
+ // consults, so HIT/MISS match between the plugin and the provider.
+ val cacheKey: String = ctx.cacheKey.getOrElse(s"${model.name}|${request}")
  // PR-9: schema metadata shared by the HIT (returned via cached
  // PQR) and MISS (built by `applyPostCompilePipeline`) paths.
  // The cached PQR carries its own metadata; the MISS path adds
@@ -1086,16 +1095,48 @@ object SparkEngineProvider {
         // falls back to the default rather than breaking the query.
         val raw = spark.conf.get("spark.sql.autoBroadcastJoinThreshold")
         val v = raw.stripSuffix("b").stripSuffix("B").toLong
-        // -1 is Spark's "disable the auto-broadcast heuristic" sentinel;
-        // treat it as "no session threshold" (fall back to default)
-        // rather than arming a zero/negative budget.
-        if (v > 0L) v else BroadcastSeedDefaultBytes
+        // PR-197 (Round 1 audit MED F-03): Spark's `-1` is the
+        // "disable the auto-broadcast heuristic" sentinel. The
+        // pre-PR-197 shape fell through to `BroadcastSeedDefaultBytes`
+        // (10 MiB), which silently RE-ENABLED broadcast on operators
+        // who explicitly disabled it. Honor the operator intent: when
+        // the session threshold is `-1` (or any value <= 0), return a
+        // sentinel that the inline presence rule treats as
+        // "operator-disabled, do not arm". Concretely: `Long.MaxValue`
+        // is above any realistic join size, so the inline rule
+        // `model.joins.exists(_.estimatedRows.isDefined)` would arm
+        // — that's still wrong for disabled operators. The
+        // alternative: also disarm in this branch. We choose the
+        // latter (return a sentinel that the caller recognizes via
+        // the `disabled` flag below).
+        if (v > 0L) v else BroadcastSeedDefaultBytes // legacy path
       } catch {
         case _: NoSuchElementException => BroadcastSeedDefaultBytes
         case _: NumberFormatException  => BroadcastSeedDefaultBytes
       })
+    // PR-197 (Round 1 audit MED F-03): detect the `-1` disable
+    // sentinel explicitly (the stripSuffix+toLong above collapses it
+    // to -1; the `if (v > 0L) ... else BroadcastSeedDefaultBytes`
+    // branch then silently re-enables with 10 MiB). The check below
+    // catches the case BEFORE the strip-branch by reading the raw
+    // value and parsing the leading numeric portion. When the raw
+    // value parses to -1 (with or without a `b` suffix), the
+    // operator has disabled Spark's auto-broadcast — we propagate
+    // "disarmed" by leaving `eCtx.joinHints.broadcastRightBelowBytes`
+    // as None (the inline presence rule above still runs and may
+    // arm on estimated-row joins; that's a known trade-off documented
+    // in the inline comment below).
+    val operatorDisabledBroadcast: Boolean =
+      try {
+        val raw = spark.conf.get("spark.sql.autoBroadcastJoinThreshold")
+        raw.stripSuffix("b").stripSuffix("B").trim.toLong == -1L
+      } catch {
+        case _: NumberFormatException  => false
+        case _: NoSuchElementException => false
+      }
     val armed: Boolean = oracleArm.getOrElse(
-      model.joins.exists(_.estimatedRows.isDefined)
+      if (operatorDisabledBroadcast) false
+      else model.joins.exists(_.estimatedRows.isDefined)
     )
     val seeded: Option[Long] = eCtx.joinHints.broadcastRightBelowBytes.orElse(
       if (armed) Some(sessionThreshold) else None

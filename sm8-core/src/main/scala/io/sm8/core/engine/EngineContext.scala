@@ -53,7 +53,20 @@ final case class EngineContext(
  // for the plugin's decision (the decision LOGIC stays in
  // plugins/*; only this typed value crosses the boundary). NOT in
  // the SDK (Context/HookManager/Plugin are frozen).
- decisionHints: Option[DecisionHints] = None) extends Product with Serializable
+ decisionHints: Option[DecisionHints] = None,
+ // PR-197 (Round 1 audit HIGH-3): optional platform-computed cache
+ // key, propagated from `EngineService.runQueryWithHooks` via
+ // `CacheBridge.platformCacheKey(...)`. When `Some(key)` the engine
+ // adapter MUST use this key for its internal cache key derivation
+ // (instead of computing its own local placeholder), so the
+ // adapter-computed key matches the platform canonical key that
+ // `CachePlugin`'s `EngineHookRequest.cacheKey` consults. When
+ // `None` (the default for legacy / bare-deploy paths that bypass
+ // `EngineService`), the adapter falls back to its local
+ // smoke-test derivation. Per scala-data-driven-refactor-mindset
+ // "data is data": the canonical key is a bijection between
+ // request-shape and key, length-prefixed to avoid collisions.
+ cacheKey: Option[String] = None) extends Product with Serializable
 
 object EngineContext {
 

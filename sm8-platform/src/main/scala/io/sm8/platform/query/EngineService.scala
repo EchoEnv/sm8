@@ -441,7 +441,13 @@ object EngineService {
               broadcastArmed          = ctx.meta.get("sm8.broadcast.arm").collect { case b: Boolean => b },
               skewArmed               = ctx.meta.get("sm8.skew.arm").collect { case b: Boolean => b },
               broadcastThresholdBytes = ctx.meta.get("sm8.broadcast.thresholdBytes").collect { case l: Long => l }
-            ))
+            )),
+            // PR-197 (Round 1 audit HIGH-3): thread the canonical
+            // platform cache key into the engine context so the
+            // spark-connector uses it for its internal cacheKey
+            // derivation (instead of computing a divergent
+            // smoke-test placeholder). See EngineContext.cacheKey.
+            cacheKey = Some(cacheKey)
           )
         for {
           provider <- selectEngine(model, request, registry)

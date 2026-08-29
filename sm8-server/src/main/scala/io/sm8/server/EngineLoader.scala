@@ -31,6 +31,7 @@ import io.sm8.core.engine.{
 }
 
 import scala.jdk.CollectionConverters._
+import scala.util.control.NonFatal
 
 object EngineLoader {
 
@@ -129,15 +130,37 @@ object EngineLoader {
         // best-effort realization via `realize(url)`. Returns Right if
         // Some(p), Left(ConnectionFailed) if None (silent-legacy
         // becomes typed-error here).
-        other.realize(parsedUrl.raw) match {
-          case Some(p)  => Right(p)
-          case None     => Left(EngineError.ConnectionFailed(
-            engine = parsedUrl.engineName,
-            reason = "realize(url) returned None for legacy provider",
-            message =
-              s"sm8: ${parsedUrl.engineName} legacy engine provider " +
-              s"rejected URL '${parsedUrl.raw}'"
-          ))
+        //
+        // PR-197 (Round 1 audit HIGH-1): wrap in try/NonFatal so an
+        // exception thrown at the Option construction site (e.g. Spark
+        // `getOrCreate()` against an invalid URL — `SparkException` from
+        // broken RPC, `IllegalArgumentException` from bad grammar)
+        // surfaces as a typed `Left(ConnectionFailed)` instead of
+        // escaping uncaught through `realizeOne → discoverAndRealize →
+        // Main.wire → Main.run`. Per scala-error-handling-mindset §1
+        // (errors are data): a non-ConnectionFailed realization failure
+        // is still a connection failure from the deployment module's
+        // perspective.
+        try {
+          other.realize(parsedUrl.raw) match {
+            case Some(p)  => Right(p)
+            case None     => Left(EngineError.ConnectionFailed(
+              engine = parsedUrl.engineName,
+              reason = "realize(url) returned None for legacy provider",
+              message =
+                s"sm8: ${parsedUrl.engineName} legacy engine provider " +
+                s"rejected URL '${parsedUrl.raw}'"
+            ))
+          }
+        } catch {
+          case NonFatal(e) =>
+            Left(EngineError.ConnectionFailed(
+              engine = parsedUrl.engineName,
+              reason = s"realize(url) threw ${e.getClass.getSimpleName}",
+              message =
+                s"sm8: ${parsedUrl.engineName} legacy engine provider " +
+                s"threw on URL '${parsedUrl.raw}': ${e.getMessage}"
+            ))
         }
     }
 }

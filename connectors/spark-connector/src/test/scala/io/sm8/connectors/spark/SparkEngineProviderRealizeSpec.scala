@@ -56,6 +56,12 @@ class SparkEngineProviderRealizeSpec extends AnyFunSuite with Matchers {
       ois.readObject().asInstanceOf[SparkEngineProvider]
     }
     back.available shouldBe true
-    back.identity.name shouldBe "spark-3.5"
+    // PR-197 (Round 1 audit HIGH-2): identity.name is now derived
+    // from the wire-stable engine name (`"spark"`) rather than the
+    // adapter-version literal `"spark-3.5"`. The descriptor's own
+    // identity (SparkEngineProviderDescriptor.identity) still
+    // carries "spark-3.5" — that's the SPI entry point identity,
+    // distinct from the realized provider's identity.
+    back.identity.name shouldBe "spark"
   }
 }
