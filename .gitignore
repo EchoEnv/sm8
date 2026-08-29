@@ -59,3 +59,8 @@ logs/
 
 # Maven wrapper jars (if added later)
 !/.mvn/wrapper/maven-wrapper.jar
+
+# Session residue / stray tooling artifacts (per-project; not project artifacts)
+.agent-probe.md       # stale turn_start hook test probe
+package-lock.json     # npm lockfile in a Scala/Maven repo is stray
+node_modules/         # npm modules — not used by this Scala project

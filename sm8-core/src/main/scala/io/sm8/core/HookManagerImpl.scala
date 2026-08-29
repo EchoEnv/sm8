@@ -39,8 +39,8 @@ import io.sm8.sdk.{HookManager, HookOrigin, HookStage, Plugin, PostHook, PreHook
 
 /**
  * HookEntry — case class for a registered hook plus its scheduling
- * data (priority + sequence + origin). Per
- * behavior. The HookManager is the only owner.
+ * data (priority + sequence + origin). Per RFC §8 priority ranges
+ * the HookManager is the only owner.
  */
 private[core] final case class HookEntry[T](
  hook: T,
@@ -145,9 +145,9 @@ final class HookManagerImpl extends HookManager {
  ): Seq[(T, Int)] = store.get(stage) match {
  case None  => Seq.empty
  case Some(buf) =>
-  // Sort on read. 
-  // is small (handful of hooks per stage); sort cost is negligible
-  // compared to the hook bodies themselves.
+  // Sort on read. The per-stage buffer is small (handful of hooks per
+  // stage), so the sort cost is negligible compared to the hook
+  // bodies themselves.
   buf.toSeq.sortBy(e => (e.priority, e.seq)).map(e => (e.hook, e.priority))
  }
 }
