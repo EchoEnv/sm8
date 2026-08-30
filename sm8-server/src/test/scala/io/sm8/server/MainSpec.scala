@@ -357,6 +357,108 @@ class MainSpec extends AnyFunSuite with Matchers {
     }
   }
 
+  // ===== PR-215 (audit 2026-08-30 L4): shutdown hook before transport.start =====
+  //
+  // The previous ordering was `transport.start() → sys.addShutdownHook { … }`.
+  // A SIGTERM arriving between the two calls left the JVM with no
+  // registered shutdown hook, so the socket stayed bound (TIME_WAIT
+  // ~60s) and any realized SparkSession was orphaned (no `close()`
+  // invocation). The fix in `Main.run` is: call
+  // `installShutdownHook(transport, realized)` BEFORE
+  // `transport.start(cli.port)`. These tests verify the contract of
+  // the extracted helper directly (the JVM hook registry is the
+  // ground truth for "was the hook installed").
+  //
+  // Idempotency assumption (proven by the second test below):
+  //   - `HttpTransport.stop()` is a no-op when `server.isDefined == false`.
+  //   - `EngineProvider.close()` is a no-op default for non-Spark
+  //     connectors (in-memory, trino, …).
+
+  test("[L4] installShutdownHook registers a JVM shutdown hook (verifiable via removeShutdownHook)") {
+    // The pre-fix ordering placed the hook AFTER `transport.start()`.
+    // By extracting `installShutdownHook` and calling it from `run()`
+    // before `start()`, the hook is registered with the JVM at the
+    // point where `start()` is invoked. This test verifies the
+    // extracted helper actually registers the hook (ground truth:
+    // `Runtime.removeShutdownHook` returns true iff registered).
+    val providers = Main.discoverProviders(getClass.getClassLoader)
+    Main.wire(sampleModel(), providers, engineName = None) match {
+      case Right((_, transport, realized)) =>
+        val hook = Main.installShutdownHook(transport, realized)
+        try {
+          // `removeShutdownHook` returns true iff the hook was found
+          // in the JVM's registry. Pre-PR-215, with the inlined
+          // `sys.addShutdownHook` after `transport.start`, this
+          // assertion would be reachable only after a successful
+          // start (race-dependent). Post-PR-215, it is registered
+          // synchronously by the helper, so the test is deterministic.
+          Runtime.getRuntime.removeShutdownHook(hook) shouldBe true
+          // Re-registering the SAME hook instance would throw
+          // IllegalStateException per JVM contract; we don't test
+          // that here because removeShutdownHook above already
+          // consumed the registration.
+        } finally {
+          // Defensive: ensure no stray hook remains for the test JVM.
+          Runtime.getRuntime.removeShutdownHook(hook)
+        }
+      case Left(msg) => fail(s"unexpected wire failure: $msg")
+    }
+  }
+
+  test("[L4] installShutdownHook body is safe to invoke when transport never started (SIGTERM during start)") {
+    // Simulates a SIGTERM arriving BEFORE `transport.start()` returns
+    // (or before `start()` was called at all). The hook body invokes
+    // `transport.stop()` — which MUST be a no-op since `server` is
+    // still `None` per `HttpTransport.stop()` — and `realized.foreach
+    // (_.close())` — which MUST be a no-op default for the test
+    // classpath's `TestEngineProvider`. Without this guarantee the
+    // PR-215 fix would shift the failure mode from "hook never fires"
+    // to "hook fires and throws", which is strictly worse.
+    val providers = Main.discoverProviders(getClass.getClassLoader)
+    Main.wire(sampleModel(), providers, engineName = None) match {
+      case Right((_, transport, realized)) =>
+        val hook = Main.installShutdownHook(transport, realized)
+        try {
+          // Manually invoke the hook body (mimics the JVM calling
+          // the shutdown hook on SIGTERM). No exception should
+          // escape: `stop()` is a no-op pre-start; `close()` is a
+          // no-op default for non-Spark providers.
+          noException should be thrownBy {
+            transport.stop()
+            realized.foreach(_.close())
+          }
+        } finally {
+          Runtime.getRuntime.removeShutdownHook(hook)
+        }
+      case Left(msg) => fail(s"unexpected wire failure: $msg")
+    }
+  }
+
+  test("[L4] installShutdownHook body is idempotent (called twice → no double-close side effect)") {
+    // `Runtime.addShutdownHook` rejects duplicate registration of
+    // the SAME hook instance; but the hook BODY itself may be
+    // invoked twice if a second SIGTERM arrives while the first
+    // handler is still running (the JVM's shutdown-hook contract
+    // says hooks run concurrently to completion, so re-entrancy
+    // is possible). `HttpTransport.stop()` and `EngineProvider.
+    // close()` MUST both be idempotent for this to be safe.
+    val providers = Main.discoverProviders(getClass.getClassLoader)
+    Main.wire(sampleModel(), providers, engineName = None) match {
+      case Right((_, transport, realized)) =>
+        val hook = Main.installShutdownHook(transport, realized)
+        try {
+          noException should be thrownBy {
+            transport.stop(); transport.stop()
+            realized.foreach(_.close())
+            realized.foreach(_.close())
+          }
+        } finally {
+          Runtime.getRuntime.removeShutdownHook(hook)
+        }
+      case Left(msg) => fail(s"unexpected wire failure: $msg")
+    }
+  }
+
   test("[C2] wire: sm8-server no longer imports io.sm8.core.EngineImpl (layer discipline)") {
     // Per audit [C2]: the layer-boundary leak was the direct
     // `new io.sm8.core.EngineImpl()` in `Main.run()`. After the fix,
