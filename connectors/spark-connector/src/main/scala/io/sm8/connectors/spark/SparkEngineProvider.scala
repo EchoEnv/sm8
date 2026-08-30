@@ -436,7 +436,7 @@ private def readResolve(): Object =
  // — engine identity, spark version, IR-path provenance.
  val schemaMetadata: Map[String, String] = Map(
   "engine.id"  -> sparkEngineName,
-  "engine.version" -> (if (spark != null) spark.version else "<uninitialized>"),
+  "engine.version" -> (if (spark != null) spark.version else SparkEngineConstants.UnrealizedNativeVersion),
   "ir.path"  -> "pr-m4")
  // The runner's `execute` callback receives a `Context` (per the
  // HookRunner Protocol). The actual `EngineContext` for the executor
