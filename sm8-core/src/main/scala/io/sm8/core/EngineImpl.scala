@@ -141,38 +141,42 @@ final class EngineImpl extends Engine {
  // Per Scala 2.13 + JDK interop: `ServiceLoader.load(Plugin.class)`
  // returns a `ServiceLoader[Plugin]` whose iterator yields `Plugin`
  // instances directly (not `ServiceLoader.Provider[Plugin]` — that's
- // the JDK 9 API which is hidden by Scala's import). `next()` can
- // throw `ServiceConfigurationError` for malformed entries; we
- // catch it via a dedicated arm (PR-203) since NonFatal does not
- // catch Error subclasses.
+ // the JDK 9 API which is hidden by Scala's import). Both `hasNext`
+ // and `next()` can throw `ServiceConfigurationError` for malformed
+ // META-INF/services entries. The inner catch arm covers body-thrown
+ // SCE (since SCE is an `Error` subclass that `NonFatal` does not
+ // catch); the outer try below covers iterator-thrown SCE, which
+ // fires before the foreach body runs and would otherwise escape the
+ // inner catch. After an iterator-thrown SCE the JDK spec leaves the
+ // iterator in an undefined state, so we log and return the partial
+ // result rather than aborting plugin discovery entirely.
  val plugins = ServiceLoader.load(classOf[Plugin]).iterator().asScala
  val loaded = List.newBuilder[Plugin]
- plugins.foreach { plugin =>
-  try loadMetadata(plugin.getClass) match {
-  case Some(meta) if allowAll || allowed.contains(meta.coords) =>
-   use(plugin)
-   loaded += plugin
-  case Some(meta) =>
-   System.err.println(
-   s"[sm8] Plugin ${plugin.getClass.getName} skipped — coords ${meta.coords} not in allowlist")
-  case None =>
-   System.err.println(
-   s"[sm8] Plugin ${plugin.getClass.getName} skipped — no META-INF/sm8/plugin.properties")
-  } catch {
-  // PR-203 (audit follow-up B3): split into 2 cases. ServiceConfigurationError
-  // extends LinkageError (an Error subclass), which NonFatal does NOT catch —
-  // the prior single `case NonFatal(e)` arm never fired for SPI failures
-  // (malformed META-INF/services entries, class-loading failures) despite
-  // the inline comment claiming otherwise. Adding the dedicated SCE arm
-  // first makes the SPI failure handling actually work; NonFatal remains as
-  // a safety net for other unexpected runtime exceptions during the loop.
+ try {
+  plugins.foreach { plugin =>
+   try loadMetadata(plugin.getClass) match {
+   case Some(meta) if allowAll || allowed.contains(meta.coords) =>
+    use(plugin)
+    loaded += plugin
+   case Some(meta) =>
+    System.err.println(
+    s"[sm8] Plugin ${plugin.getClass.getName} skipped — coords ${meta.coords} not in allowlist")
+   case None =>
+    System.err.println(
+    s"[sm8] Plugin ${plugin.getClass.getName} skipped — no META-INF/sm8/plugin.properties")
+   } catch {
+   case e: java.util.ServiceConfigurationError =>
+    System.err.println(
+    s"[sm8] Plugin ${plugin.getClass.getName} SPI failure (skipping): ${e.getMessage}")
+   case NonFatal(e) =>
+    System.err.println(
+    s"[sm8] Plugin ${plugin.getClass.getName} runtime error (skipping): ${e.getMessage}")
+   }
+  }
+ } catch {
   case e: java.util.ServiceConfigurationError =>
    System.err.println(
-   s"[sm8] Plugin ${plugin.getClass.getName} SPI failure (skipping): ${e.getMessage}")
-  case NonFatal(e) =>
-   System.err.println(
-   s"[sm8] Plugin ${plugin.getClass.getName} runtime error (skipping): ${e.getMessage}")
-  }
+   s"[sm8] Plugin iterator SPI failure (stopping discovery): ${e.getMessage}")
  }
  loaded.result()
  }
