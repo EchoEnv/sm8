@@ -510,4 +510,115 @@ class EngineServiceSpec extends AnyFunSuite with Matchers {
     out.measures shouldBe List("name", "age")
   }
 
+  test("executeEngine: TimeoutException → Left(QueryTimedOut) (engine-portable typed error)") {
+    final class TimeoutStubProvider extends EngineProvider with java.io.Serializable {
+      override val identity: io.sm8.core.engine.EngineIdentity =
+        io.sm8.core.engine.EngineIdentity("spark", "3.5.8", "0.2.4")
+      override val available: Boolean = true
+      override def query(
+          model: Model,
+          request: CoreQueryRequest,
+          ctx: io.sm8.core.engine.EngineContext
+      ): Either[EngineError, io.sm8.core.engine.PortableQueryResult] =
+        throw new java.util.concurrent.TimeoutException("query exceeded 30s")
+      override def explain(
+          model: Model,
+          request: CoreQueryRequest,
+          ctx: io.sm8.core.engine.EngineContext
+      ): Either[EngineError, String] = ???
+    }
+    val out = EngineService.executeEngine(dummyModel, CoreQueryRequest(model = "flights"), new TimeoutStubProvider)
+    out.isLeft shouldBe true
+    val err = out.left.get
+    err shouldBe a [EngineError.QueryTimedOut]
+    val qt = err.asInstanceOf[EngineError.QueryTimedOut]
+    qt.engine shouldBe "spark"
+    qt.cancelStatus shouldBe "timeout"
+    qt.message should include ("query exceeded 30s")
+  }
+
+  test("executeEngine: SQLTimeoutException → Left(QueryTimedOut) (JDBC engine path)") {
+    final class SqlTimeoutStubProvider extends EngineProvider with java.io.Serializable {
+      override val identity: io.sm8.core.engine.EngineIdentity =
+        io.sm8.core.engine.EngineIdentity("trino", "0.0.0", "0.2.4")
+      override val available: Boolean = true
+      override def query(
+          model: Model,
+          request: CoreQueryRequest,
+          ctx: io.sm8.core.engine.EngineContext
+      ): Either[EngineError, io.sm8.core.engine.PortableQueryResult] =
+        throw new java.sql.SQLTimeoutException("jdbc timeout")
+      override def explain(
+          model: Model,
+          request: CoreQueryRequest,
+          ctx: io.sm8.core.engine.EngineContext
+      ): Either[EngineError, String] = ???
+    }
+    val out = EngineService.executeEngine(dummyModel, CoreQueryRequest(model = "flights"), new SqlTimeoutStubProvider)
+    out.isLeft shouldBe true
+    val err = out.left.get
+    err shouldBe a [EngineError.QueryTimedOut]
+    val qt = err.asInstanceOf[EngineError.QueryTimedOut]
+    qt.engine shouldBe "trino"
+    qt.cancelStatus shouldBe "sql-timeout"
+  }
+
+  test("executeEngine: InterruptedException → Left(CancellationFailed) (engine-portable typed error)") {
+    final class InterruptedStubProvider extends EngineProvider with java.io.Serializable {
+      override val identity: io.sm8.core.engine.EngineIdentity =
+        io.sm8.core.engine.EngineIdentity("spark", "3.5.8", "0.2.4")
+      override val available: Boolean = true
+      override def query(
+          model: Model,
+          request: CoreQueryRequest,
+          ctx: io.sm8.core.engine.EngineContext
+      ): Either[EngineError, io.sm8.core.engine.PortableQueryResult] =
+        throw new InterruptedException("cancelled by caller")
+      override def explain(
+          model: Model,
+          request: CoreQueryRequest,
+          ctx: io.sm8.core.engine.EngineContext
+      ): Either[EngineError, String] = ???
+    }
+    val out = EngineService.executeEngine(dummyModel, CoreQueryRequest(model = "flights"), new InterruptedStubProvider)
+    out.isLeft shouldBe true
+    val err = out.left.get
+    err shouldBe a [EngineError.CancellationFailed]
+    val cf = err.asInstanceOf[EngineError.CancellationFailed]
+    cf.engine shouldBe "spark"
+    cf.reason shouldBe "interrupted"
+    cf.message should include ("cancelled by caller")
+    // P1-S2 contract: the InterruptedException arm preserves the
+    // thread's interrupt flag (per the engine-portable timeout /
+    // cancellation design). Clear it here so the next test in
+    // this suite isn't affected by the interrupt leak — this is
+    // test-hygiene only; production callers honor the interrupt
+    // per the standard Java thread-interruption contract.
+    Thread.interrupted()
+  }
+
+  test("executeEngine: TimeoutException mapping preserves thread interrupt flag for InterruptedException only") {
+    // Sanity: a TimeoutException throw does NOT set the thread's
+    // interrupt flag (only InterruptedException does — per P1-S2).
+    final class TimeoutStub2 extends EngineProvider with java.io.Serializable {
+      override val identity: io.sm8.core.engine.EngineIdentity =
+        io.sm8.core.engine.EngineIdentity("spark", "3.5.8", "0.2.4")
+      override val available: Boolean = true
+      override def query(
+          model: Model,
+          request: CoreQueryRequest,
+          ctx: io.sm8.core.engine.EngineContext
+      ): Either[EngineError, io.sm8.core.engine.PortableQueryResult] =
+        throw new java.util.concurrent.TimeoutException("x")
+      override def explain(
+          model: Model,
+          request: CoreQueryRequest,
+          ctx: io.sm8.core.engine.EngineContext
+      ): Either[EngineError, String] = ???
+    }
+    Thread.interrupted() // clear any pre-existing interrupt
+    EngineService.executeEngine(dummyModel, CoreQueryRequest(model = "flights"), new TimeoutStub2)
+    Thread.currentThread().isInterrupted shouldBe false
+  }
+
 }
