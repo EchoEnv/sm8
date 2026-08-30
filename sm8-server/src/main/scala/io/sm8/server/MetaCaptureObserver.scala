@@ -60,34 +60,52 @@ private[server] final class MetaCaptureObserver(
    * engine fold, or a future SDK relaxation that allows mutable
    * maps) would be visible via the inspector, creating a hidden
    * coupling between hook execution order and `sm8 inspect <key>`
-   * output. The post-fix body `target.set(HashMap.from(context.meta))`
-   * writes a fresh immutable HashMap, so the snapshot is decoupled
-   * from later mutations of the source.
+   * output.
    *
-   * Why `HashMap.from` (NOT `Map.from`): Scala 2.13's
-   * `Map.from(immutable.Map)` short-circuits to return the input
-   * instance unchanged — an optimization for the common case where
-   * the caller already holds an immutable Map. That optimization
-   * would defeat the defensive-copy intent: the snapshot would
-   * still alias the source. `HashMap.from` is implemented via
-   * `new HashMap` + `addOne` / bulk-load, ALWAYS producing a fresh
-   * instance for non-empty input (the empty case returns the
-   * `emptyHashMap` singleton, which is safe — there's no mutation
-   * to defend against on an empty map). This is verified by the
-   * identity-check test in [[MetaCaptureObserverSpec]].
+   * Why the post-fix body is `target.set(HashMap.from(context.meta
+   * .iterator))` (NOT `Map.from(context.meta)`, NOT `HashMap.from
+   * (context.meta)`, and NOT `HashMap.empty ++ context.meta`):
+   * all three rejected alternatives have an `instanceof HashMap`
+   * short-circuit that defeats the defensive-copy intent:
+   *
+   *   - `Map.from(immutable.Map) ⇒ same instance` for ALL
+   *     immutable Map inputs (verified via Scala 2.13 bytecode at
+   *     `scala/collection/immutable/Map$.class`, `from` method).
+   *   - `HashMap.from(HashMap) ⇒ same instance` (bytecode at
+   *     `scala/collection/immutable/HashMap$.class`, `from` method,
+   *     offset 0-11: `aload_1; instanceof HashMap; ifeq 15`
+   *     bypasses the `new HashMapBuilder` path when input is
+   *     already a HashMap).
+   *   - `HashMap.empty ++ HashMap` short-circuits when the
+   *     receiver is empty and the argument is a HashMap, returning
+   *     the argument unchanged (bytecode at
+   *     `scala/collection/immutable/HashMap.class`, `concat`
+   *     method, offset 13-22: `isEmpty; ifeq 25; aload other;
+   *     goto 98`).
+   *
+   * The chosen pattern `HashMap.from(context.meta.iterator)` passes
+   * an `Iterator` (which is NOT a HashMap) to `HashMap.from`, so
+   * the `instanceof HashMap` check is false and the
+   * `HashMapBuilder` path executes — always allocating a fresh
+   * `new HashMap` regardless of the input's concrete type. The
+   * empty case (`context.meta.isEmpty`) returns the
+   * `emptyHashMap` singleton, which is safe — there's nothing to
+   * defend against on an empty map. The HashMap-input regression
+   * test (5+ keys, mirroring production after ~5 `+` operations)
+   * is the tight falsifier: it would FAIL on the pre-fix code AND
+   * on all three rejected alternative fixes.
    *
    * Skill alignment (per [[debug-mantra-mindset]] + scala-jvm-safety +
    * scala-perf-testing + ADR-0008-ah):
-   *  - `HashMap.from(coll)` is total on a non-null `Iterable[(K, V)]`
-   *    (NPE on null source; `Context.meta` is non-null by SDK
-   *    contract — `Map.empty` default).
+   *  - `HashMap.from(iter)` is total on a non-null `Iterator`
+   *    (NPE on null iterator; `context.meta.iterator` is non-null
+   *    per `Map.empty` default).
    *  - O(n) time + space where n = `context.meta.size`; runs once
    *    per query at PostExecute (negligible per scala-perf-testing).
    *  - The snapshotted value is a fresh `scala.collection.immutable
    *    .HashMap` which IS Serializable (closure-safety: the existing
    *    `target: AtomicReference` capture is unchanged; the
-   *    snapshotted value's serializability is now guaranteed by
-   *    `HashMap.from`).
+   *    snapshotted value's serializability is preserved).
    *  - Return type is `scala.collection.immutable.HashMap[String,
    *    Any]` (a subtype of `Map[String, Any]`); no client-visible
    *    type change.
@@ -98,7 +116,7 @@ private[server] final class MetaCaptureObserver(
       override val stage: HookStage = HookStage.PostExecute
       override val priority: Int = 999
       override def run(context: Context): Context = {
-        target.set(HashMap.from(context.meta))
+        target.set(HashMap.from(context.meta.iterator))
         context
       }
       // Observer: always fire, even when a pre-hook set stop=true.
