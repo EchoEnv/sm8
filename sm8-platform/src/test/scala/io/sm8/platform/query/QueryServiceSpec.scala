@@ -332,7 +332,7 @@ class QueryServiceSpec extends AnyFunSuite with Matchers {
       where = mcpReq.where
     )
     cache.putJournaledWithModelAndVersion(
-      cacheKey,
+      io.sm8.plugins.cache.CachePlugin.regionKey("default", cacheKey),
       CachedRowDecoder.toRestateCachedRowFromPortable(twoRowsPortable).right.get,
       "flights",
       dummyModel.version

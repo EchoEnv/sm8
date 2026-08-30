@@ -28,13 +28,13 @@
  * this plugin just wires the contract to the SDK Hook surface.
  *
  * ==Read-through (PreExecute priority 50)==
- * `cache.getJournaled(hookReq.cacheKey)`. On HIT: set
+ * `cache.getJournaled(regionKey(region, hookReq.cacheKey))`. On HIT: set
  * `context.stop = true` + `result = Some(EngineHookResult(pqr))`.
  * The dispatcher short-circuits the engine; PostExecute hooks
  * still fire (RFC §6 — short-circuit observable to all hooks).
  *
  * ==Write-through (PostExecute priority 60)==
- * `cache.putJournaled(key, journaledRow)`. On the HIT path the
+ * `cache.putJournaled(regionKey(region, key), journaledRow)`. On the HIT path the
  * result is already set; the encode + write becomes a redundant
  * write of the same data (cheap; keeps the hook shape uniform).
  * InMemoryResultCache dedupes by key.
@@ -87,6 +87,33 @@ final class CachePlugin(val cache: ResultCache) extends Plugin with java.io.Seri
   }
 }
 
+object CachePlugin extends java.io.Serializable {
+
+  /** Namespace a cache key by region.
+    *
+    * Different `CachePolicy.ReadThrough(<name>)` regions must not
+    * share cache entries — an entry written under one region should
+    * not be readable under another. The composite key isolates
+    * regions without changing the SDK `ResultCache` trait.
+    *
+    * The region is length-prefixed (8 zero-padded decimal digits)
+    * so the composite key splits unambiguously into `(region, key)`.
+    * Without a prefix, `region="a::b"`, `key="x"` produces the
+    * same string as `region="a"`, `key="b::x"`.
+    *
+    * Empty / null region preserves the legacy single-tenant
+    * behaviour: the cache key is returned unmodified.
+    *
+    * @param region the cache region (e.g. `CachePolicy.ReadThrough("users").name`)
+    * @param key    the original cache key computed by the engine
+    * @return a region-scoped cache key (the original key when
+    *         `region` is null or empty)
+    */
+  def regionKey(region: String, key: String): String =
+    if (region == null || region.isEmpty) key
+    else f"${region.length}%08d:$region:$key"
+}
+
 /** PreExecute read-through. See class doc above. */
 private final class CacheReadPreHook(
     cache:   ResultCache,
@@ -130,10 +157,11 @@ private final class CacheReadPreHook(
             // skip; the O(1) early-return is the user-visible fix
             // for Gap 1 (unconditional-fire on every query).
             context
-          case Some(CachePolicy.ReadThrough(_)) =>
+          case Some(CachePolicy.ReadThrough(region)) =>
             // Read-through: only read; do NOT write on miss.
             counter.incrementAndGet()
-            cache.getJournaled(hookReq.cacheKey) match {
+            val namespacedKey = CachePlugin.regionKey(region, hookReq.cacheKey)
+            cache.getJournaled(namespacedKey) match {
               case Some(row) =>
                 hits.incrementAndGet()
                 val pqr = CachedRowDecoder.fromRestateCachedRowAsPortable(row)
@@ -145,12 +173,13 @@ private final class CacheReadPreHook(
                 misses.incrementAndGet()
                 context
             }
-          case Some(CachePolicy.WriteThrough(_)) =>
+          case Some(CachePolicy.WriteThrough(region)) =>
             // Write-through: reads on lookup (HITs short-circuit the engine
             // via stop = true, exactly like ReadThrough); the cache-write
             // side-effect lives in CacheWritePostHook (per Fix 6 matrix).
             counter.incrementAndGet()
-            cache.getJournaled(hookReq.cacheKey) match {
+            val namespacedKey = CachePlugin.regionKey(region, hookReq.cacheKey)
+            cache.getJournaled(namespacedKey) match {
               case Some(row) =>
                 hits.incrementAndGet()
                 val pqr = CachedRowDecoder.fromRestateCachedRowAsPortable(row)
@@ -234,14 +263,15 @@ private final class CacheWritePostHook(
     context.result match {
       case Some(EngineHookResult(pqr)) =>
         context.meta.get("sm8.cache.policy") match {
-          case Some(CachePolicy.WriteThrough(_)) =>
+          case Some(CachePolicy.WriteThrough(region)) =>
             // Write-through: write on every successful engine result.
             counter.incrementAndGet()
             CachedRowDecoder.toRestateCachedRowFromPortable(pqr) match {
               case Right(row) =>
                 context.request match {
                   case hookReq: EngineHookRequest =>
-                    cache.putJournaledWithModelAndVersion(hookReq.cacheKey, row, hookReq.model.name, hookReq.model.version)
+                    val namespacedKey = CachePlugin.regionKey(region, hookReq.cacheKey)
+                    cache.putJournaledWithModelAndVersion(namespacedKey, row, hookReq.model.name, hookReq.model.version)
                   case _ =>
                 }
                 context
