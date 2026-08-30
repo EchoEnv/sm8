@@ -315,11 +315,11 @@ object Main {
       case Left(err) =>
         System.err.println(err.reason); 2
       case Right(cli) if cli.modelPath.isEmpty =>
-        // Empty --model is impossible at this point because parseArgs
-        // produced a Right, but `modelPath = None` means --model was
-        // absent entirely. Surface as a typed CLI error (exit 2),
-        // not a model-load failure (exit 1) — the operator typo'd
-        // a flag, not a malformed manifest.
+        // --model was absent from the arg list; parseArgs leaves
+        // modelPath = None and run() surfaces the typed MissingFlag.
+        // This is a CLI usage error (exit 2), not a model-load failure
+        // (exit 1) — the operator forgot a flag, not a malformed
+        // manifest.
         System.err.println(CliError.MissingFlag("--model").reason); 2
       case Right(cli) =>
         PlatformModelLoader.fromPath(cli.modelPath.get) match {

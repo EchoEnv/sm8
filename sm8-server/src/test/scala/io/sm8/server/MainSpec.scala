@@ -91,12 +91,9 @@ class MainSpec extends AnyFunSuite with Matchers {
   }
 
   test("run: missing --model flag entirely exits 2 with typed MissingFlag (not a model-load failure)") {
-    // Falsifies the pre-fix bug: parser silently returned
-    // `Right(CliArgs(modelPath = Paths.get("")))`, which then hit
-    // `PlatformModelLoader.fromPath("")` and surfaced a confusing
-    // "Is a directory" parse failure (exit 1). The fix routes this
-    // through the CLI boundary so the operator sees a typed
-    // "missing required flag --model" message at exit 2.
+    // The CLI boundary translates an absent --model into the typed
+    // MissingFlag error before any filesystem call is attempted; the
+    // operator sees a CLI usage message rather than a parse failure.
     val exit = Main.run(List("--port", "9090", "--engine", "spark-3.5"))
     exit shouldBe 2
   }
@@ -107,10 +104,9 @@ class MainSpec extends AnyFunSuite with Matchers {
   }
 
   test("run: --model with empty value exits 2 (typed MissingValue, not silent path)") {
-    // `--model ""` is now impossible to construct because parseArgs
-    // only accepts a present value; an empty token is rejected at the
-    // CLI boundary. This protects the filesystem boundary from ever
-    // seeing `Paths.get("")`.
+    // An empty token after --model is rejected at the CLI boundary as
+    // MissingValue, so the filesystem boundary never sees Paths.get("")
+    // (which POSIX would resolve to the working directory).
     val exit = Main.run(List("--model", ""))
     exit shouldBe 2
   }
