@@ -23,7 +23,10 @@ import io.sm8.core.model.Model
 final class InMemoryEngineProvider() extends TypedRealizationProvider {
 
   override val identity: EngineIdentity =
-    EngineIdentity(name = "in-memory", nativeVersion = "embedded", engineAdapterVersion = "0.1.0")
+    EngineIdentity(
+      name                 = InMemoryEngineConstants.WireName,
+      nativeVersion        = InMemoryEngineConstants.NativeVersion,
+      engineAdapterVersion = InMemoryEngineConstants.AdapterVersion)
 
   override val available: Boolean = true
 

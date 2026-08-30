@@ -29,7 +29,10 @@ import io.sm8.core.engine.{EngineError, EngineIdentity, EngineProvider, EngineUr
 class InMemoryEngineProviderDescriptor extends TypedRealizationProvider {
 
   override val identity: EngineIdentity =
-    EngineIdentity(name = "in-memory", nativeVersion = "embedded", engineAdapterVersion = "0.1.0")
+    EngineIdentity(
+      name                 = InMemoryEngineConstants.WireName,
+      nativeVersion        = InMemoryEngineConstants.NativeVersion,
+      engineAdapterVersion = InMemoryEngineConstants.AdapterVersion)
 
   /** In-memory has no URL grammar and no remote to set up, so the
     * descriptor is `available = true` immediately after the no-arg
@@ -77,5 +80,8 @@ class InMemoryEngineProviderDescriptor extends TypedRealizationProvider {
 
 object InMemoryEngineProviderDescriptor {
   def identity: EngineIdentity =
-    EngineIdentity(name = "in-memory", nativeVersion = "embedded", engineAdapterVersion = "0.1.0")
+    EngineIdentity(
+      name                 = InMemoryEngineConstants.WireName,
+      nativeVersion        = InMemoryEngineConstants.NativeVersion,
+      engineAdapterVersion = InMemoryEngineConstants.AdapterVersion)
 }

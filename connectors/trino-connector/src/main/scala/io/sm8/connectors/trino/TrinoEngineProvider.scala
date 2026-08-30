@@ -49,9 +49,10 @@ final class TrinoEngineProvider private (
 
   override lazy val identity: EngineIdentity =
     EngineIdentity(
-      name                 = "trino",
-      nativeVersion        = jdbcUrl.map(_ => "client-ready").getOrElse("<uninitialized>"),
-      engineAdapterVersion = "0.1.0"
+      name                 = TrinoEngineConstants.WireName,
+      nativeVersion        = jdbcUrl.map(_ => TrinoEngineConstants.RealizedStubNativeVersion)
+                                    .getOrElse(TrinoEngineConstants.UnrealizedNativeVersion),
+      engineAdapterVersion = TrinoEngineConstants.AdapterVersion
     )
 
   override val available: Boolean = jdbcUrl.isDefined
