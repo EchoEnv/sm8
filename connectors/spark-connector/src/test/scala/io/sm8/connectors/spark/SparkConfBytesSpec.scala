@@ -99,16 +99,29 @@ class SparkConfBytesSpec extends AnyFunSuite with Matchers {
     an[NumberFormatException] should be thrownBy SparkConfBytes.parseBytes("")
   }
 
-  test("PR-210: magnitude overflow throws IllegalArgumentException (seed catch widened to match)") {
-    // ByteUnit.convertFrom throws IAE when the magnitude-suffix
-    // product exceeds Long.MAX_VALUE — distinct from
-    // NumberFormatException (bad grammar). Both are caught at the
-    // seedBroadcastThreshold call sites so the PR-197 fallback
-    // semantics hold for overflow paths. `Long.MAX_VALUE` bytes
-    // parses cleanly; one past rejects.
+  test("PR-210: Long.parseLong overflow throws NumberFormatException (existing NFE catch arm covers it)") {
+    // Spark's `JavaUtils.byteStringAs` calls `Long.parseLong` FIRST,
+    // BEFORE any suffix-scaling. Any input whose magnitude exceeds
+    // `Long.MAX_VALUE` is rejected at the parse step with
+    // NumberFormatException — the suffix-scaling overflow path
+    // (the IllegalArgumentException shape) is unreachable here.
+    // The existing PR-197 catch arm `case _: NumberFormatException`
+    // already covers this — the IAE widening at the call sites
+    // (separate test below) addresses a DIFFERENT overflow path.
     SparkConfBytes.parseBytes("9223372036854775807b") shouldBe Long.MaxValue
-    an[IllegalArgumentException] should be thrownBy SparkConfBytes.parseBytes("9223372036854775808b")
-    // Same shape for suffixed magnitudes (scaled overflow).
+    an[NumberFormatException] should be thrownBy SparkConfBytes.parseBytes("9223372036854775808b")
+    an[NumberFormatException] should be thrownBy SparkConfBytes.parseBytes("9999999999999999999b")
+  }
+
+  test("PR-210: suffix-scaled overflow throws IllegalArgumentException (IAE catch arm widened to cover it)") {
+    // `Long.parseLong` succeeds (e.g. `9000000000000000000` parses
+    // cleanly — it's below Long.MAX_VALUE as a raw integer), but
+    // `ByteUnit.convertFrom` then overflows when the value is
+    // multiplied by the GiB / TiB / PiB constant. THAT path throws
+    // `IllegalArgumentException` — distinct from NFE, so the seed's
+    // catch arm was widened to include IAE in PR-210 (otter HIGH-1)
+    // to preserve the fallback contract for this overflow shape.
     an[IllegalArgumentException] should be thrownBy SparkConfBytes.parseBytes("9000000000000000000g")
+    an[IllegalArgumentException] should be thrownBy SparkConfBytes.parseBytes("9999999999999999999t")
   }
 }
