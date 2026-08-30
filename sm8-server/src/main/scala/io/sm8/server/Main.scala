@@ -96,9 +96,17 @@ import java.util.ServiceLoader
  */
 object Main {
 
-  /** CLI shape. Parsed once; pure data (scala-data-drivenrefactor). */
+  /** CLI shape. Parsed once; pure data (scala-data-drivenrefactor).
+    *
+    * `modelPath` is `None` when `--model` was absent — the empty
+    * string is NOT a legal Path (POSIX resolves it to the working
+    * directory, which made `Files.exists("")` silently return true
+    * and produced a misleading "Is a directory" parse failure
+    * downstream). `run()` rejects `None` with a typed
+    * `CliError.MissingFlag` so the operator sees the right message.
+    */
   final case class CliArgs(
-      modelPath:     Path,
+      modelPath:     Option[Path],
       port:          Int    = 8080,
       engine:        Option[String]        = None,
       connectorUrl:  Option[String]        = None,
@@ -140,16 +148,27 @@ object Main {
       |Engines are discovered via META-INF/services/
       |io.sm8.core.engine.EngineProvider (Java ServiceLoader).""".stripMargin
 
-  /** Pure arg parser — fully unit-testable, no IO. */
+  /** Pure arg parser — fully unit-testable, no IO.
+    *
+    * `modelPath` is `None` when `--model` was absent. Callers must
+    * surface `Left(CliError.MissingFlag("--model"))` via `run()` —
+    * the parser does not emit that error itself so it stays
+    * composable in tests that construct `CliArgs(...)` directly.
+    */
   def parseArgs(args: List[String]): Either[CliError, CliArgs] = {
     def loop(remaining: List[String], acc: CliArgs): Either[CliError, CliArgs] =
       remaining match {
         case Nil => Right(acc)
         case "--help" :: _ | "-h" :: _ => Left(CliError.MissingFlag("--model")) // handled by run() before parse
-        case "--model" :: value :: rest if value.startsWith("-") =>
+        case "--model" :: value :: rest if value.startsWith("-") || value.isEmpty =>
+          // Empty value: `Paths.get("")` resolves to the working
+          // directory on POSIX (a directory exists), which would
+          // silently pass `Files.exists` and surface as a misleading
+          // "Is a directory" parse failure downstream. Reject at the
+          // CLI boundary so the operator sees a typed MissingValue.
           Left(CliError.MissingValue("--model"))
         case "--model" :: value :: rest =>
-          loop(rest, acc.copy(modelPath = Paths.get(value)))
+          loop(rest, acc.copy(modelPath = Some(Paths.get(value))))
         case "--model" :: Nil => Left(CliError.MissingValue("--model"))
         case "--port" :: value :: rest =>
           try loop(rest, acc.copy(port = value.toInt))
@@ -163,7 +182,7 @@ object Main {
         case "--connector-url" :: Nil => Left(CliError.MissingValue("--connector-url"))
         case other :: _ => Left(CliError.UnknownFlag(other))
       }
-    loop(args, CliArgs(modelPath = Paths.get("")))
+    loop(args, CliArgs(modelPath = None))
   }
 
   /** Discover providers via ServiceLoader. Driver-side, once at boot.
@@ -295,8 +314,15 @@ object Main {
     parseArgs(args) match {
       case Left(err) =>
         System.err.println(err.reason); 2
+      case Right(cli) if cli.modelPath.isEmpty =>
+        // --model was absent from the arg list; parseArgs leaves
+        // modelPath = None and run() surfaces the typed MissingFlag.
+        // This is a CLI usage error (exit 2), not a model-load failure
+        // (exit 1) — the operator forgot a flag, not a malformed
+        // manifest.
+        System.err.println(CliError.MissingFlag("--model").reason); 2
       case Right(cli) =>
-        PlatformModelLoader.fromPath(cli.modelPath) match {
+        PlatformModelLoader.fromPath(cli.modelPath.get) match {
           case Left(modelErr) =>
             System.err.println(s"sm8: model load failed: ${modelErr.toString}"); 1
           case Right(model) =>

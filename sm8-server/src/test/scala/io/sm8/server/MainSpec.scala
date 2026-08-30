@@ -60,7 +60,7 @@ class MainSpec extends AnyFunSuite with Matchers {
     val args = List("--model", "/tmp/m.yaml", "--port", "9090", "--engine", "spark-3.5")
     Main.parseArgs(args) match {
       case Right(a) =>
-        a.modelPath shouldBe Paths.get("/tmp/m.yaml")
+        a.modelPath shouldBe Some(Paths.get("/tmp/m.yaml"))
         a.port shouldBe 9090
         a.engine shouldBe Some("spark-3.5")
       case Left(e) => fail(s"unexpected parse error: ${e.reason}")
@@ -78,6 +78,37 @@ class MainSpec extends AnyFunSuite with Matchers {
 
   test("parseArgs: missing --model flag value is a typed error") {
     Main.parseArgs(List("--model")) shouldBe Left(Main.CliError.MissingValue("--model"))
+  }
+
+  test("parseArgs: --model absent returns Right with modelPath = None (run() surfaces the typed error)") {
+    // The parser is composable — it does not emit MissingFlag itself.
+    // run() is the boundary that translates "no --model" into the
+    // typed CLI error (see the run: missing --model exits 2 tests below).
+    Main.parseArgs(List("--port", "9090")) match {
+      case Right(a)  => a.modelPath shouldBe None
+      case Left(err) => fail(s"unexpected typed error: ${err.reason}")
+    }
+  }
+
+  test("run: missing --model flag entirely exits 2 with typed MissingFlag (not a model-load failure)") {
+    // The CLI boundary translates an absent --model into the typed
+    // MissingFlag error before any filesystem call is attempted; the
+    // operator sees a CLI usage message rather than a parse failure.
+    val exit = Main.run(List("--port", "9090", "--engine", "spark-3.5"))
+    exit shouldBe 2
+  }
+
+  test("run: only --engine + --connector-url (no --model) exits 2") {
+    val exit = Main.run(List("--engine", "spark-3.5", "--connector-url", "local[1]"))
+    exit shouldBe 2
+  }
+
+  test("run: --model with empty value exits 2 (typed MissingValue, not silent path)") {
+    // An empty token after --model is rejected at the CLI boundary as
+    // MissingValue, so the filesystem boundary never sees Paths.get("")
+    // (which POSIX would resolve to the working directory).
+    val exit = Main.run(List("--model", ""))
+    exit shouldBe 2
   }
 
   test("parseArgs: non-integer --port is a typed error") {
