@@ -336,15 +336,22 @@ class MainSpec extends AnyFunSuite with Matchers {
         // (the WIRE is still by-reference). What PR-214 fixed is
         // what the AtomicReference HOLDS: pre-PR-214, MetaCaptureObserver
         // aliased the SAME map instance (`target.set(context.meta)`);
-        // post-PR-214, it writes a fresh immutable copy via the
-        // builder path (`target.set(HashMap.empty[String, Any] ++
-        // context.meta)` — neither `Map.from` nor `HashMap.from`
-        // would suffice; both have an `instanceOf` short-circuit).
-        // The wire-level by-reference behaviour of
+        // post-PR-214, it writes a fresh immutable HashMap via
+        // `target.set(HashMap.from(context.meta.iterator))`. Three
+        // earlier revisions all had `instanceof HashMap` short-circuits:
+        //   - `Map.from(immutable.Map)` returns the same instance.
+        //   - `HashMap.from(HashMap)` returns the same HashMap
+        //     (verified via `javap` bytecode).
+        //   - `HashMap.empty ++ HashMap` short-circuits when the
+        //     receiver is empty and the argument is a HashMap.
+        // The current revision passes the `Iterator` (not the
+        // HashMap) to `HashMap.from`, so the `instanceof HashMap`
+        // check is false and the HashMapBuilder path always allocates
+        // a fresh HashMap. The wire-level by-reference behaviour of
         // `transport.metaInspectorEngineFn` is unchanged; this test
         // documents the wire, not the snapshot. Snapshot semantics
-        // are verified separately in `MetaCaptureObserverSpec`
-        // ([H1] tests + the [H1-HashMap-input] regression test).
+        // are verified separately in `MetaCaptureObserverSpec` ([H1]
+        // tests + the [H1-HashMap-input] regression test).
         val meta = transport.metaInspectorEngineFn.get.apply()
         meta("sm8.test.key") shouldBe "hello-from-plugin"
       case Left(msg) =>

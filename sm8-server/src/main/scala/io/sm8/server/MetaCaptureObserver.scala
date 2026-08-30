@@ -73,15 +73,22 @@ private[server] final class MetaCaptureObserver(
    *     `scala/collection/immutable/Map$.class`, `from` method).
    *   - `HashMap.from(HashMap) ⇒ same instance` (bytecode at
    *     `scala/collection/immutable/HashMap$.class`, `from` method,
-   *     offset 0-11: `aload_1; instanceof HashMap; ifeq 15`
-   *     bypasses the `new HashMapBuilder` path when input is
-   *     already a HashMap).
+   *     offsets 1-11: `aload_1; instanceof HashMap; ifeq 12` —
+   *     `instanceof` is at offset 1, `ifeq` at offset 4 jumps to
+   *     offset 12 (`new HashMapBuilder`) when the input is NOT a
+   *     HashMap; otherwise falls through to offset 7 (`aload_1;
+   *     checkcast HashMap; areturn`) and returns the input
+   *     unchanged).
    *   - `HashMap.empty ++ HashMap` short-circuits when the
    *     receiver is empty and the argument is a HashMap, returning
    *     the argument unchanged (bytecode at
    *     `scala/collection/immutable/HashMap.class`, `concat`
-   *     method, offset 13-22: `isEmpty; ifeq 25; aload other;
-   *     goto 98`).
+   *     method, offsets 12-20: `aload_0; invokevirtual isEmpty;
+   *     ifeq 21; aload_2; areturn` — `isEmpty` is at offset 13,
+   *     `ifeq` at offset 16 jumps to offset 21 (the merge path)
+   *     when the receiver is NOT empty; when empty, falls through
+   *     to offset 19 (`aload_2`) and `areturn` returns the
+   *     argument unchanged at offset 20).
    *
    * The chosen pattern `HashMap.from(context.meta.iterator)` passes
    * an `Iterator` (which is NOT a HashMap) to `HashMap.from`, so
