@@ -9,9 +9,10 @@
  *   3. discover EngineProviders via Java ServiceLoader
  *      (`META-INF/services/io.sm8.core.engine.EngineProvider`)
  *   4. build EngineRegistry (fail-loud at boot per design §4.1)
- *   5. start HttpTransport (binds the actual socket)
- *   6. install a JVM shutdown hook (scala-jvm-safetymindset:
- *      release the socket on SIGTERM/SIGINT)
+ *   5. install the JVM shutdown hook (PR-215, audit 2026-08-30
+ *      L4: BEFORE transport.start so SIGTERM during start() or
+ *      before this point still triggers cleanup)
+ *   6. start HttpTransport (binds the actual socket)
  *
  * ==Per karphyaguidsmindset "smallest correct change"==
  *
@@ -33,7 +34,11 @@
  * ==Per scala-jvm-safetymindset==
  *
  * - Shutdown hook: `transport.stop()` on JVM exit (idempotent —
- *   HttpTransport.stop() is a no-op when already stopped).
+ *   HttpTransport.stop() is a no-op when never started OR already
+ *   stopped). Registered BEFORE `transport.start()` (PR-215) so
+ *   SIGTERM during start() or before this point still triggers
+ *   cleanup; otherwise the socket stays bound (TIME_WAIT ~60s) and
+ *   the SparkSession is orphaned.
  * - Fail loud: every Left/throwable maps to a typed exit code +
  *   stderr message. No silent degradation.
  *
@@ -324,6 +329,17 @@ object Main {
               case Left(bootErr) =>
                 System.err.println(bootErr); 3
               case Right((_, transport, realized)) =>
+                // PR-215 (audit 2026-08-30 L4): install the JVM
+                // shutdown hook BEFORE transport.start() so SIGTERM
+                // arriving during start() or before this point still
+                // triggers cleanup. Previously the hook was installed
+                // AFTER start(), leaving a race window where the
+                // socket stayed bound (TIME_WAIT ~60s) and the
+                // SparkSession was orphaned (no close() invocation).
+                // Idempotency: HttpTransport.stop() no-ops when
+                // `server.isDefined == false`; EngineProvider.close()
+                // is a no-op default for non-Spark connectors.
+                installShutdownHook(transport, realized)
                 val boundPort = try transport.start(cli.port)
                 catch {
                   case e: IllegalStateException =>
@@ -331,16 +347,6 @@ object Main {
                 }
                 println(s"sm8: server listening on port $boundPort " +
                   s"(model=${model.name}, version=${model.version})")
-                // PR-O4a (ADR-008-O): release BOTH the socket AND any
-                // realized engine providers on JVM exit. The EngineProvider
-                // trait carries `close()` — spark-connector implements it to
-                // stop the SparkSession; other connectors (in-memory, trino)
-                // inherit the no-op default. A SIGTERM without this leaves
-                // the cluster's executor processes orphaned.
-                sys.addShutdownHook {
-                  transport.stop()
-                  realized.foreach(_.close())
-                }
                 // Block the main thread; the shutdown hook stops the server.
                 Thread.currentThread().join()
                 0
@@ -354,5 +360,61 @@ object Main {
     if (exit != 0) sys.exit(exit)
     // exit 0 path: main thread was interrupted (JVM shutting down) —
     // let the JVM exit naturally so the shutdown hook completes.
+  }
+
+  /**
+   * Install the JVM shutdown hook that releases the HTTP transport
+   * + closes all realized engine providers on JVM exit.
+   *
+   * Per ADR-008-O: the hook releases BOTH the socket AND any
+   * realized engine providers. A SIGTERM without this hook leaves
+   * the cluster's executor processes orphaned.
+   *
+   * Per PR-215 (audit 2026-08-30 L4): this is registered BEFORE
+   * `transport.start()` from `run()` so SIGTERM during start() or
+   * before this point still triggers cleanup. The pre-PR-215
+   * ordering (`transport.start → sys.addShutdownHook`) exposed a
+   * race window where a SIGTERM arriving between the two calls
+   * orphaned the resources.
+   *
+   * Exception propagation: `run()` catches `IllegalStateException`
+   * from `transport.start` only. A `TimeoutException` from the
+   * 30 s bind future (see [[io.sm8.platform.query.HttpTransport.start]])
+   * or an NPE from `RestateHttpServer.fromEndpoint` propagates to
+   * `main()`. This is intentional: the hook is registered, so JVM-exit
+   * cleanup still fires even when the exception escapes `run()`.
+   * `transport.stop()` is a no-op on an unstarted transport (see
+   * [[io.sm8.platform.query.HttpTransport.stop]]), so the hook body
+   * does not throw on a partial boot.
+   *
+   * Idempotency guarantees:
+   *  - `HttpTransport.stop()` no-ops when `server.isDefined == false`
+   *    (never started or already stopped); safe to call even if
+   *    `start()` never ran.
+   *  - `EngineProvider.close()` is a no-op default for non-Spark
+   *    connectors (in-memory, trino, etc.); safe to call on every
+   *    realized provider regardless of realized-state.
+   *
+   * Exposed (not `private`) so MainSpec can verify the hook is
+   * registered with the JVM regardless of `transport.start` outcome.
+   *
+   * @return the registered hook thread (caller may pass it to
+   *         `Runtime.getRuntime.removeShutdownHook` for test cleanup)
+   */
+  def installShutdownHook(
+      transport: HttpTransport,
+      realized: List[EngineProvider]
+  ): Thread = {
+    val hook = new Thread(
+      new Runnable {
+        def run(): Unit = {
+          transport.stop()
+          realized.foreach(_.close())
+        }
+      },
+      "sm8-shutdown-hook"
+    )
+    Runtime.getRuntime().addShutdownHook(hook)
+    hook
   }
 }

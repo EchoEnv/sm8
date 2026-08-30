@@ -36,6 +36,24 @@ class MainSpec extends AnyFunSuite with Matchers {
     source  = SourceRef.ByName(table = "stub_table"),
   ).toOption.get
 
+  /** Walk up from `user.dir` looking for the sm8 repo root
+    * (identified by `sm8-server/pom.xml`). Used by the L4
+    * source-order regression test, which needs a stable path
+    * to `Main.scala` regardless of cwd (Maven sets it to the
+    * module dir; IDEs may set it to the repo root). */
+  private def findRepoRoot(): java.io.File = {
+    val marker = "sm8-server" + java.io.File.separator + "pom.xml"
+    var dir: java.io.File = new java.io.File(System.getProperty("user.dir"))
+    while (dir != null && !new java.io.File(dir, marker).exists) {
+      dir = dir.getParentFile
+    }
+    require(
+      dir != null,
+      s"MainSpec.findRepoRoot: could not locate '$marker' by walking up from '${System.getProperty("user.dir")}'"
+    )
+    dir
+  }
+
   // ---- CLI parsing (pure) ----
 
   test("parseArgs: --model + --port + --engine all parse") {
@@ -355,6 +373,162 @@ class MainSpec extends AnyFunSuite with Matchers {
       case Right(_) =>
         fail(s"expected typed boot failure for stub-spark URL on test classpath, but wire() succeeded")
     }
+  }
+
+  // ===== PR-215 (audit 2026-08-30 L4): shutdown hook before transport.start =====
+  //
+  // The previous ordering was `transport.start() → sys.addShutdownHook { … }`.
+  // A SIGTERM arriving between the two calls left the JVM with no
+  // registered shutdown hook, so the socket stayed bound (TIME_WAIT
+  // ~60s) and any realized SparkSession was orphaned (no `close()`
+  // invocation). The fix in `Main.run` is: call
+  // `installShutdownHook(transport, realized)` BEFORE
+  // `transport.start(cli.port)`.
+  //
+  // Test split:
+  //   - Test 1 ("registers a JVM shutdown hook") is a
+  //     *structural-extraction* test: pre-PR-215 the method
+  //     `Main.installShutdownHook` does not exist (compile error);
+  //     post-PR-215 the helper registers the hook synchronously.
+  //   - Tests 2 and 3 are *idempotency* tests of the helper body
+  //     (`HttpTransport.stop()` no-op pre-start; `EngineProvider.close()`
+  //     no-op default). They would pass on the pre-PR-215 code too
+  //     (the hook body was the same) — they pin the invariant that
+  //     makes the ordering fix safe, but they are NOT L4 ordering
+  //     regression tests.
+  //   - Test 4 ("source-order: installShutdownHook precedes
+  //     transport.start") is the actual L4 regression test. It
+  //     reads `Main.scala` as a string and asserts that the
+  //     `installShutdownHook(transport, realized)` call site
+  //     textually precedes the `transport.start(cli.port)` call
+  //     site. A future refactor that reverts the ordering
+  //     (e.g. moves the helper call back to post-start) would
+  //     fail this test even if the helper API is unchanged.
+
+  test("[L4] installShutdownHook registers a JVM shutdown hook (verifiable via removeShutdownHook)") {
+    // Structural-extraction test: pre-PR-215 the helper method
+    // `Main.installShutdownHook` does not exist (any call site would
+    // be a compile error). Post-PR-215 the helper exists and
+    // registers the hook synchronously with the JVM, so
+    // `removeShutdownHook` returns true. This verifies the
+    // extraction, NOT the ordering — the ordering is pinned by
+    // the `[L4] source-order` test below.
+    val providers = Main.discoverProviders(getClass.getClassLoader)
+    Main.wire(sampleModel(), providers, engineName = None) match {
+      case Right((_, transport, realized)) =>
+        val hook = Main.installShutdownHook(transport, realized)
+        try {
+          // `removeShutdownHook` returns true iff the hook was found
+          // in the JVM's registry. The assertion is deterministic
+          // (the helper registers the hook synchronously).
+          Runtime.getRuntime.removeShutdownHook(hook) shouldBe true
+        } finally {
+          // Defensive: ensure no stray hook remains for the test JVM.
+          Runtime.getRuntime.removeShutdownHook(hook)
+        }
+      case Left(msg) => fail(s"unexpected wire failure: $msg")
+    }
+  }
+
+  test("[idempotency] installShutdownHook body is safe to invoke when transport never started (SIGTERM during start)") {
+    // Simulates a SIGTERM arriving BEFORE `transport.start()` returns
+    // (or before `start()` was called at all). The hook body invokes
+    // `transport.stop()` — which MUST be a no-op since `server` is
+    // still `None` per `HttpTransport.stop()` — and `realized.foreach
+    // (_.close())` — which MUST be a no-op default for the test
+    // classpath's `TestEngineProvider`. Without this guarantee the
+    // PR-215 fix would shift the failure mode from "hook never fires"
+    // to "hook fires and throws", which is strictly worse.
+    val providers = Main.discoverProviders(getClass.getClassLoader)
+    Main.wire(sampleModel(), providers, engineName = None) match {
+      case Right((_, transport, realized)) =>
+        val hook = Main.installShutdownHook(transport, realized)
+        try {
+          // Manually invoke the hook body (mimics the JVM calling
+          // the shutdown hook on SIGTERM). No exception should
+          // escape: `stop()` is a no-op pre-start; `close()` is a
+          // no-op default for non-Spark providers.
+          noException should be thrownBy {
+            transport.stop()
+            realized.foreach(_.close())
+          }
+        } finally {
+          Runtime.getRuntime.removeShutdownHook(hook)
+        }
+      case Left(msg) => fail(s"unexpected wire failure: $msg")
+    }
+  }
+
+  test("[idempotency] installShutdownHook body is idempotent (called twice → no double-close side effect)") {
+    // `Runtime.addShutdownHook` rejects duplicate registration of
+    // the SAME hook instance; but the hook BODY itself may be
+    // invoked twice if a second SIGTERM arrives while the first
+    // handler is still running (the JVM's shutdown-hook contract
+    // says hooks run concurrently to completion, so re-entrancy
+    // is possible). `HttpTransport.stop()` and `EngineProvider.
+    // close()` MUST both be idempotent for this to be safe.
+    val providers = Main.discoverProviders(getClass.getClassLoader)
+    Main.wire(sampleModel(), providers, engineName = None) match {
+      case Right((_, transport, realized)) =>
+        val hook = Main.installShutdownHook(transport, realized)
+        try {
+          noException should be thrownBy {
+            transport.stop(); transport.stop()
+            realized.foreach(_.close())
+            realized.foreach(_.close())
+          }
+        } finally {
+          Runtime.getRuntime.removeShutdownHook(hook)
+        }
+      case Left(msg) => fail(s"unexpected wire failure: $msg")
+    }
+  }
+
+  test("[L4] Main.run installs the shutdown hook BEFORE transport.start (source-order regression test)") {
+    // Per dual-review (blossom arch + daisy data-eng, 2026-08-30):
+    // the structural-extraction tests above verify that the helper
+    // exists and behaves correctly, but they do NOT pin the ordering
+    // of `installShutdownHook(…)` vs `transport.start(…)` in
+    // `Main.run`. A future refactor that moves the helper call back
+    // to post-start (the pre-PR-215 bug) would leave all 3 above
+    // tests passing. This test asserts the source-level ordering
+    // directly, so a regression would fail with a clear message.
+    //
+    // Source-as-data tests are unconventional but appropriate here:
+    // the L4 bug is purely an ordering bug in source. There is no
+    // semantic observable at runtime that distinguishes "hook
+    // installed before start" from "hook installed after start" in
+    // a unit-test environment (we cannot inject a SIGTERM between
+    // two synchronous statements). The textual position is the
+    // ground truth.
+    //
+    // Working-directory independence: Maven sets `user.dir` to the
+    // module dir (`sm8-server/`) when running `mvn test -pl
+    // sm8-server`, but IDEs and CI may set it to the repo root.
+    // `findRepoRoot` walks up looking for the canonical
+    // `sm8-server/pom.xml` so the path resolves regardless of cwd.
+    val mainFile = new java.io.File(
+      findRepoRoot(),
+      "sm8-server/src/main/scala/io/sm8/server/Main.scala"
+    )
+    require(
+      mainFile.exists,
+      s"L4 source-order test: expected $mainFile to exist (repo root=${findRepoRoot()})"
+    )
+    val src = scala.io.Source.fromFile(mainFile).mkString
+
+    // The helper call site in `run()` (line ~342 post-fix).
+    val installIdx = src.indexOf("installShutdownHook(transport, realized)")
+    installIdx should be > 0 // method call must be present
+
+    // The transport.start call site in `run()` (line ~347 post-fix).
+    val startIdx = src.indexOf("transport.start(cli.port)")
+    startIdx should be > 0 // start call must be present
+
+    // The headline L4 fix: the install call must textually precede
+    // the start call. If a future refactor reverts the ordering,
+    // this assertion fails.
+    installIdx should be < startIdx
   }
 
   test("[C2] wire: sm8-server no longer imports io.sm8.core.EngineImpl (layer discipline)") {
