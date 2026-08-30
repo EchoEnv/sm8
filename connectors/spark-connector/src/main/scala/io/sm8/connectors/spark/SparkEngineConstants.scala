@@ -32,6 +32,17 @@
  * used `"unknown"` where the instance used `"<uninitialized>"`).
  * One object per connector module keeps the layer discipline:
  * core carries the shape, each connector carries its own values.
+ *
+ * ==Why the routing invariant is runtime-pinned==
+ *
+ * The constraint "`WireName` must equal `EngineUrl.Spark.engineName`
+ * and `SparkEngineUrlParser.engineName`" is enforced by
+ * `SparkEngineIdentityInvariantSpec` at test time. Scala 2 has no
+ * cross-module compile-time literal-comparison mechanism, so a
+ * future maintainer who bypasses this object and writes the
+ * literal at a new call site will be caught by the test rather
+ * than by the compiler. The Scaladoc states the invariant; the
+ * spec enforces it.
  */
 package io.sm8.connectors.spark
 

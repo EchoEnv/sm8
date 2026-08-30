@@ -17,6 +17,17 @@
  * is mirrored per connector so each connector owns its values
  * (core carries the identity shape only, per the layer
  * discipline).
+ *
+ * ==Why the routing invariant is runtime-pinned==
+ *
+ * The constraint "`WireName` must equal the URL parser's
+ * `engineName`" is enforced by the corresponding
+ * `TrinoEngineIdentityInvariantSpec` at test time. Scala 2 has
+ * no cross-module compile-time literal-comparison mechanism, so
+ * a future maintainer who bypasses this object and writes the
+ * literal at a new call site will be caught by the test rather
+ * than by the compiler. The Scaladoc states the invariant; the
+ * spec enforces it.
  */
 package io.sm8.connectors.trino
 
@@ -31,9 +42,6 @@ private[trino] object TrinoEngineConstants {
 
   /** Native-version value once a URL is realized (client stub). */
   val RealizedStubNativeVersion: String = "client-ready"
-
-  /** Native-version used by the descriptor object companion. */
-  val DescriptorNativeVersion: String = UnrealizedNativeVersion
 
   /** This adapter's version (informational). */
   val AdapterVersion: String = "0.1.0"
