@@ -553,5 +553,76 @@ class SparkBroadcastSeedSpec extends AnyFunSuite with Matchers {
   }
  }
 
+ // ------------------------------------------------------------------------
+ // PR-209 (tigress MED-1 residual): non-(-1) negative thresholds also
+ // disarm the sm8 seed, mirroring Spark's own `EnsureRequirements`
+ // rule (`autoBroadcastJoinThreshold < 0 ⇒ None`). The pre-PR-209
+ // shape only matched the literal `-1`; values like `-2b` or
+ // `-100b` were silently re-armed with the 10 MiB default (the
+ // opposite of operator intent). The `0b` case is preserved as
+ // enabled (Spark's "always broadcast" sentinel).
+ // ------------------------------------------------------------------------
+
+ /** PR-209: parameterized spark builder — overrides the
+ * `autoBroadcastJoinThreshold` to a caller-supplied raw value so
+ * the seed's negative/zero handling is exercised without baking
+ * the threshold into a named helper per case. */
+ private def buildSparkWithThreshold(value: String): SparkSession =
+  SparkSession.builder()
+   .master("local[1]")
+   .appName(s"SparkBroadcastSeedSpec-$value")
+   .config("spark.sql.shuffle.partitions", "1")
+   .config("spark.ui.enabled", "false")
+   .config("spark.driver.host", "127.0.0.1")
+   .config("spark.driver.bindAddress", "127.0.0.1")
+   .config("spark.sql.autoBroadcastJoinThreshold", value)
+   .config("spark.sql.adaptive.enabled", "false")
+   .getOrCreate()
+
+ /** PR-209: helper that pairs the parameterized spark builder
+ * with the shared compile pipeline. Mirrors the shape of
+ * `compiled` / `compiledWithLargeThreshold` so the existing
+ * test surface stays homogeneous. */
+ private def compiledWithThreshold(value: String, model: Model, hints: JoinHints): String = {
+  val spark = buildSparkWithThreshold(value)
+  compiledWithSpark(spark, model, hints, EngineContext.defaultContext)
+ }
+
+ test("PR-209: non-(-1) negative threshold (-2b) — operator disabled, sm8 seed disarms → SortMergeJoin") {
+  // Falsifiable: pre-PR-209 the seed only matched `== -1L`, so
+  // a `-2b` threshold fell through to the 10 MiB default and the
+  // plan was a BroadcastHashJoin — the opposite of operator
+  // intent (Spark itself treats `< 0` as disabled per
+  // EnsureRequirements). Post-PR-209 the seed mirrors Spark's
+  // `< 0` rule and the plan is a SortMergeJoin, identical to
+  // the `-1b` falsifiable behavior.
+  val plan = compiledWithThreshold("-2b", modelWith(Some(1000L)), JoinHints())
+  plan should include ("SortMergeJoin")
+  plan shouldNot include ("BroadcastHashJoin")
+ }
+
+ test("PR-209: non-(-1) negative threshold (-100b) — operator disabled, sm8 seed disarms → SortMergeJoin") {
+  // Falsifiable: same contract as the `-2b` case but with a
+  // larger negative magnitude. Proves the `< 0L` comparison
+  // holds across the negative integer range, not just for `-1`
+  // and `-2`. Spark's own `< 0` rule is magnitude-blind; the
+  // sm8 seed mirrors that.
+  val plan = compiledWithThreshold("-100b", modelWith(Some(1000L)), JoinHints())
+  plan should include ("SortMergeJoin")
+  plan shouldNot include ("BroadcastHashJoin")
+ }
+
+ test("PR-209: zero threshold (0b) — NOT disabled (Spark 'always broadcast'), sm8 seed still arms → BroadcastHashJoin") {
+  // Falsifiable: `0b` is Spark's "always broadcast" sentinel —
+  // Spark itself broadcasts unconditionally when the threshold
+  // is `0`. The sm8 seed must NOT over-correct and disarm here
+  // (the operator wants broadcast, just unconditionally).
+  // `0L < 0L` is false → operatorDisabledBroadcast stays false
+  // → seed follows the inline presence rule → BroadcastHashJoin.
+  // This test is the negative case that proves the `< 0L` (not
+  // `<= 0L`) comparison is the right shape.
+  val plan = compiledWithThreshold("0b", modelWith(Some(1000L)), JoinHints())
+  plan should include ("BroadcastHashJoin")
+ }
 }
 

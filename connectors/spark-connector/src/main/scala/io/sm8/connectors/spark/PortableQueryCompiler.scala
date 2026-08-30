@@ -830,13 +830,31 @@ object PortableQueryCompiler extends java.io.Serializable {
      case _: NoSuchElementException => BroadcastSeedDefaultBytes
      case _: NumberFormatException  => BroadcastSeedDefaultBytes
     })
-   // PR-197 (Round 1 audit MED F-03): detect the `-1` disable
-   // sentinel explicitly so an operator who disabled Spark's
-   // auto-broadcast isn't silently re-armed by the inline rule.
+   // PR-197 (Round 1 audit MED F-03): detect the disable sentinel
+   // so an operator who disabled Spark's auto-broadcast isn't
+   // silently re-armed by the inline rule. PR-209 (tigress MED-1
+   // residual): Spark's `JoinSelection.canBroadcastBySize` (in
+   // `org.apache.spark.sql.catalyst.optimizer.joins`) is the
+   // authoritative broadcast-arm rule — it consults
+   // `autoBroadcastJoinThreshold` and arms broadcast only when
+   // `sizeInBytes >= 0 && sizeInBytes <= threshold`. ANY negative
+   // threshold (`-2b`, `-100b`) short-circuits to "no broadcast"
+   // — not just the literal `-1`. PR-209 mirrors that contract:
+   // the sm8 seed is disarmed for every negative threshold,
+   // matching Spark's own `< 0` semantics. The `0b` case (Spark's
+   // "always broadcast" sentinel) is correctly left as enabled
+   // — `0L < 0L` is false, so the seed remains free to arm.
+   // Pre-existing limitation (out of PR-209 scope): the hand
+   // parser below does not honor `k`/`m`/`g` suffixes — Spark's
+   // own `Utils.byteStringAsBytes` does. Follow-up PR (PR-210
+   // candidate) should delegate both `operatorDisabledBroadcast`
+   // and the `sessionThreshold` branch above to byteStringAsBytes
+   // to close the false-positive gap on values like `"1g"` or
+   // `"-2m"`.
    val operatorDisabledBroadcast: Boolean =
     try {
      val raw = spark.conf.get("spark.sql.autoBroadcastJoinThreshold")
-     raw.stripSuffix("b").stripSuffix("B").trim.toLong == -1L
+     raw.stripSuffix("b").stripSuffix("B").trim.toLong < 0L
     } catch {
      case _: NumberFormatException  => false
      case _: NoSuchElementException => false
