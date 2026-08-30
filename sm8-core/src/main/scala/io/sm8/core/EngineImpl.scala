@@ -150,9 +150,13 @@ final class EngineImpl extends Engine {
  // inner catch. After an iterator-thrown SCE the JDK spec leaves the
  // iterator in an undefined state, so we log and return the partial
  // result rather than aborting plugin discovery entirely.
- val plugins = ServiceLoader.load(classOf[Plugin]).iterator().asScala
+ // `ServiceLoader.load(...)` itself can also throw SCE for an
+ // inaccessible service type or a modular deployment without the
+ // `uses` directive; the outer try covers that path too so all
+ // SCE sources are caught at one boundary.
  val loaded = List.newBuilder[Plugin]
  try {
+  val plugins = ServiceLoader.load(classOf[Plugin]).iterator().asScala
   plugins.foreach { plugin =>
    try loadMetadata(plugin.getClass) match {
    case Some(meta) if allowAll || allowed.contains(meta.coords) =>
