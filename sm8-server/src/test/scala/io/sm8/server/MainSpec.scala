@@ -332,10 +332,26 @@ class MainSpec extends AnyFunSuite with Matchers {
         // (1) The transport captured the inspector closure.
         transport.metaInspectorEngineFn shouldBe Some(inspectorFn)
         // (2) Calling the inspector returns the pre-populated meta
-        // — i.e. the closure captures the AtomicReference by reference,
-        // not a snapshot. (This is the [H1] finding: a future fix
-        // should make MetaCaptureObserver write an immutable copy;
-        // this test currently documents the by-reference behavior.)
+        // — i.e. the closure captures the AtomicReference by reference
+        // (the WIRE is still by-reference). What PR-214 fixed is
+        // what the AtomicReference HOLDS: pre-PR-214, MetaCaptureObserver
+        // aliased the SAME map instance (`target.set(context.meta)`);
+        // post-PR-214, it writes a fresh immutable HashMap via
+        // `target.set(HashMap.from(context.meta.iterator))`. Three
+        // earlier revisions all had `instanceof HashMap` short-circuits:
+        //   - `Map.from(immutable.Map)` returns the same instance.
+        //   - `HashMap.from(HashMap)` returns the same HashMap
+        //     (verified via `javap` bytecode).
+        //   - `HashMap.empty ++ HashMap` short-circuits when the
+        //     receiver is empty and the argument is a HashMap.
+        // The current revision passes the `Iterator` (not the
+        // HashMap) to `HashMap.from`, so the `instanceof HashMap`
+        // check is false and the HashMapBuilder path always allocates
+        // a fresh HashMap. The wire-level by-reference behaviour of
+        // `transport.metaInspectorEngineFn` is unchanged; this test
+        // documents the wire, not the snapshot. Snapshot semantics
+        // are verified separately in `MetaCaptureObserverSpec` ([H1]
+        // tests + the [H1-HashMap-input] regression test).
         val meta = transport.metaInspectorEngineFn.get.apply()
         meta("sm8.test.key") shouldBe "hello-from-plugin"
       case Left(msg) =>
