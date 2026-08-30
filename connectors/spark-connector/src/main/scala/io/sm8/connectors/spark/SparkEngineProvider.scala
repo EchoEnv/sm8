@@ -339,7 +339,7 @@ private def readResolve(): Object =
   // rejection guard is never triggered). Read from the final eCtx
   // (post-hooks) so a PreExecute hook may still override.
  val effectiveCtx: io.sm8.core.engine.EngineContext =
-    SparkEngineProvider.seedBroadcastThreshold(querySession, eCtx, model)
+    PortableQueryCompiler.seedBroadcastThreshold(querySession, eCtx, model)
   // Per-query skew factor design: per-query skew factor seed (per-query, single
   // conditional; honors JoinHints.skewFactor when Some). The fresh-session
   // conf has no operator-pre-set value, so a Some(f) sets the per-query
@@ -898,7 +898,7 @@ private[spark] def compileModelToDataFrame(
   // schema BEFORE lowering (the validator is baked into the
   // canonical entry point).
   // ADR-009-a broadcast seed on the per-query (or null) session.
-  seedCtx = SparkEngineProvider.seedBroadcastThreshold(querySession, ctx, model)
+  seedCtx = PortableQueryCompiler.seedBroadcastThreshold(querySession, ctx, model)
   // Per-query skew factor design: per-query skew factor seed (per-query, single
   // conditional; honors JoinHints.skewFactor when Some).
   skewCtx = SparkEngineProvider.seedSkewFactor(querySession, seedCtx, model)
@@ -1045,105 +1045,17 @@ object SparkEngineProvider {
    * only NARROW it via request.limit, never widen or disable it. */
   val DefaultResultCapRows: Long = 1_000_000L
 
-  val BroadcastSeedDefaultBytes: Long = 10L * 1024L * 1024L
-
-  /**
-   * Arms the adapter's broadcast byte-gate when the model declares
-   * any join `estimatedRows` (inline presence rule) OR when a
-   * plugin's PreExecute hook armed the broadcast oracle (typed
-   * transport via EngineContext.decisionHints per ADR-009-d v0.3).
-   *
-   * The estimate is an ARM (presence), not a value: the runtime
-   * `sizeInBytes` check stays authoritative, so a large side is
-   * never physically broadcast. Caller/hook-set hints always win
-   * over the seed; `preferredStrategy` is untouched (the Cross
-   * + strategy rejection guard is never triggered).
-   *
-   * Oracle precedence: when the broadcast oracle is present
-   * (Some(b)), the oracle's arm Boolean wins over the inline
-   * presence rule; when present, the oracle's threshold bytes
-   * win over the session autoBroadcastJoinThreshold default. None
-   * on either field preserves today's behavior (inline arm +
-   * session default).
-   *
-   * @param spark the connected Spark session whose configured
-   *              auto-broadcast threshold seeds the gate when no
-   *              oracle threshold is provided
-   * @param eCtx the possibly-hint-bearing engine context
-   * @param model the query model (join estimates consulted by the
-   *              inline presence rule)
-   * @return the context with a seeded broadcast threshold if armed
-   */
+  // The broadcast seed logic lives on `PortableQueryCompiler` (the
+  // canonical owner of join lowering). This delegator preserves the
+  // existing `SparkEngineProvider.seedBroadcastThreshold` API for any
+  // internal callers (the request-layer + the `SparkBroadcastSeedSpec`
+  // test fixture) without duplicating the seed body.
   def seedBroadcastThreshold(
     spark: org.apache.spark.sql.SparkSession,
     eCtx:  io.sm8.core.engine.EngineContext,
     model: io.sm8.core.model.Model
-  ): io.sm8.core.engine.EngineContext = {
-    // Per-query decision oracle: prefer the plugin's arm + threshold
-    // bytes when present; fall back to the inline presence rule +
-    // the session default threshold. The two regimes differ on
-    // identical models with est > BroadcastThresholdRows (plugin
-    // disarms; inline arms) — observable divergence proves the
-    // wiring.
-    val broadcastOracle = eCtx.decisionHints
-    val oracleArm: Option[Boolean]    = broadcastOracle.flatMap(_.broadcastArmed)
-    val oracleThreshold: Option[Long] = broadcastOracle.flatMap(_.broadcastThresholdBytes)
-    val sessionThreshold: Long = oracleThreshold.getOrElse(
-      try {
-        // Spark renders the threshold with a 'b' suffix (e.g.
-        // "10485760b") — strip it before parsing. Any parse failure
-        // falls back to the default rather than breaking the query.
-        val raw = spark.conf.get("spark.sql.autoBroadcastJoinThreshold")
-        val v = raw.stripSuffix("b").stripSuffix("B").toLong
-        // PR-197 (Round 1 audit MED F-03): Spark's `-1` is the
-        // "disable the auto-broadcast heuristic" sentinel. The
-        // pre-PR-197 shape fell through to `BroadcastSeedDefaultBytes`
-        // (10 MiB), which silently RE-ENABLED broadcast on operators
-        // who explicitly disabled it. Honor the operator intent: when
-        // the session threshold is `-1` (or any value <= 0), return a
-        // sentinel that the inline presence rule treats as
-        // "operator-disabled, do not arm". Concretely: `Long.MaxValue`
-        // is above any realistic join size, so the inline rule
-        // `model.joins.exists(_.estimatedRows.isDefined)` would arm
-        // — that's still wrong for disabled operators. The
-        // alternative: also disarm in this branch. We choose the
-        // latter (return a sentinel that the caller recognizes via
-        // the `disabled` flag below).
-        if (v > 0L) v else BroadcastSeedDefaultBytes // legacy path
-      } catch {
-        case _: NoSuchElementException => BroadcastSeedDefaultBytes
-        case _: NumberFormatException  => BroadcastSeedDefaultBytes
-      })
-    // PR-197 (Round 1 audit MED F-03): detect the `-1` disable
-    // sentinel explicitly (the stripSuffix+toLong above collapses it
-    // to -1; the `if (v > 0L) ... else BroadcastSeedDefaultBytes`
-    // branch then silently re-enables with 10 MiB). The check below
-    // catches the case BEFORE the strip-branch by reading the raw
-    // value and parsing the leading numeric portion. When the raw
-    // value parses to -1 (with or without a `b` suffix), the
-    // operator has disabled Spark's auto-broadcast — we propagate
-    // "disarmed" by leaving `eCtx.joinHints.broadcastRightBelowBytes`
-    // as None (the inline presence rule above still runs and may
-    // arm on estimated-row joins; that's a known trade-off documented
-    // in the inline comment below).
-    val operatorDisabledBroadcast: Boolean =
-      try {
-        val raw = spark.conf.get("spark.sql.autoBroadcastJoinThreshold")
-        raw.stripSuffix("b").stripSuffix("B").trim.toLong == -1L
-      } catch {
-        case _: NumberFormatException  => false
-        case _: NoSuchElementException => false
-      }
-    val armed: Boolean = oracleArm.getOrElse(
-      if (operatorDisabledBroadcast) false
-      else model.joins.exists(_.estimatedRows.isDefined)
-    )
-    val seeded: Option[Long] = eCtx.joinHints.broadcastRightBelowBytes.orElse(
-      if (armed) Some(sessionThreshold) else None
-    )
-    if (seeded == eCtx.joinHints.broadcastRightBelowBytes) eCtx
-    else eCtx.copy(joinHints = eCtx.joinHints.copy(broadcastRightBelowBytes = seeded))
-  }
+  ): io.sm8.core.engine.EngineContext =
+    PortableQueryCompiler.seedBroadcastThreshold(spark, eCtx, model)
 
   /**
    * Per-query skew factor seed. Writes

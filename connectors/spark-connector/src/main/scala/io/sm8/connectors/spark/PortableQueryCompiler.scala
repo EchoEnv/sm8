@@ -124,10 +124,19 @@ class PortableQueryCompiler(val spark: SparkSession)
  def compile(
   model: Model,
   ctx: EngineContext): Either[EngineError, DataFrame] = {
+ // Seed the broadcast byte-gate from the model's join estimates
+ // BEFORE the join step. Without this seed, callers that bypass
+ // the request-layer seed sites (`SparkEngineProvider.query`,
+ // `compileModelToDataFrame`) read an un-seeded `ctx`, and
+ // `applyJoins` falls through to Spark's `autoBroadcastJoinThreshold`
+ // heuristic — the gate is silently OFF. The null-spark provider
+ // path skips the seed (the config-less smoke); the helper itself
+ // is null-safe.
+ val seededCtx = PortableQueryCompiler.seedBroadcastThreshold(spark, ctx, model)
  for {
   sourceDf <- resolveSource(model.source)
   filtered <- applyFilters(sourceDf, model.filters)
-  joined  <- applyJoins(filtered, model.joins, ctx)
+  joined  <- applyJoins(filtered, model.joins, seededCtx)
   aggregated <- applyAggregations(joined, model)
  } yield aggregated
  }
@@ -197,16 +206,25 @@ class PortableQueryCompiler(val spark: SparkSession)
  // the `Either[ModelValidationError, Unit]` return type forces the
  // caller to handle the validation result at compile time (no
  // silent null / no try-catch / no runtime `UNRESOLVED_COLUMN`).
+ // The 5-arg overload has the Model in scope, so it can apply the
+ // broadcast seed. The 2-arg / 3-arg overloads only see a `RelOp`
+ // (no Model, no `joins[].estimatedRows`); direct callers of those
+ // overloads must seed `ctx.joinHints.broadcastRightBelowBytes`
+ // themselves — request-layer paths (`SparkEngineProvider.query` and
+ // `compileModelToDataFrame`) and `SparkBroadcastSeedSpec` fixtures
+ // already do so before delegating.
  def compileRelOp(
   model:   io.sm8.core.model.Model,
   relOp:   io.sm8.core.rel.RelOp,
   ctx:   EngineContext,
   scan:   io.sm8.core.engine.ResolvedSource.Scan,
-  preFilteredDf: Option[org.apache.spark.sql.DataFrame]): Either[EngineError, DataFrame] =
+  preFilteredDf: Option[org.apache.spark.sql.DataFrame]): Either[EngineError, DataFrame] = {
+ val seededCtx = PortableQueryCompiler.seedBroadcastThreshold(spark, ctx, model)
  io.sm8.core.model.ModelValidator.validateAgainstSchema(model, scan).left.map(e => EngineError.UnsupportedCapability(
   engine  = "spark-connector",
   capability = "ModelValidator.validateAgainstSchema",
-  message = e.message)).flatMap(_ => compileRelOp(relOp, ctx, preFilteredDf))
+  message = e.message)).flatMap(_ => compileRelOp(relOp, seededCtx, preFilteredDf))
+ }
 
 /** Aggregate -> DataFrame: for the GAP-5 minimum, we use the
  * `compileRelOpAggregateSubtree` helper that recursively walks
@@ -739,5 +757,99 @@ def renderAggregate(call: AggregateCall): Either[EngineError, Column] = {
  ).toArray
  if (dimNames.isEmpty) df
  else df.select(dimNames.map(name => df.col(name)): _*)
+ }
+}
+
+object PortableQueryCompiler extends java.io.Serializable {
+
+ /** Default broadcast seed threshold (10 MiB), matching Spark's
+  * `spark.sql.autoBroadcastJoinThreshold` default. Used when no
+  * session-supplied threshold is available and no plugin oracle
+  * provides one.
+  */
+ val BroadcastSeedDefaultBytes: Long = 10L * 1024L * 1024L
+
+ /**
+  * Arms the adapter's broadcast byte-gate when the model declares
+  * any join `estimatedRows` (inline presence rule) OR when a
+  * plugin's PreExecute hook armed the broadcast oracle (typed
+  * transport via `EngineContext.decisionHints`).
+  *
+  * The estimate is an ARM (presence), not a value: the runtime
+  * `sizeInBytes` check stays authoritative, so a large side is
+  * never physically broadcast. Caller/hook-set hints always win
+  * over the seed; `preferredStrategy` is untouched (the Cross
+  * + strategy rejection guard is never triggered).
+  *
+  * Oracle precedence: when the broadcast oracle is present
+  * (`Some(b)`), the oracle's arm Boolean wins over the inline
+  * presence rule; when present, the oracle's threshold bytes
+  * win over the session `autoBroadcastJoinThreshold` default.
+  * `None` on either field preserves today's behavior (inline arm +
+  * session default).
+  *
+  * The null-spark path (the supported config-less smoke used by
+  * tests like `PortableQueryCompilerSpec`) returns `eCtx` unchanged —
+  * no seed is meaningful when there is no live SparkSession to
+  * consult for the operator-disabled sentinel or the session default.
+  *
+  * @param spark the connected Spark session whose configured
+  *              auto-broadcast threshold seeds the gate when no
+  *              oracle threshold is provided; `null` is allowed
+  *              (the smoke path returns `eCtx` unchanged)
+  * @param eCtx the possibly-hint-bearing engine context
+  * @param model the query model (join estimates consulted by the
+  *              inline presence rule)
+  * @return the context with a seeded broadcast threshold if armed
+  */
+ def seedBroadcastThreshold(
+  spark: org.apache.spark.sql.SparkSession,
+  eCtx:  io.sm8.core.engine.EngineContext,
+  model: io.sm8.core.model.Model
+ ): io.sm8.core.engine.EngineContext = {
+  if (spark == null) eCtx
+  else {
+   val broadcastOracle = eCtx.decisionHints
+   val oracleArm: Option[Boolean]    = broadcastOracle.flatMap(_.broadcastArmed)
+   val oracleThreshold: Option[Long] = broadcastOracle.flatMap(_.broadcastThresholdBytes)
+   val sessionThreshold: Long = oracleThreshold.getOrElse(
+    try {
+     val raw = spark.conf.get("spark.sql.autoBroadcastJoinThreshold")
+     val v = raw.stripSuffix("b").stripSuffix("B").toLong
+     // PR-197 (Round 1 audit MED F-03): Spark's `-1` is the
+     // "disable the auto-broadcast heuristic" sentinel; the
+     // pre-PR-197 shape fell through to `BroadcastSeedDefaultBytes`
+     // (10 MiB), which silently re-enabled broadcast on operators
+     // who explicitly disabled it. Honor the operator intent: when
+     // the session threshold is `-1` (or any value <= 0), the
+     // inline arm is also disarmed (see `operatorDisabledBroadcast`
+     // below). The branch here returns the default for non-`-1`
+     // parse failures only.
+     if (v > 0L) v else BroadcastSeedDefaultBytes
+    } catch {
+     case _: NoSuchElementException => BroadcastSeedDefaultBytes
+     case _: NumberFormatException  => BroadcastSeedDefaultBytes
+    })
+   // PR-197 (Round 1 audit MED F-03): detect the `-1` disable
+   // sentinel explicitly so an operator who disabled Spark's
+   // auto-broadcast isn't silently re-armed by the inline rule.
+   val operatorDisabledBroadcast: Boolean =
+    try {
+     val raw = spark.conf.get("spark.sql.autoBroadcastJoinThreshold")
+     raw.stripSuffix("b").stripSuffix("B").trim.toLong == -1L
+    } catch {
+     case _: NumberFormatException  => false
+     case _: NoSuchElementException => false
+    }
+   val armed: Boolean = oracleArm.getOrElse(
+    if (operatorDisabledBroadcast) false
+    else model.joins.exists(_.estimatedRows.isDefined)
+   )
+   val seeded: Option[Long] = eCtx.joinHints.broadcastRightBelowBytes.orElse(
+    if (armed) Some(sessionThreshold) else None
+   )
+   if (seeded == eCtx.joinHints.broadcastRightBelowBytes) eCtx
+   else eCtx.copy(joinHints = eCtx.joinHints.copy(broadcastRightBelowBytes = seeded))
+  }
  }
 }
