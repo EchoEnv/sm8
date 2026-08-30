@@ -377,6 +377,16 @@ object Main {
    * race window where a SIGTERM arriving between the two calls
    * orphaned the resources.
    *
+   * Exception propagation: `run()` catches `IllegalStateException`
+   * from `transport.start` only. A `TimeoutException` from the
+   * 30 s bind future (see [[io.sm8.platform.query.HttpTransport.start]])
+   * or an NPE from `RestateHttpServer.fromEndpoint` propagates to
+   * `main()`. This is intentional: the hook is registered, so JVM-exit
+   * cleanup still fires even when the exception escapes `run()`.
+   * `transport.stop()` is a no-op on an unstarted transport (see
+   * [[io.sm8.platform.query.HttpTransport.stop]]), so the hook body
+   * does not throw on a partial boot.
+   *
    * Idempotency guarantees:
    *  - `HttpTransport.stop()` no-ops when `server.isDefined == false`
    *    (never started or already stopped); safe to call even if
