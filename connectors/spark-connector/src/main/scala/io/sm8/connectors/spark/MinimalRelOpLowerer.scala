@@ -83,7 +83,7 @@ final class MinimalRelOpLowerer(
  val spark: SparkSession,
  val pc:  PortableQueryCompiler,
  val identity: EngineIdentity = EngineIdentity(
-  name = "spark-3.5", nativeVersion = "3.5", engineAdapterVersion = "0.1.0")) extends java.io.Serializable {
+  name = SparkEngineConstants.DescriptorName, nativeVersion = "3.5", engineAdapterVersion = SparkEngineConstants.AdapterVersion)) extends java.io.Serializable {
 
  // PR-M5: the single source of truth for RelOp -> DataFrame lowering.
  // Per-node methods below. `lower` is a thin delegator.

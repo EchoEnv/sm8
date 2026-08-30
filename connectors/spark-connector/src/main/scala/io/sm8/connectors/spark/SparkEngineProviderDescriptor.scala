@@ -41,9 +41,9 @@ class SparkEngineProviderDescriptor
 
  override lazy val identity: EngineIdentity =
  EngineIdentity(
-  name     = "spark-3.5",
-  nativeVersion  = "<uninitialized>",
-  engineAdapterVersion = "0.1.0")
+  name     = SparkEngineConstants.DescriptorName,
+  nativeVersion  = SparkEngineConstants.UnrealizedNativeVersion,
+  engineAdapterVersion = SparkEngineConstants.AdapterVersion)
 
  override val available: Boolean = false
 
@@ -58,20 +58,21 @@ class SparkEngineProviderDescriptor
  * compatibility with PR-O4g callers; new code should use `realizeTyped`.
  *
  * PR-197 (Round 1 audit HIGH-2): the realized provider's
- * `identity.name` is now `"spark"` (the wire-stable engine name) rather
- * than the adapter-version literal `"spark-3.5"`. This prevents the
- * realized provider's identity from diverging from the URL parser's
- * wire-stable name. The descriptor's own identity
- * (`SparkEngineProviderDescriptor.identity`) still carries `"spark-3.5"`
- * because the descriptor IS the adapter-version SPI entry point —
- * distinct from the runtime-realized provider's identity.
+ * `identity.name` is now the wire-stable engine name (`"spark"`, via
+ * `SparkEngineConstants.WireName`) rather than the adapter-version
+ * literal. This prevents the realized provider's identity from
+ * diverging from the URL parser's wire-stable name. The descriptor's
+ * own identity (`SparkEngineProviderDescriptor.identity`) still
+ * carries the adapter-version literal because the descriptor IS the
+ * adapter-version SPI entry point — distinct from the
+ * runtime-realized provider's identity.
  */
  override def realize(url: String): Option[EngineProvider] =
  if (url == null || url.trim.isEmpty) None
  else try Some(new SparkEngineProvider(
   spark   = newSparkSession(url),
   bridge   = SparkTypeBridge,
-  sparkEngineName = "spark",
+  sparkEngineName = SparkEngineConstants.WireName,
   hookRunner  = None)) catch {
   case NonFatal(_) => None
  }
@@ -149,5 +150,8 @@ class SparkEngineProviderDescriptor
 
 object SparkEngineProviderDescriptor {
  def identity: EngineIdentity =
- EngineIdentity(name = "spark-3.5", nativeVersion = "unknown", engineAdapterVersion = "0.1.0")
+ EngineIdentity(
+  name     = SparkEngineConstants.DescriptorName,
+  nativeVersion  = SparkEngineConstants.UnrealizedNativeVersion,
+  engineAdapterVersion = SparkEngineConstants.AdapterVersion)
 }

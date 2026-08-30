@@ -50,7 +50,7 @@ import scala.util.control.NonFatal
 final class SparkEngineProvider(
  val spark:   SparkSession,
  val bridge:   SparkTypeBridge.type,
- val sparkEngineName: String = "spark-3.5",
+ val sparkEngineName: String = SparkEngineConstants.WireName,
  // PR-3b (ADR-008-P §C1): optional hook runner wrapping the execute stage.
  // When `None` (bare-deploy shape), the compile runs directly. When `Some`,
  // PreExecute hooks fire before compile (may set ctx.stop), PostExecute
@@ -132,8 +132,8 @@ final class SparkEngineProvider(
  override lazy val identity: io.sm8.core.engine.EngineIdentity =
  io.sm8.core.engine.EngineIdentity(
   name     = sparkEngineName,
-  nativeVersion  = if (spark != null) spark.version else "<uninitialized>",
-  engineAdapterVersion = "0.1.0"
+  nativeVersion  = if (spark != null) spark.version else SparkEngineConstants.UnrealizedNativeVersion,
+  engineAdapterVersion = SparkEngineConstants.AdapterVersion
  )
 
  /** PR-O4g (ADR-008-O): the null-sentinel no-arg ctor is gone.
