@@ -815,7 +815,7 @@ object PortableQueryCompiler extends java.io.Serializable {
    val sessionThreshold: Long = oracleThreshold.getOrElse(
     try {
      val raw = spark.conf.get("spark.sql.autoBroadcastJoinThreshold")
-     val v = raw.stripSuffix("b").stripSuffix("B").toLong
+     val v = SparkConfBytes.parseBytes(raw.trim)
      // PR-197 (Round 1 audit MED F-03): Spark's `-1` is the
      // "disable the auto-broadcast heuristic" sentinel; the
      // pre-PR-197 shape fell through to `BroadcastSeedDefaultBytes`
@@ -827,8 +827,9 @@ object PortableQueryCompiler extends java.io.Serializable {
      // parse failures only.
      if (v > 0L) v else BroadcastSeedDefaultBytes
     } catch {
-     case _: NoSuchElementException => BroadcastSeedDefaultBytes
-     case _: NumberFormatException  => BroadcastSeedDefaultBytes
+     case _: NoSuchElementException       => BroadcastSeedDefaultBytes
+     case _: NumberFormatException        => BroadcastSeedDefaultBytes
+     case _: IllegalArgumentException     => BroadcastSeedDefaultBytes
     })
    // PR-197 (Round 1 audit MED F-03): detect the disable sentinel
    // so an operator who disabled Spark's auto-broadcast isn't
@@ -844,20 +845,33 @@ object PortableQueryCompiler extends java.io.Serializable {
    // matching Spark's own `< 0` semantics. The `0b` case (Spark's
    // "always broadcast" sentinel) is correctly left as enabled
    // — `0L < 0L` is false, so the seed remains free to arm.
-   // Pre-existing limitation (out of PR-209 scope): the hand
-   // parser below does not honor `k`/`m`/`g` suffixes — Spark's
-   // own `Utils.byteStringAsBytes` does. Follow-up PR (PR-210
-   // candidate) should delegate both `operatorDisabledBroadcast`
-   // and the `sessionThreshold` branch above to byteStringAsBytes
-   // to close the false-positive gap on values like `"1g"` or
-   // `"-2m"`.
+   // PR-210: both session reads now go through
+   // [[io.sm8.connectors.spark.SparkConfBytes.parseBytes]], a
+   // connector-local mirror of Spark's own
+   // `ConfigHelpers.byteFromString` (the routine
+   // `SQLConf.bytesConf(ByteUnit.BYTE)` wires for this key) — the
+   // original is `private[spark]`, and the public
+   // `JavaUtils.byteStringAsBytes` rejects a leading `-`, so `-1`
+   // (Spark's documented disable sentinel) would throw instead of
+   // parsing. The replaced hand `stripSuffix("b").stripSuffix("B")
+   // .toLong` parser only accepted plain integers (and Spark's
+   // `10MB` default only worked by accident — the
+   // NumberFormatException fell through to `BroadcastSeedDefaultBytes`,
+   // which happens to equal Spark's default). Any suffixed operator
+   // value (`1g`, `-2m`, `512kb`) threw NumberFormatException and
+   // silently reverted to the defaults — a false positive on both
+   // the threshold and the disable-detection paths. Malformed
+   // values (`abc`) still throw NumberFormatException, so the
+   // existing catch arms (and their documented fallback
+   // semantics) are unchanged.
    val operatorDisabledBroadcast: Boolean =
     try {
      val raw = spark.conf.get("spark.sql.autoBroadcastJoinThreshold")
-     raw.stripSuffix("b").stripSuffix("B").trim.toLong < 0L
+     SparkConfBytes.parseBytes(raw.trim) < 0L
     } catch {
-     case _: NumberFormatException  => false
-     case _: NoSuchElementException => false
+     case _: NumberFormatException        => false
+     case _: NoSuchElementException       => false
+     case _: IllegalArgumentException     => false
     }
    val armed: Boolean = oracleArm.getOrElse(
     if (operatorDisabledBroadcast) false

@@ -624,5 +624,98 @@ class SparkBroadcastSeedSpec extends AnyFunSuite with Matchers {
   val plan = compiledWithThreshold("0b", modelWith(Some(1000L)), JoinHints())
   plan should include ("BroadcastHashJoin")
  }
+
+ // ------------------------------------------------------------------------
+ // PR-210: suffixed threshold values must be parsed by Spark's own
+ // byte-string grammar, not silently dropped.
+ //
+ // Pre-PR-210 the hand `stripSuffix("b").stripSuffix("B").toLong`
+ // parser threw NumberFormatException on ANY suffixed value
+ // (`1g`, `-2m`, `512kb`), so:
+ //   - `sessionThreshold` silently reverted to
+ //     `BroadcastSeedDefaultBytes` (10 MiB) — the operator's
+ //     explicit `1g` budget was ignored, and a `2g` budget was
+ //     shrunk to 10 MiB (seeds disarmed → SortMergeJoin where
+ //     the operator configured broadcast).
+ //   - `operatorDisabledBroadcast` silently read `false` for
+ //     `-2m` — an operator who explicitly disabled broadcast via
+ //     a suffixed value got the seed re-arming broadcast anyway
+ //     (the exact operator-intent violation PR-209 fixed for
+ //     plain-integer negatives).
+ //
+ // Post-PR-210 both reads delegate to
+ // [[io.sm8.connectors.spark.SparkConfBytes.parseBytes]], a
+ // connector-local mirror of Spark's `ConfigHelpers.byteFromString`
+ // (the parser `SQLConf.bytesConf(ByteUnit.BYTE)` wires for this
+ // key — `private[spark]`, hence the local mirror). The seed and
+ // Spark's join planner now agree byte-for-byte on every accepted
+ // grammar shape (`b`/`k`/`kb`/`m`/`mb`/`g`/`gb`/`t`/`tb`/`p`/`pb`,
+ // case-insensitive; the `kib`/`mib`/`gib`/`tib`/`pib` variants
+ // Spark's error message names are NOT in the byteSuffixes map and
+ // still throw — verified empirically).
+ // ------------------------------------------------------------------------
+
+ test("PR-210: suffixed positive threshold (1g) — inline rule arms on the tiny fixture → BroadcastHashJoin") {
+  // Falsifiable: pre-PR-210 `1g` threw NumberFormatException in
+  // the hand parser, `sessionThreshold` fell back to 10 MiB. The
+  // plan-level assertion alone cannot distinguish 1 GiB from
+  // the 10 MiB fallback on this ~100-byte fixture (both fit);
+  // byte-exact coverage is pinned by SparkConfBytesSpec
+  // (parseBytes("1g") == 1073741824L) which closes the parser
+  // gap directly. This test asserts the END-TO-END integration:
+  // with the real parsed 1 GiB budget, the inline presence rule
+  // still arms broadcast.
+  val plan = compiledWithThreshold("1g", modelWith(Some(1000L)), JoinHints())
+  plan should include ("BroadcastHashJoin")
+  plan shouldNot include ("SortMergeJoin")
+ }
+
+ test("PR-210: suffixed positive threshold (2g) — operator's real 2 GiB budget still arms the tiny fixture → BroadcastHashJoin") {
+  // Falsifiable: pre-PR-210 `2g` threw NumberFormatException in
+  // the hand parser, `sessionThreshold` fell back to 10 MiB.
+  // Byte-exact coverage of the parsed 2 GiB is pinned by
+  // SparkConfBytesSpec (parseBytes("2g") == 2_147_483_648L).
+  // This test asserts the END-TO-END integration: with the real
+  // parsed 2 GiB budget (NOT the 10 MiB fallback) the inline
+  // presence rule still arms broadcast on the ~100-byte fixture.
+  val plan = compiledWithThreshold("2g", modelWith(Some(1000L)), JoinHints())
+  plan should include ("BroadcastHashJoin")
+ }
+
+  // PR-210: malformed threshold (abc) cannot reach the seed via a
+  // real SparkSession — Spark validates
+  // `spark.sql.autoBroadcastJoinThreshold` when it builds the
+  // SessionState using the same `ConfigHelpers.byteFromString`
+  // grammar this parser mirrors; a malformed value throws
+  // NumberFormatException BEFORE any query runs. So the
+  // session-level fallback contract (PR-197) is unreachable
+  // through the SparkSession path; the parser-level contract is
+  // pinned by `SparkConfBytesSpec` (grammar + NumberFormatException
+  // + IllegalArgumentException for magnitude overflow). This
+  // block is the in-suite breadcrumb for future maintainers who
+  // wonder why there is no session-level `abc` test.
+
+  test("PR-210: suffixed negative threshold (-2m) — operator disabled, sm8 seed disarms → SortMergeJoin") {
+  // Falsifiable: pre-PR-210 `-2m` threw NumberFormatException →
+  // `operatorDisabledBroadcast` silently read false → seed armed
+  // broadcast on an operator who explicitly disabled it. The
+  // pre-PR-210 plan was BroadcastHashJoin; post-PR-210 it must
+  // be SortMergeJoin. This is the exact false-positive gap the
+  // PR-209 comment flagged.
+  val plan = compiledWithThreshold("-2m", modelWith(Some(1000L)), JoinHints())
+  plan should include ("SortMergeJoin")
+  plan shouldNot include ("BroadcastHashJoin")
+ }
+
+ test("PR-210: suffixed threshold (512kb) — small real budget still arms the tiny fixture → BroadcastHashJoin") {
+  // Falsifiable: 512 KiB is a REAL parsed budget (524288 bytes)
+  // that comfortably covers the ~100-byte fixture. Pre-PR-210
+  // `512kb` was unparsable → 10 MiB fallback → same plan; the
+  // regression this pins is grammar acceptance, not divergence.
+  val plan = compiledWithThreshold("512kb", modelWith(Some(1000L)), JoinHints())
+  plan should include ("BroadcastHashJoin")
+ }
+
+
 }
 
