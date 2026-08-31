@@ -53,7 +53,7 @@ NOISE_PATTERNS = [
     (r"\bis\s+replaced\s+with\b", "narrates a diff (\"replaced with\") instead of describing current state"),
     (r"\bearlier\s+internal-only\s+version", "references internal version history"),
     (r"\[\[[a-z0-9]+(-[a-z0-9]+)+\]\]", "double-bracket reference looks like a skill/tool name, not a Scala symbol"),
-    (r"\bper\s+scala-(?:jvm-safety|spark-batch-bugs|error-handling|data-drivenrefactor|jar-packaging|perf-testing|scala2-scaladoc)(?:\s+§\d+|\b)", "bare skill-citation in .scala source (per scala-X §N) — should use `[[scala-X]]` wiki-link form instead"),
+    (r"\bper\s+scala-(?:jvm-safety|spark-batch-bugs|error-handling|data-driven-refactor|jar-packaging|perf-testing|2-scaladoc)(?:\s+§\d+|\b)", "bare skill-citation in .scala source (per scala-X §N) — should use `[[scala-X]]` wiki-link form instead"),
 ]
 
 COMPILED = [(re.compile(p, re.IGNORECASE), reason) for p, reason in NOISE_PATTERNS]

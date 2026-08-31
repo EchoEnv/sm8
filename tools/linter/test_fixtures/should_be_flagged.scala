@@ -25,6 +25,8 @@
 // 2b. Other bare skill-citation forms (matches the broader regex).
 // Per scala-spark-batch-bugs §1 we mirror the bare form.
 // Per scala-error-handling we also flag it.
+// Per scala-data-driven-refactor §2 to prove the typo fix.
+// Per scala-2-scaladoc §3 to prove the 2-scaladoc form is caught.
 
 /* 3. Stable-doc PR handle with process-narration context
  * (this is the .md linter's scope, but a process-narration

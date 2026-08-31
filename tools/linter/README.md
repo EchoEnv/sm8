@@ -32,10 +32,11 @@ catches process narration in stable docs that the original couldn't reach.
 Patterns:
 
 - `was added in PR-NNN` / `introduced in PR-NNN` / `added in PR-NNN` /
-  `merged in PR-NNN` / `fixed in PR-NNN` / `see PR-XYZ` /
-  `sprints in PR-NNN` — stable-doc PR handle with process-narration
-  context. (Plain `PR-123` mentions in cross-references are OK; only the
-  narration phrasing is flagged.)
+  `merged in PR-NNN` / `fixed in PR-NNN` /
+  `See PR-NNN` (standalone, no `in`) /
+  `See PR-NNN in ...` / `sprints in PR-NNN` — stable-doc
+  PR handle with process-narration context. (Plain `PR-123` mentions in
+  cross-references are OK; only the narration phrasing is flagged.)
 - Mixed-letter PR handle with process-narration context
   (bullet starting with mixed-letter handle + colon/period): same
   `(?=[a-zA-Z]\w*\d|\d\w*[a-zA-Z])\w*` lookahead as the .scala linter
@@ -49,6 +50,12 @@ Patterns:
 - `test_fixtures/should_be_flagged.scala` — synthetic .scala with
   examples of the new patterns. Linter should report exit 1 + each
   comment flagged.
+- `test_fixtures/should_be_flagged.md` — synthetic .md with examples
+  of the stable-doc narration patterns (digit-only + mixed-letter + standalone
+  `See PR-NNN`). Linter should report exit 1 with 9 findings (3 digit-only
+  "added/introduced/merged in PR-NNN", 2 mixed-letter "added/fixed in PR-X",
+  2 standalone "See PR-NNN", 2 mixed-letter list-item prefixes). Section D
+  (legitimate cross-references without narration) MUST remain unflagged.
 
 ## Usage
 

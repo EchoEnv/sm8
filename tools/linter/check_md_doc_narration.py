@@ -28,6 +28,7 @@ from pathlib import Path
 # (pattern, human-readable reason)
 NOISE_PATTERNS = [
     (r"\b(?:was added|introduced|added|merged|fixed|see|sprints?)\s+in\s+pr-?\d+\b", "stable-doc PR handle (was added in PR-NNN) — process narration"),
+    (r"\bsee\s+pr-?\d+\b", "stable-doc PR handle (see PR-NNN) — process narration"),
     (r"\b(?:was added|introduced|added|merged|fixed|see|sprints?)\s+in\s+pr-\w*(?=[a-zA-Z]\w*\d|\d\w*[a-zA-Z])\w*\b", "stable-doc PR handle with process-narration context (was added in / introduced in PR-O4g) — process narration"),
     (r"^\s*[-*]\s*PR-\w*(?=[a-zA-Z]\w*\d|\d\w*[a-zA-Z])\w*[:.]", "list item starting with mixed-letter PR handle — process narration"),
 ]
