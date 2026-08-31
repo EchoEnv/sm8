@@ -1,5 +1,12 @@
 # SM8 — Senior Data Engineer Code Review
 
+> **⚠️ Historical snapshot (2026-08-15).** References to
+> `ConnectorContractSpec` / the 4 RFC §12 Connector conformance assertions
+> describe the pre-ADR-011-a codebase; that contract base has since been
+> removed and conformance moved to per-connector `EngineProvider` test
+> suites. Read current architecture from
+> `docs/rfcs/2026-08-12_v1_architecture-spec/` + `docs/adr/0011-a-*`.
+
 **Date:** 2026-08-15
 **Branch:** `main` @ `5b6eb5c`
 **Reviewer scope:** senior data engineer — full reactor (sm8-core, sm8-platform, sm8-cli, all connectors/, all plugins/)

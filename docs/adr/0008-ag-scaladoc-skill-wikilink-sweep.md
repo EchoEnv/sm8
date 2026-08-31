@@ -1,5 +1,11 @@
 # ADR-008-AG: scaladoc sweep — strip skill-wikilink pattern from production source
 
+> **⚠️ Historical snapshot (2026-08-22).** File paths in the tables below (e.g.
+> `io/sm8/sdk/ResultRows.scala`) reflect the tree at the time of the sweep;
+> the `Connector` SDK files have since been removed by ADR-011-a. Read
+> current architecture from `docs/rfcs/2026-08-12_v1_architecture-spec/`
+> + `docs/adr/0011-a-*`.
+
 | Field | Value |
 | **Status** | **v1.0 — mechanical sweep approved (per scala2-scaladoc-mindset §"No internal process noise")** |
 | **Date** | 2026-08-22 |
