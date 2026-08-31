@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.org/POM/4.0.0
+                             http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!--
+    SM8 DuckDB Connector — the engine-portable adapter for DuckDB,
+    the embedded in-process analytical database.
+
+    Layer discipline (RFC §3): this module is the ONLY place allowed
+    to depend on org.duckdb:*. It is an engine connector, not a
+    plugin or hook — it implements the EngineProvider contract via
+    the same descriptor + parser + provider pattern the spark /
+    trino / in-memory connectors use.
+
+    Per scala-spark-batch-bugs §1 + scala-jvm-safety: the JDBC
+    Connection is the only long-lived resource; it is opened lazily
+    per realize(), stored on the provider, and closed in close()
+    (idempotent). No ThreadLocal, no static state.
+
+    DuckDB URLs: jdbc:duckdb:/path/to/db.duckdb (file-backed) or
+    jdbc:duckdb: (in-memory database). Grammar validated in
+    DuckdbEngineUrlParser per RFC adapters.md Rule 4.
+  -->
+
+  <parent>
+    <groupId>io.sm8</groupId>
+    <artifactId>sm8-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <relativePath>../../pom.xml</relativePath>
+  </parent>
+
+  <artifactId>duckdb-connector_2.13</artifactId>
+  <packaging>jar</packaging>
+
+  <name>SM8 DuckDB Connector</name>
+  <description>Engine-portable adapter for DuckDB (embedded in-process analytical database). Realizes EngineProvider over the DuckDB JDBC driver.</description>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.sm8</groupId>
+      <artifactId>sm8-core_2.13</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <!-- DuckDB JDBC driver: bundles native libs for linux_amd64,
+         linux_arm64, osx_universal, windows_amd64 — works on the
+         aarch64 deployment box out of the box. -->
+    <dependency>
+      <groupId>org.duckdb</groupId>
+      <artifactId>duckdb_jdbc</artifactId>
+      <version>1.5.5.1</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.scalatest</groupId>
+      <artifactId>scalatest_${scala.binary.version}</artifactId>
+      <version>${scalatest.version}</version>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- Unified conformance bases (HookContractSpec, PluginContractSpec,
+         AdapterConformanceSpec) from sm8-core's test-jar. -->
+    <dependency>
+      <groupId>io.sm8</groupId>
+      <artifactId>sm8-core_2.13</artifactId>
+      <version>${project.version}</version>
+      <type>test-jar</type>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin><groupId>net.alchim31.maven</groupId><artifactId>scala-maven-plugin</artifactId></plugin>
+      <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-compiler-plugin</artifactId></plugin>
+      <!-- DuckDB connector: no Spark allowed, same as every other
+           connector except spark-connector. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-enforcer-plugin</artifactId>
+        <executions><execution><id>enforce-no-spark</id><goals><goal>enforce</goal></goals></execution></executions>
+        <configuration>
+          <rules>
+            <bannedDependencies>
+              <excludes>
+                <exclude>org.apache.spark:*</exclude>
+              </excludes>
+              <message>
+                DuckDB connector is Spark-free: the `org.apache.spark:*`
+                classpath belongs to `connectors/spark-connector/` (the
+                only reactor module allowed to depend on it). Use
+                `mvn -DexcludeScope=test -pl connectors/duckdb-connector
+                -am dependency:tree` to find the offending transitive
+                dependency.
+              </message>
+            </bannedDependencies>
+          </rules>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.scalatest</groupId>
+        <artifactId>scalatest-maven-plugin</artifactId>
+        <executions><execution><id>test</id><goals><goal>test</goal></goals><phase>test</phase></execution></executions>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-source-plugin</artifactId>
+        <executions><execution><id>attach-sources</id><goals><goal>jar-no-fork</goal></goals></execution></executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>
