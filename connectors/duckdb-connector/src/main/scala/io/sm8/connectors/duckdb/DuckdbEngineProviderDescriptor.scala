@@ -1,5 +1,8 @@
 /*
- * SM8 DuckDB Connector — ServiceLoader descriptor (PR-O4g parity).
+ * SM8 DuckDB Connector — ServiceLoader descriptor. Mirrors the
+ * spark / trino / in-memory connector shape exactly (descriptor
+ * is the SPI-discoverable entry; the heavy `DuckdbEngineProvider`
+ * is the realized provider).
  *
  * The descriptor is the ONLY thing registered via SPI for engine
  * discovery (`META-INF/services/io.sm8.core.engine.EngineProvider`).

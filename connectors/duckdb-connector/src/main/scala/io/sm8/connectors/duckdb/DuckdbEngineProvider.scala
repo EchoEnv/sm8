@@ -6,7 +6,7 @@
  * (`org.duckdb.*`, `java.sql.*`) live ONLY here — no other module
  * sees them.
  *
- * ==Resource lifecycle (scala-jvm-safety §2)==
+ * ==Resource lifecycle==
  *
  * The JDBC `Connection` is opened in `realize`/`realizeTyped` (the
  * realization boundary), stored on the provider, and closed in
@@ -14,7 +14,7 @@
  * Statement/ResultSet resources are scoped per-query with
  * try/finally so a failed query cannot leak them.
  *
- * ==Memory (scala-jvm-safety §3)==
+ * ==Memory==
  *
  * The `jdbc:duckdb:` URL (the default in-memory form) loads ALL data
  * into the JVM heap. This is the right pick for tests and small
@@ -23,7 +23,7 @@
  * to disk. A future contributor reading "in-process" should not
  * assume unlimited memory.
  *
- * ==Closure safety (scala-spark-batch-bugs §1)==
+ * ==Closure safety==
  *
  * `EngineProvider extends Serializable`; the captured `Connection`
  * is `java.sql.Connection` (not serializable at the type level) —
@@ -47,8 +47,7 @@
  * The query is `SELECT * FROM <table>` where `<table>` comes from
  * the model's `SourceRef.ByName.table` (connector-controlled via
  * Model manifests, not user SQL input). The boundary is
- * internal-trust per `scala-error-handling` — no SQL injection
- * surface. */
+ * internal-trust — no SQL injection surface. */
 package io.sm8.connectors.duckdb
 
 import io.sm8.core.engine.{EngineContext, EngineError, EngineIdentity, EngineProvider, EngineUrl, PortableQueryResult, QueryRequest, ResultRow, ResultSchema, ResultValue, TypedRealizationProvider}
@@ -165,7 +164,8 @@ final class DuckdbEngineProvider private[duckdb] (
    * Statement/ResultSet are scoped try/finally per-query (resource
    * safety on every exit path). Any NonFatal JDBC failure surfaces
    * as a typed `EngineError.ConnectionFailed` — never a silent
-   * partial result (scala-error-handling §4).
+   * partial result (typed-error: the caller must pattern-match the
+   * typed `EngineError` variant returned, NOT a generic throwable).
    *
    * @param model   the portable model (named the queried table)
    * @param request the query shape (dimensions/measures/limit)
@@ -192,10 +192,10 @@ final class DuckdbEngineProvider private[duckdb] (
         ))
     }
 
-    // NPE guard (scala-jvm-safety §1): request.model may disagree
-    // with model.name on a malformed call — the queried table is
-    // model.source's table, not request.model's string; both stay
-    // as-is and no cross-check is enforced here (mirror of the
+    // NPE guard: request.model may disagree with model.name on a
+    // malformed call — the queried table is model.source's table,
+    // not request.model's string; both stay as-is and no
+    // cross-check is enforced here (mirror of the
     // other reference engines).
     try {
       val c = connectionOrNull

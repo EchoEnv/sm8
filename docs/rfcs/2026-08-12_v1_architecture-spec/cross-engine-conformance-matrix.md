@@ -2,9 +2,9 @@
 
 > **Status**: this matrix documents the conformance surface of every engine connector in the v1 architecture spec
 > (RFC `docs/rfcs/2026-08-12_v1_architecture-spec/`). The shared base
-> (`AdapterConformanceSpec`) was added in PR-234; the four concrete
-> connector specs + four identity-invariant specs follow. If you add a
-> 5th reference engine, copy the bottom row's column shape verbatim.
+> defines 5 mechanical checks and 9 abstract members that the 4 concrete
+> connector specs + 4 identity-invariant specs each specialize. If you
+> add a 5th reference engine, copy the bottom row's column shape verbatim.
 
 ## 1. The shared base
 
@@ -198,10 +198,9 @@ connector the same minimum; the deep-spec surface is engine-specific.
   (per-connector URL grammar) and the realization contract
 - `sm8-core/src/test/scala/io/sm8/sdk/contract/AdapterConformanceSpec.scala`
   — the shared base (5 mechanical checks, 9 abstract members)
-- `sm8-core/src/main/scala/io/sm8/core/engine/EngineUrl.scala` —
+- `sm8-core/src/main/scala/io/sm8/core/engine/EngineUrl.scala`
   the 4 sealed cases
 - `sm8-core/src/main/scala/io/sm8/core/engine/TypedRealizationProvider.scala`
-  — the typed-realization contract
-- PR-234 introduced the shared conformance base + 4 concrete specs
-- PR-235 added the DuckDB connector (4th reference engine + 4th
-  sealed `EngineUrl.DuckDb` case)
+  + `sm8-core/src/main/scala/io/sm8/core/engine/EngineProvider.scala`
+  — the typed-realization + provider contracts
+- The conformance base + 4 concrete specs (in-memory, trino, spark, duckdb) and the 4th sealed `EngineUrl.DuckDb` case were added together to the v1 conformance surface; this matrix is the consolidating doc.
