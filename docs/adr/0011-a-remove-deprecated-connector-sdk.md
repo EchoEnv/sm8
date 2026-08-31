@@ -1,6 +1,6 @@
 # ADR-011-a: Remove the deprecated `Connector` SDK surface — production pivoted to `EngineProvider`; legacy Pipeline seam retired with it
 
-| **Status** | **Proposed (v0.1 draft — pending dual-reviewer validation)** |
+| **Status** | **Accepted (v0.2 — dual-reviewer scope validation complete; both APPROVE-SCOPE Option A; 3 HIGH blockers resolved, 6 MEDIUM doc-only edits inventoried)** |
 
 ## Context
 
@@ -87,9 +87,18 @@ Specifically:
 
 4. **Trim `Pipeline` / `StageEnv`** — drop the `connectors` param; the
    `Execute` stage's `ConnectorRequest` dispatch arm is removed. The
-   stage keeps its typed-failure behavior for unknown request types
-   (`ConnectorError("-", UnsupportedCapability)` becomes a
-   platform-owned equivalent or is dropped with the type).
+   stage's typed-failure behavior for unknown `Request` subtypes
+   (the `case other` arm — P1-A3-E4 protection against silent
+   pass-through) is **kept** and rewritten to surface a
+   `PipelineError(-, EngineError.UnsupportedCapability)` via the
+   `Result` envelope, independent of the deleted `ConnectorError`.
+   `Pipeline.run`'s stub-empty-result fallback at lines 197-205
+   (built when no stage sets a result, e.g. a pre-hook short-circuit)
+   is replaced by a minimal `StubResult(stage: PipelineStage)`
+   case class extending `Result` — the sentinel is preserved for
+   `HookDispatchSpec`'s short-circuit assertion, which now reads the
+   stage tag off the StubResult instead of asserting against the
+   deleted `ConnectorResult`.
 
 5. **Rewrite 3 live-code specs** to preserve hook / transformer coverage
    without the deprecated seam:
@@ -152,6 +161,46 @@ Specifically:
   hook + transformer contracts, which are NOT deprecated).
 - `Pipeline` itself stays (the in-tree fallback runner per RFC §5 and
   the canonical reference for `HookRunnerOrchestration`).
+- A new `StubResult(stage: PipelineStage) extends Result` is added
+  to preserve the short-circuit sentinel semantics from the deleted
+  `ConnectorResult(name = "", schema = empty, rows = empty)`.
+
+### Doc-only edit sites (must ride the same PR for repo self-consistency)
+
+The blast radius enumeration missed 10 doc-only sites that reference
+the deprecated surface and would go stale post-removal. All ride
+the same PR:
+
+| File | Line | Edit |
+|---|---|---|
+| `sm8-core/src/main/scala/io/sm8/core/model/Model.scala` | 21 | delete unused `import io.sm8.sdk.SemanticQuery` (compile break) |
+| `sm8-core/src/test/scala/io/sm8/core/model/ModelSpec.scala` | 11 | same delete (compile break) |
+| `sm8-core/src/main/scala/io/sm8/sdk/package.scala` | 37 | delete `type ConnectorRequest = io.sm8.core.ConnectorRequest` re-export (compile break) |
+| `sm8-core/src/main/scala/io/sm8/sdk/Plugin.scala` | 9-11, 18-20 | scaladoc rewrite: Plugin.setup registers Hooks / Transformers (not Connectors) |
+| `sm8-core/src/main/scala/io/sm8/sdk/Engine.scala` | 6, 28 | scaladoc rewrite: Engine holds HookManager + TransformerRegistry + Pipeline runner |
+| `sm8-core/src/main/scala/io/sm8/core/schema/SealedDataType.scala` | 14 | scaladoc trim: drop "Connector" from the SDK type enumeration |
+| `sm8-platform/src/main/scala/io/sm8/platform/query/hooks/EngineHookDispatcher.scala` | 212 | historical cite reword: cite ADR-011-a for the removal (replaces "marked deprecated" cite) |
+| `sm8-core/src/main/scala/io/sm8/core/HookManagerImpl.scala` | 17-19, 57-58 | scaladoc rewrite: drop "same pattern as ConnectorRegistryImpl" comparison |
+| `sm8-core/README.md` | 26, 47, 121-128 | SDK table + marker list + Connector code example all removed/replaced |
+| `README.md` (top-level) | 70-76 | FlightsConnector example removed |
+| `plugins/audit-plugin/src/main/scala/io/sm8/plugins/audit/AuditStub.scala` | 18 | stale TrinoConnector breadcrumb dropped |
+
+The architecture-spec RFC (`docs/rfcs/2026-08-12_v1_architecture-spec/semantic-layer-engine-architecture.md`)
+also references `AdapterRegistry` in 19 places + `Adapter` in 13 — section 3 table + section 11 repo structure
+get a same-release fast-follow doc PR replacing `AdapterRegistry` with
+"`EngineRegistry` + `TypedRealizationProvider` (ServiceLoader)".
+
+### Test-rewrite assertion inventory
+
+Pre-rewrite assertion counts (baseline, captured 2026-08-31):
+
+| Spec | Assertions | Action |
+|---|---|---|
+| `EngineSmokeSpec` | 7 | keep 1 (forgiving plugin setup); rewrite 2 (Pipeline `case other` typed-failure + stub-empty-result short-circuit) via new `StubResult` + `PipelineError` envelope; drop 4 (Connector-routing assertions) |
+| `HookDispatchSpec` | 5 | keep 3 (priority / tiebreak / stage isolation — pure `HookManagerImpl`); rewrite 2 (fail-fast + stop-flag) via `ctx.meta` written by a post-hook |
+| `TransformerSwapSpec` | 5 | keep 3 (auto-activate / swap / unknown → None — pure `TransformerRegistry`); rewrite 2 (Pipeline.Format invocation + Plugin-registers-Transformer integration) |
+| 5 plugin `*StubSpec` | 2+2+2+4+6 | keep all "setup registers exactly one hook at stage X" assertions verbatim; rewrite the "fires once per engine.run" tests to count invocations via direct `HookRunner`-style dispatch (no Connector vehicle) |
+| `ConnectorContractSpec` + `StubConnectorSpec` | all | delete (pure Connector fixtures; zero concrete impls extend them outside this repo — verified) |
 
 ## RFC alignment
 
@@ -194,13 +243,30 @@ Specifically:
 
 - `mvn test` full reactor green post-rewrite (baseline 1296 tests;
   expected delta: contract-fixture suites deleted, rewritten suites
-  preserve assertion counts).
+  preserve assertion counts per the table above).
 - Reviewers diff assertion inventories (list of `should` clauses) for
   the 3 rewritten specs + 5 plugin specs before/after.
-- Grep gates: zero references to `io.sm8.sdk.Connector`,
-  `ConnectorRegistry`, `ConnectorSchema`, `ResultRows`,
-  `SemanticQuery`, `ConnectorConfig` anywhere in the repo
-  (main + test).
+- Grep gates (zero hits in repo main + test, excluding `target/`):
+  `io\.sm8\.sdk\.(Connector|ConnectorRegistry|ConnectorSchema|ResultRows|SemanticQuery|ConnectorConfig)`
+  + `engine\.connectors` + `ConnectorRegistryImpl` + `ConnectorRequest`
+  + `ConnectorResult` + `ConnectorError`.
+
+## References
+
+- `docs/adr/0001-0004-engine-portable-architecture.md` §P1-3 (production
+  abstraction pivot to `EngineProvider`)
+- `docs/adr/0008-q-sdk-redesign-rename-phantom-typed.md` (SDK
+  redesign — `Connector` → `EngineProvider` rename lineage)
+- `docs/adr/0008-p-post-review-followup.md` §AR-P1-7 (the
+  deprecation decision this PR honors)
+- `docs/adr/0010-a-enginehookdispatcher-stage-parameter.md` (prior ADR
+  in the same family — the `HookRunnerOrchestration` pattern that
+  drives the live pipeline)
+- `docs/rfcs/2026-08-12_v1_architecture-spec/adapters.md` (the
+  "What an Adapter Is" contract this PR removes from the SDK and
+  re-localizes to the `EngineProvider` family)
+- `docs/rfcs/2026-08-12_v1_architecture-spec/semantic-layer-engine-architecture.md` §3
+  core boundary table (the rule this deletion strengthens)
 
 ## Status
 
