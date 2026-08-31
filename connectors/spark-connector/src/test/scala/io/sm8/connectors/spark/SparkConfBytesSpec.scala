@@ -16,7 +16,7 @@
  * NumberFormatException-on-malformed contract are each pinned by
  * a dedicated case.
  *
- * Per scala-perf-testing: pure string parsing, no SparkSession —
+ * Per [[scala-perf-testing-mindset]]: pure string parsing, no SparkSession —
  * the whole suite runs on the JVM with no Spark context.
  */
 package io.sm8.connectors.spark

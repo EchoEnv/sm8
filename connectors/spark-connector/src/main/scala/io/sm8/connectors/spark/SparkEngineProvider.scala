@@ -955,7 +955,7 @@ private lazy val sparkSourceRegistry: Option[io.sm8.connectors.spark.ModelRegist
  * preallocates a single Array of size n and converts to List
  * once at the end.
  *
- * Per scala-error-handling-mindset: a null Spark cell becomes
+ * Per [[scala-error-handling-mindset]]: a null Spark cell becomes
  * `ResultValue.NullV` (never throws NPE on the boundary).
  */
  private def decodeRow(

@@ -70,7 +70,7 @@ final case class EngineContext(
  // `CachePlugin`'s `EngineHookRequest.cacheKey` consults. When
  // `None` (the default for legacy / bare-deploy paths that bypass
  // `EngineService`), the adapter falls back to its local
- // smoke-test derivation. Per scala-data-driven-refactor-mindset
+ // smoke-test derivation. Per [[scala-data-driven-refactor-mindset]]
  // "data is data": the canonical key is a bijection between
  // request-shape and key, length-prefixed to avoid collisions.
  cacheKey: Option[String] = None) extends Product with Serializable

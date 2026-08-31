@@ -5,7 +5,7 @@
  * `io.sm8.sdk`) with the platform's typed engine-portable shapes
  * (`Model`, `QueryRequest`, `PortableQueryResult`).
  *
- * Per scala-data-driven-refactor-mindset "default to typed
+ * Per [[scala-data-driven-refactor-mindset]] "default to typed
  * carriers": the wrappers are case classes (data only). Plugin
  * authors read `request.model` / `request.mcpRequest` to get the
  * typed values; they write `context.meta` for cross-hook state.

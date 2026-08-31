@@ -6,7 +6,7 @@
 // only sound if a decided-but-ignored field surfaces as a typed
 // `UnsupportedCapability` named by the producing platform meta key.
 //
-// Per scala-data-driven-refactor §3, the duplicated decision-logic
+// Per [[scala-data-driven-refactor-mindset]] §3, the duplicated decision-logic
 // between InMemoryEngineProvider and TrinoEngineProvider is a known
 // refactor target. The pre-PR-202 implementation had this logic
 // duplicated 1:1 in each adapter; PR-202 closed the cross-engine

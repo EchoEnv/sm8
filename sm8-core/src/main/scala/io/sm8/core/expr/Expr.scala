@@ -45,7 +45,7 @@ import io.sm8.core.schema.{Field, SealedDataType}
  * ==Why core (engine-portable)==
  * Expressions are universal across query engines. The engine
  * adapter compiles each case to its native SQL or computation.
- * Per scala-data-driven-refactor, data (the expression) lives in
+ * Per [[scala-data-driven-refactor-mindset]], data (the expression) lives in
  * core; behavior (the compile to SQL) lives in the engine
  * adapter.
  * ==Data-driven mantra compliance==

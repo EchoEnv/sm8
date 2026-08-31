@@ -76,7 +76,7 @@ class TypedDimensionSpec extends AnyFlatSpec with Matchers {
   }
 
   "TypedDimension witness" should "round-trip via the object-level pattern (closure-safe)" in {
-    // Per scala-spark-batch-bugs-mindset §1 (closure-safety): the witness
+    // Per [[scala-spark-batch-bugs-mindset]] §1 (closure-safety): the witness
     // MUST be defined at `object` level. The witness MUST survive
     // ObjectOutputStream round-trip (proves the Spark closure-safe pattern).
     object Refs {

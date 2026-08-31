@@ -13,14 +13,14 @@
  * Matches the pattern set by `EngineRegistry` and
  * `EngineProvider` (PR-C0c).
  *
- * Per scala-jvm-safety-mindset: deterministic across JVM
+ * Per [[scala-jvm-safety-mindset]]: deterministic across JVM
  * restarts (SHA-256, not `hashCode` which is JVM-instance-specific).
  *
  * Per scala-impact-analysis-mindset: pure additive. 0 callers
  * in our reactor today (PR-C5b-ext-β will wire `EngineService.runQuery`
  * to use it). Legacy stays in `/tmp/semanticdf`.
  *
- * Per scala-jar-packaging-mindset: no new Maven deps. JDK's
+ * Per [[scala-jar-packaging-mindset]]: no new Maven deps. JDK's
  * `java.security.MessageDigest` is part of the standard library.
  *
  * ==Length-prefix encoding (collision-safe)==
@@ -70,7 +70,7 @@ object CacheBridge {
    * isolation bug).
    *
    * SHA-256 over a length-prefixed concatenation of the fields.
-   * Per scala-data-driven-refactor-mindset "data is data":
+   * Per [[scala-data-driven-refactor-mindset]] "data is data":
    * the canonical form must be a bijection between request-shape
    * and key (no two distinct request shapes may share a key). A
    * delimiter-only encoding admits `List("a,b") == List("a","b")`

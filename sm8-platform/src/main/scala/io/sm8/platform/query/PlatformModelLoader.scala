@@ -38,7 +38,7 @@
  *
  * ==Spark concerns (per user directive)==
  *
- * Per scala-spark-batch-bugs-mindset mantras:
+ * Per [[scala-spark-batch-bugs-mindset]] mantras:
  * - mantras #1, #5: no Spark types captured, no executor-side
  *   closure. Pure data in sm8-platform.
  * - mantra #3 (schema-drift verify at boundary): typed
@@ -67,11 +67,11 @@ import io.sm8.core.model.Model
 /**
  * Typed parse-error ADT for the platform-layer model loader.
  *
- * Per scala-data-driven-refactor-mindset: pure data, no
+ * Per [[scala-data-driven-refactor-mindset]]: pure data, no
  * behavior. Each case carries the underlying `CoreManifestError`
  * so callers can pattern-match on either layer.
  *
- * Per scala-error-handling-mindset "errors are data": this
+ * Per [[scala-error-handling-mindset]] "errors are data": this
  * is the SHAPE layer at the platform boundary; the platform
  * callers pattern-match on it OR map to `EngineError`.
  */

@@ -12,7 +12,7 @@
  * types, same JSON serialization (Jackson maps case-class
  * constructor params identically to Java record components).
  *
- * Per scala-data-driven-refactor-mindset (pure data): no
+ * Per [[scala-data-driven-refactor-mindset]] (pure data): no
  * methods beyond the auto-derived ones (equals, hashCode, copy,
  * toString, productElement, productArity). `Product with Serializable`
  * for transport + cache round-trip.
@@ -23,7 +23,7 @@
  * canonical form going forward; PR-C5+ will route the legacy
  * callers through it.
  *
- * Per scala-jvm-safety-mindset: all fields are `String` or
+ * Per [[scala-jvm-safety-mindset]]: all fields are `String` or
  * `List[String]` — no null at the field level; `Option` is
  * applied at the BUILD boundary (PR-C5a's `buildMCPRequest`).
  */

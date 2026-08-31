@@ -133,7 +133,7 @@ class QueryPartsSpec extends AnyFlatSpec with Matchers {
     ComparisonOp.GE shouldBe a [ComparisonOp]
   }
 
-  it should "be Serializable (per scala-spark-batch-bugs §1 closure-safety)" in {
+  it should "be Serializable (per [[scala-spark-batch-bugs-mindset]] §1 closure-safety)" in {
     val baos = new ByteArrayOutputStream(64)
     val oos  = new ObjectOutputStream(baos)
     oos.writeObject(ComparisonOp.GT); oos.close()

@@ -430,7 +430,7 @@ class MainSpec extends AnyFunSuite with Matchers {
     //    (the `AtomicReference[Map[String, Any]]` and the
     //    `Context.meta`) is `Serializable`; the hook closures
     //    serialize correctly per ADR-0008-ah.
-    //  - Per scala-jvm-safety: `Context.meta` is non-null by SDK
+    //  - Per [[scala-jvm-safety-mindset]]: `Context.meta` is non-null by SDK
     //    contract (default `Map.empty`); the test plugins do not
     //    introduce any NPE surface.
     //  - Per scala-impact-analysis: layer discipline — this test

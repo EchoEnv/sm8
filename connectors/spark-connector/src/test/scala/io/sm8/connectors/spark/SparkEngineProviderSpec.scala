@@ -1,7 +1,7 @@
 /*
  * SM8 Spark Engine Provider spec - closure-safety + contract.
  *
- * Per scala-spark-batch-bugs-mindset mantra #1 ("closures
+ * Per [[scala-spark-batch-bugs-mindset]] mantra #1 ("closures
  * captured by Spark UDFs / lambdas in Dataset.map must avoid
  * non-serializable refs"): the provider constructor captures a
  * SparkSession. Spark 3.5.x + 4.1.x guarantee SparkSession is
@@ -61,7 +61,7 @@ class SparkEngineProviderSpec extends AnyFunSuite with Matchers {
   }
 
   test("SparkEngineProvider: extends EngineProvider which extends Serializable - captured SparkSession ref (null here) survives ObjectOutputStream round-trip") {
-    // Per scala-spark-batch-bugs-mindset mantra #1: the trait
+    // Per [[scala-spark-batch-bugs-mindset]] mantra #1: the trait
     // `EngineProvider extends Serializable` is the contract.
     // The provider class itself declares `extends java.io.Serializable`
     // via the trait. The round-trip proves the contract holds.
@@ -123,7 +123,7 @@ class SparkEngineProviderSpec extends AnyFunSuite with Matchers {
     out2.toOption.get should include ("SM8 Plan: test-model")
   }
   test("SparkEngineProvider: query() happy path returns Right(PortableQueryResult) from a real SparkSession table") {
-    // Per scala-spark-batch-bugs-mindset mantra #3 (schema drift
+    // Per [[scala-spark-batch-bugs-mindset]] mantra #3 (schema drift
     // - verify at the boundary): the schema field types come
     // from the actual compiled DataFrame.schema, not from
     // caller-supplied dimensions/measures. The result schema

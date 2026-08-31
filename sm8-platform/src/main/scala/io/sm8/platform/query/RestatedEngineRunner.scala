@@ -107,7 +107,7 @@ object RestatedEngineRunner {
    * that any non-handler caller (tests, CLI driver, dev mode)
    * will exercise.
    *
-   * Per scala-error-handling-mindset: supplier exceptions
+   * Per [[scala-error-handling-mindset]]: supplier exceptions
    * propagate to the caller (no swallow). The supplier is
    * responsible for idempotency under replay — `Restate.run`
    * semantics land in the follow-up PR.
@@ -145,7 +145,7 @@ object RestatedEngineRunner {
   /**
    * Probe for a Restate handler-thread context.
    *
-   * Per scala-jvm-safety-mindset "null is a liar": the v2.x
+   * Per [[scala-jvm-safety-mindset]] "null is a liar": the v2.x
    * SDK provides no `RestateContext.current()` static method
    * (verified by JAR inspection of `sdk-common` + `sdk-core`
    * at v2.1.1). The follow-up handler-class PR must set up a

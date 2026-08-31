@@ -26,7 +26,7 @@
  *
  * ==Handler-thread context==
  *
- * Per scala-jvm-safety-mindset "null is a liar": the SDK does
+ * Per [[scala-jvm-safety-mindset]] "null is a liar": the SDK does
  * NOT expose a `RestateContext.current()` static (verified by JAR
  * inspection of sdk-common + sdk-core at v2.1.1). The handler body
  * operates on the `HandlerContext` argument the SDK passes in —
@@ -37,7 +37,7 @@
  *
  * ==Serializable hygiene==
  *
- * Per scala-spark-batch-bugs-mindset "closures": Restate's
+ * Per [[scala-spark-batch-bugs-mindset]] "closures": Restate's
  * journal rehydration requires the handler's captured `Model`,
  * `EngineRegistry`, and `ResultCache` to be `Serializable`.
  * All are already verified Serializable by
@@ -81,7 +81,7 @@ object QueryService {
    * `ServiceDefinition` is returned so the caller can register it
    * on a Restate HTTP server.
    *
-   * Per scala-data-driven-refactor-mindset "sealed-trait dispatch":
+   * Per [[scala-data-driven-refactor-mindset]] "sealed-trait dispatch":
    * the JDK `ServiceType.SERVICE` enum pick + `HandlerType.SHARED`
    * dispatch deterministically picks the wire shape (parallels
    * the legacy v1.x `@Service` annotation).
@@ -133,7 +133,7 @@ object QueryService {
     val resultSerde  = jacksonSerdeFactory.create(classOf[QueryResult])
 
     // -- Construct EngineImpl + register caller-supplied plugins --
-    // Per scala-data-driven-refactor-mindset "Plugin unit of
+    // Per [[scala-data-driven-refactor-mindset]] "Plugin unit of
     // extension": each plugin's `setup(engine)` registers its
     // hooks via `engine.hooks.registerPreHook` / `registerPostHook`.
     // The platform does NOT hardcode which plugins run — the
@@ -179,7 +179,7 @@ object QueryService {
    * invocation time (via `HandlerRunner.of(fn, serdeFactory,
    * options)`).
    *
-   * Per scala-error-handling-mindset: the legacy Java code
+   * Per [[scala-error-handling-mindset]]: the legacy Java code
    * threw `RuntimeException` on engine errors; we use the SDK's
    * `TerminalException` (mapped from `EngineError` via
    * `engineErrorCode`) so the journal + retry path preserves the
@@ -187,7 +187,7 @@ object QueryService {
    * return once the @Handler signature supports it (currently the
    * SDK requires `RES` to be JSON-serializable).
    *
-   * Per scala-jvm-safety-mindset "null is a liar": we don't
+   * Per [[scala-jvm-safety-mindset]] "null is a liar": we don't
    * capture the `HandlerContext` — the handler body is a pure
    * function of `(request, model, registry, cache)`. The cache
    * HIT path uses the global `InMemoryResultCache`; the engine
@@ -204,7 +204,7 @@ object QueryService {
    * retry, which is exactly what the SDK's journaled-retry
    * design is meant to AVOID.
    *
-   * Per scala-error-handling-mindset "errors are data":
+   * Per [[scala-error-handling-mindset]] "errors are data":
    * the engine's `EngineError.QueryTimedOut` already maps to HTTP
    * 504 (see `engineErrorCode` below). The wire contract is
    * honest: the journal re-runs the engine call on retry; the
@@ -238,7 +238,7 @@ object QueryService {
         // `TerminalException` to preserve the typed ErrorCode in
         // the journal + retry path. `RuntimeException(err.toString)`
         // would lose the 11-subtype EngineError structure.
-        // Per scala-error-handling-mindset "errors are data":
+        // Per [[scala-error-handling-mindset]] "errors are data":
         // a typed-error wire contract is the goal; the SDK v2.x
         // currently requires JSON-serializable `RES`, so we land
         // here as a TerminalException throw (logged + retryable
@@ -256,7 +256,7 @@ object QueryService {
    * failures and client-side errors (4xx) only for inputs that
    * the engine itself rejected.
    *
-   * Per scala-data-driven-refactor-mindset "sealed-trait dispatch":
+   * Per [[scala-data-driven-refactor-mindset]] "sealed-trait dispatch":
    * the match is exhaustive over the 13 EngineError variants —
    * the compiler enforces this if a new variant is added.
    */

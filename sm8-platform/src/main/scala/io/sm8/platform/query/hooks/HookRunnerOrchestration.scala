@@ -42,7 +42,7 @@
  *   Subsequent mutations reuse the case-class copy.
  * - No `var`, no `ThreadLocal`, no mutable maps.
  *
- * Per scala-data-driven-refactor-mindset "sealed-trait dispatch":
+ * Per [[scala-data-driven-refactor-mindset]] "sealed-trait dispatch":
  * the only branching is the match on `stage == PipelineStage.Execute`
  * for the executor-thunk choice and the `ctx.stop` short-circuit.
  *

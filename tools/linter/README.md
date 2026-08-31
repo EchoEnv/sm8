@@ -69,6 +69,10 @@ python3 tools/linter/check_scaladoc_noise.py <file_or_dir>
 # PR-246 new sibling (in this repo; .md only)
 python3 tools/linter/check_md_doc_narration.py <file_or_dir>
 
+# PR-247 rewrite helper: convert bare `Per scala-X` citations to `[[scala-X-mindset]]`
+# wiki-link form. Rewrites in place; verify the diff before committing.
+python3 tools/linter/apply_linter_skill_citations.py <file_or_dir>
+
 # CI integration (suggested)
 mvn -q \
   -pl none \
@@ -81,3 +85,29 @@ mvn -q \
 
 (The CI integration example isn't wired up in this PR — that's a
 follow-up if the team wants lint-as-CI.)
+
+## PR-247: skill-citation carve-out + rewrite helper
+
+The `[[scala-X-mindset]]` wiki-link form is the sm8 convention for skill
+citations (used 30+ times across the codebase). The generic
+"double-bracket reference" pattern in `check_scaladoc_noise.py` would
+otherwise flag every wiki-link form, contradicting the bare-citation pattern
+that says "use `[[scala-X]]` form."
+
+PR-247 adds a precise carve-out in `check_scaladoc_noise.py`: the
+`[[scala-X-mindset]]` and `[[scala-X]]` forms for the 7 known skill names
+(jvm-safety, spark-batch-bugs, error-handling, data-driven-refactor,
+jar-packaging, perf-testing, 2-scaladoc) are NOT flagged. Any other
+double-bracket reference (including `[[scala-foo-bar-baz]]` for an
+unknown skill) still matches.
+
+The `apply_linter_skill_citations.py` script mechanically converts bare
+`Per scala-X` and `Per scala-X §N` citations to the wiki-link form, and
+also fixes the pre-existing `Per scala-error-handlingmindset` typo (missing
+hyphen between `handling` and `mindset`).
+
+### PR-247 fixture
+
+- `test_fixtures/skill_citations_input.scala` — input fixture with 6 variants
+  (bare, `§N`, `-mindset`, `-mindset mantra #N`, typo, lowercase `per`).
+- `test_fixtures/skill_citations_expected.scala` — expected output.

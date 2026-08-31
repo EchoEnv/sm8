@@ -108,7 +108,7 @@ private[server] final class MetaCaptureObserver(
    *    (NPE on null iterator; `context.meta.iterator` is non-null
    *    per `Map.empty` default).
    *  - O(n) time + space where n = `context.meta.size`; runs once
-   *    per query at PostExecute (negligible per scala-perf-testing).
+   *    per query at PostExecute (negligible per [[scala-perf-testing-mindset]]).
    *  - The snapshotted value is a fresh `scala.collection.immutable
    *    .HashMap` which IS Serializable (closure-safety: the existing
    *    `target: AtomicReference` capture is unchanged; the

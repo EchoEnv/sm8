@@ -76,7 +76,7 @@ class HttpTransportSpec extends AnyFunSuite with Matchers {
   // -- Spark concerns + closure safety (per user directive) --
 
   test("HttpTransport: captures only typed case-class-derived Serializable (per ADR-006 closure-safety)") {
-    // Per scala-spark-batch-bugs-mindset mantra #1: the captured
+    // Per [[scala-spark-batch-bugs-mindset]] mantra #1: the captured
     // Model + EngineRegistry are case-class-derived and Serializable.
     // Per ADR-006 + the prior smoke test in PR #51 + PR #57: the
     // typed pipeline IS serializable. The HTTP transport holds NO
@@ -102,7 +102,7 @@ class HttpTransportSpec extends AnyFunSuite with Matchers {
 
   // -- Spark concerns + driver/executor boundary (per user directive) --
 
-  test("HttpTransport: per scala-spark-batch-bugs-mindset mantra #5, the HTTP server is the BOUNDARY between driver-side (engine) and client-side (wire)") {
+  test("HttpTransport: per [[scala-spark-batch-bugs-mindset]] mantra #5, the HTTP server is the BOUNDARY between driver-side (engine) and client-side (wire)") {
     // Per ADR-006: the HTTP transport is in sm8-platform, NOT core.
     // It composes typed EngineRegistry. The selected engine
     // (SparkEngineProvider per connectors/spark-connector/) compiles

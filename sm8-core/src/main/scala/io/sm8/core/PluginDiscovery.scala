@@ -51,12 +51,12 @@ import io.sm8.sdk.Plugin
  * point that lets sm8-server trigger `discoverFromConfig()`
  * without naming the concrete `EngineImpl` class.
  *
- * Per scala-data-driven-refactor-mindset §1: this is a pure
+ * Per [[scala-data-driven-refactor-mindset]] §1: this is a pure
  * factory — it does no caching, holds no state, and is safe
  * to call multiple times. The underlying `EngineImpl` is
  * created per call (no leak risk across hot-reload).
  *
- * Per scala-error-handlingmindset §1 (errors are data): on a
+ * Per [[scala-error-handling-mindset]] §1 (errors are data): on a
  * misconfigured boot (malformed `sm8.plugins.allowed`, SPI
  * errors), this method logs and returns `Nil` rather than
  * throwing — the caller treats an empty plugin list as a

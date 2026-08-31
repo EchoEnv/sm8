@@ -11,7 +11,7 @@
  * - decodeRow hot path: preallocated Array[ResultValue](n),
  *   no per-cell allocation
  * - collect() stays in driver process; no executor-side closure
- *   capture (per scala-spark-batch-bugs-mindset mantra #5)
+ *   capture (per [[scala-spark-batch-bugs-mindset]] mantra #5)
  *
  * The 100k number is a PROXY for the big-data path. Real
  * big-data queries hit 100M+ rows; the closure-safety contract
@@ -65,9 +65,9 @@ class SparkConnectorBigDataScaleSpec extends AnyFunSuite with Matchers {
     ).toOption.get
 
   // -- Big-data scale: closure-safety holds at 100k rows --
-  // Per scala-spark-batch-bugs-mindset mantra #1: closures
+  // Per [[scala-spark-batch-bugs-mindset]] mantra #1: closures
   // captured by Spark must avoid non-serializable refs.
-  // Per scala-jvm-safety-mindset mantra #3: no static / ThreadLocal
+  // Per [[scala-jvm-safety-mindset]] mantra #3: no static / ThreadLocal
   // state that survives test cleanup.
 
   test("SparkEngineProvider + PortableQueryCompiler: closure-safety round-trip holds with a 100k-row DataFrame reference (proxy for big-data scale)") {
@@ -116,7 +116,7 @@ class SparkConnectorBigDataScaleSpec extends AnyFunSuite with Matchers {
   }
 
   // -- Big-data scale: decodeRow hot path stays allocation-light --
-  // Per scala-perf-testing-mindset mantra #3 (count allocations):
+  // Per [[scala-perf-testing-mindset]] mantra #3 (count allocations):
   // the per-row decode is the hot path at big-data scale.
   // 100k rows × 5 cols = 500k cells. The Array[ResultValue](n)
   // preallocation keeps this O(n_rows × n_cols) without
@@ -160,7 +160,7 @@ class SparkConnectorBigDataScaleSpec extends AnyFunSuite with Matchers {
       // SealedDataType via SparkTypeBridge.
       result.schema.fields.map(_.name).toSet shouldBe Set("id", "name", "category", "score", "active")
       result.schema.fields.find(_.name == "name").map(_.dataType) shouldBe Some(io.sm8.core.schema.SealedDataType.Varchar)
-      // Per scala-perf-testing-mindset mantra #4 (warm the JIT):
+      // Per [[scala-perf-testing-mindset]] mantra #4 (warm the JIT):
       // the first iteration compiles the hot loop; subsequent
       // rows are at steady state. With 100k rows, the JIT
       // has time to warm up; per-row decode should be ~1us.
@@ -173,7 +173,7 @@ class SparkConnectorBigDataScaleSpec extends AnyFunSuite with Matchers {
   }
 
   // -- Driver-executor asymmetry: compile + collect stay in driver --
-  // Per scala-spark-batch-bugs-mindset mantra #5: the compile()
+  // Per [[scala-spark-batch-bugs-mindset]] mantra #5: the compile()
   // and collect() calls both run in the driver process. No
   // executor-side closure capture. ResultRow construction
   // happens in the driver.

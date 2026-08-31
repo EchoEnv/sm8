@@ -20,7 +20,7 @@
  *   }
  *   if (providerHolder[0] == null) { throw new IAE(...); }
  *
- * Per scala-jvm-safety-mindset: this is a primitive-array-as-
+ * Per [[scala-jvm-safety-mindset]]: this is a primitive-array-as-
  * mutable-cell pattern — a Java idiom for "I don't have a
  * monad-handling context, so I'll use a 1-element array to escape
  * the value." The Scala 2.13 equivalent is a direct `for`-
@@ -38,9 +38,9 @@
  * boundary when the `Either` was `Left(...)`, losing the typed
  * `EngineError` info. The Scala version returns the `Either`
  * unchanged — the caller (PR-C5b's wrapper) handles the error
- * path. Per scala-error-handling-mindset "errors are data".
+ * path. Per [[scala-error-handling-mindset]] "errors are data".
  *
- * Per scala-data-driven-refactor-mindset (sealed-trait
+ * Per [[scala-data-driven-refactor-mindset]] (sealed-trait
  * dispatch + MatchError-free): the `buildMCPRequest` helper
  * pattern-matches on `Option` (Scala native) — no Map-based
  * dispatch.
@@ -205,7 +205,7 @@ object EngineService {
    * and threw `IllegalArgumentException` on `RuntimeException` —
    * losing the typed `EngineError` info.
    *
-   * Per scala-error-handling-mindset: catch at the IO boundary
+   * Per [[scala-error-handling-mindset]]: catch at the IO boundary
    * (this IS the IO boundary for the engine adapter), convert
    * to the typed `EngineError`. The caller (PR-C6) handles the
    * `Either` at the Restate boundary.
@@ -228,7 +228,7 @@ object EngineService {
     try {
       provider.query(model, mcpReq, ctx)
     } catch {
-      // Per scala-error-handling: convert at the IO boundary.
+      // Per [[scala-error-handling-mindset]]: convert at the IO boundary.
       // Legacy code threw `IllegalArgumentException` here,
       // losing the typed error. The Scala version preserves it
       // via `EngineError.ProviderInvocationFailed` — the catch-all
@@ -475,7 +475,7 @@ object EngineService {
         // materialize plugins) can read it directly via ctx.cachePolicy
         // rather than re-parsing `Context.meta.get("sm8.cache.policy")`.
         //
-        // Per scala-data-driven-refactor-mindset: the field is typed
+        // Per [[scala-data-driven-refactor-mindset]]: the field is typed
         // ADT (io.sm8.core.model.CachePolicy), not a String — closed
         // set of cases (NoCache, ReadThrough(name), WriteThrough(name)),
         // forcing every adapter to handle the full matrix.
@@ -534,7 +534,7 @@ object EngineService {
               case Some(EngineHookResult(pqr)) =>
                 Right(toQueryResultFromPortable(pqr, request))
               case Some(other) =>
-                // Per scala-error-handling-mindset: programmer error
+                // Per [[scala-error-handling-mindset]]: programmer error
                 // (the dispatcher's contract is "executor populates
                 // result on success"). Surface as a typed EngineError.
                 Left(EngineError.ProviderInvocationFailed(

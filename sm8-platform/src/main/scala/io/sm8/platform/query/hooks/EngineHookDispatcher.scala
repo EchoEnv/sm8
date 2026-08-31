@@ -23,7 +23,7 @@
  *   captured once per cache-MISS, invoked once.
  * - No mutable state, no `var`, no `ThreadLocal`.
  *
- * Per scala-data-driven-refactor-mindset "sealed-trait dispatch":
+ * Per [[scala-data-driven-refactor-mindset]] "sealed-trait dispatch":
  * the only branching in this file is the match on `Left`/`Right`
  * and the `try/catch` in `firePre`/`firePost`.
  *
@@ -44,7 +44,7 @@
  *   converts `NonFatal`, so a fatally-broken JVM fails loud instead
  *   of being swallowed into a typed error.
  *
- * Per scala-jvm-safety-mindset "null is a liar": the
+ * Per [[scala-jvm-safety-mindset]] "null is a liar": the
  * dispatcher accepts a non-null `HookManager` at construction
  * time. `execute` is a by-name parameter that is only invoked
  * when a pre-hook does NOT set `context.stop = true`.

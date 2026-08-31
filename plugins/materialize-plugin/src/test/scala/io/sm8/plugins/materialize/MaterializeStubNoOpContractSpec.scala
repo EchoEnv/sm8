@@ -6,7 +6,7 @@
  * incremented. This locks in the no-op invariant mechanically so future
  * contributors cannot accidentally add real behavior without a test signal.
  *
- * Per scala-data-driven-refactor-mindset: the "data is data" rule applies
+ * Per [[scala-data-driven-refactor-mindset]]: the "data is data" rule applies
  * to plugins too — a stub plugin must advertise itself as a stub.
  *
  * Per scala2-scaladoc-mindset: no [[wikilinks]], no PR/Phase/ADR/process
