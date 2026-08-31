@@ -41,6 +41,7 @@
     <module>sm8-core</module>
     <module>connectors/in-memory-connector</module>
     <module>connectors/trino-connector</module>
+    <module>connectors/duckdb-connector</module>
     <module>connectors/spark-connector</module>
     <module>plugins/audit-plugin</module>
     <module>plugins/row-cap-plugin</module>

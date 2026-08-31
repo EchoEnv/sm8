@@ -8,21 +8,26 @@
  * live in each connector, registered via the `EngineUrlParser` SPI
  * (see `EngineUrlParser.scala`).
  *
- * ==Why a sealed trait + 3 cases (not a Map[String, URLParser])==
+ * ==Why a sealed trait (not a Map[String, URLParser])==
  *
- * trait + match". N=3 engines (Spark, Trino, InMemory) is a fixed,
- * small, known-at-compile-time set. Compiler-checked exhaustiveness is
- * the strongest guarantee available; don't give it up by default.
- * External connectors add new case classes (the trait is open for
- * extension by being NOT `sealed` at the trait level — only the 3
- * companion cases are exhaustive within core).
+ * trait + match". The case-class set is fixed, small, known-at-compile-time;
+ * each new reference engine adds one more `case class` next to the
+ * existing 3 (Spark, Trino, InMemory; the trait is `sealed` so the
+ * compiler enforces exhaustiveness). External connectors do NOT extend
+ * the sealed trait — they use the `EngineUrlParser` SPI to validate
+ * their grammar and realize against the existing 3 cases. (One
+ * exception: the in-process DuckDB engine needed a 4th case
+ * because its URL must carry the wire-stable name on the typed
+ * carrier for audit + routing correctness — the
+ * `InMemory(seed)` slot would have lied about the engine name.)
  *
  * ==Why NOT put the grammar parser in the core companion==
  *
  * Per RFC `adapters.md` Rule 4 (verbatim): "Per-connector `realize()`
  * validates its own URL grammar". Putting grammar parsers here would
  * import connector knowledge into the supposedly engine-portable core,
- * violating both the RFC rule and ADR-001's core boundary.
+ * Per the core-boundary rule (no grammar parsers here), external
+ * connectors are decoupled from this trait's body.
  *
  * ==Serializable (Spark closure-safety + Restate journal capture)==
  *
@@ -67,6 +72,18 @@ object EngineUrl {
  final case class Trino(jdbcUrl: String) extends EngineUrl {
  val raw: String  = jdbcUrl
  val engineName: String = "trino"
+ }
+
+ /** DuckDB engine URL: a JDBC-style URL (`jdbc:duckdb:` for an
+ * in-memory database, or `jdbc:duckdb:/path/to/db.duckdb` for a
+ * file-backed one). The `InMemory` seed-slot lies about the engine
+ * name ("in-memory" instead of "duckdb"), which corrupts audit
+ * events and breaks the conformance base's routing-invariant
+ * check; the dedicated case keeps the wire-stable name on the typed
+ * carrier. */
+ final case class DuckDb(jdbcUrl: String) extends EngineUrl {
+ val raw: String  = jdbcUrl
+ val engineName: String = "duckdb"
  }
 
  /** In-memory engine URL: no connection needed (embedded reference
