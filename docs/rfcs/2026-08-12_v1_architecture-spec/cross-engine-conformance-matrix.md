@@ -18,8 +18,8 @@ structural override:
 | 1 | `should "carry the wire-stable engine name on the realized provider"` | `realize(validUrl).get.identity.name == wireName` |
 | 2 | `should "reject blank and null URLs"` | `realize("")`, `realize("   ")`, `realize(null)` all return `None` (skipped when `hasUrlGrammar = false`) |
 | 3 | `should "reject grammar-invalid URLs with None"` | every URL in `invalidUrls` returns `None` |
-| 4 | `should "reject a foreign EngineUrl case via typed realization"` | `realizeTyped(foreignEngineUrl)` returns `Left(EngineError.ConnectionFailed)` named with the engine label (never a silent `None`) |
-| 5 | `should "honor the query contract deterministically (well-formed result, or typed deferred error for stub engines)"` | two calls of `provider.query(model, request, ctx)` agree on `(schema, metadata)` (schema + metadata equality — NOT full row equality, because `collect()` has no `ORDER BY`); if `querySucceeds = true`, the result is a well-formed `Right(PortableQueryResult)`; if `querySucceeds = false`, the result is a typed `Left(EngineError.FeatureDeferred)` |
+| 4 | `should "reject a foreign EngineUrl case via typed realization"` | `realizeTyped(foreignEngineUrl)` returns `Left(EngineError.ConnectionFailed)` named with the engine label (the base asserts the typed `Left(EngineError)` shape; all 4 current reference engines use `EngineError.ConnectionFailed` for this case) |
+| 5 | `should "honor the query contract deterministically (well-formed result, or typed deferred error for stub engines)"` | two calls of `provider.query(model, request, ctx)` agree on `(schema, metadata)` (schema + metadata equality — NOT full row equality, because `collect()` has no `ORDER BY`); if `querySucceeds = true`, the result is a well-formed `Right(PortableQueryResult)`; if `querySucceeds = false`, the result is a typed `Left(EngineError)` (only the trino connector currently exercises this branch — it returns `EngineError.FeatureDeferred`; the other 3 reference engines are not stub-descriptors and don't assert this branch) |
 
 ### Abstract members each connector must supply
 
@@ -48,7 +48,7 @@ diverges, document it here.
 | `spark-connector` | `spark` | `"local[*]"` | `true` (master URIs are free-form; only blank/null rejected) | `true` | Live `local[*]` session + registered `conformance_people` temp view | (empty — no grammar reject besides blank/null) |
 | `duckdb-connector` | `duckdb` | `"jdbc:duckdb:<tmpfile>"` (shared file-backed, see note 1) | `true` | `true` | File-backed DuckDB + `CREATE OR REPLACE TABLE conformance_people` | `"http://not-a-jdbc-url"`, `"jdbc:mysql://wrong-engine"`, `"jdbc:trino://localhost:8080"`, `"jdbc:duckdb"` (no colon) |
 
-**Note 1 (DuckDB shared-file design)**: the conformance base calls `descriptor.realize(validUrl).get` in its determinism test, which creates a *fresh* in-memory DuckDB per realization. The DuckDB spec uses a SHARED file-backed URL (`jdbc:duckdb:<tmpfile>`) so the base's separate realization re-opens the same file and the conformance table seeded by `wellFormedQuery` is visible to it. `afterAll` closes every realized provider (tracked in a `ListBuffer`) and deletes the temp file.
+**Note 1 (DuckDB shared-file design)**: the conformance base calls `descriptor.realize(validUrl).get` in its determinism test, which creates a *fresh* in-memory DuckDB per realization. The DuckDB spec uses a SHARED file-backed URL (`jdbc:duckdb:<tmpfile>`) so the base's separate realization re-opens the same file and the conformance table seeded by `wellFormedQuery` is visible to it. `afterAll` closes the wellFormedQuery-tracked provider (the only one the spec explicitly tracks) and deletes the temp file; the determinism-test provider remains open until JVM exit.
 
 **Note 2 (in-memory `hasUrlGrammar = false`)**: the in-memory engine has no URL grammar. It accepts any non-null string and always realizes. The blank/null branch is skipped (per the `if (hasUrlGrammar)` guard in the base).
 
@@ -125,8 +125,11 @@ connector the same minimum; the deep-spec surface is engine-specific.
      test-jar dep for the conformance base
    - `XxxEngineConstants.scala` (single source of truth for
      `WireName`, `AdapterVersion`, `UnrealizedNativeVersion` sentinels)
-   - `XxxEngineUrlParser.scala` extending `EngineUrlParser` (skip
-     this if your engine has no URL grammar, like in-memory)
+   - `XxxEngineUrlParser.scala` extending `EngineUrlParser` (required
+     for the 4 reference engines — even `in-memory` has a degenerate
+     parser that maps any input to `EngineUrl.InMemory`; without
+     it, SPI-backed `EngineUrl.parse(engineName, raw)` dispatch has no
+     engine entry)
    - `XxxEngineProviderDescriptor.scala` extending
      `TypedRealizationProvider` (the ServiceLoader-discoverable entry)
    - `XxxEngineProvider.scala` extending `TypedRealizationProvider`

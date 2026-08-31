@@ -53,10 +53,16 @@ class DuckdbAdapterConformanceSpec extends AdapterConformanceSpec with BeforeAnd
   private val sharedUrl: String = "jdbc:duckdb:" + sharedFile.toString
 
   /** Providers realized during the suite (the conformance base calls
-    * `descriptor.realize(validUrl)` and our `wellFormedQuery` calls
-    * it again — both yield fresh DuckDB connections that the
-    * `afterAll` lifecycle must close). Tracked here so we never
-    * leak a connection. */
+    * `descriptor.realize(validUrl)` in its routing-invariant +
+    * determinism tests, and our `wellFormedQuery` calls it again
+    * — all three yield fresh DuckDB connections). The
+    * `wellFormedQuery`-triggered realization is the one we track
+    * in the `realizedProviders` buffer and close in `afterAll`; the
+    * base's two realizations remain open until JVM exit (this is
+    * a known small leak under the shared-file design — see
+    * cross-engine-conformance-matrix.md Note 1 for the full
+    * rationale). Tracking the `wellFormedQuery` realization here
+    * ensures the conformance-table resource is released. */
   private val realizedProviders = scala.collection.mutable.ListBuffer.empty[DuckdbEngineProvider]
 
   /** The descriptor under test (URL-grammar validating; narrow
