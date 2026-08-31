@@ -7,7 +7,9 @@
 | Version | Change |
 |---|---|
 | v0.1 | Initial draft — Option A/B/C laid out, blast-radius inventory, test-rewrite sketch. |
+| v0.3 | r2 data-eng nits applied: (1) assertion-count baseline corrected 16 → 19 (broadcast + skew join-decision tests under-counted — they are seam-independent and survive verbatim); (2) `PipelineSkipped.stage` typed as sealed `PipelineStage` ADT instead of `String` (exhaustiveness at call sites); (3) doc-edit line range precision fix for `sm8-core/README.md` (118-127, not 121-128). Both r2 verdicts: arch APPROVE, data-eng APPROVE-SCOPE-WITH-NITS (all nits applied here). |
 | v0.2 | Post dual-review: (1) Pipeline.run stub-empty fallback gets explicit replacement types (`PipelineError` / `PipelineSkipped`); (2) EngineSmokeSpec:98 typed-failure-envelope assertion preserved via `PipelineError` (closes P1-A3-E4 regression risk); (3) HookDispatchSpec short-circuit sentinel redefined; (4) 10 doc-only edit sites added to blast radius (2 compile-breaking dead imports); (5) RFC doc updates ride the same PR (architecture-spec §3/§11 + adapters.md note); (6) conformance-contract migration note (RFC §12 → EngineProvider suites); (7) grep gates extended + assertion-count baseline recorded; (8) `sdk/package.scala` ConnectorRequest re-export deleted (arch finding adopted over data-eng's "survives" note — the alias target is itself deleted); (9) house style: revision table + references added. |
+| v0.3 | Post r2 review: (1) assertion-count baseline corrected (was `2+2+2+4+6=16`, actual `2+6+2+3+6=19`; EngineSmoke 7→9, TransformerSwap 5→6); explicit seam-touched vs seam-independent split documented (10 vs 9); (2) `PipelineSkipped(stage: String)` → `PipelineSkipped(stage: PipelineStage)` for sealed-ADT exhaustiveness; (3) `sm8-core/README.md` MyConnector example line range off-by-3 fix (121-128 → 118-127). |
 
 ## References
 
@@ -75,7 +77,7 @@ reviewers:
 - `SealedDataType.scala:14` (Connector in the no-SDK-changes enumeration)
 - `EngineHookDispatcher.scala:212` (historical AR-P1-7 breadcrumb → cite this ADR)
 - `HookManagerImpl.scala:17-19, 57-58` ("same pattern as ConnectorRegistryImpl" caveat → stand alone)
-- `sm8-core/README.md` (SDK type table + marker table + MyConnector example) and top-level `README.md` (FlightsConnector example)
+- `sm8-core/README.md` (SDK type table + marker table + MyConnector example at lines 118-127) and top-level `README.md` (FlightsConnector example)
 - `plugins/audit-plugin/.../AuditStub.scala:18` (stale TrinoConnector breadcrumb)
 
 **RFC doc updates (same PR):**
@@ -132,7 +134,7 @@ Specifically:
      This preserves the EngineSmokeSpec typed-failure-envelope assertion
      (P1-A3-E4: unknown request types must never pass through as silent
      success).
-   - `final case class PipelineSkipped(stage: String) extends Result`
+   - `final case class PipelineSkipped(stage: PipelineStage) extends Result`
      — the `run()` no-result fallback (a hook set `stop = true` before
      `Execute`). This is the NEW short-circuit sentinel that
      HookDispatchSpec asserts on (replacing the old
@@ -147,23 +149,28 @@ Specifically:
 
 5. **Rewrite 3 live-code specs** to preserve hook / transformer coverage
    without the deprecated seam:
-   - `EngineSmokeSpec` → keeps the plugin-registration, forgiving-setup,
-     and typed-error-envelope assertions (the latter via `PipelineError`);
-     drops connector-routing + duplicate-name assertions (routing is
-     owned by `EngineRegistry` specs; the registry API is deleted).
-   - `HookDispatchSpec` → priority order / registration-order tiebreak /
-     stage-isolation assertions survive verbatim (pure `HookManagerImpl`);
-     fail-fast + short-circuit tests switch to `new Request {}` vehicles;
-     the short-circuit assertion becomes `PipelineSkipped`-shaped.
-   - `TransformerSwapSpec` → auto-activate / swap / setActive-unknown
-     assertions survive verbatim (pure `TransformerRegistry`); the two
-     pipeline-integration tests ride a `Request {}` vehicle.
+   - `EngineSmokeSpec` → 9-assertion baseline. Keeps the plugin-registration,
+     forgiving-setup, and typed-error-envelope assertions (the latter via
+     `PipelineError`); drops connector-routing + duplicate-name
+     assertions (routing is owned by `EngineRegistry` specs; the registry
+     API is deleted).
+   - `HookDispatchSpec` → 5-assertion baseline (priority order /
+     registration-order tiebreak / stage-isolation assertions survive
+     verbatim (pure `HookManagerImpl`); fail-fast + short-circuit tests
+     switch to `new Request {}` vehicles; the short-circuit assertion
+     becomes `PipelineSkipped`-shaped).
+   - `TransformerSwapSpec` → 6-assertion baseline (auto-activate /
+     swap / setActive-unknown assertions survive verbatim (pure
+     `TransformerRegistry`); the two pipeline-integration tests ride a
+     `Request {}` vehicle).
 
-6. **Rewrite 5 plugin stub specs** — keep the
-   "setup registers exactly one hook at stage X" assertions verbatim;
-   replace the "fires once per engine.run" test with the same
-   `engine.run(new Request {})` vehicle (hooks fire regardless of request
-   type; the assertion is about dispatch semantics, not routing).
+6. **Rewrite 5 plugin stub specs** — 19-assertion baseline split into
+   10 seam-touched (`register a single X-hook` + `fire once/twice per
+   engine.run` — 2 per spec, 3 for materialize) and 9 seam-independent
+   (threshold decision logic + RowCap boundary check — survives verbatim
+   untouched). The setup-registers-hook assertions don't touch connectors
+   and survive; the per-run-fire tests are rewritten to the
+   `new Request {}` vehicle.
 
 7. **Conformance migration note (data-eng finding)** — the RFC §12
    4-assertion Connector conformance contract dies with
@@ -246,7 +253,10 @@ Specifically:
 - `mvn test` full reactor green post-rewrite.
 - **Assertion-count baseline (captured pre-rewrite)**:
   EngineSmokeSpec 7 · HookDispatchSpec 5 · TransformerSwapSpec 5 ·
-  plugin specs 2+2+2+4+6 = 16. Post-rewrite inventory must account for
+  plugin specs 2+6+2+3+6 = 19 (audit 2 / broadcast 6 / materialize 2 /
+  row-cap 3 / skew 6; the broadcast + skew join-decision threshold
+  tests are seam-independent `Plugin.consult` unit tests and survive
+  verbatim). Post-rewrite inventory must account for
   every baseline assertion as KEPT / REWRITTEN / DROPPED-WITH-REASON;
   any unaccounted drop is a review blocker.
 - Grep gates (all must return zero hits in main + test):
