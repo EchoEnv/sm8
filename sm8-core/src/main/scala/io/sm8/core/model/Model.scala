@@ -11,14 +11,13 @@
  * adapters or hooks.
  *
  * Per 
- * modify any of the 10 frozen SDK types (Plugin, Connector, PreHook,
- * PostHook, Transformer, Context, Engine, ConnectorRegistry, HookManager,
+ * modify any of the frozen SDK types (Plugin, PreHook,
+ * PostHook, Transformer, Context, Engine, HookManager,
  * TransformerRegistry).
  */
 package io.sm8.core.model
 
 import io.sm8.core.rel.AggregateCall
-import io.sm8.sdk.SemanticQuery
 
 /**
  * Engine-portable semantic model container. Holds the dimensions /

@@ -10,7 +10,7 @@
  */
 package io.sm8.plugins.materialize
 
-import io.sm8.core.{ConnectorRequest, EngineImpl}
+import io.sm8.core.EngineImpl
 import io.sm8.sdk.HookStage
 
 import org.scalatest.flatspec.AnyFlatSpec
@@ -35,16 +35,7 @@ class MaterializeStubSpec extends AnyFlatSpec with Matchers {
     val plugin = new MaterializeStub(PersistLevel.MemoryAndDisk)
     engine.use(plugin)
 
-    val stub = new io.sm8.sdk.Connector {
-      override def name: String = "stub"
-      override def connect(config: io.sm8.sdk.ConnectorConfig): Unit = ()
-      override def query(request: io.sm8.sdk.SemanticQuery): io.sm8.sdk.ResultRows =
-        io.sm8.sdk.ResultRows(Vector.empty)
-      override def schema(): io.sm8.sdk.ConnectorSchema = io.sm8.sdk.ConnectorSchema(Nil)
-    }
-    engine.connectors.register(stub)
-
-    engine.run(ConnectorRequest("stub", new io.sm8.sdk.SemanticQuery {}))
+    engine.run(new io.sm8.sdk.Request {})
     // Both the PreExecute persist hook AND the PostExecute unpersist
     // hook fire on each engine.run - that's the lifecycle pair.
     plugin.fires.get() shouldBe 2

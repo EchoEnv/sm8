@@ -33,7 +33,7 @@
   <packaging>jar</packaging>
 
   <name>SM8 Trino Connector</name>
-  <description>SM8 Connector for Trino (formerly PrestoSQL). Shape-correct reference Connector; passes ConnectorContractSpec.</description>
+  <description>SM8 Connector for Trino (formerly PrestoSQL). Shape-correct reference Connector; conformance validated by this module's EngineProvider test suites.</description>
 
   <dependencies>
     <dependency>
@@ -44,8 +44,9 @@
 
     <!--
       Test-jar classifier: pulls in the contract bases
-      (ConnectorContractSpec). The bases are part of sm8-core's
-      test sources, published as the test-jar artifact (per PR #2).
+      (HookContractSpec, PluginContractSpec). The bases are part of
+      sm8-core's test sources, published as the test-jar artifact
+      (per PR #2).
     -->
     <dependency>
       <groupId>io.sm8</groupId>

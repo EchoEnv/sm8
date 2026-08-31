@@ -14,8 +14,8 @@ import io.sm8.sdk._
 /**
  * Audit Hook Plugin. Records each engine.run via a PostFormat hook.
  *
- * Per the Spark-closure-safety rule
- * (same pattern as Step 8 TrinoConnector fix).
+ * Per the Spark-closure-safety rule (hooks must be Serializable and
+ * capture no non-serializable engine state).
  */
 final class AuditStub extends Plugin with java.io.Serializable {
 

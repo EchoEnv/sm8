@@ -59,22 +59,21 @@ The `sm8-core` module compiles and tests **without Spark on the classpath** — 
 
 ### Define a Plugin
 
-The Core exposes a 7-type SDK. A Plugin author implements `Plugin` + `Connector` and registers via `engine.use(...)`:
+The Core exposes a 6-type SDK. A Plugin author implements `Plugin` and registers hooks + transformers via `engine.use(...)`:
 
 ```scala
 import io.sm8.sdk._
 
-class FlightsConnector extends Connector {
-  def name = "flights"
-  def connect(config: ConnectorConfig): Unit = ???
-  def query(request: SemanticQuery): ResultRows = ???
-  def schema(): ConnectorSchema = ???
-}
-
 class FlightsPlugin extends Plugin {
-  def setup(engine: Engine): Unit = engine.use(FlightsConnector())
+  def setup(engine: Engine): Unit = {
+    engine.hooks.registerPostHook(/* audit/metrics hook */)
+  }
 }
 ```
+
+Engine adapters are not a Plugin concern — data sources are wired by
+the `EngineProvider` ServiceLoader seam in the connector modules
+(see `connectors/`).
 
 That's the entire Core API. No Spark, no Trino, no DuckDB imports — those are Plugin authors' concerns, not Core's.
 
@@ -143,7 +142,7 @@ examples/
 | Resource | Description |
 |----------|-------------|
 | [`sm8-core/README.md`](sm8-core/README.md) | Frozen Core: SDK surface (7 types), what's in/out, zero-Spark invariant |
-| [`sm8-core/src/main/scala/io/sm8/sdk/`](sm8-core/src/main/scala/io/sm8/sdk/) | SDK source — the 7 public-API types (`Plugin`, `Connector`, `PreHook`, `PostHook`, `Transformer`, `Context`, `Engine`) plus their supporting types. Anything here is a breaking change. |
+| [`sm8-core/src/main/scala/io/sm8/sdk/`](sm8-core/src/main/scala/io/sm8/sdk/) | SDK source — the public-API types (`Plugin`, `PreHook`, `PostHook`, `Transformer`, `Context`, `Engine`) plus their supporting types. Anything here is a breaking change. |
 | [`sm8-platform/`](sm8-platform/) | Engine-portable runtime: `EngineService`, hook dispatcher, Restate wiring |
 | [`sm8-server/`](sm8-server/) | MCP REST + Restate handlers (the HTTP surface the CLI and external clients hit) |
 | [`docs/adr/`](docs/adr/) | Architecture Decision Records — why each design choice was made |
@@ -153,7 +152,7 @@ examples/
 
 ## Contributing
 
-SM8 follows a **frozen Core, hot Plugins** discipline: the public SDK in `sm8-core` is the stability promise. Any change to the SDK surface (`Plugin`, `Connector`, `PreHook`, `PostHook`, `Transformer`, `Context`, `Engine`) is a breaking change and requires a version bump plus a MiMa exclusion entry once the release gate is wired.
+SM8 follows a **frozen Core, hot Plugins** discipline: the public SDK in `sm8-core` is the stability promise. Any change to the SDK surface (`Plugin`, `PreHook`, `PostHook`, `Transformer`, `Context`, `Engine`) is a breaking change and requires a version bump plus a MiMa exclusion entry once the release gate is wired.
 
 To add a new **engine**, create a new module under `connectors/` and implement the `EngineProvider` contract — the `spark-connector` is the reference. To add a new **plugin**, create a module under `plugins/` and ship a `META-INF/services/io.sm8.sdk.Plugin` entry plus a `plugin.properties` file declaring your Maven coordinates for the allowlist.
 

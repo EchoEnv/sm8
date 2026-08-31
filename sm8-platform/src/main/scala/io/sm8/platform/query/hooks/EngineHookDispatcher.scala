@@ -209,8 +209,8 @@ final class EngineHookDispatcher private (hooks: HookManager) extends io.sm8.sdk
    *
    * Per PR-9 (ADR-008-P §T1-D2 + §"What's Next"): the discriminator
    * is `PostHook.runsOnStop` (default `true` = Observer; override
-   * `false` for Mutator). PR-7 (AR-P1-7) marked the Connector trait
-   * deprecated; this flag finishes the symmetrical classification
+   * `false` for Mutator). The legacy Connector trait has since been
+   * removed entirely; this flag finishes the symmetrical classification
    * for post-hook intent (RFC `hooks.md` enumerates 5 types; 3 of
    * them post-fire).
    */

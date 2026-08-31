@@ -11,14 +11,19 @@
  * Per [[scala-perf-testing-mindset]]: side-channel counters via
  * AtomicInteger (no `var`, thread-safe) to verify which Transformer
  * the Pipeline invoked.
+ *
+ * The pipeline-integration tests ride a `new Request {}` vehicle —
+ * the Pipeline performs no engine dispatch in the in-tree fallback
+ * (production requests flow through the `EngineProvider` family).
+ * The format stage still invokes the active Transformer on the
+ * Context regardless of request type.
  */
 package io.sm8.core.transform
 
 import java.util.concurrent.atomic.AtomicInteger
 
-import io.sm8.core.{ConnectorRequest, EngineImpl}
-import io.sm8.sdk.{Context, Plugin, Transformer}
-import io.sm8.sdk.contract.{StubConfig, StubConnector, StubQuery}
+import io.sm8.core.EngineImpl
+import io.sm8.sdk.{Context, Plugin, Request, Transformer}
 
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -79,8 +84,6 @@ class TransformerSwapSpec extends AnyFlatSpec with Matchers {
     val markdownCounter = new AtomicInteger(0)
 
     val engine = EngineImpl()
-    val stub = new StubConnector
-    engine.connectors.register(stub)
 
     // Replace the built-in JsonTransformer with our counting ones
     // (still named "json" and "markdown" so swap works on names).
@@ -90,13 +93,13 @@ class TransformerSwapSpec extends AnyFlatSpec with Matchers {
     engine.transformers.register(mdTr)
 
     // Run with the auto-active (first registered = "json").
-    engine.run(ConnectorRequest(stub.name, StubQuery(malformed = false)))
+    engine.run(new Request {})
     jsonCounter.get() shouldBe 1
     markdownCounter.get() shouldBe 0
 
     // Swap and run again.
     engine.transformers.setActive("markdown")
-    engine.run(ConnectorRequest(stub.name, StubQuery(malformed = false)))
+    engine.run(new Request {})
     markdownCounter.get() shouldBe 1
     jsonCounter.get() shouldBe 1  // unchanged from previous run
   }
@@ -105,8 +108,6 @@ class TransformerSwapSpec extends AnyFlatSpec with Matchers {
     // Verifies the Plugin → Transformer integration (a Plugin's setup
     // method is the standard way to register built-in transformers).
     val engine = EngineImpl()
-    val stub = new StubConnector
-    engine.connectors.register(stub)
 
     val jsonCounter = new AtomicInteger(0)
     val plugin = new Plugin {
@@ -119,7 +120,7 @@ class TransformerSwapSpec extends AnyFlatSpec with Matchers {
     engine.use(plugin)
     engine.transformers.active.map(_.name) shouldBe Some("counting-json")
 
-    engine.run(ConnectorRequest(stub.name, StubQuery(malformed = false)))
+    engine.run(new Request {})
     jsonCounter.get() shouldBe 1
   }
 }

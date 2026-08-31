@@ -1,62 +1,61 @@
 /*
  * SM8 Core — EngineSmokeSpec.
  *
- * First end-to-end smoke for the SM8 Engine:
+ * End-to-end smoke for the SM8 Engine:
  *   1. Construct an Engine
- *   2. Register a Connector directly via `engine.connectors.register`
- *   3. Send a `ConnectorRequest` to `engine.run`
- *   4. Assert the Connector was invoked and rows came back
+ *   2. Register a Plugin via `engine.use(plugin)` (Plugin.setup
+ *      registers a hook against the engine)
+ *   3. Send a request to `engine.run` and observe the typed Result
  *
  * This is the proof that Step 3's machinery (Engine + registries +
- * Pipeline + Connector contract) wires together correctly.
+ * Pipeline) wires together correctly.
  *
- * It uses the Step 2 StubConnector (defined in
- * `io.sm8.sdk.contract.StubConnectorSpec`) because the StubConnector
- * has predictable behavior. The real built-in `InMemoryConnector`
- * is tested in its own module (`connectors/in-memory-connector`).
+ * Engine dispatch (which provider serves a query) is owned by the
+ * `EngineProvider` family + `EngineRegistry` (ServiceLoader
+ * discovery) and is covered by the per-connector specs under
+ * `connectors/` — this spec covers the engine's plugin portal + the
+ * Pipeline's typed-failure contract (an unknown request type must
+ * never pass through as a silent success).
  */
 package io.sm8.core
 
+import io.sm8.core.engine.EngineError
 import io.sm8.sdk._
-import io.sm8.sdk.contract.{StubConfig, StubConnector, StubQuery}
 
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
 class EngineSmokeSpec extends AnyFlatSpec with Matchers {
 
-  "Engine" should "register a Connector and route a request to it" in {
-    val engine  = EngineImpl()
-    val stub    = new StubConnector
-    engine.connectors.register(stub)
+  // ---- Test fixtures ----
 
-    val request = ConnectorRequest(
-      connectorName = stub.name,
-      query         = StubQuery(malformed = false)
-    )
-
-    val result = engine.run(request)
-
-    result shouldBe a [ConnectorResult]
-    val cr = result.asInstanceOf[ConnectorResult]
-    cr.connectorName shouldBe "stub"
-    cr.rows.rows should have size 1
-    cr.rows.rows.head should contain key "id"
+  /** Minimal PreHook that records nothing — proves registration only. */
+  private final class NoopPreHook extends PreHook {
+    override val name: String     = "smoke-hook"
+    override val priority: Int    = 10
+    override val stage: HookStage = HookStage.PreParse
+    override def run(context: Context): Context = context
   }
 
-  it should "honour stop = true to short-circuit the pipeline (delegated to HookDispatchSpec)" in {
-    // Step 4: the actual stop-flag test lives in HookDispatchSpec
-    // (it needs to register a StopPreHook directly). This test name
-    // stays as a documentation breadcrumb pointing readers to the
-    // real test.
-    succeed  // per [[debug-mantra-mindset]]: an empty test body silently passes; we deliberately use `succeed` here as a marker
+  /** Stop-setting PreHook — sets context.stop = true (short-circuit). */
+  private final class StopPreHook extends PreHook {
+    override val name: String     = "stopper"
+    override val priority: Int    = 1
+    override val stage: HookStage = HookStage.PreParse
+    override def run(context: Context): Context =
+      context.copy(stop = true)
   }
 
-  it should "fail loudly when registering a Connector with a duplicate name" in {
+  "Engine" should "register a Plugin that adds a hook via setup(engine)" in {
     val engine = EngineImpl()
-    val stub1  = new StubConnector
-    engine.connectors.register(stub1)
-    an [IllegalArgumentException] should be thrownBy engine.connectors.register(stub1)
+    val plugin  = new Plugin {
+      override def setup(engine: Engine): Unit = {
+        engine.hooks.registerPreHook(
+          HookStage.PreParse, new NoopPreHook, priority = 10, origin = HookOrigin.Core)
+      }
+    }
+    engine.use(plugin)
+    engine.hooks.preHooksFor(HookStage.PreParse).map(_._1.name) shouldBe List("smoke-hook")
   }
 
   it should "be forgiving when a Plugin's setup throws" in {
@@ -68,47 +67,32 @@ class EngineSmokeSpec extends AnyFlatSpec with Matchers {
     noException should be thrownBy engine.use(bad) // bad plugin warns, never crashes
   }
 
-  it should "register a Plugin that adds a Connector via setup(engine)" in {
-    val engine = EngineImpl()
-    val stub    = new StubConnector
-    val plugin  = new Plugin {
-      override def setup(engine: Engine): Unit = {
-        engine.connectors.register(stub)
-      }
-    }
-    engine.use(plugin)
-    val result = engine.run(
-      ConnectorRequest(connectorName = stub.name, query = StubQuery(false))
-    )
-    result shouldBe a [ConnectorResult]
-  }
-
-  it should "surface an unknown connector name as a typed ConnectorError (P1-A3-E4), never empty rows" in {
-    val engine   = EngineImpl()
-    val request  = ConnectorRequest(connectorName = "nonexistent", query = StubQuery(false))
-    val result   = engine.run(request)
-    // Previously this returned ConnectorResult("nonexistent", empty, empty)
-    // — a silent success; now it must be a typed EngineUnavailable.
-    result shouldBe a [ConnectorError]
-    val err = result.asInstanceOf[ConnectorError]
-    err.connectorName shouldBe "nonexistent"
-    err.error shouldBe a [io.sm8.core.engine.EngineError.EngineUnavailable]
-  }
-
-  it should "surface an unknown request type as a typed ConnectorError(UnsupportedCapability), never pass-through" in {
+  it should "surface an unknown request type as a typed PipelineError(UnsupportedCapability), never pass-through" in {
     val engine  = EngineImpl()
-    val request = new Request {} // not a ConnectorRequest — nothing can execute it
+    val request = new Request {} // not a known request type — nothing can execute it
     val result  = engine.run(request)
-    // Previously this passed through and the pipeline returned a stub
-    // empty ConnectorResult ("", empty, empty) — a silent success.
-    // The typed failure must travel in the Result envelope instead.
-    result shouldBe a [ConnectorError]
-    val err = result.asInstanceOf[ConnectorError]
-    err.connectorName shouldBe "-"
-    err.error shouldBe a [io.sm8.core.engine.EngineError.UnsupportedCapability]
-    val unsupported = err.error.asInstanceOf[io.sm8.core.engine.EngineError.UnsupportedCapability]
+    // An unrecognized request type must travel in the Result envelope
+    // as a typed failure, not pass through unchanged (a silent
+    // success the caller cannot distinguish from a real result).
+    result shouldBe a [PipelineError]
+    val err = result.asInstanceOf[PipelineError]
+    err.engine shouldBe "-"
+    err.error shouldBe a [EngineError.UnsupportedCapability]
+    val unsupported = err.error.asInstanceOf[EngineError.UnsupportedCapability]
     unsupported.engine shouldBe "pipeline"
     unsupported.capability shouldBe "RequestType"
     unsupported.message should include (request.getClass.getName)
+  }
+
+  it should "short-circuit when a hook sets Context.stop and return PipelineSkipped naming the halt stage" in {
+    val engine = EngineImpl()
+    engine.hooks.registerPreHook(
+      HookStage.PreParse, new StopPreHook, priority = 1, origin = HookOrigin.Core)
+
+    val result = engine.run(new Request {})
+    // The hook set stop before any stage body ran — the explicit
+    // short-circuit marker names the stage where the pipeline halted.
+    result shouldBe a [PipelineSkipped]
+    result.asInstanceOf[PipelineSkipped].stage shouldBe PipelineStage.Parse
   }
 }

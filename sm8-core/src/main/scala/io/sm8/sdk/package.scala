@@ -34,5 +34,4 @@ object `package` {
  val EngineHookResult = io.sm8.core.engine.EngineHookResult
 
  // -- Engine-portable request (PR-K) --
- type ConnectorRequest = io.sm8.core.ConnectorRequest
 }

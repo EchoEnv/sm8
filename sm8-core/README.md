@@ -16,13 +16,12 @@ Steps 3–7.
 
 ### SDK (`io.sm8.sdk`)
 
-The single import path for Plugin authors. Every type a Plugin or
-Connector author touches lives here:
+The single import path for Plugin authors. Every type a Plugin
+author touches lives here:
 
 | Type              | Kind                  | Frozen after |
 |-------------------|-----------------------|--------------|
 | `Plugin`          | trait                 | Step 1       |
-| `Connector`       | trait                 | Step 1       |
 | `PreHook`         | trait                 | Step 1       |
 | `PostHook`        | trait                 | Step 1       |
 | `Transformer`     | trait                 | Step 1       |
@@ -43,10 +42,6 @@ something to reference:
 |---------------------|-------------------------|--------------------------------------|
 | `Request`           | Step 3                  | Marker trait — full shape is JSON    |
 | `Result`            | Step 3                  | Marker trait — full shape is JSON    |
-| `ConnectorConfig`   | Step 3                  | Full shape includes connection opts   |
-| `SemanticQuery`     | Step 3                  | Lowered from the IR in Step 0        |
-| `ResultRows`        | Step 3                  | Portable row shape                   |
-| `ConnectorSchema`   | Step 3                  | Portable schema shape                |
 
 ### Supporting types
 
@@ -63,7 +58,6 @@ core" rule and the plan's B-style sequencing:
 - **Pipeline runner** (parse → resolve → execute → format) — Step 3
 - **`EngineImpl`** (the `Engine` trait's implementation) — Step 3
 - **HookManager** (priority-ordered dispatch) — Step 4
-- **ConnectorRegistry** (name → Connector lookup) — Step 3
 - **TransformerRegistry** (exactly-one-active swap) — Step 6
 - **`ServiceLoader` discovery** — Step 7
 - **Maven-coords allowlist filter** — Step 7
@@ -81,9 +75,8 @@ mvn -pl sm8-core test
 Expected:
 
 - `mvn compile` succeeds; zero warnings about unused params.
-- `mvn test` runs 4 specs:
+- `mvn test` runs the contract + smoke specs:
   - `PluginContractSpec` (3 tests)
-  - `ConnectorContractSpec` (3 tests)
   - `HookContractSpec` (5 tests)
   - `CoreClasspathSpec` (1 test, asserts no Spark on classpath)
 - All 12 tests green.
@@ -115,30 +108,24 @@ the baseline advances to a new release.
 ```scala
 import io.sm8.sdk._
 
-class MyConnector extends Connector {
-  def name = "my-source"
-  def connect(config: ConnectorConfig): Unit = ???
-  def query(request: SemanticQuery): ResultRows = ???
-  def schema(): ConnectorSchema = ???
-}
-
 class MyPlugin extends Plugin {
   def setup(engine: Engine): Unit = {
-    engine.use(/* register my connector + hooks here */)
+    engine.hooks.registerPostHook(/* audit/metrics hook here */)
   }
 }
 ```
 
-That's the entire public API surface. No internal types leak. No
+Data-source wiring is NOT a Plugin concern — engine adapters are
+realized by the `EngineProvider` ServiceLoader seam in the connector
+modules. No internal types leak. No
 Spark, no Trino, no DuckDB — those are Plugin authors' problem, not
 the Core's.
 
 ## What's next
 
 - **Step 2**: Promote the contract skeletons to abstract base classes
-  (`ConnectorContractSpec` enforces the 4 RFC §12 assertions).
-- **Step 3**: `Engine` implementation + `InMemoryConnector` built-in
-  reference + Pipeline runner.
+  (`PluginContractSpec` / `HookContractSpec`).
+- **Step 3**: `Engine` implementation + Pipeline runner.
 - **Step 7**: Portal (`ServiceLoader` + allowlist).
 - **Step 8**: Repackage `adapters/semanticdf-{spark,trino,…}` as
   `connectors/{spark,trino,…}-connector/`.

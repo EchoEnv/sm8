@@ -17,6 +17,12 @@
  * passes an explicit `origin = HookOrigin.Core` because the test
  * priorities are 1, 10, 50 (Core range, not FirstParty). The SDK's
  * 3-int overload still defaults to FirstParty for backward compat.
+ *
+ * The pipeline-integration tests (fail-fast + short-circuit) ride a
+ * `new Request {}` vehicle — the Pipeline performs no engine dispatch
+ * in the in-tree fallback (production requests flow through the
+ * `EngineProvider` family); the hook semantics under test are
+ * dispatch-agnostic.
  */
 package io.sm8.core
 
@@ -104,7 +110,7 @@ class HookDispatchSpec extends AnyFlatSpec with Matchers {
     val engine = EngineImpl()
     engine.hooks.registerPreHook(HookStage.PreExecute, new ThrowingPreHook, priority = 10, origin = HookOrigin.Core)
 
-    val request  = ConnectorRequest(connectorName = "anything", query = new SemanticQuery {})
+    val request  = new Request {}
     val thrown = the [RuntimeException] thrownBy engine.run(request)
     thrown.getMessage shouldBe "hook intentionally throws"
   }
@@ -115,15 +121,11 @@ class HookDispatchSpec extends AnyFlatSpec with Matchers {
     // Register a StopPreHook at PreParse (before the parse stage).
     engine.hooks.registerPreHook(HookStage.PreParse, new StopPreHook("stopper", 1, trace), priority = 1, origin = HookOrigin.Core)
 
-    // Stage bodies add to trace themselves in this spec; here we
-    // verify the hook ran (so stop was set) and that the Pipeline
-    // short-circuited (result remains None since execute never ran).
-    val result = engine.run(ConnectorRequest(connectorName = "anything", query = new SemanticQuery {}))
+    val result = engine.run(new Request {})
 
     trace.toList shouldBe List("pre:stopper")
-    // No stage set a result → stub empty ConnectorResult.
-    result shouldBe a [ConnectorResult]
-    val cr = result.asInstanceOf[ConnectorResult]
-    cr.connectorName shouldBe ""  // sentinel: no stage produced a result
+    // No stage set a result → the explicit short-circuit marker.
+    result shouldBe a [PipelineSkipped]
+    result.asInstanceOf[PipelineSkipped].stage shouldBe PipelineStage.Parse
   }
 }
