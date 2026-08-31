@@ -4,6 +4,13 @@ Companion doc to `semantic-layer-engine-architecture.md` (Sections 3, 7, 7a, 12)
 
 ## What an Adapter Is
 
+Note (2026-08-30): in the SM8 Scala implementation, the reference
+implementation of the adapter contract below is the `EngineProvider`
+family (`TypedRealizationProvider` descriptors + `EngineUrlParser`,
+ServiceLoader-discovered per engine URL) — not an SDK trait registered
+through a core-held registry. The contract shape here describes the
+responsibilities; `EngineProvider` realizes them.
+
 An adapter connects the engine to one specific data source. It's the only piece of the system allowed to know about connection strings, drivers, API endpoints, or query dialects for that source.
 
 ```

@@ -126,12 +126,17 @@ Context:
 ### Engine (core, minimal)
 ```
 Engine:
-  adapters: AdapterRegistry
   hooks: HookManager
 
   use(plugin) -> engine        # calls plugin.setup(engine)
   run(request) -> result       # executes the 4-stage pipeline with hooks
 ```
+
+Note (2026-08-30): the `adapters: AdapterRegistry` member was removed —
+the adapter contract is realized by the `EngineProvider` family
+(`TypedRealizationProvider` descriptors + `EngineUrlParser`, discovered
+via ServiceLoader), not by a core-held registry. The `Engine` trait no
+longer carries any adapter-registration surface.
 
 ## 7a. Worked Examples
 
@@ -222,7 +227,7 @@ Document this convention wherever `hooks.register` is exposed.
 ## 11. Repo Structure (suggested, adapt to language conventions)
 
 ```
-/core            # Engine, Context, Adapter contract, Plugin contract, HookManager
+/core            # Engine, Context, Adapter contract (via EngineProvider seam), Plugin contract, HookManager
 /adapters        # built-in reference adapters (e.g. in-memory, REST)
 /plugins         # built-in reference plugins (e.g. logging, cache)
 /tests/contract  # conformance test suite every Adapter must pass
@@ -257,7 +262,7 @@ This is what keeps "customize freely" from degrading into "customize into a brok
 
 An implementation is complete when:
 
-- [ ] Core (`Engine`, `Context`, `HookManager`, `AdapterRegistry`) has no dependency on any specific adapter or plugin
+- [ ] Core (`Engine`, `Context`, `HookManager`) has no dependency on any specific adapter or plugin (the adapter contract is realized by the `EngineProvider` seam, not a core-held registry)
 - [ ] At least one reference adapter and one reference plugin exist and pass conformance tests
 - [ ] A new adapter can be added by a contributor without touching any file outside `/adapters` and their own plugin
 - [ ] A new hook can be added without touching any file outside their own plugin

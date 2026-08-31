@@ -3,7 +3,7 @@
  */
 package io.sm8.plugins.skew
 
-import io.sm8.core.{ConnectorRequest, EngineImpl}
+import io.sm8.core.EngineImpl
 import io.sm8.core.model.{JoinSpec, Model, SourceRef}
 import io.sm8.core.rel.JoinKind
 import io.sm8.sdk.HookStage
@@ -25,16 +25,7 @@ class SkewStubSpec extends AnyFlatSpec with Matchers {
     val plugin = new SkewStub
     engine.use(plugin)
 
-    val stub = new io.sm8.sdk.Connector {
-      override def name: String = "stub"
-      override def connect(config: io.sm8.sdk.ConnectorConfig): Unit = ()
-      override def query(request: io.sm8.sdk.SemanticQuery): io.sm8.sdk.ResultRows =
-        io.sm8.sdk.ResultRows(Vector.empty)
-      override def schema(): io.sm8.sdk.ConnectorSchema = io.sm8.sdk.ConnectorSchema(Nil)
-    }
-    engine.connectors.register(stub)
-
-    engine.run(ConnectorRequest("stub", new io.sm8.sdk.SemanticQuery {}))
+    engine.run(new io.sm8.sdk.Request {})
     plugin.fires.get() shouldBe 1
   }
 

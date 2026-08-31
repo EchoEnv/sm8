@@ -2,13 +2,15 @@
  * SM8 SDK — Plugin.
  *
  * The unit of extension. A Plugin is a named, versioned bundle that, on
- * load, registers one or more Connectors and/or one or more Hooks with
+ * load, registers one or more Hooks and/or Transformers with
  * the engine. It is the only thing a contributor publishes and the only
  * thing `engine.use(.)` consumes.
  *
  * Per RFC §7 + plugins.md: `Plugin.setup(engine) -> void` registers
- * adapters via `engine.connectors.register(.)` and hooks via
- * `engine.hooks.register(stage, fn, priority)`.
+ * hooks via `engine.hooks.register(stage, fn, priority)` and
+ * transformers via `engine.transformers.register(.)`. Data-source
+ * wiring is not a Plugin concern — it is owned by the `EngineProvider`
+ * ServiceLoader seam in the connector modules.
  *
  * Frozen after Step 1. The `setup(engine: Engine)` method signature is
  * the SDK contract. Any change is a breaking SDK change.

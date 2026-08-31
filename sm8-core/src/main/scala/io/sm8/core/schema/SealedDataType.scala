@@ -11,8 +11,8 @@
  * change). A `Binary` case was added (review
  * pass #2, finding #2) to support end-to-end `ResultValue.BinaryV`
  * round-trip through the cache journal.
- * * No SDK type changes (Plugin, Connector, PreHook, PostHook,
- * Transformer, Context, Engine, ConnectorRegistry, HookManager,
+ * * No SDK type changes (Plugin, PreHook, PostHook,
+ * Transformer, Context, Engine, HookManager,
  * TransformerRegistry all untouched). The sm8-platform
  * bootstrap + `sealedTypeTag` restructure) and later
  * engine-portable adapters consume this.

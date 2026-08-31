@@ -14,9 +14,8 @@
  * boundary (the SDK doc already declared this throw — the contract
  * is preserved).
  *
- * The hook storage map is a `mutable.Map` (same pattern as
- * `ConnectorRegistryImpl`; documented single-threaded use — register
- * at startup, dispatch at request time).
+ * The hook storage map is a `mutable.Map` — documented
+ * single-threaded use: register at startup, dispatch at request time.
  *
  * Hook throws abort the pipeline per RFC §9 (fail-fast) — NOT
  * runtime errors to be wrapped in Either. The hook author CHOSE to
@@ -54,10 +53,9 @@ private[core] final case class HookEntry[T](
  * - pre-hooks and post-hooks, grouped by `HookStage`
  * - a monotonic sequence counter for registration-order tie-breaking
  *
- * Not thread-safe for concurrent `register*` calls (per the same
- * caveat as `ConnectorRegistryImpl`). The expected usage is: all
- * plugins register their hooks at startup; the engine then reads
- * `preHooksFor` / `postHooksFor` on the request path.
+ * Not thread-safe for concurrent `register*` calls. The expected usage
+ * is: all plugins register their hooks at startup; the engine then
+ * reads `preHooksFor` / `postHooksFor` on the request path.
  */
 final class HookManagerImpl extends HookManager {
 

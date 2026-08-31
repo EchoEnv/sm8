@@ -30,12 +30,11 @@ import io.sm8.sdk._
  */
 final class EngineImpl extends Engine {
 
- private val _connectors: ConnectorRegistryImpl = new ConnectorRegistryImpl
  private val _hooks:   HookManagerImpl   = new HookManagerImpl
  private val _transformers: TransformerRegistryImpl = new TransformerRegistryImpl
 
  // Hoisted from per-run allocation; the Pipeline is stateless.
- private val pipeline: Pipeline = new Pipeline(_connectors, _hooks, _transformers)
+ private val pipeline: Pipeline = new Pipeline(_hooks, _transformers)
 
  // Thread-safe set for plugin idempotency. ConcurrentHashMap.newKeySet
  // is the only Set in the standard library that scales under writes.
@@ -65,7 +64,6 @@ final class EngineImpl extends Engine {
  override def run(request: Request): Result =
  pipeline.run(request)
 
- override def connectors: ConnectorRegistry = _connectors
  override def hooks: HookManager    = _hooks
  override def transformers: TransformerRegistry = _transformers
 

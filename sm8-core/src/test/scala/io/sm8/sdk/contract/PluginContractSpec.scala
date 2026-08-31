@@ -28,7 +28,7 @@ package io.sm8.sdk.contract
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
-import io.sm8.core.{ConnectorRegistryImpl, HookManagerImpl, TransformerRegistryImpl}
+import io.sm8.core.{HookManagerImpl, TransformerRegistryImpl}
 import io.sm8.sdk.{Engine, Plugin, Request, Result}
 
 abstract class PluginContractSpec extends AnyFlatSpec with Matchers {
@@ -73,7 +73,6 @@ object PluginContractSpecStubs {
 
   /** Minimal no-op Engine for testing Plugin.setup idempotency. */
   val NoopEngine: Engine = new Engine {
-    private val _connectors:   ConnectorRegistryImpl   = new ConnectorRegistryImpl
     private val _hooks:        HookManagerImpl         = new HookManagerImpl
     private val _transformers: TransformerRegistryImpl = new TransformerRegistryImpl
 
@@ -87,7 +86,6 @@ object PluginContractSpecStubs {
         "NoopEngine is a Step 2 contract-test stub; real Engine.run lands in Step 3"
       )
 
-    override def connectors: io.sm8.sdk.ConnectorRegistry    = _connectors
     override def hooks: io.sm8.sdk.HookManager               = _hooks
     override def transformers: io.sm8.sdk.TransformerRegistry = _transformers
   }

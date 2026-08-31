@@ -42,7 +42,6 @@ import io.sm8.sdk._
  * — data, not constructor-args scattered through each stage).
  */
 final case class StageEnv(
- connectors: ConnectorRegistry,
  hooks: HookManager,
  transformers: TransformerRegistry
 )
@@ -85,46 +84,26 @@ object Stage {
  }
 
  /**
- * Execute — run the query against the chosen adapter(s). A
- * `ConnectorRequest` is routed to the named Connector and becomes
- * a `ConnectorResult`; failures are typed, never silent:
- * an unregistered connector name yields
- * `ConnectorError(name, EngineError.EngineUnavailable)`, and any
- * other (unrecognized) request type yields
- * `ConnectorError("-", EngineError.UnsupportedCapability)` — both
- * in the Result envelope so callers pattern-match on the typed
- * failure instead of mistaking empty rows for success.
+ * Execute — run the query against the chosen adapter(s). The in-tree
+ * fallback Pipeline performs NO engine dispatch: production requests
+ * are realized per-URL by the `EngineProvider` family (ServiceLoader
+ * discovery) and never touch this Pipeline. A request that reaches
+ * this stage is by definition one this Pipeline cannot execute, so the
+ * stage surfaces a typed failure — `PipelineError` carrying
+ * `EngineError.UnsupportedCapability` — instead of passing the request
+ * through unchanged. An unrecognized request type must never pass
+ * through as a silent success (preserves the typed-failure contract
+ * the deleted dispatch arm served).
  */
  case object Execute extends Stage {
   override def name: PipelineStage = PipelineStage.Execute
-  override def run(env: StageEnv)(ctx: Context): Context = ctx.request match {
-   case ConnectorRequest(connectorName, query) =>
-    env.connectors.get(connectorName) match {
-     case Some(c) =>
-      val rows = c.query(query)
-      val sch = c.schema()
-      ctx.copy(result = Some(ConnectorResult(connectorName, sch, rows)))
-     case None =>
-      // P1-A3-E4: an unregistered connector name must surface a
-      // typed failure, not a silent empty success.
-      ctx.copy(result = Some(ConnectorError(
-       connectorName,
-       EngineError.EngineUnavailable(
-        engine     = connectorName,
-        available  = Nil,
-        wasDefault = false,
-        message    = s"sm8: connector '$connectorName' is not registered"))))
-    }
-   case other =>
-    // Unknown request type — surface a typed NotImplemented-style
-    // failure instead of passing through unchanged.
-    ctx.copy(result = Some(ConnectorError(
-     "-",
-     EngineError.UnsupportedCapability(
-      engine     = "pipeline",
-      capability = "RequestType",
-      message    = s"sm8: unsupported request type ${other.getClass.getName}"))))
-  }
+  override def run(env: StageEnv)(ctx: Context): Context =
+   ctx.copy(result = Some(PipelineError(
+    engine = "-",
+    error = EngineError.UnsupportedCapability(
+     engine     = "pipeline",
+     capability = "RequestType",
+     message    = s"sm8: unsupported request type ${ctx.request.getClass.getName}"))))
  }
 
  /**
@@ -151,13 +130,12 @@ object Stage {
  * runner is a single `foldLeft` — adding a stage is data, not code.
  */
 final class Pipeline(
- connectors: ConnectorRegistry,
  hooks: HookManager,
  transformers: TransformerRegistry
 ) {
 
  /** Bundled environment for Stage.run. */
- private val env: StageEnv = StageEnv(connectors, hooks, transformers)
+ private val env: StageEnv = StageEnv(hooks, transformers)
 
  /**
  * Run `request` through all stages. Returns the final Result.
@@ -167,7 +145,8 @@ final class Pipeline(
  * short-circuits all remaining stages and hooks.
  * @param request the Request to run
  * @return the final Result (the last Context's `result`, or a
- *   stub empty result if no stage set one)
+ *   `PipelineSkipped` marker carrying the stage where a hook
+ *   short-circuited the pipeline before any stage produced a result)
  */
  def run(request: Request): Result = {
  val initial = Context(
@@ -180,9 +159,11 @@ final class Pipeline(
 
  val finalCtx = Stage.All.foldLeft(initial) { (ctx, stage) =>
   if (ctx.stop) {
-  // Per RFC: short-circuit. Tag the Context with the stage
-  // name so downstream observers know where the pipeline halted.
-  ctx.copy(stage = stage.name)
+  // Per RFC: short-circuit. The Context already carries the stage
+  // where the halt was set — keep it so the `PipelineSkipped`
+  // sentinel (and downstream observers) know where the pipeline
+  // halted.
+  ctx
   } else {
   // 1. Pre-hooks (priority-ordered; fail-fast on throw).
   val afterPre = runPreHooks(stage, ctx)
@@ -195,13 +176,10 @@ final class Pipeline(
  }
 
  finalCtx.result.getOrElse(
-  // No stage set a result (e.g. a pre-hook short-circuited via
-  // Context.stop before Execute ran) — return a stub empty result.
-  ConnectorResult(
-   connectorName = "",
-   schema  = ConnectorSchema(Nil),
-   rows    = ResultRows(Vector.empty)
-  )
+  // No stage set a result (a hook set Context.stop before any stage
+  // body produced one) — return the explicit short-circuit marker,
+  // not a silent empty success.
+  PipelineSkipped(finalCtx.stage)
  )
  }
 
