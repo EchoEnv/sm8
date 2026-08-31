@@ -77,6 +77,43 @@ the `EngineProvider` ServiceLoader seam in the connector modules
 
 That's the entire Core API. No Spark, no Trino, no DuckDB imports — those are Plugin authors' concerns, not Core's.
 
+### Hook contracts: priority ranges + error policy
+
+Every hook you register carries a `priority: Int` and the engine sorts
+all hooks for a stage by `(priority ASC, registration order)`. The
+ranges are reserved by the hook's origin so independently-authored
+plugins don't stomp each other's ordering (RFC §8):
+
+| Range | Owner |
+|---|---|
+| 0–99 | Core / built-in behavior |
+| 100–899 | First-party / official plugins |
+| 900+ | Community / user plugins |
+
+Resources enforcing this at registration: `HookOrigin.validate`.
+Hooks registered via the 3-arg `registerPreHook`/`registerPostHook`
+are assigned First-party origin and must use non-negative priority
+(`IllegalArgumentException` on negative); the 4-arg origin-aware
+overload enforces the full range by origin (RFC §8 conformance).
+
+Error handling follows RFC §9 (fail-fast):
+
+- A hook that throws a `NonFatal` exception surfaces as a typed
+  `EngineError.HookFailed(name, priority, stage, message)` that
+  fails the current pipeline stage and propagates to the caller. Fatal
+  `Error`s (e.g. OOM) propagate unchanged. The pipeline can therefore
+  fail loudly (the typed error is visible to the caller) without losing
+  the hook author's intent. Hooks that need to recover from expected
+  failures catch their own exceptions and return a normal `Context`.
+- Adapter errors during `execute` surface as `EngineError` variants
+  (`EngineError.UnsupportedCapability`, `ConnectionFailed`,
+  `FeatureDeferred`, etc.) — they are typed data the caller
+  pattern-matches on, never wrapped or silently swallowed.
+- A hook that sets `context.stop = true` short-circuits the rest of
+  the pipeline. Post-hooks still run on the short-circuit path (so
+  observers see the cached/halted result), but mutator post-hooks
+  with `runsOnStop = false` skip it.
+
 ### Build the full reactor
 
 ```bash
