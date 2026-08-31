@@ -10,7 +10,7 @@ import org.scalatest.matchers.should.Matchers
  * Tests for `InMemoryResultCache` (PR-C5b-ext-β).
  *
  * maps are `ConcurrentHashMap`; reads + writes see a consistent
- * snapshot. Single-flight uses `computeIfAbsent` for atomic
+ * snapshot. Single-flight uses `putIfAbsent` for atomic
  * per-key coalescing.
  *
  * types are JDK or Scala stdlib.

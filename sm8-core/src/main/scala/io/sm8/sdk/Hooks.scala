@@ -90,15 +90,11 @@ trait PreHook {
  * both wasted work AND a no-op at best, wrong at worst).
  *
  * The default `runsOnStop = true` matches Observer semantics (always
- * fire). Plugins that want Mutator semantics (skip on `c.stop`) override
- * to `false` — see 
- *
- * default method (not a separate trait). One mechanism, two intents —
- * per the RFC's "classification of intent, not a separate mechanism"
- * convention. 
- * where it breaks": the short-circuit flag at the dispatcher boundary
- * is the fault line; this flag lets the dispatcher honor both
- * intents without splitting the trait.
+ * fire). Plugins that want Mutator semantics (skip on `c.stop`)
+ * override to `false` — see the short-circuit-cache pattern in
+ * `CachePlugin.scala` for a reference. The dispatcher honors both
+ * intents at the same `runsOnStop` flag, so a single trait covers
+ * both without splitting the hook taxonomy.
  */
 trait PostHook {
 
@@ -200,7 +196,7 @@ object HookStage {
  }
 }
 /**
- * Per-PR-3b (ADR-008-P §C1): the per-stage hook runner protocol.
+ * The per-stage hook runner protocol (ADR-010-a).
  *
  * The Core's 4-stage pipeline (parse -> resolve -> execute -> format, per
  * RFC §5) fires two hook attachment points per stage (pre/post) = 8 hook

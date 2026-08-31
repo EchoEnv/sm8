@@ -45,15 +45,14 @@ trait HookManager {
  def registerPreHook(stage: HookStage, hook: PreHook, priority: Int): HookManager
 
  /**
- * Origin-aware registration (RFC §8 conformance PR).
+ * Origin-aware registration (RFC §8 conformance).
  *
  * Plugin authors who declare their origin (Core / FirstParty /
- * Community) get the SDK to enforce the reserved range at
- * registration time. Plugin authors using the 3-arg overload
- * get the non-negative check only — the documented SDK
- * contract.
- *
- * change to the SDK surface. The existing 3-arg overload is
+ * Community) get the engine to enforce the reserved range at
+ * registration time — the implementation overrides this overload
+ * with the typed range check. Plugin authors using the 3-arg
+ * overload get the non-negative check only — the documented SDK
+ * contract. The existing 3-arg overload is
  * preserved with identical semantics; downstream Plugins and
  * HookManagerImpl are unaffected.
  */
@@ -68,10 +67,10 @@ trait HookManager {
  def registerPostHook(stage: HookStage, hook: PostHook, priority: Int): HookManager
 
  /**
- * Origin-aware registration (RFC §8 conformance PR). Same
- * semantics as the PreHook variant. Plugin authors can opt
- * into strict range enforcement by passing an explicit
- * `origin`.
+ * Origin-aware registration (RFC §8 conformance). Same
+ * semantics as the PreHook variant: declaring an explicit
+ * `origin` opts the registration into strict range
+ * enforcement at the implementation layer.
  */
  def registerPostHook(stage: HookStage, hook: PostHook, priority: Int, origin: HookOrigin): HookManager = registerPostHook(stage, hook, priority)
  /**
