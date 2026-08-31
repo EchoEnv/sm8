@@ -1,16 +1,17 @@
 # sm8-core
 
 The **frozen Core** of the SM8 engine. Spark-free. Implements the SDK
-surface (7 types) and the Core Boundary from the karpathy-app-design
-pattern as instantiated by the [SM8 plan][plan].
-
-[plan]: /home/emilio/.claude/plans/agile-kindling-beacon.md
+surface and the Core Boundary from the v1 architecture spec in
+[`docs/rfcs/2026-08-12_v1_architecture-spec/`](../docs/rfcs/2026-08-12_v1_architecture-spec/).
 
 ## Status
 
-**Step 1 of the 11-step migration.** Ships the SDK only — no Pipeline
-runner, no ServiceLoader discovery, no allowlist filter. Those land in
-Steps 3–7.
+The SDK is the frozen public surface. The engine implementation
+(`io.sm8.core.EngineImpl`), the 4-stage pipeline, ServiceLoader
+discovery (`PluginDiscovery`), and the allowlist filter all ship in
+this module alongside the SDK; the SDK trait itself is the stability
+promise. See "What's in this module" for what lives in Core versus
+what is deliberately left to plugins/connectors.
 
 ## What's in this module
 
@@ -19,29 +20,31 @@ Steps 3–7.
 The single import path for Plugin authors. Every type a Plugin
 author touches lives here:
 
-| Type              | Kind                  | Frozen after |
-|-------------------|-----------------------|--------------|
-| `Plugin`          | trait                 | Step 1       |
-| `PreHook`         | trait                 | Step 1       |
-| `PostHook`        | trait                 | Step 1       |
-| `Transformer`     | trait                 | Step 1       |
-| `Context`         | case class            | Step 1       |
-| `Engine`          | trait (registry only) | Step 1       |
+| Type              | Kind                  |
+|-------------------|-----------------------|
+| `Plugin`          | trait                 |
+| `PreHook`         | trait                 |
+| `PostHook`        | trait                 |
+| `Transformer`     | trait                 |
+| `Context`         | case class            |
+| `Engine`          | trait (orchestrator facade) |
 
-These are the SDK stability promise (per [[Q2 = A]] and [[Q5 = A]]).
-Any change to the public surface of any of these types is a breaking
-change. Version bumps, MiMa exclusions, and CHANGELOG entries required.
+These are the SDK stability promise. Any change to the public
+surface of any of these types is a breaking change. Version bumps,
+MiMa exclusions, and CHANGELOG entries required.
 
 ### Marker types in the SDK
 
-These are abstract in Step 1 and gain their concrete shape in later
-steps. They exist now so the SDK compiles and the test skeletons have
-something to reference:
+These are marker traits; concrete request/result shapes are carried
+by the `EngineHookRequest` / `EngineHookResult` / `PipelineError` /
+`PipelineSkipped` families in `io.sm8.core` and by the per-connector
+realization types. They stay abstract in the SDK so the public
+surface does not grow with every engine.
 
-| Type                | Concrete shape lands in | Notes                                |
-|---------------------|-------------------------|--------------------------------------|
-| `Request`           | Step 3                  | Marker trait — full shape is JSON    |
-| `Result`            | Step 3                  | Marker trait — full shape is JSON    |
+| Type                | Notes                              |
+|---------------------|------------------------------------|
+| `Request`           | Marker trait — input to the engine |
+| `Result`            | Marker trait — output of the engine |
 
 ### Supporting types
 
@@ -50,19 +53,23 @@ something to reference:
 | `PipelineStage`     | `Context.scala`             | Sealed: 4 cases                    |
 | `HookStage`         | `Hooks.scala`               | Sealed: 8 named attachment points  |
 
-## What's NOT in this module
+## What's in this module (and what's deliberately not)
 
 These are deliberate omissions per the karpathy "smallest correct
-core" rule and the plan's B-style sequencing:
+core" rule. The pipeline runner (`Pipeline`), `EngineImpl` (the
+`Engine` trait's implementation), `HookManagerImpl` (priority-ordered
+dispatch), `TransformerRegistry` (exactly-one-active swap), and
+`ServiceLoader` discovery (`PluginDiscovery`) all ship **inside**
+`io.sm8.core` in this module — they are not part of the SDK's
+public trait surface, but they are on the Core classpath. The Maven
+_coordinates_ allowlist filter and MiMa are release-readiness gates
+that land with the first v1.0.0 RC.
 
-- **Pipeline runner** (parse → resolve → execute → format) — Step 3
-- **`EngineImpl`** (the `Engine` trait's implementation) — Step 3
-- **HookManager** (priority-ordered dispatch) — Step 4
-- **TransformerRegistry** (exactly-one-active swap) — Step 6
-- **`ServiceLoader` discovery** — Step 7
-- **Maven-coords allowlist filter** — Step 7
-- **`EngineError` ADT** (typed error type for `connect()` / `query()`) — Step 0 (moves from `semanticdf-core`)
-- **Manifest validation** (Jackson + JSON Schema) — Step 0
+What Core never gains (per RFC §3 layer discipline):
+
+- A dependency on any specific adapter or plugin implementation
+  (`maven-enforcer-plugin` rejects `org.apache.spark:*` here).
+- Connector/engine grammar — that lives in `connectors/*`.
 
 ## Build
 
@@ -75,11 +82,10 @@ mvn -pl sm8-core test
 Expected:
 
 - `mvn compile` succeeds; zero warnings about unused params.
-- `mvn test` runs the contract + smoke specs:
-  - `PluginContractSpec` (3 tests)
-  - `HookContractSpec` (5 tests)
-  - `CoreClasspathSpec` (1 test, asserts no Spark on classpath)
-- All 12 tests green.
+- `mvn test` runs the full Core suite — the unified contract bases
+  (`PluginContractSpec`, `HookContractSpec`), the engine smoke /
+  hook-dispatch / transformer-swap / discovery specs, and
+  `CoreClasspathSpec` (asserts no Spark on the classpath). All green.
 
 ## Zero-Spark invariant
 
@@ -96,8 +102,8 @@ If either fails, the Core is broken — Spark classes belong in
 ## Binary compatibility
 
 `mima-maven-plugin` is **not** wired yet — it's a release-readiness gate
-that lands when we cut the first v1.0.0 release candidate (Step 9 in
-the sequencing). Step 1 is 0.1.0-SNAPSHOT; the SDK surface is still
+that lands when we cut the first v1.0.0 release candidate. The
+module is currently 0.1.0-SNAPSHOT and the SDK surface is still
 settling. Once MiMa is wired, baseline is `0.1.0` (first public
 release), and any public-API change after that blocks `mvn verify`
 until either (a) the change is justified via MiMa exclusion, or (b)
@@ -121,11 +127,47 @@ modules. No internal types leak. No
 Spark, no Trino, no DuckDB — those are Plugin authors' problem, not
 the Core's.
 
+### Hook contracts: priority ranges + error policy
+
+Every hook registered on the engine sorts by `(priority ASC,
+registration order)` (RFC §8). The ranges below are reserved by the
+hook's origin so independently-authored plugins don't collide:
+
+| Range | Owner |
+|---|---|
+| 0–99 | Core / built-in behavior |
+| 100–899 | First-party / official plugins |
+| 900+ | Community / user plugins |
+
+The 3-arg `registerPreHook`/`registerPostHook` overloads require
+non-negative priority and tag the hook First-party by default. The
+4-arg overload (with `HookOrigin`) enforces the full range by origin
+through `HookOrigin.validate`; an out-of-range priority throws
+`IllegalArgumentException` at registration.
+
+Error handling (RFC §9): a hook that throws a `NonFatal`
+exception surfaces as a typed `EngineError.HookFailed(name,
+priority, stage, message)` that fails the current pipeline stage
+and propagates to the caller; fatal `Error`s (e.g. OOM) propagate
+unchanged. The pipeline fails loudly (typed error visible to caller)
+without losing the hook author's intent. Hooks that must survive
+non-fatal failures catch their own exceptions and return a normal
+`Context`. Observer-style hooks should never throw; mutator
+post-hooks that should skip the short-circuit path override
+`runsOnStop` to `false`. A hook that sets `context.stop = true`
+short-circuits the remaining stages but post-hooks (including
+observer-style audits) still fire on the short-circuit path so
+observability is preserved.
+
+For a copy-and-modify starting point, see
+[`plugins/example-plugin/README.md`](../plugins/example-plugin/README.md).
+
 ## What's next
 
-- **Step 2**: Promote the contract skeletons to abstract base classes
-  (`PluginContractSpec` / `HookContractSpec`).
-- **Step 3**: `Engine` implementation + Pipeline runner.
-- **Step 7**: Portal (`ServiceLoader` + allowlist).
-- **Step 8**: Repackage `adapters/semanticdf-{spark,trino,…}` as
-  `connectors/{spark,trino,…}-connector/`.
+- **Release gate**: wire `mima-maven-plugin` against a `0.1.0`
+  baseline when cutting the first v1.0.0 release candidate.
+- **Connector conformance**: a shared contract suite that every
+  `connectors/*` engine must pass (mirrors the plugin-side
+  `HookContractSpec` / `PluginContractSpec` unification).
+- **Feature work** continues against the v1 architecture spec in
+  `docs/rfcs/2026-08-12_v1_architecture-spec/`.
