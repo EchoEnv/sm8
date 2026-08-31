@@ -49,6 +49,7 @@
     <module>plugins/materialize-plugin</module>
     <module>plugins/skew-plugin</module>
     <module>plugins/semantic-graph-plugin</module>
+    <module>plugins/example-plugin</module>
     <module>sm8-cli</module>
     <module>sm8-server</module>
     <module>sm8-platform</module>

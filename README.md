@@ -115,12 +115,14 @@ connectors/                  # Engine-portable adapters (one per engine)
 └── trino-connector/
 
 plugins/                     # Hook Plugins discovered via META-INF/services
+├── example-plugin/          # COPY-ME template for new plugin authors
 ├── audit-plugin/
 ├── broadcast-plugin/
 ├── cache-plugin/
 ├── materialize-plugin/
 ├── row-cap-plugin/
-└── skew-plugin/
+├── skew-plugin/
+└── semantic-graph-plugin/
 
 sm8-core/                    # Frozen Core — SDK + 4-stage pipeline. Spark-free.
 sm8-platform/                # Engine-portable runtime: EngineService, hooks, Restate
