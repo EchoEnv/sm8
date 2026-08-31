@@ -13,12 +13,12 @@
  *   2. Parse the raw URL into a typed `EngineUrl` (per-connector grammar).
  *   3. Realize each provider against the typed URL with TYPED errors.
  *
- * Per scala-error-handlingmindset §1 (errors are data) + ADR-008-Q
+ * Per [[scala-error-handling-mindset]] §1 (errors are data) + ADR-008-Q
  * §C1: this helper returns `List[Either[EngineError, EngineProvider]]`
  * — typed per-provider errors, not a silent `List[EngineProvider]`
  * that hides the failure mode.
  *
- * Per scala-jvm-safety-mindset §3 (long-lived state): NO static
+ * Per [[scala-jvm-safety-mindset]] §3 (long-lived state): NO static
  * ServiceLoader cache. The loader is per-call (no leak risk across
  * hot-reload); the caller (sm8-server Main.wire) calls this once at
  * boot.
@@ -43,7 +43,7 @@ object EngineLoader {
    *   - `Left(engineError)` for each provider that could NOT be
    *     realized (typed error per ADR-008-Q §C1).
    *
-   * Per scala-error-handlingmindset §1: the caller (Main.wire)
+   * Per [[scala-error-handling-mindset]] §1: the caller (Main.wire)
    * inspects the typed errors and surfaces them as boot failures
    * (fail-loud per design §4.1: misconfigured boots are loud at
    * startup, not silent at query time).
@@ -137,7 +137,7 @@ object EngineLoader {
         // broken RPC, `IllegalArgumentException` from bad grammar)
         // surfaces as a typed `Left(ConnectionFailed)` instead of
         // escaping uncaught through `realizeOne → discoverAndRealize →
-        // Main.wire → Main.run`. Per scala-error-handling-mindset §1
+        // Main.wire → Main.run`. Per [[scala-error-handling-mindset]] §1
         // (errors are data): a non-ConnectionFailed realization failure
         // is still a connection failure from the deployment module's
         // perspective.

@@ -138,11 +138,11 @@ final class HttpTransport(
   }
 
   /**
-   * Bind + start the HTTP server. Per scala-perf-testingmindset:
+   * Bind + start the HTTP server. Per [[scala-perf-testing-mindset]]:
    * startup-time initialization; called once.
    *
    * Awaits the Vert.x bind future — bind failures throw
-   * `IllegalStateException` (fail loud, per scala-jvm-safetymindset).
+   * `IllegalStateException` (fail loud, per [[scala-jvm-safety-mindset]]).
    *
    * @param port TCP port (default 8080 — Restate's default ingress
    *             port; `0` = ephemeral)

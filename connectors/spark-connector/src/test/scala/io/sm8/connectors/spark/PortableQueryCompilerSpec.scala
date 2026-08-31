@@ -2,16 +2,16 @@
  * SM8 PortableQueryCompiler spec - closure-safety + real-runtime
  * compile path.
  *
- * Per scala-spark-batch-bugs-mindset mantra #1: the compiler
+ * Per [[scala-spark-batch-bugs-mindset]] mantra #1: the compiler
  * extends java.io.Serializable and captures ONLY a SparkSession
  * (which Spark 3.5 + 4.1 guarantee is Serializable). The round-trip
  * test proves the contract at runtime.
  *
- * Per scala-spark-batch-bugs-mindset mantra #5 (driver vs executor
+ * Per [[scala-spark-batch-bugs-mindset]] mantra #5 (driver vs executor
  * asymmetry): compile() + collect() both run in the driver process;
  * no driver-side resources leak to executors.
  *
- * Per scala-jvm-safety-mindset mantra #3 (long-lived state): the
+ * Per [[scala-jvm-safety-mindset]] mantra #3 (long-lived state): the
  * compiler has NO static / ThreadLocal state. The captured
  * SparkSession is constructor-frozen.
  */
@@ -35,7 +35,7 @@ class PortableQueryCompilerSpec extends AnyFunSuite with Matchers {
 
   /** Round-trip via Java serialization - the path Restate and
     * Spark UDFs use to verify captured-state contract.
-    * Per scala-spark-batch-bugs-mindset mantra #1. */
+    * Per [[scala-spark-batch-bugs-mindset]] mantra #1. */
   private def roundTripViaJavaSerialization[T](obj: T): T = {
     val bytes = new ByteArrayOutputStream()
     val oos = new ObjectOutputStream(bytes)
@@ -48,7 +48,7 @@ class PortableQueryCompilerSpec extends AnyFunSuite with Matchers {
   }
 
   /** Construct a portable Model with the given source + filters.
-    * Per scala-data-driven-refactor-mindset: pure data, smart
+    * Per [[scala-data-driven-refactor-mindset]]: pure data, smart
     * constructor via Model.of (no direct constructor access). */
   private def makeModel(
       source: SourceRef,
@@ -72,7 +72,7 @@ class PortableQueryCompilerSpec extends AnyFunSuite with Matchers {
   // -- closure-safety baseline (scala-spark-batch-bugs-mindset mantra #1) --
 
   test("PortableQueryCompiler: extends java.io.Serializable and survives ObjectOutputStream round-trip with null spark") {
-    // Per scala-jvm-safety-mindset mantra #3: null spark is a
+    // Per [[scala-jvm-safety-mindset]] mantra #3: null spark is a
     // valid reference (lazy evaluation). The round-trip proves
     // the COMPILER class itself survives serialization, which is
     // the captured-state contract the user asked for.
@@ -171,7 +171,7 @@ class PortableQueryCompilerSpec extends AnyFunSuite with Matchers {
   // -- Driver-executor asymmetry: schema + collect() in driver only --
 
   test("PortableQueryCompiler.compile: output DataFrame schema is the actual compiled plan schema (not caller-supplied dimensions)") {
-    // Per scala-spark-batch-bugs-mindset mantra #3 (verify at the
+    // Per [[scala-spark-batch-bugs-mindset]] mantra #3 (verify at the
     // boundary): even when the model's dimensions list is wrong
     // (e.g. references a column that doesn't exist), the compiled
     // DataFrame schema is the Spark-side resolved schema. The
@@ -197,7 +197,7 @@ class PortableQueryCompilerSpec extends AnyFunSuite with Matchers {
       out.isRight shouldBe true
       val df = out.toOption.get
       // The compiled schema has the projected columns (just "name").
-      // Per scala-spark-batch-bugs-mindset mantra #3: this is the
+      // Per [[scala-spark-batch-bugs-mindset]] mantra #3: this is the
       // boundary contract.
       df.schema.fieldNames.toSet shouldBe Set("name")
       df.schema("name").dataType shouldBe StringType
@@ -209,7 +209,7 @@ class PortableQueryCompilerSpec extends AnyFunSuite with Matchers {
   // -- Driver-side collect() materialization (scala-spark-batch-bugs-mindset mantra #5) --
 
   test("PortableQueryCompiler.compile: collect() runs in the driver process and returns Array[Row] to the caller") {
-    // Per scala-spark-batch-bugs-mindset mantra #5: collect()
+    // Per [[scala-spark-batch-bugs-mindset]] mantra #5: collect()
     // materializes rows in the driver. No executor-side
     // closures are captured. The compiler + DataFrame
     // references do NOT cross the executor boundary.

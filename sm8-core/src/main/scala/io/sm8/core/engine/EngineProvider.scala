@@ -5,7 +5,7 @@ import io.sm8.core.model.Model
 /** Engine-portable engine-provider trait — the engine-portable contract.
  * Mirrors the design doc §6.4 "EngineProvider".
  * ==Why a trait (not a concrete class)==
- * Per scala-data-driven-refactor \u00a71: data in core, behavior in
+ * Per [[scala-data-driven-refactor-mindset]] \u00a71: data in core, behavior in
  * adapters. The PROVIDER trait is the data shape (the contract
  * MCP needs); the IMPLEMENTATIONS (SparkEngineProvider,
  * TrinoEngineProvider) are the engine-specific behavior. The trait
@@ -148,7 +148,7 @@ final case class QueryRequest(
   * field). Each FilterSpec carries a name (for diagnostics)
   * and an Expr predicate. Per scala-data-driven-refacer:
   * Expr is pure data; the engine-specific compile is in the
-  * adapter. Per scala-error-handling: at the IO boundary,
+  * adapter. Per [[scala-error-handling-mindset]]: at the IO boundary,
   * unsupported filter shapes surface as typed
   * EngineError.UnsupportedCapability. */
  filters: List[io.sm8.core.model.FilterSpec] = Nil,
@@ -165,7 +165,7 @@ final case class QueryRequest(
  /** the current implementation: typed having predicates (per the design contract). */
  having:  Seq[io.sm8.core.rel.Having[Nothing]]    = Nil,
  /** the current implementation: typed partition hints (best-effort; AQE may override
-  * per scala-spark-batch-bugs §2). */
+  * per [[scala-spark-batch-bugs-mindset]] §2). */
  partitionBy: Seq[io.sm8.core.rel.PartitionBy[Nothing]]  = Nil,
  /** the current implementation: typed window specs (rank-only minimal; the design contract). */
  window:  Seq[io.sm8.core.rel.TypedWindow[Nothing, Nothing]] = Nil,

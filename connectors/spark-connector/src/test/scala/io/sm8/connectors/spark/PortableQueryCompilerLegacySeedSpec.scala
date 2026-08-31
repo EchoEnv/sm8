@@ -12,7 +12,7 @@
  * directly (test fixtures, replays, third-party drivers) read an
  * un-seeded `ctx` and the broadcast gate was silently OFF.
  *
- * Per scala-spark-batch-bugs §1: every assertion is on the evaluated
+ * Per [[scala-spark-batch-bugs-mindset]] §1: every assertion is on the evaluated
  * physical plan, not the intermediate logical hints. Adaptive Query
  * Execution is disabled in `buildSpark` so Catalyst cannot re-plan
  * the join around the assertion; the sm8 seed's explicit `broadcast()`
@@ -53,7 +53,7 @@ class PortableQueryCompilerLegacySeedSpec extends AnyFunSuite with Matchers {
       .config("spark.driver.host", "127.0.0.1")
       .config("spark.driver.bindAddress", "127.0.0.1")
       // Disable AQE so Catalyst cannot re-plan the join around the
-      // assertion (per scala-spark-batch-bugs §1: what you wrote isn't
+      // assertion (per [[scala-spark-batch-bugs-mindset]] §1: what you wrote isn't
       // what runs — AQE is a second optimizer pass on top of the
       // explicit `functions.broadcast` call). The sm8 seed's explicit
       // `broadcast()` call (or its absence) is the only determinant.

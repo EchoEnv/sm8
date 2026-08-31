@@ -175,7 +175,7 @@ class MetaCaptureObserverSpec extends AnyFunSuite with Matchers {
   }
 
   test("[H1] postHook snapshot of empty meta is an immutable.HashMap (no NPE)") {
-    // Per scala-jvm-safety: `HashMap.from(Map.empty.iterator)`
+    // Per [[scala-jvm-safety-mindset]]: `HashMap.from(Map.empty.iterator)`
     // is total and returns the `emptyHashMap` singleton (same as
     // `Map.empty` in observable behaviour, both immutable). NPE
     // safety check on the SDK contract.

@@ -132,7 +132,7 @@ final case class RestateCachedRow(
  // Row-length validation lives at the encoder (CachedRowDecoder.toRestateCachedRowFromPortable)
  // which is the only non-test constructor caller. This separation keeps the case-class
  // invariant a programmer-error check (null + size) and the runtime-error check
- // (row-length) at the journal boundary as typed-Left per scala-error-handling-mindset.
+ // (row-length) at the journal boundary as typed-Left per [[scala-error-handling-mindset]].
 }
 
 object RestateCachedRow {

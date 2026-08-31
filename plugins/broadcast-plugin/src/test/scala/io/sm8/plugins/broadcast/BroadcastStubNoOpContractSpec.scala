@@ -10,7 +10,7 @@
  * ADR-009-d invariant mechanically so future contributors cannot
  * accidentally widen the write surface without a test signal.
  *
- * Per scala-data-driven-refactor-mindset: the "data is data" rule applies
+ * Per [[scala-data-driven-refactor-mindset]]: the "data is data" rule applies
  * to plugins too — a stub plugin must advertise itself as a stub.
  *
  * Per scala2-scaladoc-mindset: no [[wikilinks]], no PR/Phase/ADR/process

@@ -18,7 +18,7 @@
  * `SortMergeJoinExec`. This pins the seed's actual behavior rather
  * than the framework's default.
  *
- * Per scala-spark-batch-bugs: every assertion is on the EVALUATED
+ * Per [[scala-spark-batch-bugs-mindset]]: every assertion is on the EVALUATED
  * physical plan (executor-side truth), not the intermediate logical
  * hints.
  */

@@ -4,7 +4,7 @@ import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
 /** Phase 2 contract: prove `EngineIdentity` is a usable, Spark-free
-  * data record. Per scala-data-driven-refactor, this is pure data:
+  * data record. Per [[scala-data-driven-refactor-mindset]], this is pure data:
   * the identity SHAPE is engine-portable; the VALUES are engine-
   * specific.
   */

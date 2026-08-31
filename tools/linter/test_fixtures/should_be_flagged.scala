@@ -28,6 +28,11 @@
 // Per scala-data-driven-refactor §2 to prove the typo fix.
 // Per scala-2-scaladoc §3 to prove the 2-scaladoc form is caught.
 
+// 2c. Skill wiki-links (carve-out from pattern [27] — MUST NOT be flagged).
+// * Per [[scala-jvm-safety-mindset]]: this is intentional.
+// * Per [[scala-perf-testing-mindset]] §3.
+// * Per [[scala-data-driven-refactor]]: bare skill wiki-link also ok.
+
 /* 3. Stable-doc PR handle with process-narration context
  * (this is the .md linter's scope, but a process-narration
  * phrase + PR handle in a .scala comment should also be caught

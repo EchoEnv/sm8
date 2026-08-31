@@ -12,7 +12,7 @@
  *      Serializable enclosing local throws — proves the rule
  *      "define the witness at `object` level").
  *
- * Per scala-spark-batch-bugs-mindset §1: the closure-safety
+ * Per [[scala-spark-batch-bugs-mindset]] §1: the closure-safety
  * invariant the test proves is that the witness captures ONLY the
  * singleton + extracted values (Serializable) — not the enclosing
  * method scope.
@@ -51,7 +51,7 @@ class TypedDimensionClosureSafetySpec extends AnyFlatSpec with Matchers {
 
   "TypedDimension witness (closure-safe pattern)" should
       "round-trip a closure that references the witness" in {
-    // Per scala-jvm-safety-mindset §3: the closure body references
+    // Per [[scala-jvm-safety-mindset]] §3: the closure body references
     // extracted vals (Strings, both Serializable), NOT the enclosing
     // object via Scala's outer-pointer. The TypedDimension witness
     // is stored as a val at object level (singleton), so the closure

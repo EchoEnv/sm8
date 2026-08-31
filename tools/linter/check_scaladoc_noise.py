@@ -52,7 +52,11 @@ NOISE_PATTERNS = [
     (r"\(was\s+a\b", "narrates a diff (\"was a ...\") instead of describing current state"),
     (r"\bis\s+replaced\s+with\b", "narrates a diff (\"replaced with\") instead of describing current state"),
     (r"\bearlier\s+internal-only\s+version", "references internal version history"),
-    (r"\[\[[a-z0-9]+(-[a-z0-9]+)+\]\]", "double-bracket reference looks like a skill/tool name, not a Scala symbol"),
+    # Carve out the 7 known scala-* skill wiki-links (per the skill allowlist in pattern [28])
+    # from the generic "double-bracket reference" rule. The negative lookahead matches
+    # the FULL [[scala-X-mindset]] or [[scala-X]] form, then blocks it; any other
+    # [[X-Y-Z]] form still matches (e.g. [[scala-foo-bar-baz]] for an unknown skill).
+    (r"\[\[(?!scala-(?:jvm-safety|spark-batch-bugs|error-handling|data-driven-refactor|jar-packaging|perf-testing|2-scaladoc)(?:-mindset)?\]\])[a-z0-9]+(-[a-z0-9]+)+\]\]", "double-bracket reference looks like a skill/tool name, not a Scala symbol (excluding `[[scala-X-mindset]]` skill wiki-links)"),
     (r"\bper\s+scala-(?:jvm-safety|spark-batch-bugs|error-handling|data-driven-refactor|jar-packaging|perf-testing|2-scaladoc)(?:\s+§\d+|\b)", "bare skill-citation in .scala source (per scala-X §N) — should use `[[scala-X]]` wiki-link form instead"),
 ]
 

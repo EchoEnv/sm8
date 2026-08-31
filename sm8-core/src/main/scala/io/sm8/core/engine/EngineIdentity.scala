@@ -21,7 +21,7 @@ package io.sm8.core.engine
  * The design uses 3 fields to distinguish the engine's NATIVE
  * version (informational) from the ADAPTER's version (which can
  * matter for reproducibility — same model + same adapter version
- * produces the same SQL). Per scala-data-driven-refactor §1
+ * produces the same SQL). Per [[scala-data-driven-refactor-mindset]] §1
  * ("data is data, behavior lives elsewhere"): the identity is
  * pure data; no behavior on the case class.
  *

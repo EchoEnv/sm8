@@ -41,14 +41,14 @@ class PluginDiscoverySpec extends AnyFlatSpec with Matchers {
   }
 
   it should "delegate to EngineImpl.discoverFromConfig without throwing" in {
-    // Per scala-error-handling-mindset: a misconfigured boot (no
+    // Per [[scala-error-handling-mindset]]: a misconfigured boot (no
     // allowlist file, SPI errors) MUST NOT throw. The factory exists
     // precisely so deployment callers don't need to catch
     // reflection/SPI exceptions.
     val plugins = PluginDiscovery.discoverFromConfig()
     // Returns a List (possibly empty). Type-level contract.
     plugins shouldBe a[List[_]]
-    // Per scala-jvm-safety: not a null on the happy path.
+    // Per [[scala-jvm-safety-mindset]]: not a null on the happy path.
     plugins should not be null
   }
 
@@ -63,7 +63,7 @@ class PluginDiscoverySpec extends AnyFlatSpec with Matchers {
   }
 
   it should "be safe to call multiple times (no caching, no state)" in {
-    // Per scala-data-driven-refactor-mindset §1: a factory holds no
+    // Per [[scala-data-driven-refactor-mindset]] §1: a factory holds no
     // state. Two consecutive calls MUST each succeed and return
     // List[Plugin] without throwing. (Element identity is NOT
     // asserted: SPI instantiates fresh Plugin instances per call,

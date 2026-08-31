@@ -52,7 +52,7 @@
  * - The groupBy+agg path allocates one Column per measure; the
  *  window path one withColumn per measure + one per calc.
  *
- * Per scala-error-handling-mindset: unsupported shapes surface at
+ * Per [[scala-error-handling-mindset]]: unsupported shapes surface at
  * the compile boundary as typed `EngineError` (FeatureDeferred for
  * the 10 unwired aggregates; UnsupportedCapability for multi-key
  * joins + unresolvable right-side models). Internals are total.
@@ -507,7 +507,7 @@ protected[spark] def readPathByPath(
 
  /** Apply the model's measures + calculated measures.
  *
- * Two code paths (per scala-spark-batch-bugs section 1 + the legacy):
+ * Two code paths (per [[scala-spark-batch-bugs-mindset]] section 1 + the legacy):
  * - window path when any calculated measure references
  *  Expr.All (preserves per-row data for percent-of-total)
  * - groupBy+agg path otherwise (per-group totals)

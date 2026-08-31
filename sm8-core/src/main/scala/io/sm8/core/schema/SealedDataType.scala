@@ -46,7 +46,7 @@ package io.sm8.core.schema
  * ExtensionValue mechanism instead.
  * ==Why core (engine-portable)==
  * Types are universal across query engines. The engine adapter
- * maps each case to its native type. Per scala-data-driven-refactor,
+ * maps each case to its native type. Per [[scala-data-driven-refactor-mindset]],
  * data (types) lives in core; behavior (engine-specific mapping)
  * lives in the engine adapter layer.
  * ==Data-driven mantra compliance==

@@ -60,7 +60,7 @@ class TypedAggregateCallClosureSafetySpec extends AnyFlatSpec with Matchers {
     probe(recovered)
   }
 
-  // Per scala-spark-batch-bugs-mindset §1 (closure-safety): the
+  // Per [[scala-spark-batch-bugs-mindset]] §1 (closure-safety): the
     // UDF closure must capture ONLY Serializable refs (Strings +
     // AggregateFn case object + Expr case class — all Serializable).
     // The closure MUST NOT capture the enclosing UdfClosure object —
