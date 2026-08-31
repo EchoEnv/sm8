@@ -1,18 +1,19 @@
 /*
  * SM8 Core — Pipeline.
  * Runs the 4-stage pipeline (parse → resolve → execute → format) on
- * a Context. Step 4: pre-hooks fire before each stage body, post-hooks
+ * a Context. Pre-hooks fire before each stage body, post-hooks
  * fire after; `Context.stop = true` short-circuits the rest of the
  * pipeline; hook throws abort the pipeline (RFC §9 fail-fast).
- * sealed-trait/match over Map-based rule tables"): the 4 pipeline
- * stages are a sealed `Stage` hierarchy. The pipeline runner walks
- * a `List[Stage]` (DATA, not control flow) via `foldLeft`. Adding
- * a stage = adding a case class to `Stage` + adding it to
- * `Stage.All`. The compiler enforces both.
- * (`val`, case class, no `var`). The pipeline is `foldLeft`-pure —
- * no shared mutable state, safe under concurrency.
- * fail-fast. The pipeline does NOT wrap them — they propagate to
- * `engine.run(.)`. The hook author chose to throw; we honor that.
+ * The 4 pipeline stages are a sealed `Stage` hierarchy. The pipeline
+ * runner walks a `List[Stage]` (DATA, not control flow) via
+ * `foldLeft`. Adding a stage = adding a case class to `Stage` +
+ * adding it to `Stage.All`. The compiler enforces both.
+ * Immutable state throughout (`val`, case class, no `var`): the
+ * pipeline is `foldLeft`-pure — no shared mutable state, safe under
+ * concurrency.
+ * Hook throws are fail-fast: the pipeline does NOT wrap them — they
+ * propagate to `engine.run(.)`. The hook author chose to throw; we
+ * honor that.
  * The Pipeline is internal (lives in `io.sm8.core`). Plugin authors
  * never construct a Pipeline directly — they go through
  * `Engine.run(request)`.
@@ -22,14 +23,11 @@
  * `RuntimeException` propagates per RFC §9 fail-fast. Production paths
  * go through `sm8-platform`'s `EngineHookDispatcher` +
  * `HookRunnerOrchestration`, which wrap throws as typed
- * `Left(EngineError.HookFailed(...))` per ADR-0008-af (currently at
- * v1.1 per the ADR's own revision-history table; updated to v1.1
- * after reviewer feedback sanitized HookFailed.message with engineer =
- * "<dispatcher>" literal)
- * (`EngineError.scala:140-149`). See ADR-0010-a for the dispatcher
- * contract. The Pipeline here is the canonical in-tree fallback
- * (RFC §5) and the 5 plugin test suites' seam; it is DORMANT in
- * production. PR-194c (Round 1 Review A): no code change, doc only.
+ * `Left(EngineError.HookFailed(...))` with an `engine` attribution
+ * of the `"<dispatcher>"` literal (see `EngineError.HookFailed`).
+ * See ADR-0010-a for the dispatcher contract. The Pipeline here is
+ * the canonical in-tree fallback (RFC §5) and the plugin test
+ * suites' seam; it is DORMANT in production.
  */
 package io.sm8.core
 
@@ -107,9 +105,9 @@ object Stage {
  }
 
  /**
- * Format — shape the raw result into the response. Step 3:
- * invokes the active Transformer if one is registered; otherwise
- * the Context passes through.
+ * Format — shape the raw result into the response: invokes the
+ * active Transformer if one is registered; otherwise the Context
+ * passes through.
  */
  case object Format extends Stage {
  override def name: PipelineStage = PipelineStage.Format

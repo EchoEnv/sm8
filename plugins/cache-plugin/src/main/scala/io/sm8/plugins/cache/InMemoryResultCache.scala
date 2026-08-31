@@ -1,71 +1,34 @@
 /*
- * SM8 Platform — InMemoryResultCache (LRU + single-flight impl).
+ * SM8 cache Plugin — InMemoryResultCache (LRU + single-flight impl).
  *
- * Replaces the legacy Java `io.semanticdf.cache.InMemoryResultCache`
- * (semanticdf-spark) with a Scala 2.13 class for `sm8-platform`.
- *
- * existing style): `final class` with a companion factory. NOT
- * Java. Matches the pattern set by `RestateCachedRow` (PR-C1) and
- * the `EngineService` `object` (PR-C5a/b/c).
- *
- * maps are `ConcurrentHashMap`; reads see a consistent snapshot;
+ * Bounded LRU cache for `RestateCachedRow` (engine-portable
+ * journaled form). Thread-safe. Eviction runs LRU when
+ * `entries.size() > maxEntries`. Reads see a consistent snapshot;
  * single-flight uses `putIfAbsent` (NOT `computeIfAbsent` — the
  * latter holds a CHM bin lock during compute, which is a documented
- * anti-pattern). No resource lifecycle.
+ * anti-pattern).
  *
- * `java.util.concurrent.ConcurrentHashMap` is part of JDK.
+ * == Single-flight error propagation ==
  *
- * propagates `compute.get()` exceptions to ALL waiters for the same
- * key (the legacy semantics). The cache is NOT populated on
+ * Leader and waiter paths both propagate `compute.get()` exceptions
+ * to all callers of the same key. The cache is NOT populated on
  * failure. Exceptions are unwrapped from `ExecutionException` and
  * the cause is rethrown so callers see the original error. The
- * interrupt flag is restored on `InterruptedException` for BOTH
- * the leader path (compute threw — flag lost by JVM-clear
- * semantics) AND the waiter path (cause is InterruptedException —
- * same JVM-clear trap).
+ * thread interrupt flag is restored on `InterruptedException` for
+ * BOTH paths (the JVM clears the flag when throwing
+ * `ExecutionException` from `Future.get()`, and the leader path
+ * sees the same JVM-clear trap when its compute throws).
  *
- * == Serializability (PR-C5b-ext-γ concern) ==
+ * == Serializability ==
  *
- * Used caches must be Serializable for `Restate.run` to capture
- * them in journaled closures. The `inflight` map is `@transient`
+ * Implements `Serializable` so the populated cache survives
+ * `Restate.run` journal capture. The `inflight` map is `@transient`
  * because its `CompletableFuture` values are NOT serializable
- * (`java.util.concurrent.CompletableFuture` is a runtime
- * class without a serialVersionUID). The `Entry` class IS
- * `Serializable` (the populated cache survives round-trip).
- * After deserialize, the `inflight` map is lazily reinitialized
- * to an empty `ConcurrentHashMap` via the `readResolve` pattern.
- *
- * == Review pass #2 fixes (PR-C5b-ext-β) ==
- *
- * - Entry `extends Serializable` (JVM-reviewer CRITICAL #1:
- *   populated cache failed `ObjectOutputStream.writeObject` with
- *   `NotSerializableException`).
- * - Leader path: `compute → put → complete` (was `compute →
- *   complete → put` — DE-reviewer CRITICAL #3: an exception from
- *   the put would leave waiters seeing the value while the cache
- *   was empty).
- * - Leader path: `InterruptedException` triggers
- *   `Thread.currentThread.interrupt()` BEFORE
- *   `leaderFut.completeExceptionally` (JVM-reviewer MAJOR #2).
- * - Waiter path: when the unwrapped `cause` is
- *   `InterruptedException`, restore the interrupt flag BEFORE
- *   rethrowing (JVM-reviewer MAJOR #3: the JVM clears the flag
- *   when throwing `ExecutionException` from `Future.get()`).
- * - `invalidateModel`: re-check tag inside the iteration loop
- *   (JVM-reviewer MAJOR #4: TOCTOU between `modelIndex.remove`
- *   and `entries.remove` could remove wrong-model entries).
- * - `invalidateModel`: drop the `inflight.remove(key)` call
- *   (JVM-reviewer MAJOR #5: the non-CAS remove can clobber a
- *   fresh leader installed after the invalidate scan started;
- *   the leader's own `finally` cleans up correctly).
- * - `getOrComputeJournaled`: added `(key, model, version, compute)`
- *   overload (DE-reviewer MAJOR #5: the original `getOrCompute`
- *   hardcoded `model="", version=0` which made entries
- *   uninvalidateable).
- * - `evictIfFull`: empty-collection guard before `minBy`
- *   (DE-reviewer MAJOR #6: a concurrent `invalidateModel`
- *   emptying entries between `size()` and `minBy` would throw
- *   `UnsupportedOperationException`).
+ * (`java.util.concurrent.CompletableFuture` is a runtime class
+ * without a `serialVersionUID`). The `Entry` class IS `Serializable`
+ * (the populated cache survives round-trip). After deserialize,
+ * `readResolve` reinitializes `inflight` to an empty
+ * `ConcurrentHashMap`.
  */
 package io.sm8.plugins.cache
 
@@ -122,8 +85,7 @@ final class InMemoryResultCache(
     new ConcurrentHashMap[String, java.util.Set[String]]()
   // class` with `var`) so mutation doesn't break `equals`/
   // `hashCode`. `extends Serializable` so the populated cache
-  // survives `ObjectOutputStream` round-trip (review pass #2
-  // JVM-reviewer CRITICAL #1).
+  // survives `ObjectOutputStream` round-trip.
   private final class Entry(
       val value: RestateCachedRow,
       val model: String,
@@ -152,8 +114,7 @@ final class InMemoryResultCache(
 
   private def evictIfFull(): Unit = {
     // Strict `>`: hold up to `maxEntries` items; eviction only
-    // on overflow. Per review pass #2 (DE-reviewer MAJOR #6):
-    // also guard against `minBy` on an empty collection
+    // on overflow. Guard against `minBy` on an empty collection
     // (a concurrent `invalidateModel` can empty entries between
     // the size check and the scan).
     if (entries.size() > maxEntries && !entries.isEmpty) {
@@ -219,12 +180,13 @@ final class InMemoryResultCache(
     * model tag). The lookup is O(1) via the `model → keys`
     * sidecar.
     *
-    * Per review pass #2 (JVM-reviewer MAJOR #4 + #5): this
-    * implementation re-checks the tag under `entries.remove`
-    * (CAS) to defend against a concurrent put changing the tag
-    * between `modelIndex.remove` and the iteration; AND removes
-    * the previous `inflight.remove(key)` (non-CAS) call that was
-    * weakening single-flight during the invalidate window. */
+    * re-checks the tag under `entries.remove`
+    * (CAS) so a concurrent put that changes the tag
+    * between `modelIndex.remove` and the iteration does not
+    * remove wrong-model entries; the previous `inflight.remove(key)`
+    * (non-CAS) call that weakened single-flight during the
+    * invalidate window is gone — the leader's own `finally`
+    * cleans up. */
   def invalidateModel(name: String): Int = {
     val keys = modelIndex.remove(name)
     if (keys == null) 0
@@ -252,11 +214,11 @@ final class InMemoryResultCache(
 
   /** Same-flight read-through with proper model-tag threading.
     *
-    * Per review pass #2 (DE-reviewer MAJOR #5): the original
-    * `getOrComputeJournaled` hardcoded `model=""` `version=0`,
-    * making entries from this path uninvalidateable. This overload
-    * threads the model + version through to the cache put so PR-C5b-ext-γ
-    * (Restate.run integration) can produce invalidateable entries. */
+    * Threads the model + version through to the cache put so
+    * journal capture (e.g. `Restate.run`) produces invalidateable
+    * entries. The original `getOrComputeJournaled` hardcoded
+    * `model=""` `version=0`, making entries from this path
+    * uninvalidateable. */
   def getOrComputeJournaled(
       key: String,
       model: String,
@@ -278,20 +240,19 @@ final class InMemoryResultCache(
       // We're the leader. Run compute OUTSIDE the map lock.
       try {
         val v = compute.get()
-        // Per review pass #2 (DE-reviewer CRITICAL #3): STORE
-        // BEFORE completing the future. If the put throws (an
-        // extremely unlikely event in practice, e.g. an evict
+        // STORE BEFORE completing the future. If the put throws
+        // (an extremely unlikely event in practice, e.g. an evict
         // race), the future is never completed with `v`; all
         // paths see the exception consistently.
         putJournaledWithModelAndVersion(key, v, model, version)
         leaderFut.complete(v)
       } catch {
         case t: InterruptedException =>
-          // interrupt flag before throwing ExecutionException":
-          // restore the flag BEFORE completing the future
-          // exceptionally. Without this, the leader's interrupt
-          // status is silently lost (review pass #2 JVM-reviewer
-          // MAJOR #2).
+          // Restore the interrupt flag BEFORE completing the
+          // future exceptionally. Without this, the leader's
+          // interrupt status is silently lost (the JVM clears
+          // it when throwing `ExecutionException` from
+          // `Future.get()`).
           Thread.currentThread.interrupt()
           leaderFut.completeExceptionally(t)
           // Do NOT store the failed entry; cache is empty.
@@ -315,8 +276,7 @@ final class InMemoryResultCache(
         // (per the trait contract — no `ExecutionException` wrapper).
         val cause = e.getCause
         if (cause != null) {
-          // Per review pass #2 (JVM-reviewer MAJOR #3): the JVM
-          // clears the interrupt flag before throwing
+          // The JVM clears the interrupt flag before throwing
           // `ExecutionException` from `Future.get()` (the flag-clear
           // is part of the standard interrupt-handling protocol).
           // If the cause is `InterruptedException`, restore the

@@ -18,14 +18,15 @@
 package io.sm8.sdk
 
 /**
- * A Plugin is the unit of extension. Implementations register Connectors
- * and Hooks with the engine during `setup`.
+ * A Plugin is the unit of extension. Implementations register Hooks
+ * with the engine during `setup`.
  *
  * Plugin authors should:
  * - keep `setup` idempotent-safe (it is called once at startup per the
  *  RFC plugins.md Rule 1);
- * - NOT open connections, NOT touch external systems from setup — that
- *  is the Connector's job;
+ * - NOT open connections, NOT touch external systems from setup — data
+ *  sources are wired by the engine-portable `EngineProvider` SPI, not
+ *  by a Plugin;
  * - hold one clear purpose (RFC plugins.md Rule 2);
  * - NOT import other Plugins directly — read what they need from
  *  `context.meta` at hook-time (RFC plugins.md Rule 3).
@@ -33,7 +34,7 @@ package io.sm8.sdk
 trait Plugin extends java.io.Serializable {
 
  /**
- * Register this Plugin's Connectors and Hooks with the engine.
+ * Register this Plugin's Hooks with the engine.
  *
  * Called exactly once at startup by `Engine.use(plugin)`. Must not
  * throw under normal operation; if registration fails, return without

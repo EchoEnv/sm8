@@ -1,9 +1,9 @@
 /*
  * SM8 audit Hook Plugin.
  *
- * registers a Post-hook at PostFormat. Real audit (SLF4J-sinked
- * structured event) lands in Step 7; for Step 9a we just count fires.
- *
+ * registers a Post-hook at PostFormat that counts each fire via an
+ * AtomicInteger. The structured-event sink (SLF4J) is a future
+ * extension that lands separately from the counter.
  */
 package io.sm8.plugins.audit
 
@@ -37,8 +37,8 @@ final class AuditStub extends Plugin with java.io.Serializable {
 }
 
 /**
- * PostFormat audit hook. Step 9a: increments a counter (the SLF4J
- * sink lands in Step 7).
+ * PostFormat audit hook. Increments a counter on every fire. The
+ * SLF4J-sinked structured event is a future extension.
  *
  * Serializable: captured in closures must serialize cleanly.
  */

@@ -2,31 +2,27 @@
  * SM8 SDK — Engine.
  *
  * The Engine is the orchestrator. It contains no business logic (per
- * karpathy §1.2 — "The Core must not import from extension code"). It
- * holds the HookManager + TransformerRegistry + the pipeline runner.
- *
- * For Step 1 we ship the Engine as a registry trait only — no Pipeline
- * implementation, no ServiceLoader discovery, no allowlist filter. Those
- * land in Steps 3 (Pipeline skeleton) and 7 (Portal).
+ * karpathy §1.2 — "The Core must not import from extension code").
+ * The SDK trait here is the registry surface (HookManager +
+ * TransformerRegistry); the pipeline runner, ServiceLoader discovery,
+ * and the allowlist filter are provided by `io.sm8.core`
+ * (`EngineImpl` + `PluginDiscovery`).
  *
  * Plugin authors interact with the Engine only through `engine.use(plugin)`
  * (per karpathy-app-design skill — Extension authors never instantiate
  * registries directly).
  *
- * Frozen after Step 1 for the SDK surface. The implementation lives in
- * `io.sm8.core.EngineImpl` (added in Step 3) and may change without
- * SDK break — only the trait here is a stability promise.
+ * The trait here is the SDK stability promise. The implementation
+ * lives in `io.sm8.core.EngineImpl` and may change without SDK break.
  */
 package io.sm8.sdk
 
 /**
  * The engine is the orchestrator. Plugin authors get an Engine instance
  * passed to `Plugin.setup(engine)`; they call `engine.use(plugin)` to
- * register more Plugins (chaining) or interact with the registries.
- *
- * For Step 1 we expose the minimum needed to write a Plugin. The full
- * registries (`hooks`, `transformers`) and the pipeline runner land in
- * Step 3 (Engine skeleton).
+ * register more Plugins (chaining) or interact with the registries
+ * (`hooks`, `transformers`). The `run` method delegates to the
+ * pipeline runner owned by `io.sm8.core.EngineImpl`.
  */
 trait Engine {
 
@@ -44,14 +40,13 @@ trait Engine {
 
  /**
  * Run a request through the 4-stage pipeline. Implementation lives
- * in `core.EngineImpl` (Step 3).
+ * in `core.EngineImpl`.
  */
  def run(request: Request): Result
 
  /**
  * Hook manager. Plugins access this from `setup(engine)` to
  * register their Pre/PostHooks: `engine.hooks.registerPreHook(.)`.
- * Step 3 surface: register-only. Priority dispatch lands in Step 4.
  */
  def hooks: HookManager
 
