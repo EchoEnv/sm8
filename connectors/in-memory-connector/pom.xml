@@ -15,10 +15,10 @@
     i.e. it lives in its own Maven module, depends on `sm8-core`,
     and ships as a separate JAR via the Portal.
 
-    For Step 3 this module's only job is to prove that a real
-    Connector extending `ConnectorContractSpec` passes all 4
-    RFC §12 assertions. Step 8 adds more Connectors; this is
-    the template they copy.
+    This module provides the built-in in-process data source via
+    the `EngineProvider` seam. Conformance is validated by this
+    module's own provider test suites (typed `realize` grammar +
+    routing tests).
   -->
 
   <parent>
@@ -32,7 +32,7 @@
   <packaging>jar</packaging>
 
   <name>SM8 in-memory Connector</name>
-  <description>Built-in reference Connector for SM8 — in-process data source. Passes ConnectorContractSpec.</description>
+  <description>Built-in in-process data source for SM8. Conformance validated by per-connector EngineProvider test suites.</description>
 
   <dependencies>
     <dependency>
@@ -43,9 +43,9 @@
 
     <!--
       Test-jar classifier — pulls in the contract bases
-      (ConnectorContractSpec) from sm8-core's src/test/. The bases
-      ARE test infrastructure that ships to Plugin authors so their
-      connector specs can extend them.
+      (HookContractSpec, PluginContractSpec) from sm8-core's
+      src/test/. The bases ARE test infrastructure that ships to
+      Plugin authors so their specs can extend them.
     -->
     <dependency>
       <groupId>io.sm8</groupId>

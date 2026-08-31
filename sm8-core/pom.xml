@@ -93,9 +93,9 @@
       </plugin>
 
       <!--
-        Publish a test-jar with the contract bases (ConnectorContractSpec,
-        HookContractSpec, PluginContractSpec) so third-party Connector
-        modules can depend on them via <classifier>tests</classifier>.
+        Publish a test-jar with the contract bases (HookContractSpec,
+        PluginContractSpec) so third-party Plugin modules can depend
+        on them via <classifier>tests</classifier>.
         This is the standard Maven pattern for shared test
         infrastructure (e.g. Spring's spring-test jar).
       -->

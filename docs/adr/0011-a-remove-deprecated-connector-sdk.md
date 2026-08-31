@@ -9,6 +9,7 @@
 | v0.1 | Initial draft — Option A/B/C laid out, blast-radius inventory, test-rewrite sketch. |
 | v0.2 | Post dual-review: (1) Pipeline.run stub-empty fallback gets explicit replacement types (`PipelineError` / `PipelineSkipped`); (2) EngineSmokeSpec:98 typed-failure-envelope assertion preserved via `PipelineError` (closes P1-A3-E4 regression risk); (3) HookDispatchSpec short-circuit sentinel redefined; (4) 10 doc-only edit sites added to blast radius (2 compile-breaking dead imports); (5) RFC doc updates ride the same PR (architecture-spec §3/§11 + adapters.md note); (6) conformance-contract migration note (RFC §12 → EngineProvider suites); (7) grep gates extended + assertion-count baseline recorded; (8) `sdk/package.scala` ConnectorRequest re-export deleted (arch finding adopted over data-eng's "survives" note — the alias target is itself deleted); (9) house style: revision table + references added. |
 | v0.3 | r2 data-eng nits applied: (1) assertion-count baseline corrected 16 → 19 (broadcast + skew join-decision tests under-counted in v0.2; they are seam-independent `Plugin.consult` unit tests and survive the rewrite verbatim); (2) `PipelineSkipped.stage` typed as sealed `PipelineStage` ADT instead of `String` (exhaustiveness at call sites + assertion matching); (3) `sm8-core/README.md` doc-edit line range precision fix (118-127). Final r2 verdicts: arch APPROVE, data-eng APPROVE-SCOPE-WITH-NITS (all nits applied in this commit). Scope phase complete; the implementation PR proceeds per Decision sections 1-8. |
+| v0.3.1 | Implementation-phase dual-review (r1) corrections: (1) core spec assertion baselines corrected to actual pre-PR test counts — EngineSmokeSpec 9→7, TransformerSwapSpec 6→5 (Context §Test-surface table + Verification plan aligned); (2) connector module pom descriptions + test-jar comments no longer cite the deleted conformance contract (re-pointed to per-connector `EngineProvider` test suites); (3) `StageEnv` scaladoc fragment repaired after the `connectors` param removal. Implementation verdicts: arch APPROVE-WITH-NITS, data-eng APPROVE-WITH-NITS (all ship-relevant nits applied here). |
 
 ## References
 
@@ -69,7 +70,7 @@ reviewers:
 - `EngineSmokeSpec` — routes via `engine.connectors.register(...)` + `ConnectorRequest` (rewritten; 7 assertions baseline)
 - `HookDispatchSpec` — tests HOOK semantics via the Connector seam (rewritten; 5 assertions baseline)
 - `TransformerSwapSpec` — tests TRANSFORMER semantics via the seam (rewritten; 5 assertions baseline)
-- 5 plugin `*StubSpec` suites (audit / broadcast / materialize / row-cap / skew) — "hook fires once per run" (rewritten; 2+2+2+4+6 assertions baseline)
+- 5 plugin `*StubSpec` suites (audit / broadcast / materialize / row-cap / skew) — "hook fires once per run" (rewritten; 2+6+2+3+6 = 19 assertions baseline)
 
 **Doc-only stale sites (must ride the same PR):**
 - `Plugin.scala` scaladoc (registers-Connectors text), `Engine.scala` scaladoc (holds-ConnectorRegistry text)
@@ -148,17 +149,19 @@ Specifically:
 
 5. **Rewrite 3 live-code specs** to preserve hook / transformer coverage
    without the deprecated seam:
-   - `EngineSmokeSpec` → 9-assertion baseline. Keeps the plugin-registration,
-     forgiving-setup, and typed-error-envelope assertions (the latter via
-     `PipelineError`); drops connector-routing + duplicate-name
-     assertions (routing is owned by `EngineRegistry` specs; the registry
-     API is deleted).
+   - `EngineSmokeSpec` → 7-assertion baseline (pre-PR test count).
+     Keeps the forgiving-setup and typed-error-envelope assertions
+     (the latter via `PipelineError`); adds an explicit short-circuit
+     `PipelineSkipped` assertion; drops connector-routing,
+     duplicate-name, plugin-adds-Connector, and unknown-Connector-name
+     assertions (routing is owned by `EngineRegistry` specs; the
+     registry API is deleted).
    - `HookDispatchSpec` → 5-assertion baseline (priority order /
      registration-order tiebreak / stage-isolation assertions survive
      verbatim (pure `HookManagerImpl`); fail-fast + short-circuit tests
      switch to `new Request {}` vehicles; the short-circuit assertion
      becomes `PipelineSkipped`-shaped).
-   - `TransformerSwapSpec` → 6-assertion baseline (auto-activate /
+   - `TransformerSwapSpec` → 5-assertion baseline (auto-activate /
      swap / setActive-unknown assertions survive verbatim (pure
      `TransformerRegistry`); the two pipeline-integration tests ride a
      `Request {}` vehicle).
@@ -251,7 +254,7 @@ Specifically:
 
 - `mvn test` full reactor green post-rewrite.
 - **Assertion-count baseline (captured pre-rewrite, r2-corrected)**:
-  EngineSmokeSpec 9 · HookDispatchSpec 5 · TransformerSwapSpec 6 ·
+  EngineSmokeSpec 7 · HookDispatchSpec 5 · TransformerSwapSpec 5 ·
   plugin specs 2+6+2+3+6 = 19 (audit 2 / broadcast 6 / materialize 2 /
   row-cap 3 / skew 6; the broadcast + skew join-decision threshold
   tests are seam-independent `Plugin.consult` unit tests and survive

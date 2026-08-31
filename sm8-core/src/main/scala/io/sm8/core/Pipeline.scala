@@ -38,8 +38,8 @@ import io.sm8.sdk._
 
 /**
  * Environment passed to each Stage at runtime. Bundles the
- * registries the stages need (
- * — data, not constructor-args scattered through each stage).
+ * registries the stages need (hooks + transformers) — data,
+ * not constructor-args scattered through each stage.
  */
 final case class StageEnv(
  hooks: HookManager,
