@@ -4,8 +4,10 @@
  * The minimalRelOpLowerer is constructed here WITHOUT a SparkSession
  * (spark = null). Only the public + private static analysis
  * functions that don't need a real Spark are exercised; for any
- * test that needs SparkSession, defer to the existing
- * PortableQueryCompilerSpec / EngineSmokeSpec.
+ * test that needs SparkSession, defer to the in-tree
+ * SparkSession-bearing specs (Spark*, PortableQueryCompiler*,
+ * PortableExprCompiler*, CompileRelOpSpec, FilterPushdownSpec,
+ * TypedQueryCompilerPushdownSpec).
  */
 package io.sm8.connectors.spark
 
