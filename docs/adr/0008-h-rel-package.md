@@ -1,5 +1,12 @@
 # ADR-008-H: New `rel/` IR package — relational plan nodes (PR-H)
 
+> **⚠️ Historical snapshot (2026-08-16).** The `ConnectorContractSpec` conformance base
+> referenced here was removed by ADR-011-a; the test-jar contract bases
+> that remain are `HookContractSpec` + `PluginContractSpec`. This document
+> is retained as a historical record for the `rel/` package decision. Read
+> current architecture from `docs/rfcs/2026-08-12_v1_architecture-spec/`
+> + `docs/adr/0011-a-*`.
+
 **Status:** Accepted. **Date:** 2026-08-16. **Author:** SM8 agent (per user directive "do all 4 IR extensions + including join one to one, one to many, many to many op cross-join").
 
 ## Context and Problem Statement
