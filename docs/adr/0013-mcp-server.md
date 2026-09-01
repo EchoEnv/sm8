@@ -16,7 +16,16 @@ This ADR does NOT replace the Restate ingress — it sits alongside it and deleg
 
 ## Decision
 
-Add a new MCP server module `sm8-mcp/` in the **adapter** layer (mirrors `sm8-cli`'s adapter status — see `semantic-layer-engine-architecture.md` §3 Core Boundary: deployment-side modules that compose the transport library go in the adapter layer). The MCP server **delegates** to the existing Restate ingress endpoints over HTTP — no engine logic, no duplicate parsing.
+Add a new MCP server module `sm8-mcp/` in the **adapter** layer (mirrors `sm8-cli`'s position — see `semantic-layer-engine-architecture.md` §3 Core Boundary: deployment-side modules that compose the transport library go in the adapter layer, alongside `sm8-cli` and `sm8-server`). The MCP server **delegates** to the existing Restate ingress endpoints over HTTP — no engine logic, no duplicate parsing.
+
+> **Layer taxonomy caveat** (raised by dual-review r1): §3's strict
+> "Adapter" definition is `EngineProvider` implementations that "know
+> about a specific data source." sm8-mcp doesn't fit that — it doesn't
+> touch any data source. The pragmatic placement is "adapter-like
+> deployment module," alongside `sm8-cli` (which similarly delegates
+> to the REST surface without being an EngineProvider). If a future
+> RFC update formalizes the "transport adapter" tier, sm8-mcp belongs
+> there.
 
 **Process model (v1):**
 
@@ -40,6 +49,23 @@ class and keeps sm8-server's contract untouched. The MCP-aware agent
 (Claude Desktop, etc.) is designed to spawn subprocesses — this is the
 normal deployment shape.
 
+> **Note on RFC §11a wording** (raised by dual-review r1): §11a says
+> "the deployment module is the single binary that hosts them [HTTP
+> server, MCP wire, REST]" and "Wire shape (MCP/REST) is decided by
+> the transport handler chosen at bind time, not by separate
+> deployment modules." Read literally, §11a forbids sm8-mcp as a
+> separate binary. The **pragmatic reading**: §11a forbids parallel
+> deployment modules that each host the SAME wire shape redundantly
+> (e.g. one binary for Restate + another for REST doing the same
+> thing). **This ADR does not duplicate wire shapes**: the Restate
+> ingress (the only ingress) stays in sm8-server; sm8-mcp is a thin
+> transport adapter that **delegates** to that ingress over HTTP. If
+> a future maintainer reads §11a more strictly, the in-process
+> alternative is achievable by removing the subprocess boundary and
+> routing through the Restate `HandlerContext` (dev.restate.sdk package; the existing handlers depend on it per ADR-006) directly — left as
+> a follow-up. The separate-binary path is the safe v1 default
+> because it eliminates the stdout-pollution risk class entirely.
+
 Precondition: sm8-server (or another Restate-ingress-compatible
 backend) must be reachable at `--ingress-url`. If not, every tool call
 fails with a typed MCP error (`isError=true`, connection-refused
@@ -61,7 +87,7 @@ java -cp <classpath> io.sm8.mcp.Main [--ingress-url <url>] [--request-timeout <s
 
 | Transport | Status | Rationale |
 |---|---|---|
-| **stdio** | SHIPPED | Default per Anthropic's recommended MCP setup. Spawned as a subprocess; reads stdin / writes stdout. Works with Claude Desktop out of the box. |
+| **stdio** | v1 scope | Default per Anthropic's recommended MCP setup. Spawned as a subprocess; reads stdin / writes stdout. Works with Claude Desktop out of the box. |
 | **Streamable HTTP** | DEFERRED to a follow-up (ADR-014) | Requires writing a custom Vert.x → MCP transport adapter (the SDK ships a Servlet one only; sm8-server is Vert.x, not Servlet). Out of scope for v1. |
 
 **Tools exposed (5 total: 4 forwarding to existing Restate handlers + 1 new handler):**
@@ -83,7 +109,7 @@ sm8-platform's handlers are `HandlerRunner.of(...)` closures that depend on Rest
 - Lowest blast radius: no new port, no auth, no concurrency concerns.
 - Anthropic's recommended path: every MCP-aware desktop client supports it.
 - The `StdioServerTransportProvider` lifecycle is well-defined: spawn → block on stdin read loop → exit on EOF. JVM shutdown hook just calls `closeGracefully()`.
-- Stdio's only gotcha: the MCP server reads stdin; sm8-server's `MetricsService/snapshot` debug logging MUST go to stderr only (PR-256 added System.err routing; need to verify the same convention holds for any future log added by MCP tool wrappers — explicit guard in the implementation).
+- `sm8-mcp`'s own logging goes to stderr (via SLF4J binding or explicit `System.err.println`), never stdout — stdout is reserved for JSON-RPC frames. No slf4j config ships with `sm8-mcp`; the default JDK `SimpleLogger` writes to stderr. This is a documented implementation constraint, not a runtime check.
 
 ## Why not a new wire surface in sm8-platform
 
@@ -91,7 +117,14 @@ Per RFC §11a "transport library contains zero deployment concerns":
 
 > Wire shape (MCP / REST) is decided by the transport handler chosen at bind time, not by separate deployment modules.
 
-The MCP SDK is a transport. sm8-server (deployment module) is the natural host for it, alongside the existing Restate + Prometheus transports. Adding it to sm8-platform would pull deployment concerns (subprocess lifecycle, log routing) into the transport library — exactly what the RFC forbids.
+The MCP SDK is a transport. Adding it to sm8-platform would pull
+**deployment concerns** (subprocess lifecycle, log routing, typed
+CLI parsing, the entire `io.sm8.mcp.Main` entry point) into the
+transport library — exactly what the RFC forbids. The MCP server
+therefore lives in `sm8-mcp/` (a separate module), which is itself
+a deployment-side module by the §11a definition. The §11a "single
+binary" language is addressed in the **§11a note** above (Decision
+section): sm8-mcp does not duplicate any wire shape; it delegates.
 
 ## Wiring
 
@@ -113,12 +146,12 @@ sm8-mcp/                              # NEW adapter-layer module
 `sm8-mcp` runs as a single-process stdio server. Lifecycle:
 
 1. Parse `--ingress-url` + `--request-timeout` (typed parse, same pattern as sm8-server's CLI).
-2. Build a `StdioServerTransportProvider(new JacksonJsonMapper())` (the SDK ships Jackson 3 in `mcp-json-jackson3` per the SDK README; stdio transport default-constructs on `System.in` / `System.out`).
+2. Build a `StdioServerTransportProvider(new JacksonMcpJsonMapper(new tools.jackson.databind.json.JsonMapper()))` — the SDK ships Jackson 3 in `mcp-json-jackson3` (verified via `unzip -l mcp-json-jackson3-2.0.1.jar`); `JacksonMcpJsonMapper`'s only ctor takes a `tools.jackson.databind.json.JsonMapper` (the Jackson 3 core). The `StdioServerTransportProvider(jsonMapper)` ctor then defaults to `System.in` / `System.out` (the two-arg overload with explicit streams is also available).
 3. Build the typed `McpServer.sync(stdioTransport)` with:
    - `.serverInfo("sm8-mcp", "0.1.0-SNAPSHOT")` (matches sm8-server's version)
    - `.capabilities(ServerCapabilities.builder().tools(true).build())` (no resources/prompts per scope)
    - `.tools(queryTool, listModelsTool, describeModelTool, listEnginesTool, getMetricsTool)` (each `SyncToolSpecification.builder().tool(...).callHandler(BiFunction<...>)`)
-4. Call `.build()` — returns an `McpSyncServer`. The SDK's stdio provider begins the stdin read loop on `.build()` (verified in the SDK source: `setSessionFactory` is invoked by the builder, which immediately calls `transport.initProcessing()` which spawns the read+write threads).
+4. Call `.build()` — returns an `McpSyncServer`. The SDK's stdio provider begins the stdin read loop on `.build()` (verified via `javap -p` on `StdioServerTransportProvider`: the provider's only public session-related method is `setSessionFactory(McpServerSession.Factory)`; the McpServer builder calls this internally, which creates a `StdioMcpSessionTransport` private inner class and spawns two `Schedulers.fromExecutorService(...)` threads — one for the stdin read loop, one for the stdout write loop. The threads run until stdin EOF or `closeGracefully()` is invoked.)
 5. Register a JVM shutdown hook: `mcpServer.closeGracefully().block(Duration.ofSeconds(5))` on SIGTERM. (No HTTP sockets to coordinate; no providers to close; the only resource is the SDK's internal schedulers which `closeGracefully` will dispose.)
 6. `Thread.currentThread().join()` (the main thread is idle; the SDK's scheduler threads handle all I/O).
 
@@ -128,9 +161,17 @@ sm8-mcp/                              # NEW adapter-layer module
 
 Exposes the engine registry as a typed wire DTO. ~25 LOC: a `ListEnginesRequest` + `ListEnginesResponse` case class, a `ServiceDefinition` factory that calls `EngineRegistry.availableProviders` (returns the sorted names of providers that successfully realized — i.e. **available**, not every discovered; verification criterion: matches the sm8-cli `engines list` semantics already shipped), and the same `HandlerRunner.of(...)` pattern as the other services. Linter-clean, ~3 unit tests.
 
-## Open thread: does sm8 already have a separate module for deployment-side tooling?
+## Open thread: sm8-cli dep precedent (corrected from r1)
 
-`sm8-cli` is an **adapter** module (`semantic-layer-engine-architecture.md` §3) — it depends on `sm8-core` only. `sm8-mcp` will depend on `sm8-platform` (NOT core) because the MCP tool wrappers need the wire DTOs (`QueryRequest`, `ListModelsResponse`, etc.) which live in sm8-platform. This is the same dependency direction `sm8-server` already has.
+`sm8-cli/pom.xml` actually has **zero `sm8-*` dependencies** — only
+jackson-databind, scala-library, scalatest. Its module description
+string mentions "sm8-core for SDK types" but the pom does not declare
+it (sm8-cli's wire-DTOs are accessed via its own copy of the
+case-class shapes, or via an unrelated artifact). The correct precedent
+for sm8-mcp's dependency direction is therefore **`sm8-server`,
+which depends on `sm8-platform_2.13`** — that direction is established
+(verified via `sm8-server/pom.xml:40-52`). sm8-mcp will follow it:
+depends on `sm8-platform` only, no core or plugin reach-in.
 
 ## Verification criteria
 
