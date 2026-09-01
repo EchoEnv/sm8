@@ -1,6 +1,13 @@
 # ADR-012-c: ConfigService — Restate-handler surface for runtime config
 
-> **Status:** Proposed (negative decision). **Date:** 2026-09-01. **Author:** SM8 agent (per user directive "can we draft these as new ADR-012 series and pass to dual reviewers to approve first").
+> **Status:** Accepted (negative decision — hold; see Revisions). **Date:** 2026-09-01. **Author:** SM8 agent (per user directive "can we draft these as new ADR-012 series and pass to dual reviewers to approve first").
+
+## Revision history
+
+| Version | Date | Author | Change |
+|---|---|---|
+| 1 | 2026-09-01 | SM8 agent | Initial ADR. Proposed status, negative decision. |
+| 2 | 2026-09-01 | SM8 agent (PR-253) | **Revisit-gate-1 verdict**: scanned the 5 triggers below against the period from initial ADR through PR-252. **None fired.** Status moved from Proposed → Accepted (hold). Next revisit-gate scheduled by the **first of**: (a) any new `docs/adr/*.md` file landing (the existing CI is just docs — no auto-gate, this is a manual review trigger when the reviewer adds a "ConfigService" mention); (b) the pre-release-tag-cut PR (likely the v0.1.0 cut per ADR-008-P §Cross-P0-B); (c) one calendar year from this ADR (2027-09-01) as a hard backstop. PR-number lotto is NOT a reliable cadence anchor; the previous draft's PR-272 reference was an arbitrary threshold and has been removed. |
 
 ## Context and Problem Statement
 
