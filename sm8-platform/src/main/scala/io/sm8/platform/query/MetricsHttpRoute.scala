@@ -14,12 +14,15 @@
  * 15s cadence noise).
  *
  * Per [[scala-jvm-safety-mindset]]: stateless route. No resource
- * lifecycle beyond standard Vert.x handler registration. The
- * `Vertx.vertx()` used here is a SEPARATE instance from the Restate
- * HTTP transport's internal `Vertx` (`RestateHttpServer.fromEndpoint`
- * calls `Vertx.vertx()` itself — verified via javap on the SDK jar).
- * Two independent event-loop pools, two independent sockets. The
- * Restate ingress's `HttpEndpointRequestHandler` is never touched.
+ * lifecycle beyond standard Vert.x handler registration. Both the
+ * metrics server and the Restate ingress call `Vertx.vertx()` (the
+ * JVM-level singleton), but the two `HttpServer` instances are
+ * independent — independent sockets, independent request handlers.
+ * Nothing in the metrics server touches the Restate ingress's
+ * `HttpEndpointRequestHandler` on port 8080 (verified via javap on
+ * the SDK jar: `RestateHttpServer.fromEndpoint` creates its own
+ * server; we never call `requestHandler` on a server we didn't
+ * create).
  *
  * Per the `building-restate-services` skill: this route is OUTSIDE
  * Restate's journal pipeline (the `/metrics` path is plain HTTP, not

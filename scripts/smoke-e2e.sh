@@ -342,17 +342,28 @@ for i in $(seq 1 20); do
   sleep 0.5
 done
 metrics_body=$(curl -s --max-time 5 "http://127.0.0.1:9099/metrics")
-echo "$metrics_body" | grep -qE 'sm8_invocation_total[[:space:]]+[1-9][0-9]*' \
-  || fail "Prometheus /metrics should include sm8_invocation_total >= 1; got: $metrics_body"
-echo "  Prometheus /metrics includes sm8_invocation_total >= 1 (PR-258)"
+# Line-exact value parse (substring overmatch risk: `total 1` would
+# match a body line of `total 11` — same fix as the MetricsHttpRouteSpec
+# test 5 helper, but as a bash awk one-liner).
+metrics_invocation_total=$(echo "$metrics_body" \
+  | awk '/^sm8_invocation_total / { print $2; exit }')
+[ -n "$metrics_invocation_total" ] \
+  || fail "Prometheus /metrics should include sm8_invocation_total line; got: $metrics_body"
+[ "$metrics_invocation_total" -ge 1 ] \
+  || fail "Prometheus /metrics sm8_invocation_total must be >= 1; got: $metrics_invocation_total"
+echo "  Prometheus /metrics sm8_invocation_total = $metrics_invocation_total (>= 1, PR-258)"
 
-echo "$metrics_body" | grep -qE 'sm8_process_uptime_seconds[[:space:]]+[0-9]+' \
-  || fail "Prometheus /metrics should include sm8_process_uptime_seconds; got: $metrics_body"
-echo "  Prometheus /metrics includes sm8_process_uptime_seconds (PR-258)"
+metrics_uptime=$(echo "$metrics_body" \
+  | awk '/^sm8_process_uptime_seconds / { print $2; exit }')
+[ -n "$metrics_uptime" ] \
+  || fail "Prometheus /metrics should include sm8_process_uptime_seconds line; got: $metrics_body"
+echo "  Prometheus /metrics sm8_process_uptime_seconds = $metrics_uptime (PR-258)"
 
-echo "$metrics_body" | grep -qE 'sm8_cache_hits_total[[:space:]]+[0-9]+' \
-  || fail "Prometheus /metrics should include sm8_cache_hits_total; got: $metrics_body"
-echo "  Prometheus /metrics includes sm8_cache_hits_total (PR-258)"
+metrics_cache_hits=$(echo "$metrics_body" \
+  | awk '/^sm8_cache_hits_total / { print $2; exit }')
+[ -n "$metrics_cache_hits" ] \
+  || fail "Prometheus /metrics should include sm8_cache_hits_total line; got: $metrics_body"
+echo "  Prometheus /metrics sm8_cache_hits_total = $metrics_cache_hits (PR-258)"
 
 echo "$metrics_body" | grep -q '# TYPE sm8_invocation_total counter' \
   || fail "Prometheus /metrics should include TYPE line for sm8_invocation_total; got: $metrics_body"
