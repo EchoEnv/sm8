@@ -282,7 +282,7 @@ object Sm8ToolHandlers {
   private def copyString(
       args: java.util.Map[String, Object],
       key:  String,
-      dst:  java.util.HashMap[String, Object]
+      dst:  java.util.LinkedHashMap[String, Object]
   ): Unit = {
     val v = args.get(key)
     if (v != null && v.isInstanceOf[String]) dst.put(key, v)
@@ -294,7 +294,7 @@ object Sm8ToolHandlers {
   private def copyList(
       args: java.util.Map[String, Object],
       key:  String,
-      dst:  java.util.HashMap[String, Object]
+      dst:  java.util.LinkedHashMap[String, Object]
   ): Unit = {
     val v = args.get(key)
     if (v == null) return
