@@ -133,6 +133,13 @@ final class HttpTransport(
       // binding it after QueryService doesn't change QueryService's
       // semantics.
       .bind(ModelService.definition(model))
+      // Per [[ADR-012-b]] (`docs/adr/0012-b-metricsservice-restate-handler.md`):
+      // bind MetricsService. No captured params — the placeholder
+      // counters are a constant zero until ADR-012-b-followup
+      // instruments the call sites. Same SERVICE+SHARED rationale
+      // as MetaInspectorService (state lives in sm8-platform, not
+      // in a Restate journal).
+      .bind(MetricsService.definition())
     metaInspectorEngineFn match {
       case Some(engineFn) =>
         baseEndpoint
