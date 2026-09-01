@@ -294,6 +294,16 @@ echo "$model_service_detail" | grep -q '"describe"' \
   || fail "/services/ModelService missing describe handler: $model_service_detail"
 echo "  /services/ModelService has listModels + getModel + describe handlers"
 
+# Per PR-252 commit 2: verify MetaInspectorService has BOTH handlers
+# (getMeta + getMetaByPrefix). The getMetaByPrefix addition enables batch
+# introspection (e.g. "show me all `sm8.cache.*` keys in one call").
+mi_service_detail="$(curl -s --max-time 5 "http://127.0.0.1:$RESTATE_ADMIN_PORT/services/MetaInspectorService")"
+echo "$mi_service_detail" | grep -q '"getMeta"' \
+  || fail "/services/MetaInspectorService missing getMeta handler: $mi_service_detail"
+echo "$mi_service_detail" | grep -q '"getMetaByPrefix"' \
+  || fail "/services/MetaInspectorService missing getMetaByPrefix handler: $mi_service_detail"
+echo "  /services/MetaInspectorService has getMeta + getMetaByPrefix handlers"
+
 # Verify cluster health (UI header status indicator).
 health_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
   "http://127.0.0.1:$RESTATE_ADMIN_PORT/cluster-health")"

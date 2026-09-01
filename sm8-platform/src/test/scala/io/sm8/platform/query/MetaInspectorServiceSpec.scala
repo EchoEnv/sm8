@@ -78,10 +78,14 @@ class MetaInspectorServiceSpec extends AnyFunSuite with Matchers {
     defn.getServiceName shouldBe "MetaInspectorService"
   }
 
-  test("MetaInspectorService.definition exposes a single handler named getMeta") {
+  test("MetaInspectorService.definition exposes both getMeta AND getMetaByPrefix handlers") {
+    // Per [[ADR-010-a]] (PR-252 commit 2): MetaInspectorService gained
+    // the `getMetaByPrefix` handler so callers can do batch introspection
+    // (e.g. "show me all `sm8.cache.*` keys in one call").
     val defn =
       MetaInspectorService.definition(model, emptyRegistry, () => Map.empty)
-    defn.getHandlers.asScala.map(_.getName).toList shouldBe List("getMeta")
+    val handlerNames = defn.getHandlers.asScala.map(_.getName).toSet
+    handlerNames shouldBe Set("getMeta", "getMetaByPrefix")
   }
   test("MetaRequest is a 1-field case class (only the key)") {
     val req = MetaRequest(key = "io.sm8.foo:bar")
@@ -103,5 +107,88 @@ class MetaInspectorServiceSpec extends AnyFunSuite with Matchers {
     val resp = MetaResponse(key = "missing", present = false, value = None)
     resp.present shouldBe false
     resp.value shouldBe None
+  }
+
+  // ------------------------------------------------------------------
+  // getMetaByPrefix handler tests (sm8-pr252 commit 2)
+  // ------------------------------------------------------------------
+
+  test("MetaByPrefixRequest is a 1-field case class (only the prefix)") {
+    val req = MetaByPrefixRequest(prefix = "sm8.cache")
+    req.prefix shouldBe "sm8.cache"
+  }
+
+  test("MetaEntry carries key + value (no 'present' field — prefix filter implies presence)") {
+    val entry = MetaEntry(key = "sm8.cache.policy", value = Map("tier" -> "ReadOnly"))
+    entry.key shouldBe "sm8.cache.policy"
+    entry.value shouldBe Map("tier" -> "ReadOnly")
+  }
+
+  test("MetaByPrefixResponse carries prefix + count + entries") {
+    val resp = MetaByPrefixResponse(
+      prefix = "sm8.cache",
+      count  = 2,
+      entries = Seq(
+        MetaEntry(key = "sm8.cache.policy", value = Map("tier" -> "ReadOnly")),
+        MetaEntry(key = "sm8.cache.lastHit", value = Map("key" -> "k1"))
+      )
+    )
+    resp.prefix shouldBe "sm8.cache"
+    resp.count shouldBe 2
+    resp.entries.size shouldBe 2
+  }
+
+  // ------------------------------------------------------------------
+  // Direct tests of the extracted filterByPrefix helper. Per the spec
+  // design rule: the handler closure delegates to filterByPrefix, so
+  // testing the helper directly is the canonical way to assert the
+  // filter+sort+wrap logic.
+  // ------------------------------------------------------------------
+
+  test("filterByPrefix returns only keys matching the prefix") {
+    val meta = Map[String, Any](
+      "sm8.cache.policy"   -> Map("tier" -> "ReadOnly"),
+      "sm8.cache.lastHit"  -> Map("key" -> "k1"),
+      "io.sm8.plugins.foo" -> "primitive-value",
+      "sm8.query.foo"      -> 42
+    )
+    val out = MetaInspectorService.filterByPrefix(meta, "sm8.cache")
+    out.size shouldBe 2
+    out.map(_.key).toSet shouldBe Set("sm8.cache.policy", "sm8.cache.lastHit")
+  }
+
+  test("filterByPrefix returns keys in lexicographic order (stable)") {
+    val meta = Map[String, Any](
+      "z.last" -> 1,
+      "a.first" -> 2,
+      "m.middle" -> 3
+    )
+    val out = MetaInspectorService.filterByPrefix(meta, "")
+    out.map(_.key) shouldBe Seq("a.first", "m.middle", "z.last")
+  }
+
+  test("filterByPrefix with empty prefix matches all keys") {
+    val meta = Map[String, Any]("a" -> 1, "b" -> 2, "c" -> 3)
+    MetaInspectorService.filterByPrefix(meta, "").size shouldBe 3
+  }
+
+  test("filterByPrefix with prefix that matches no keys returns empty Seq") {
+    val meta = Map[String, Any]("sm8.cache.policy" -> Map.empty[String, Any])
+    MetaInspectorService.filterByPrefix(meta, "io.sm9").size shouldBe 0
+  }
+
+  test("filterByPrefix wraps non-Map values as Map(\"value\" -> v) for wire uniformity") {
+    val meta = Map[String, Any](
+      "sm8.cache.policy"   -> Map("tier" -> "ReadOnly"),
+      "sm8.cache.lastHit"  -> "k1",
+      "sm8.cache.count"    -> 42L,
+      "sm8.cache.enabled"  -> true
+    )
+    val out = MetaInspectorService.filterByPrefix(meta, "sm8.cache")
+    out.size shouldBe 4
+    out.find(_.key == "sm8.cache.policy").get.value shouldBe Map("tier" -> "ReadOnly")
+    out.find(_.key == "sm8.cache.lastHit").get.value shouldBe Map("value" -> "k1")
+    out.find(_.key == "sm8.cache.count").get.value shouldBe Map("value" -> 42L)
+    out.find(_.key == "sm8.cache.enabled").get.value shouldBe Map("value" -> true)
   }
 }
