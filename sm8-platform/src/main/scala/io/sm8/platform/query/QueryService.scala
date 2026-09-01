@@ -229,11 +229,29 @@ object QueryService {
       cache: ResultCache,
       dispatcher: HookRunnerOrchestration
   ): QueryResult = {
+    // Per ADR-012-b-followup (= PR-256): record every invocation
+    // attempt at the top of `runQuery` — total counter.
+    QueryMetrics.recordInvocation()
     EngineService.runQueryWithHooks(
       request, model, registry, cache, dispatcher
     ) match {
-      case Right(qr)  => qr
+      case Right(qr) =>
+        // Per ADR-012-b-followup: succeeded counter increments on
+        // every typed-Right return.
+        QueryMetrics.recordSuccess()
+        qr
       case Left(err) =>
+        // Per ADR-012-b-followup: errors counter increments per-error-type
+        // for the 2 error types currently treated as "failed" (5xx).
+        // Other EngineError variants have different semantics (4xx
+        // client errors; not counted here).
+        err match {
+          case _: io.sm8.core.engine.EngineError.QueryTimedOut =>
+            QueryMetrics.recordTimedOut()
+          case _: io.sm8.core.engine.EngineError.AuditSinkUnavailable =>
+            QueryMetrics.recordAuditSinkUnavailable()
+          case _ =>  // other error types don't count toward "failed"
+        }
         // Per review pass #2 (DE-reviewer #1): use Restate's
         // `TerminalException` to preserve the typed ErrorCode in
         // the journal + retry path. `RuntimeException(err.toString)`

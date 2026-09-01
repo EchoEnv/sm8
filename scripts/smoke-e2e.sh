@@ -304,13 +304,28 @@ echo "$mi_service_detail" | grep -q '"getMetaByPrefix"' \
   || fail "/services/MetaInspectorService missing getMetaByPrefix handler: $mi_service_detail"
 echo "  /services/MetaInspectorService has getMeta + getMetaByPrefix handlers"
 
-# Per PR-254 (ADR-012-b): verify MetricsService is bound and exposes the
-# `snapshot` handler. Counters return PLACEHOLDER ZEROS today (ADR-012-b
-# wire surface; ADR-012-b-followup will instrument real values).
+# Per PR-254 + PR-256 (ADR-012-b + ADR-012-b-followup): verify
+# MetricsService is bound AND its counters reflect the smoke's
+# QueryService.runQuery invocation. Per ADR-012-b-followup
+# Verification criterion #6: after 1 successful invocation,
+# invocations.total == 1 + invocations.succeeded == 1.
 metrics_service_detail="$(curl -s --max-time 5 "http://127.0.0.1:$RESTATE_ADMIN_PORT/services/MetricsService")"
 echo "$metrics_service_detail" | grep -q '"snapshot"' \
   || fail "/services/MetricsService missing snapshot handler: $metrics_service_detail"
-echo "  /services/MetricsService has snapshot handler (ADR-012-b; placeholder counters)"
+echo "  /services/MetricsService has snapshot handler (ADR-012-b; PR-256 wired real counters)"
+
+# Per ADR-012-b-followup Verification criterion #6: after the 1
+# QueryService.runQuery call above, MetricsService.snapshot must
+# show invocations.total >= 1 AND invocations.succeeded >= 1.
+metrics_snapshot=$(curl --http2-prior-knowledge -s --max-time 10 \
+  -X POST -H "Content-Type: application/json" -H "Accept: application/json" \
+  -d '{}' "http://127.0.0.1:8080/MetricsService/snapshot")
+echo "  MetricsService/snapshot body: $metrics_snapshot"
+echo "$metrics_snapshot" | grep -qE '"total"[[:space:]]*:[[:space:]]*[1-9][0-9]*' \
+  || fail "MetricsService invocations.total should be >= 1 after smoke; got: $metrics_snapshot"
+echo "$metrics_snapshot" | grep -qE '"succeeded"[[:space:]]*:[[:space:]]*[1-9][0-9]*' \
+  || fail "MetricsService invocations.succeeded should be >= 1; got: $metrics_snapshot"
+echo "  MetricsService/snapshot shows invocations.total >= 1 AND succeeded >= 1 (PR-256)"
 
 # Verify cluster health (UI header status indicator).
 health_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
