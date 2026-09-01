@@ -252,6 +252,12 @@ echo "$deployments" | grep -q '"QueryService"' \
   || fail "/deployments admin response missing QueryService: $deployments"
 echo "  /deployments contains QueryService"
 
+# Per [[ADR-012-a]] (`docs/adr/0012-a-modelservice-restate-handler.md`):
+# ModelService is always bound (alongside QueryService). Assert it.
+echo "$deployments" | grep -q '"ModelService"' \
+  || fail "/deployments admin response missing ModelService (ADR-012-a): $deployments"
+echo "  /deployments contains ModelService (ADR-012-a)"
+
 # ---- 9. Verify the same data the web UI shows ---------------------------
 # The Restate web UI at http://localhost:9070 renders two views that
 # matter: /services (Services page) and /cluster-health (top-level
@@ -267,11 +273,26 @@ echo "$services" | grep -q '"name":"QueryService"' \
   || fail "/services admin missing QueryService: $services"
 echo "  /services contains QueryService (UI Services page data)"
 
+# Per ADR-012-a: ModelService should also appear in /services.
+echo "$services" | grep -q '"name":"ModelService"' \
+  || fail "/services admin missing ModelService (ADR-012-a): $services"
+echo "  /services contains ModelService (ADR-012-a; UI Services page data)"
+
 # Verify the per-service detail endpoint (UI "Service details" page).
 service_detail="$(curl -s --max-time 5 "http://127.0.0.1:$RESTATE_ADMIN_PORT/services/QueryService")"
 echo "$service_detail" | grep -q '"runQuery"' \
   || fail "/services/QueryService missing runQuery handler: $service_detail"
 echo "  /services/QueryService has runQuery handler"
+
+# Per ADR-012-a: verify ModelService detail shows the 3 new handlers.
+model_service_detail="$(curl -s --max-time 5 "http://127.0.0.1:$RESTATE_ADMIN_PORT/services/ModelService")"
+echo "$model_service_detail" | grep -q '"listModels"' \
+  || fail "/services/ModelService missing listModels handler: $model_service_detail"
+echo "$model_service_detail" | grep -q '"getModel"' \
+  || fail "/services/ModelService missing getModel handler: $model_service_detail"
+echo "$model_service_detail" | grep -q '"describe"' \
+  || fail "/services/ModelService missing describe handler: $model_service_detail"
+echo "  /services/ModelService has listModels + getModel + describe handlers"
 
 # Verify cluster health (UI header status indicator).
 health_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \

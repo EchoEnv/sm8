@@ -290,7 +290,10 @@ class HttpTransportPluginWiringSpec extends AnyFunSuite with Matchers {
 
       val withoutNames = withoutInspector.endpoint.getServiceDefinitions.iterator()
         .asScala.map(_.getServiceName).toList
-      withoutNames shouldBe List("QueryService")
+      // Per [[ADR-012-a]]: ModelService is always bound (read-only
+      // DTO of the loaded model). MetaInspectorService is bound
+      // only when metaInspectorEngineFn is Some(_).
+      withoutNames shouldBe List("QueryService", "ModelService")
     } finally {
       withInspector.stop()
       withoutInspector.stop()

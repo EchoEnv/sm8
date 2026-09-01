@@ -127,6 +127,12 @@ final class HttpTransport(
         cache    = cache,
         plugins  = plugins,
       ))
+      // Per [[ADR-012-a]] (`docs/adr/0012-a-modelservice-restate-handler.md`):
+      // bind ModelService alongside QueryService. ModelService is a
+      // stateless reader over the captured `model` reference, so
+      // binding it after QueryService doesn't change QueryService's
+      // semantics.
+      .bind(ModelService.definition(model))
     metaInspectorEngineFn match {
       case Some(engineFn) =>
         baseEndpoint
