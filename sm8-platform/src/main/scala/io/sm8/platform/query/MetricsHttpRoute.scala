@@ -15,9 +15,11 @@
  *
  * Per [[scala-jvm-safety-mindset]]: stateless route. No resource
  * lifecycle beyond standard Vert.x handler registration. The
- * underlying `Vertx.vertx()` is shared at the JVM level with the
- * RestateHttpServer but the `HttpServer` instances are independent —
- * Restate's `HttpEndpointRequestHandler` on port 8080 is never touched.
+ * `Vertx.vertx()` used here is a SEPARATE instance from the Restate
+ * HTTP transport's internal `Vertx` (`RestateHttpServer.fromEndpoint`
+ * calls `Vertx.vertx()` itself — verified via javap on the SDK jar).
+ * Two independent event-loop pools, two independent sockets. The
+ * Restate ingress's `HttpEndpointRequestHandler` is never touched.
  *
  * Per the `building-restate-services` skill: this route is OUTSIDE
  * Restate's journal pipeline (the `/metrics` path is plain HTTP, not
@@ -90,24 +92,45 @@ object MetricsHttpRoute {
       case _: java.util.concurrent.ExecutionException =>
         throw new IllegalStateException(
           s"sm8: metrics HTTP server failed to bind port $metricsPort")
+      // A 30-second bind hang is near-impossible in practice (no
+      // I/O before the socket is bound), but if it does fire the
+      // TimeoutException / InterruptedException must be converted
+      // to the same IllegalStateException so Main.run's fail-soft
+      // contract holds ("continuing without metrics"). Without
+      // this the process would die mid-boot with the Restate
+      // ingress already up (the exception would escape run()).
+      case _: java.util.concurrent.TimeoutException =>
+        throw new IllegalStateException(
+          s"sm8: metrics HTTP server bind timed out (30s) on port $metricsPort")
+      case e: InterruptedException =>
+        Thread.currentThread().interrupt()  // restore interrupt
+        throw new IllegalStateException(
+          s"sm8: metrics HTTP server bind interrupted on port $metricsPort", e)
     }
     bound
   }
 
   /** Stop the metrics server (called from sm8-server's shutdown
-    * hook). */
+    * hook).
+    *
+    * @param server the `HttpServer` handle returned by [[start]]
+    */
   def stop(server: HttpServer): Unit = server.close()
 
   /** Build the Prometheus text body for the current `QueryMetrics`
     * snapshot. Pure function — exposed package-private for unit
     * tests. */
   private[query] def renderBody(startedAt: Instant): String = {
+    val startEpoch = startedAt.toEpochMilli / 1000L
+    val now        = System.currentTimeMillis / 1000L
     val snap = QueryMetrics.snapshot(
-      uptimeSeconds = (System.currentTimeMillis - startedAt.toEpochMilli) / 1000L,
+      uptimeSeconds = now - startEpoch,
       startedAtIso  = startedAt.toString
     )
-    val now = System.currentTimeMillis / 1000L
-    val startEpoch = startedAt.toEpochMilli / 1000L
+    // snap.uptimeSeconds == now - startEpoch; use snap.uptimeSeconds
+    // on the wire so both gauges share one clock tick — two
+    // `System.currentTimeMillis` calls could disagree at a second
+    // boundary, making the uptime gauge and the snapshot disagree.
     s"""# HELP sm8_invocation_total Total QueryService.runQuery calls
        |# TYPE sm8_invocation_total counter
        |sm8_invocation_total ${snap.invocations.total}
@@ -131,7 +154,7 @@ object MetricsHttpRoute {
        |sm8_error_timed_out_total ${snap.errors.timedOut}
        |# HELP sm8_process_uptime_seconds Seconds since sm8 process start
        |# TYPE sm8_process_uptime_seconds gauge
-       |sm8_process_uptime_seconds ${now - startEpoch}
+       |sm8_process_uptime_seconds ${snap.uptimeSeconds}
        |# HELP sm8_process_start_time_seconds sm8 process start time (Unix seconds)
        |# TYPE sm8_process_start_time_seconds gauge
        |sm8_process_start_time_seconds $startEpoch

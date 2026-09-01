@@ -112,9 +112,11 @@ class MetricsHttpRouteSpec extends AnyFunSuite with Matchers {
     QueryMetrics.recordCacheMiss()
 
     val body = MetricsHttpRoute.renderBody(fixedStart)
-    body should include (s"sm8_invocation_total ${beforeTotal + 1}")
-    body should include (s"sm8_cache_hits_total ${beforeHits + 2}")
-    body should include (s"sm8_cache_misses_total ${beforeMisses + 1}")
+    // Line-exact parse (no substring overmatch: `...total 1` would
+    // otherwise pass against a body line of `...total 11`).
+    metricValue(body, "sm8_invocation_total") shouldBe beforeTotal + 1
+    metricValue(body, "sm8_cache_hits_total") shouldBe beforeHits + 2
+    metricValue(body, "sm8_cache_misses_total") shouldBe beforeMisses + 1
   }
 
   // ----- Test 6 (uptime monotonicity) -----
@@ -127,6 +129,23 @@ class MetricsHttpRouteSpec extends AnyFunSuite with Matchers {
     val uptimeLine = body.linesIterator.find(_.startsWith("sm8_process_uptime_seconds "))
     uptimeLine shouldBe defined
     uptimeLine.get.split(" ")(1).toLong should be >= 0L
+  }
+
+  // ----- Test 6b (line-exact value parse — pins the overmatch fix) -----
+  test("renderBody value lines are parseable as Long (line-exact, no substring overmatch)") {
+    val body = MetricsHttpRoute.renderBody(fixedStart)
+    val counters = Seq(
+      "sm8_invocation_total", "sm8_invocation_succeeded_total",
+      "sm8_invocation_failed_total", "sm8_cache_hits_total",
+      "sm8_cache_misses_total", "sm8_error_audit_sink_unavailable_total",
+      "sm8_error_timed_out_total", "sm8_process_uptime_seconds",
+      "sm8_process_start_time_seconds"
+    )
+    counters.foreach { name =>
+      withClue(s"metric $name must have exactly one parseable value line: ") {
+        metricValue(body, name) should be >= 0L
+      }
+    }
   }
 
   // ----- Test 7 (no doubled _total suffix anywhere) -----
@@ -161,4 +180,18 @@ class MetricsHttpRouteSpec extends AnyFunSuite with Matchers {
   /** Count the number of "# HELP" lines (= number of metrics). */
   private def expectedMetricsCount(body: String): Int =
     body.linesIterator.count(_.startsWith("# HELP "))
+
+  /** Parse the exact value line for `name` (the line that starts with
+    * `name + " "`) and return the Long it ends with. Fails the test
+    * if the line is absent or the value is not a Long — this is the
+    * line-exact alternative to substring `include` matching, which
+    * overmatches numeric prefixes (`total 1` ⊂ `total 11`). */
+  private def metricValue(body: String, name: String): Long = {
+    val prefix = name + " "
+    val line = body.linesIterator.find(_.startsWith(prefix))
+    withClue(s"value line for `$name` missing from body:\n$body\n") {
+      line shouldBe defined
+    }
+    line.get.substring(prefix.length).toLong
+  }
 }

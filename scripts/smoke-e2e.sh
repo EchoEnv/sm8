@@ -362,6 +362,16 @@ echo "$metrics_body" | grep -q '# HELP sm8_invocation_total' \
   || fail "Prometheus /metrics should include HELP line for sm8_invocation_total; got: $metrics_body"
 echo "  Prometheus /metrics includes HELP sm8_invocation_total (Prometheus text format 0.0.4)"
 
+# ADR verification criterion #5: the content-type header must be set
+# correctly on the wire. The /metrics route is GET-only (HEAD → 404
+# per criterion #4), so dump headers from a real GET request with
+# `-D -` + `-o /dev/null`.
+ct_header="$(curl -s -D - -o /dev/null --max-time 5 "http://127.0.0.1:9099/metrics" \
+  | grep -i '^content-type:' || true)"
+echo "$ct_header" | grep -qi 'text/plain; version=0.0.4' \
+  || fail "Prometheus /metrics Content-Type header must be text/plain version=0.0.4; got: '$ct_header'"
+echo "  Prometheus /metrics Content-Type: text/plain; version=0.0.4 (ADR criterion #5)"
+
 # ADR verification criterion #4: unknown paths on the metrics port
 # return 404, not 200 (separate server, not a fall-through router).
 unknown_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
