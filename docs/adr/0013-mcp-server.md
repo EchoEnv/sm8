@@ -64,7 +64,7 @@ java -cp <classpath> io.sm8.mcp.Main [--ingress-url <url>] [--request-timeout <s
 | **stdio** | SHIPPED | Default per Anthropic's recommended MCP setup. Spawned as a subprocess; reads stdin / writes stdout. Works with Claude Desktop out of the box. |
 | **Streamable HTTP** | DEFERRED to a follow-up (ADR-014) | Requires writing a custom Vert.x → MCP transport adapter (the SDK ships a Servlet one only; sm8-server is Vert.x, not Servlet). Out of scope for v1. |
 
-**Tools exposed (5, 1:1 with existing Restate handlers):**
+**Tools exposed (5 total: 4 forwarding to existing Restate handlers + 1 new handler):**
 
 | Tool name | Forwards to | Notes |
 |---|---|---|
@@ -101,21 +101,32 @@ The MCP SDK is a transport. sm8-server (deployment module) is the natural host f
 sm8-mcp/                              # NEW adapter-layer module
 ├── pom.xml                           # depends on sm8-platform (only — no core/plugin reach-in)
 └── src/main/scala/io/sm8/mcp/
+    ├── Main.scala                    # io.sm8.mcp.Main entry point; --ingress-url + --request-timeout
     ├── McpServer.scala               # builds io.modelcontextprotocol.server.McpServer via the SDK
     ├── Sm8ToolHandlers.scala         # 5 BiFunction tool handlers; each delegates to Restate ingress via java.net.http.HttpClient
     ├── HttpIngressClient.scala       # thin typed wrapper over java.net.http.HttpClient (timeout, error mapping)
     └── package.scala
 ```
 
-### `--mcp-transport stdio` lifecycle (sm8-server/Main.scala additions)
+### `io.sm8.mcp.Main` lifecycle (sm8-mcp's Main.scala)
 
-1. After existing `--port` + `--metrics-port` binding, check `cli.mcpTransport`.
-2. If `stdio`: build `McpServer.sync(StdioServerTransportProvider(jsonMapper))`, register the 5 tools, call `.build()` — the SDK's stdio provider begins the stdin read loop immediately. Block the main thread on `Thread.currentThread().join()` (already there for the Restate + metrics case; stdio is process-bound so join is correct).
-3. JVM shutdown hook: call `mcpServer.closeGracefully()` BEFORE the existing transport + metrics hooks (cleanest teardown order: stop accepting new MCP requests first, then close the HTTP sockets).
+`sm8-mcp` runs as a single-process stdio server. Lifecycle:
+
+1. Parse `--ingress-url` + `--request-timeout` (typed parse, same pattern as sm8-server's CLI).
+2. Build a `StdioServerTransportProvider(new JacksonJsonMapper())` (the SDK ships Jackson 3 in `mcp-json-jackson3` per the SDK README; stdio transport default-constructs on `System.in` / `System.out`).
+3. Build the typed `McpServer.sync(stdioTransport)` with:
+   - `.serverInfo("sm8-mcp", "0.1.0-SNAPSHOT")` (matches sm8-server's version)
+   - `.capabilities(ServerCapabilities.builder().tools(true).build())` (no resources/prompts per scope)
+   - `.tools(queryTool, listModelsTool, describeModelTool, listEnginesTool, getMetricsTool)` (each `SyncToolSpecification.builder().tool(...).callHandler(BiFunction<...>)`)
+4. Call `.build()` — returns an `McpSyncServer`. The SDK's stdio provider begins the stdin read loop on `.build()` (verified in the SDK source: `setSessionFactory` is invoked by the builder, which immediately calls `transport.initProcessing()` which spawns the read+write threads).
+5. Register a JVM shutdown hook: `mcpServer.closeGracefully().block(Duration.ofSeconds(5))` on SIGTERM. (No HTTP sockets to coordinate; no providers to close; the only resource is the SDK's internal schedulers which `closeGracefully` will dispose.)
+6. `Thread.currentThread().join()` (the main thread is idle; the SDK's scheduler threads handle all I/O).
+
+**No port binding.** No `Vertx.vertx()`. No `bind`/`listen` future. The process is single-purpose: read JSON-RPC, call HTTP, write JSON-RPC.
 
 ### New `EngineService.listEngines` Restate handler (sm8-platform)
 
-Exposes the engine registry as a typed wire DTO. ~25 LOC: a `ListEnginesRequest` + `ListEnginesResponse` case class, a `ServiceDefinition` factory that calls `EngineRegistry.names` (returns the `EngineIdentity.name` of every discovered provider), and the same `HandlerRunner.of(...)` pattern as the other services. Linter-clean, ~3 unit tests.
+Exposes the engine registry as a typed wire DTO. ~25 LOC: a `ListEnginesRequest` + `ListEnginesResponse` case class, a `ServiceDefinition` factory that calls `EngineRegistry.availableProviders` (returns the sorted names of providers that successfully realized — i.e. **available**, not every discovered; verification criterion: matches the sm8-cli `engines list` semantics already shipped), and the same `HandlerRunner.of(...)` pattern as the other services. Linter-clean, ~3 unit tests.
 
 ## Open thread: does sm8 already have a separate module for deployment-side tooling?
 
@@ -131,7 +142,7 @@ Exposes the engine registry as a typed wire DTO. ~25 LOC: a `ListEnginesRequest`
 | 4 | Lifecycle: SIGTERM during MCP session closes cleanly without hanging | shutdown hook integration test in `McpServerSpec` |
 | 5 | Layer discipline: `sm8-mcp/pom.xml` depends on `sm8-platform` only — no core or plugin reach-in | linter/rule check |
 | 6 | Smoke: existing scripts/smoke-e2e.sh still passes (no regression on Restate ingress or metrics endpoint) | unchanged smoke script |
-| 7 | New smoke assertion: MCP `tools/list` returns all 5 tool names | `scripts/smoke-mcp.sh` (NEW) — starts a tiny sm8-server in the background, then `java -cp ... io.sm8.mcp.Main --ingress-url ...`, pipes `{"jsonrpc":"2.0","method":"tools/list","id":1}\n` to stdin + closes stdin (EOF), greps stdout for the 5 tool names |
+| 7 | New smoke assertion: MCP handshake + `tools/list` returns all 5 tool names | `scripts/smoke-mcp.sh` (NEW) — starts a tiny sm8-server in the background, then `java -cp ... io.sm8.mcp.Main --ingress-url ...` as a subprocess. Pipes the full MCP handshake sequence to stdin (newline-delimited JSON): `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}` + `{"jsonrpc":"2.0","method":"notifications/initialized"}` + `{"jsonrpc":"2.0","id":2,"method":"tools/list"}` + EOF. Greps stdout for all 5 tool names. Without the `initialize` + `notifications/initialized` exchange the SDK rejects `tools/list` with a "not initialized" error (per MCP spec §lifecycle). |
 | 8 | Streamable HTTP `--mcp-port` (deferred ADR-014) is NOT a flag in v1; the smoke CLI args must not reference it | grep verification — no `--mcp-port` in the v1 CLI |
 
 ## Out of scope for this PR (deferred)
