@@ -340,6 +340,14 @@ object Main {
             // of `semantic-layer-engine-architecture.md` §3 (Core Boundary).
             // The factory is the inward-facing seam that insulates this
             // deployment wiring from future refactors of `EngineImpl`.
+            // Per ADR-012-b-followup (= PR-256): wire the MetricsSink
+            // BEFORE PluginDiscovery so the cache plugin's hit/miss
+            // handlers see the registered QueryMetrics (and tick the
+            // counters). If not registered, the trait defaults to NoOp
+            // so this is safe in tests and other deployments.
+            io.sm8.core.cache.MetricsRegistry.register(
+              io.sm8.platform.query.QueryMetrics
+            )
             val discovered: List[io.sm8.sdk.Plugin] =
               io.sm8.core.PluginDiscovery.discoverFromConfig()
             val plugins: List[io.sm8.sdk.Plugin] =

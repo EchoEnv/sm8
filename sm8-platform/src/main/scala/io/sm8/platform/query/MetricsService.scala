@@ -209,16 +209,14 @@ object MetricsService {
       HandlerRunner.of(
         (ctx: dev.restate.sdk.Context, _: SnapshotRequest) => {
           val now: Instant = Instant.now()
-          MetricsSnapshot(
-            startedAt    = startedAt.toString,
+          // Per ADR-012-b-followup (= PR-255): delegate to the
+          // QueryMetrics singleton which holds the live counters.
+          // The snapshot reader reads 6 AtomicLongs (non-atomic
+          // across the read; documented acceptable for diagnostic use
+          // per QueryMetrics.snapshot Scaladoc).
+          QueryMetrics.snapshot(
             uptimeSeconds = (now.toEpochMilli - startedAt.toEpochMilli) / 1000L,
-            // Per ADR-012-b §Implementation sketch: all counters
-            // are placeholder zeros until ADR-012-b-followup
-            // instruments the call sites. Honesty over completeness:
-            // wire surface ready, values 0, followup tracked.
-            invocations = InvocationCounters(total = 0, succeeded = 0, failed = 0),
-            cache       = CacheCounters(hits = 0, misses = 0),
-            errors      = ErrorCounters(auditSinkUnavailable = 0, timedOut = 0)
+            startedAtIso  = startedAt.toString
           )
         },
         jacksonSerdeFactory,

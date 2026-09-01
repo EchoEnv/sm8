@@ -42,6 +42,7 @@
 package io.sm8.plugins.cache
 
 import io.sm8.core.cache._
+import io.sm8.core.cache.MetricsRegistry
 import java.util.concurrent.atomic.AtomicInteger
 
 import io.sm8.core.engine.{EngineHookRequest, EngineHookResult}
@@ -164,6 +165,11 @@ private final class CacheReadPreHook(
             cache.getJournaled(namespacedKey) match {
               case Some(row) =>
                 hits.incrementAndGet()
+                // Per ADR-012-b-followup (= PR-256): forward the
+                // hit to the registered MetricsSink (if any). Defaults
+                // to NoOp when no sink is registered (e.g. tests, or
+                // deployments that don't want metrics).
+                MetricsRegistry.sink().recordCacheHit()
                 val pqr = CachedRowDecoder.fromRestateCachedRowAsPortable(row)
                 context.copy(
                   result = Some(EngineHookResult(pqr)),
@@ -171,6 +177,8 @@ private final class CacheReadPreHook(
                 )
               case None =>
                 misses.incrementAndGet()
+                // Per ADR-012-b-followup: forward the miss too.
+                MetricsRegistry.sink().recordCacheMiss()
                 context
             }
           case Some(CachePolicy.WriteThrough(region)) =>
@@ -182,6 +190,7 @@ private final class CacheReadPreHook(
             cache.getJournaled(namespacedKey) match {
               case Some(row) =>
                 hits.incrementAndGet()
+                MetricsRegistry.sink().recordCacheHit()
                 val pqr = CachedRowDecoder.fromRestateCachedRowAsPortable(row)
                 context.copy(
                   result = Some(EngineHookResult(pqr)),
@@ -189,6 +198,7 @@ private final class CacheReadPreHook(
                 )
               case None =>
                 misses.incrementAndGet()
+                MetricsRegistry.sink().recordCacheMiss()
                 context
             }
         }

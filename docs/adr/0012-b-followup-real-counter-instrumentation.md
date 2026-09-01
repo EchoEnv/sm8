@@ -1,6 +1,6 @@
 # ADR-012-b-followup: Real counter instrumentation for MetricsService
 
-> **Status:** Proposed. **Date:** 2026-09-01. **Author:** SM8 agent (per user directive "go with your recommended", building on PR-254's `MetricsService` wire surface + PR-250's ADR-012-b plan).
+**Status:** Accepted. PR-256 implements the design (dual-reviewed PASS). **Date:** 2026-09-01. **Author:** SM8 agent (per user directive "go with your recommended", building on PR-254's `MetricsService` wire surface + PR-250's ADR-012-b plan).
 
 ## Context and Problem Statement
 
@@ -54,7 +54,7 @@ Per `docs/rfcs/2026-08-12_v1_architecture-spec/` §3:
 | **sm8-platform** | New `QueryMetrics` object (singleton, `AtomicLong` fields). `MetricsService.snapshotRunner` delegates to it. `QueryService.runQuery` handler closure calls 3 record methods. |
 | **plugins / cache-plugin** | New `Option[QueryMetrics]` constructor parameter on `CachePlugin` factory (default `None`). When `Some(qm)`, the hit/miss branches in `onPreExecute` call `qm.recordCacheHit()` / `qm.recordCacheMiss()`. |
 | **sm8-server** | Construct `QueryMetrics` once at boot, pass `Some(...)` to the cache plugin factory. |
-| **sm8-core** | 0 changes (the counter is consumed by sm8-platform code only; the cache plugin talks to sm8-core's `ResultCache` trait which is unaffected). |
+| **sm8-core** | NEW `MetricsSink` trait + `MetricsRegistry` static holder (cache-plugin depends on sm8-core only; sm8-platform is the impl). The cache plugin reads via `MetricsRegistry.sink()`. |
 | **adapters / connectors** | 0 changes. |
 
 ### Implementation sketch
@@ -168,7 +168,7 @@ private def runQuery(
 // AFTER:
 final class CachePlugin(
     val cache: ResultCache,
-    val metrics: Option[QueryMetrics] = None  // <-- NEW (PR-255)
+    val metrics: Option[QueryMetrics] = None  // <-- NEW (PR-255 — superseded by Revision 3)
 ) extends Plugin with java.io.Serializable {
 
   override def onPreExecute(...): HookResult = {
@@ -272,7 +272,7 @@ The implementation PR must satisfy all of:
    | 7 | `snapshot computes failed = auditSinkUnavailable + timedOut` | after 2 audit + 3 timeout, `invocations.failed == 5` |
 
 6. **Smoke** — `/scripts/smoke-e2e.sh --external-ip <addr>` adds a new assertion: after the existing 1 QueryService.runQuery invocation, `/services/MetricsService/snapshot` returns `invocations.total == 1`
-7. **Layer discipline** — `sm8-core` has 0 production-code changes; `sm8-platform` is the only module that imports `QueryMetrics`; the cache-plugin reads `QueryMetrics` via the static seam (per PR-191 layering convention)
+7. **Layer discipline** — `sm8-core` has 2 new files (`MetricsSink` trait + `MetricsRegistry` static holder) so the cache plugin can record hit/miss events without taking a new transitive dep on sm8-platform; `sm8-platform` adds `QueryMetrics` (extends `MetricsSink`) + 2 file edits; the cache-plugin reads `MetricsRegistry.sink()` (default `NoOp` when no sink registered = backward-compat preserved).
 
 ## References
 
@@ -291,3 +291,4 @@ The implementation PR must satisfy all of:
 |---|---|---|---|
 | 1 | 2026-09-01 | SM8 agent (PR-255) | Initial ADR. Proposed status. Counter holders + 3 architectural decisions (sm8-platform home, opt-in cache-plugin, non-atomic snapshot + Scaladoc note) + concrete file list. |
 | 2 | 2026-09-01 | SM8 agent (PR-255 r1 amend) | r1 dual-review fixes: (a) sketch placement corrected — record calls go in `private def runQuery`, NOT the HandlerRunner lambda; (b) overflow math corrected from "~12 hours at 100k qps" to "≈3.3 million years, effectively unbounded; resets on process restart"; (c) dead code removed — `invocationsFailed: AtomicLong` field + `recordFailure()` method deleted (snapshot computes failed as `auditSinkUnavailable + timedOut`); (d) CachePlugin integration now uses a static seam (`object CachePlugin { withSharedMetrics(qm: QueryMetrics) }`) instead of constructor param, preserving the `PluginDiscovery.discoverFromConfig()` factory pattern; (e) added Verification criteria section with 7 explicit acceptance tests. |
+| 3 | 2026-09-01 | SM8 agent (PR-256 r2 amend) | Implementation deviated from the sketch on the cache-plugin wiring seam: instead of `Option[QueryMetrics]` in the cache-plugin constructor (sketch) + sm8-core unchanged (Row 1), the implementation adds `MetricsSink` trait + `MetricsRegistry` static holder in sm8-core (Row 1 updated). Rationale: cache-plugin must not take a new transitive dep on sm8-platform (per `plugins.md` Rule 4: plugins don't depend on adapters). The new design preserves the original decision shape (opt-in via `MetricsRegistry.register(QueryMetrics)` at boot; trait defaults to `NoOp` for backward compat) while fixing the layer concern. ADR doc-staleness fixes per guppy r2 LOWs: Layer discipline table row 1 + Verification criterion #7 + Implementation Sketch annotation updated. No code change. |
