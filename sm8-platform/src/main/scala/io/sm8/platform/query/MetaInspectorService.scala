@@ -100,6 +100,48 @@ import scala.jdk.CollectionConverters._
 object MetaInspectorService {
 
   /**
+   * Filter `meta` by prefix and project each entry to `MetaEntry`.
+   *
+   * Pure function extracted from the `getMetaByPrefix` handler
+   * closure so it can be unit-tested without driving the full
+   * Restate machinery. Behavior:
+   *   - Match: `key.startsWith(prefix)` (verbatim prefix, no glob/regex).
+   *   - Empty prefix matches all keys (useful for full introspection).
+   *   - Order: lexicographic ascending on key (stable across calls).
+   *   - Value shape: same as `getMeta` — `Map[String, Any]` for
+   *     values that are themselves maps, `Map("value" -> v)` for
+   *     primitives, to keep the wire shape uniform.
+   *
+   * Per [[scala-data-driven-refactor-mindset]]: this is the single
+   * canonical projection. The handler closure MUST call this helper
+   * rather than re-implementing the filter/sort/wrap logic inline.
+   *
+   * Per [[scala-data-driven-refactor-mindset]] match-exhaustiveness:
+   * the `match` is total over `v` (handles both Map and "other"
+   * shapes). Per [[scala-error-handling-mindset]]: no
+   * `asInstanceOf` on primitives (we wrap them in `Map("value" -> v)`
+   * which Jackson serializes correctly with `DefaultScalaModule`).
+   *
+   * @param meta   the captured `context.meta` map (read-only)
+   * @param prefix the filter prefix (verbatim string match)
+   * @return      the filtered + sorted + projected entries
+   */
+  private[query] def filterByPrefix(
+      meta: Map[String, Any],
+      prefix: String
+  ): Seq[MetaEntry] =
+    meta.toSeq
+      .filter { case (k, _) => k.startsWith(prefix) }
+      .sortBy { case (k, _) => k }
+      .map { case (k, v) =>
+        val wrapped: Map[String, Any] = v match {
+          case m: Map[_, _] => m.asInstanceOf[Map[String, Any]]
+          case other        => Map("value" -> other)
+        }
+        MetaEntry(key = k, value = wrapped)
+      }
+
+  /**
    * Build the Restate `ServiceDefinition` for the `getMeta`
    * handler.
    *
@@ -118,10 +160,10 @@ object MetaInspectorService {
         .registerModule(com.fasterxml.jackson.module.scala.DefaultScalaModule)
     val jacksonSerdeFactory = new JacksonSerdeFactory(scalaMapper)
 
-    val requestSerde = jacksonSerdeFactory.create(classOf[MetaRequest])
-    val responseSerde = jacksonSerdeFactory.create(classOf[MetaResponse])
+    val getMetaRequestSerde = jacksonSerdeFactory.create(classOf[MetaRequest])
+    val getMetaResponseSerde = jacksonSerdeFactory.create(classOf[MetaResponse])
 
-    val handlerRunner: HandlerRunner[MetaRequest, MetaResponse] =
+    val getMetaRunner: HandlerRunner[MetaRequest, MetaResponse] =
       HandlerRunner.of(
         (ctx: dev.restate.sdk.Context, req: MetaRequest) => {
           val meta = engineFn()
@@ -146,19 +188,54 @@ object MetaInspectorService {
         HandlerRunner.Options.DEFAULT
       )
 
-    val handlerDefinition: HandlerDefinition[MetaRequest, MetaResponse] =
-      HandlerDefinition.of(
-        "getMeta",
-        HandlerType.SHARED,
-        requestSerde,
-        responseSerde,
-        handlerRunner
+    val byPrefixRequestSerde = jacksonSerdeFactory.create(classOf[MetaByPrefixRequest])
+    val byPrefixResponseSerde = jacksonSerdeFactory.create(classOf[MetaByPrefixResponse])
+
+    // Per karpathy-guidelines (smallest correct change): keep the same value-shape
+    // projection as `getMeta` (Map[String, Any] wrap) so clients see
+    // a consistent shape across both handlers.
+    val byPrefixRunner: HandlerRunner[MetaByPrefixRequest, MetaByPrefixResponse] =
+      HandlerRunner.of(
+        (ctx: dev.restate.sdk.Context, req: MetaByPrefixRequest) => {
+          val meta = engineFn()
+          // Per [[scala-data-driven-refactor-mindset]]: the match is
+          // total (handles both Map and other value shapes, mirroring
+          // getMeta). Empty prefix matches everything (intentional —
+          // useful for full introspection of the captured context.meta).
+          val entries = filterByPrefix(meta, req.prefix)
+          MetaByPrefixResponse(
+            prefix = req.prefix,
+            count  = entries.size,
+            entries = entries
+          )
+        },
+        jacksonSerdeFactory,
+        HandlerRunner.Options.DEFAULT
       )
 
     ServiceDefinition.of(
       "MetaInspectorService",
       ServiceType.SERVICE,
-      java.util.List.of(handlerDefinition)
+      java.util.List.of(
+        HandlerDefinition.of(
+          "getMeta",
+          HandlerType.SHARED,
+          getMetaRequestSerde,
+          getMetaResponseSerde,
+          getMetaRunner
+        ),
+        // Per the design rationale at the top of this file:
+        // SERVICE + SHARED is correct for both handlers. Both are
+        // read-only queries over in-process state — no per-key
+        // Restate state.
+        HandlerDefinition.of(
+          "getMetaByPrefix",
+          HandlerType.SHARED,
+          byPrefixRequestSerde,
+          byPrefixResponseSerde,
+          byPrefixRunner
+        )
+      )
     )
   }
 }
