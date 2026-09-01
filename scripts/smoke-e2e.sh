@@ -97,8 +97,8 @@ source:
 YAML
 
 CP="sm8-server/target/classes:connectors/in-memory-connector/target/classes:$(cat "$CP_FILE")"
-echo "starting sm8-server on port $SM8_PORT ..."
-java -cp "$CP" io.sm8.server.Main --model "$MODEL" --port "$SM8_PORT" >>"$LOG" 2>&1 &
+echo "starting sm8-server on port $SM8_PORT (metrics on 9099, per --metrics-port) ..."
+java -cp "$CP" io.sm8.server.Main --model "$MODEL" --port "$SM8_PORT" --metrics-port 9099 >>"$LOG" 2>&1 &
 SM8_PID=$!
 
 # ---- 4. Track cleanup targets -----------------------------------------------
@@ -326,6 +326,80 @@ echo "$metrics_snapshot" | grep -qE '"total"[[:space:]]*:[[:space:]]*[1-9][0-9]*
 echo "$metrics_snapshot" | grep -qE '"succeeded"[[:space:]]*:[[:space:]]*[1-9][0-9]*' \
   || fail "MetricsService invocations.succeeded should be >= 1; got: $metrics_snapshot"
 echo "  MetricsService/snapshot shows invocations.total >= 1 AND succeeded >= 1 (PR-256)"
+
+# PR-258 (ADR-012-b-export): verify the Prometheus /metrics endpoint on
+# the separate --metrics-port. The metrics server is a standalone Vert.x
+# HttpServer on a dedicated port (9099 here to avoid the sm8 server's
+# default 9090), NOT a sub-router on the Restate ingress. Per ADR
+# verification criterion #6: `curl /metrics` returns
+# `sm8_invocation_total == 1` after the existing 1 QueryService.runQuery
+# call (smoke invariant).
+echo "verifying Prometheus /metrics endpoint on --metrics-port 9099 (ADR-012-b-export, PR-258) ..."
+# Wait for metrics bind (the sm8 process prints the listening line only
+# after the bind future completes, per [[scala-jvm-safety-mindset]]).
+for i in $(seq 1 20); do
+  curl -sf --max-time 2 "http://127.0.0.1:9099/metrics" >/dev/null 2>&1 && break
+  sleep 0.5
+done
+metrics_body=$(curl -s --max-time 5 "http://127.0.0.1:9099/metrics")
+# Line-exact value parse (substring overmatch risk: `total 1` would
+# match a body line of `total 11` — same fix as the MetricsHttpRouteSpec
+# test 5 helper, but as a bash awk one-liner).
+metrics_invocation_total=$(echo "$metrics_body" \
+  | awk '/^sm8_invocation_total / { print $2; exit }')
+[ -n "$metrics_invocation_total" ] \
+  || fail "Prometheus /metrics should include sm8_invocation_total line; got: $metrics_body"
+[ "$metrics_invocation_total" -ge 1 ] \
+  || fail "Prometheus /metrics sm8_invocation_total must be >= 1; got: $metrics_invocation_total"
+echo "  Prometheus /metrics sm8_invocation_total = $metrics_invocation_total (>= 1, PR-258)"
+
+metrics_uptime=$(echo "$metrics_body" \
+  | awk '/^sm8_process_uptime_seconds / { print $2; exit }')
+[ -n "$metrics_uptime" ] \
+  || fail "Prometheus /metrics should include sm8_process_uptime_seconds line; got: $metrics_body"
+echo "  Prometheus /metrics sm8_process_uptime_seconds = $metrics_uptime (PR-258)"
+
+metrics_cache_hits=$(echo "$metrics_body" \
+  | awk '/^sm8_cache_hits_total / { print $2; exit }')
+[ -n "$metrics_cache_hits" ] \
+  || fail "Prometheus /metrics should include sm8_cache_hits_total line; got: $metrics_body"
+echo "  Prometheus /metrics sm8_cache_hits_total = $metrics_cache_hits (PR-258)"
+
+echo "$metrics_body" | grep -q '# TYPE sm8_invocation_total counter' \
+  || fail "Prometheus /metrics should include TYPE line for sm8_invocation_total; got: $metrics_body"
+echo "  Prometheus /metrics includes TYPE sm8_invocation_total counter (Prometheus text format 0.0.4)"
+
+echo "$metrics_body" | grep -q '# HELP sm8_invocation_total' \
+  || fail "Prometheus /metrics should include HELP line for sm8_invocation_total; got: $metrics_body"
+echo "  Prometheus /metrics includes HELP sm8_invocation_total (Prometheus text format 0.0.4)"
+
+# ADR verification criterion #5: the content-type header must be set
+# correctly on the wire. The /metrics route is GET-only (HEAD → 404
+# per criterion #4), so dump headers from a real GET request with
+# `-D -` + `-o /dev/null`.
+ct_header="$(curl -s -D - -o /dev/null --max-time 5 "http://127.0.0.1:9099/metrics" \
+  | grep -i '^content-type:' || true)"
+echo "$ct_header" | grep -qi 'text/plain; version=0.0.4' \
+  || fail "Prometheus /metrics Content-Type header must be text/plain version=0.0.4; got: '$ct_header'"
+echo "  Prometheus /metrics Content-Type: text/plain; version=0.0.4 (ADR criterion #5)"
+
+# ADR verification criterion #4: unknown paths on the metrics port
+# return 404, not 200 (separate server, not a fall-through router).
+unknown_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+  "http://127.0.0.1:9099/whatever")"
+[ "$unknown_code" = "404" ] \
+  || fail "unknown path on metrics port should return 404, got $unknown_code"
+echo "  Prometheus /metrics returns 404 for unknown paths (ADR criterion #4)"
+
+# ADR verification criterion #2: the metrics server is on a separate
+# socket from the Restate ingress (port 8080) AND the sm8 deployment
+# port ($SM8_PORT). If they collided, /health wouldn't work on 8080.
+# The Restate ingress is exercised above; this just verifies 9099 is
+# NOT an alias for either — the body differs from /health.
+restate_health="$(curl -s --max-time 2 "http://127.0.0.1:$RESTATE_INGRESS_PORT/health" 2>/dev/null || true)"
+[ "$metrics_body" != "$restate_health" ] \
+  || fail "metrics port body should differ from Restate ingress /health (separate-port invariant)"
+echo "  metrics port body differs from Restate ingress /health (separate-port invariant, ADR criterion #2)"
 
 # Verify cluster health (UI header status indicator).
 health_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \

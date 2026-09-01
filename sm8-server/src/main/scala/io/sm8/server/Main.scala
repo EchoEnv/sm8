@@ -71,7 +71,7 @@ package io.sm8.server
 import io.sm8.core.engine.{EngineError, EngineIdentity, EngineProvider, EngineRegistry, QueryRequest, PortableQueryResult}
 import io.sm8.core.model.Model
 
-import io.sm8.platform.query.{HttpTransport, PlatformModelLoader}
+import io.sm8.platform.query.{HttpTransport, MetricsHttpRoute, PlatformModelLoader}
 
 import java.nio.file.{Path, Paths}
 import java.util.ServiceLoader
@@ -108,6 +108,7 @@ object Main {
   final case class CliArgs(
       modelPath:     Option[Path],
       port:          Int    = 8080,
+      metricsPort:   Int    = 9090,
       engine:        Option[String]        = None,
       connectorUrl:  Option[String]        = None,
   )
@@ -136,6 +137,7 @@ object Main {
       |
       |  --model <path>   model manifest (YAML, schema-validated)
       |  --port <n>       TCP port (default 8080; 0 = ephemeral)
+      |  --metrics-port <n>  TCP port for Prometheus /metrics (default 9090)
       |  --engine <name>     default engine (default: first discovered
       |                      EngineProvider on the classpath)
       |  --connector-url <u> optional connector URL (e.g.
@@ -174,6 +176,10 @@ object Main {
           try loop(rest, acc.copy(port = value.toInt))
           catch { case _: NumberFormatException => Left(CliError.BadInt("--port", value)) }
         case "--port" :: Nil => Left(CliError.MissingValue("--port"))
+        case "--metrics-port" :: value :: rest =>
+          try loop(rest, acc.copy(metricsPort = value.toInt))
+          catch { case _: NumberFormatException => Left(CliError.BadInt("--metrics-port", value)) }
+        case "--metrics-port" :: Nil => Left(CliError.MissingValue("--metrics-port"))
         case "--engine" :: value :: rest =>
           loop(rest, acc.copy(engine = Some(value)))
         case "--engine" :: Nil => Left(CliError.MissingValue("--engine"))
@@ -381,7 +387,46 @@ object Main {
                 }
                 println(s"sm8: server listening on port $boundPort " +
                   s"(model=${model.name}, version=${model.version})")
-                // Block the main thread; the shutdown hook stops the server.
+                // Standalone Prometheus metrics HttpServer on a
+                // SEPARATE port (`--metrics-port`, default 9090),
+                // per `docs/adr/0012-b-export-prometheus-metrics.md`.
+                // Per [[scala-jvm-safety-mindset]], install a SECOND
+                // shutdown hook BEFORE MetricsHttpRoute.start() so a
+                // SIGTERM arriving during bind() still closes the
+                // socket — same ordering invariant as the PR-215
+                // hook (the pre-existing hook for transport +
+                // providers is preserved unchanged). The slot is an
+                // AtomicReference so the hook (installed first) can
+                // observe the server handle (assigned after bind).
+                //
+                // Bind failure is fail-LOUD on stderr but does NOT
+                // abort the process: the Restate ingress is already
+                // up and useful without observability.
+                //
+                // The startedAt Instant is shared with MetricsService
+                // so the /metrics body's uptime matches the
+                // MetricsService/snapshot handler exactly.
+                val metricsSlot =
+                  new java.util.concurrent.atomic.AtomicReference[io.vertx.core.http.HttpServer]()
+                val metricsHook = new Thread(
+                  new Runnable {
+                    def run(): Unit = {
+                      val ms = metricsSlot.get()
+                      if (ms != null) MetricsHttpRoute.stop(ms)
+                    }
+                  },
+                  "sm8-metrics-shutdown-hook"
+                )
+                Runtime.getRuntime().addShutdownHook(metricsHook)
+                try {
+                  metricsSlot.set(MetricsHttpRoute.start(cli.metricsPort,
+                    io.sm8.platform.query.MetricsService.startedAtInstant))
+                  println(s"sm8: metrics endpoint listening on port ${cli.metricsPort}")
+                } catch {
+                  case e: IllegalStateException =>
+                    System.err.println(s"sm8: ${e.getMessage} — continuing without metrics")
+                }
+                // Block the main thread; the shutdown hooks stop the servers.
                 Thread.currentThread().join()
                 0
             }

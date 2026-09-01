@@ -173,6 +173,14 @@ object MetricsService {
    */
   private val startedAt: Instant = Instant.now()
 
+  /** Public accessor for the process start time. Exposed for the
+    * Prometheus exporter ([[MetricsHttpRoute]]) which needs
+    * the same `Instant` so `sm8_process_uptime_seconds` and
+    * `sm8_process_start_time_seconds` agree with the
+    * `MetricsService/snapshot` handler. Read-only — no setter, the
+    * start time is immutable for the life of the JVM. */
+  def startedAtInstant: Instant = startedAt
+
   /**
    * Build the Restate `ServiceDefinition` for the `snapshot`
    * handler.

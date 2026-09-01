@@ -218,6 +218,48 @@ class MainSpec extends AnyFunSuite with Matchers {
       Left(Main.CliError.MissingValue("--connector-url"))
   }
 
+  // ===== --metrics-port CLI flag (Prometheus export, ADR-012-b-export) =====
+  //
+  // The metrics server runs on a SEPARATE Vert.x HttpServer bound to
+  // --metrics-port (default 9090). These tests pin the typed parse
+  // of the new flag so a typo / bad integer surfaces at the CLI
+  // boundary (per [[scala-error-handling-mindset]]).
+
+  test("parseArgs: --metrics-port parses to a custom Int") {
+    Main.parseArgs(List("--model", "m.yaml", "--metrics-port", "9099")) match {
+      case Right(cli) =>
+        cli.metricsPort shouldBe 9099
+        cli.port shouldBe 8080  // unchanged default
+      case Left(err) => fail(s"unexpected: ${err.reason}")
+    }
+  }
+
+  test("parseArgs: --metrics-port defaults to 9090 when absent") {
+    Main.parseArgs(List("--model", "m.yaml")) match {
+      case Right(cli) => cli.metricsPort shouldBe 9090
+      case Left(err) => fail(s"unexpected: ${err.reason}")
+    }
+  }
+
+  test("parseArgs: --metrics-port non-integer is a typed error") {
+    Main.parseArgs(List("--model", "m.yaml", "--metrics-port", "abc")) shouldBe
+      Left(Main.CliError.BadInt("--metrics-port", "abc"))
+  }
+
+  test("parseArgs: --metrics-port without value is a typed error") {
+    Main.parseArgs(List("--model", "m.yaml", "--metrics-port")) shouldBe
+      Left(Main.CliError.MissingValue("--metrics-port"))
+  }
+
+  test("parseArgs: --metrics-port + --port co-exist (separate-port design)") {
+    Main.parseArgs(List("--model", "m.yaml", "--port", "8080", "--metrics-port", "9090")) match {
+      case Right(cli) =>
+        cli.port shouldBe 8080
+        cli.metricsPort shouldBe 9090
+      case Left(err) => fail(s"unexpected: ${err.reason}")
+    }
+  }
+
   // ===== PR-O4a (ADR-008-O): shutdown hook + close() lifecycle =====
 
   test("PR-O4a: shutdown hook calls close() on every realized engine provider") {
