@@ -304,6 +304,14 @@ echo "$mi_service_detail" | grep -q '"getMetaByPrefix"' \
   || fail "/services/MetaInspectorService missing getMetaByPrefix handler: $mi_service_detail"
 echo "  /services/MetaInspectorService has getMeta + getMetaByPrefix handlers"
 
+# Per PR-254 (ADR-012-b): verify MetricsService is bound and exposes the
+# `snapshot` handler. Counters return PLACEHOLDER ZEROS today (ADR-012-b
+# wire surface; ADR-012-b-followup will instrument real values).
+metrics_service_detail="$(curl -s --max-time 5 "http://127.0.0.1:$RESTATE_ADMIN_PORT/services/MetricsService")"
+echo "$metrics_service_detail" | grep -q '"snapshot"' \
+  || fail "/services/MetricsService missing snapshot handler: $metrics_service_detail"
+echo "  /services/MetricsService has snapshot handler (ADR-012-b; placeholder counters)"
+
 # Verify cluster health (UI header status indicator).
 health_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
   "http://127.0.0.1:$RESTATE_ADMIN_PORT/cluster-health")"
