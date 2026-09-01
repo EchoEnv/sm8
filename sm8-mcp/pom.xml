@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.sm8</groupId>
+        <artifactId>sm8-parent</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>sm8-mcp_2.13</artifactId>
+    <packaging>jar</packaging>
+
+    <name>sm8-mcp</name>
+    <description>Anthropic MCP server (stdio transport) for the SM8
+        Restate ingress. Per ADR-013 (PR-259). Separate binary from
+        sm8-server (stdio requires exclusive process-stdout ownership).
+        Delegates 1:1 to the existing Restate ingress endpoints via
+        java.net.http.HttpClient. Depends on sm8-platform only (for the
+        wire DTOs) + the official io.modelcontextprotocol.sdk:mcp bundle.</description>
+
+    <dependencies>
+        <!-- Per ADR-013 (PR-259): the MCP server depends on sm8-platform
+             ONLY — for the wire DTOs (QueryRequest, ListModelsResponse,
+             etc.). No core or plugin reach-in. Mirrors sm8-server's
+             dependency direction (sm8-server -> sm8-platform). -->
+        <dependency>
+            <groupId>io.sm8</groupId>
+            <artifactId>sm8-platform_2.13</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Per ADR-013 sources: io.modelcontextprotocol.sdk:mcp:2.0.1
+             is a convenience bundle (mcp-core + mcp-json-jackson3).
+             mcp-json-jackson3 brings Jackson 3 (tools.jackson.core)
+             which is a SEPARATE classpath from the Jackson 2.15.2
+             already in sm8-platform for Restate Serde. No conflict. -->
+        <dependency>
+            <groupId>io.modelcontextprotocol.sdk</groupId>
+            <artifactId>mcp</artifactId>
+            <version>2.0.1</version>
+        </dependency>
+
+        <!-- Jackson 3 (tools.jackson.core) transitively needs Jackson 2's
+             jackson-annotations package at runtime (JacksonAnnotationIntrospector
+             references JsonSerializeAs which was added in jackson-annotations
+             2.19+). The mcp bundle's dependency graph pulls in jackson-databind
+             but NOT the annotations jar; declare both explicitly so the shaded
+             fat jar includes them. We pin jackson-annotations 2.21 (the only
+             available version in m2 that has JsonSerializeAs) and pair it with
+             jackson-databind 2.20.1 (the closest available; minor versions are
+             ABI-compatible). Verified via NoClassDefFoundError caught in
+             scripts/smoke-mcp.sh on PR-260. -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-annotations</artifactId>
+            <version>2.21</version>
+        </dependency>
+
+        <!-- Same family: jackson-databind 2.20.1 mirrors the annotations
+             version to keep the reflective lookup consistent. Jackson 2 +
+             Jackson 3 coexist (different package namespaces:
+             com.fasterxml.jackson.* vs tools.jackson.*); MCP SDK only
+             needs the 2 annotations/databind to satisfy reflective lookups. -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <version>2.20.1</version>
+        </dependency>
+
+        <!-- mcp-json-jackson3's `DefaultJsonSchemaValidator` (used by the
+             SDK on .build()) references `com.networknt.schema.dialect.Dialects`
+             at runtime but the bundle's dependency graph does NOT pull
+             json-schema-validator transitively. Declare it explicitly so
+             the shaded fat jar includes it. Verified via
+             NoClassDefFoundError caught in scripts/smoke-mcp.sh on
+             PR-260 r0 (default dep resolution does not include it). -->
+        <dependency>
+            <groupId>com.networknt</groupId>
+            <artifactId>json-schema-validator</artifactId>
+            <version>3.0.6</version>
+        </dependency>
+
+        <!-- JDK HttpClient (java.net.http) is built-in to JDK 11+; no
+             extra dep needed. The smoke script uses bash + nc (no
+             extra dep). -->
+
+        <dependency>
+            <groupId>org.scala-lang</groupId>
+            <artifactId>scala-library</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.scalatest</groupId>
+            <artifactId>scalatest_${scala.binary.version}</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <sourceDirectory>src/main/scala</sourceDirectory>
+        <testSourceDirectory>src/test/scala</testSourceDirectory>
+
+        <plugins>
+            <!-- Per the parent pom's standard scala-maven-plugin
+                 config; same conventions as sm8-server. -->
+            <plugin>
+                <groupId>net.alchim31.maven</groupId>
+                <artifactId>scala-maven-plugin</artifactId>
+            </plugin>
+
+            <!-- Build a fat jar so the MCP server can be spawned as a
+                 single `java -cp ... io.sm8.mcp.Main` per ADR-013
+                 ADR-013 Lifecycle section. The smoke script + Claude
+                 Desktop both invoke it this way. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals><goal>shade</goal></goals>
+                        <configuration>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <transformers>
+                                <transformer
+                                  implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>io.sm8.mcp.Main</mainClass>
+                                </transformer>
+                            </transformers>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

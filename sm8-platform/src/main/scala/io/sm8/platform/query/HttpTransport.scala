@@ -140,6 +140,11 @@ final class HttpTransport(
       // as MetaInspectorService (state lives in sm8-platform, not
       // in a Restate journal).
       .bind(MetricsService.definition())
+      // Per ADR-013 (PR-259): bind EngineService so MCP/LLM agents can
+      // discover available engines for the `query.engine` field. No new
+      // state, no new wire DTOs beyond the existing `EngineRegistry` —
+      // the handler is a single method call on `registry.availableProviders`.
+      .bind(EngineServiceRest.definition(registry))
     metaInspectorEngineFn match {
       case Some(engineFn) =>
         baseEndpoint
