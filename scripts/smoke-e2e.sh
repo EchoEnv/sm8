@@ -38,7 +38,6 @@
 #   --sm8-port <n>         TCP port for sm8 (default 9090)
 #   --restate-image <img>  Docker image to use (default restatedev/restate:1.5)
 #   --help                 Show this help + exit 0
-EXTERNAL_IP_OVERRIDE=""
 SM8_PORT_DEFAULT=9090
 RESTATE_IMAGE_DEFAULT="restatedev/restate:1.5"
 while [ "$#" -gt 0 ]; do
@@ -261,9 +260,11 @@ done
 # Post /deployments with the sm8 deployment URI. Because restate runs
 # in a separate container with bridge networking, "127.0.0.1" inside
 # restate is restate's OWN loopback, NOT the host. Restate must reach
-# sm8 via the HOST's external IP (--external-ip, default "localhost"
-# which works for the no-bridge case). On the host, the external IP
-# is what the user opened in the success message.
+# sm8 via the host's externally-routable IPv4 (auto-detected by default,
+# or pass --external-ip / set EXTERNAL_IP_OVERRIDE env). The admin POST
+# itself uses 127.0.0.1 because the host->docker-proxy published port
+# path is local; only the URI restate dials back to needs the external
+# address.
 #
 # Pre-PR-269 this hard-coded "127.0.0.1" which silently failed when
 # restate was on bridge networking (the original --network host path
