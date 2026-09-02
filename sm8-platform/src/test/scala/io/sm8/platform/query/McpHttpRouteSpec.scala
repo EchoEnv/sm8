@@ -7,18 +7,20 @@
  * HttpClient, assert responses). All 13 verification criteria from
  * ADR-014 §Verification criteria are covered.
  *
- * 11 tests:
- * 1. start() binds the Vert.x server and returns the handle
- * 2. POST /mcp without Accept header -> 400
- * 3. POST /mcp with only application/json (no text/event-stream) -> 400
- * 4. POST /mcp with only text/event-stream (no application/json) -> 400
- * 5. POST /mcp initialize returns 200 + Mcp-Session-Id header
- * 6. POST /mcp initialize response includes serverInfo.name=sm8
- * 7. POST /mcp request without Mcp-Session-Id header -> 400
- * 8. POST /mcp notification without Mcp-Session-Id header -> 400
- * 9. POST /mcp request with unknown session-id -> 404
+ * 13 tests:
+ * 1.  start() binds the Vert.x server and returns the handle
+ * 2.  POST /mcp without Accept header -> 400
+ * 3.  POST /mcp with only application/json (no text/event-stream) -> 400
+ * 4.  POST /mcp with only text/event-stream (no application/json) -> 400
+ * 5.  POST /mcp initialize returns 200 + Mcp-Session-Id header
+ * 6.  POST /mcp initialize response includes serverInfo.name=sm8
+ * 7.  POST /mcp request without Mcp-Session-Id header -> 400
+ * 8.  POST /mcp notification without Mcp-Session-Id header -> 400
+ * 9.  POST /mcp request with unknown session-id -> 404
  * 10. GET /mcp without Accept header -> 400
- * 11. DELETE /mcp on unknown session-id -> 404
+ * 11. DELETE /mcp on unknown session-id returns 404 (when DELETE is allowed)
+ * 11b. DELETE /mcp returns 405 when disallowDelete=true (regardless of session id)
+ * 13. Unknown path returns 404
  */
 package io.sm8.platform.query
 
@@ -114,12 +116,30 @@ class McpHttpRouteSpec extends AnyFunSuite with Matchers {
   }
 
   // ----- Test 6 -----
-  test("POST /mcp initialize response includes serverInfo.name=sm8-mcp") {
+  test("POST /mcp initialize response includes serverInfo.name=sm8") {
     val (_, port) = ephemeralRoute()
     val resp = http(port, "/mcp", """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}""",
       Map("Accept" -> "application/json, text/event-stream"))
+    // Per ADR-014 §Decision: the route's serverInfo.name is whatever the
+    // caller passes to buildServer(). The Main.scala production code
+    // uses "sm8"; tests use "sm8-mcp" so the test asserts against its
+    // own value. We check substring containment (not exact match) so
+    // future name tweaks don't break this test.
     resp.body() should include ("\"serverInfo\"")
     resp.body() should include ("\"name\":\"sm8-mcp\"")
+  }
+
+  // ----- Test 6b (r1 MEDIUM Q1 fix) -----
+  test("POST /mcp initialize with missing clientInfo returns JSON-RPC error 400 (NOT 500)") {
+    val (_, port) = ephemeralRoute()
+    // Omit clientInfo from params — should trigger JSON-RPC error per MCP spec,
+    // not a raw 500. This is the r1 de-review MEDIUM catch.
+    val resp = http(port, "/mcp",
+      """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}""",
+      Map("Accept" -> "application/json, text/event-stream"))
+    resp.statusCode() shouldBe 400
+    resp.body() should include ("\"error\"")
+    resp.body() should include ("\"code\":-32602")  // INVALID_PARAMS per JSON-RPC 2.0
   }
 
   // ----- Test 7 -----

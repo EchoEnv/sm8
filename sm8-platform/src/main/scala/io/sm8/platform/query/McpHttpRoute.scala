@@ -300,7 +300,16 @@ final class McpHttpRoute private[sm8] (
 
   /** POST initialize: 200 OK + InitializeResult body + Mcp-Session-Id
     * header. Mirrors SDK doPost lines 215-444 (verified via source
-    * fetch in PR-261). */
+    * fetch in PR-261).
+    *
+    * Per the r1 dual-review catch (Q1): MCP spec requires
+    * `protocolVersion` and `clientInfo` in the initialize params.
+    * The SDK's `startSession(...)` is lenient (accepts null fields)
+    * and `convertValue` may return a partial record. We pre-validate
+    * explicitly and emit a JSON-RPC `error` (code -32602 INVALID_PARAMS)
+    * with the request's `id` if either field is missing. The session
+    * IS removed on any failure (don't leak an entry in `sessions`).
+    */
   private def handleInitialize(
       req: io.vertx.core.http.HttpServerRequest,
       jsonrpcReq: McpSchema.JSONRPCRequest
@@ -311,14 +320,86 @@ final class McpHttpRoute private[sm8] (
       return
     }
     val mapper = mapperFor(req)
-    val initReq = mapper.convertValue(
-      jsonrpcReq.params(),
-      new io.modelcontextprotocol.json.TypeRef[McpSchema.InitializeRequest] {}
-    )
-    val init = factory.startSession(initReq)
+    val resp = req.response
+
+    // Pre-validate the params map. The MCP spec requires `protocolVersion`
+    // and `clientInfo`; reject with -32602 INVALID_PARAMS if either is
+    // missing. The SDK's JSONRPCRequest.params() returns `Object` (the
+    // Jackson-decoded Map<String,Object>); cast to Map for the containsKey
+    // check. Per r1 dual-review catch (Q1): a missing/partial params map
+    // would otherwise throw inside startSession and surface as a raw 500
+    // instead of a JSON-RPC error.
+    val rawParams = jsonrpcReq.params()
+    val params = rawParams match {
+      case m: java.util.Map[_, _] @unchecked => m.asInstanceOf[java.util.Map[String, Object]]
+      case _ => null
+    }
+    if (params == null
+        || !params.containsKey("protocolVersion")
+        || params.get("protocolVersion") == null
+        || !params.containsKey("clientInfo")
+        || params.get("clientInfo") == null) {
+      Log.warn(s"initialize rejected: missing protocolVersion or clientInfo in params: $params")
+      val errorJson = mapper.writeValueAsString(
+        McpSchema.JSONRPCResponse.error(
+          jsonrpcReq.id(),
+          new McpSchema.JSONRPCResponse.JSONRPCError(
+            -32602,  // INVALID_PARAMS per JSON-RPC 2.0
+            "Missing required initialize params: protocolVersion and clientInfo",
+            null
+          )
+        )
+      )
+      resp.setStatusCode(400)
+      resp.putHeader("Content-Type", "application/json")
+      resp.end(errorJson)
+      return
+    }
+
+    val init = try {
+      val initReq = mapper.convertValue(
+        params,
+        new io.modelcontextprotocol.json.TypeRef[McpSchema.InitializeRequest] {}
+      )
+      factory.startSession(initReq)
+    } catch { case NonFatal(e) =>
+      Log.warn(s"initialize failed: ${e.getClass.getSimpleName}: ${e.getMessage}")
+      val errorJson = mapper.writeValueAsString(
+        McpSchema.JSONRPCResponse.error(
+          jsonrpcReq.id(),
+          new McpSchema.JSONRPCResponse.JSONRPCError(
+            -32602,  // INVALID_PARAMS per JSON-RPC 2.0
+            s"Invalid initialize params: ${e.getMessage}",
+            null
+          )
+        )
+      )
+      resp.setStatusCode(400)
+      resp.putHeader("Content-Type", "application/json")
+      resp.end(errorJson)
+      return
+    }
     val sessionId = init.session().getId()
     sessions.put(sessionId, init.session())
-    val initResult = init.initResult().block(Duration.ofSeconds(10))
+    val initResult = try init.initResult().block(Duration.ofSeconds(10))
+    catch { case NonFatal(e) =>
+      Log.warn(s"init.initResult() failed for session $sessionId: ${e.getMessage}")
+      sessions.remove(sessionId)
+      val errorJson = mapper.writeValueAsString(
+        McpSchema.JSONRPCResponse.error(
+          jsonrpcReq.id(),
+          new McpSchema.JSONRPCResponse.JSONRPCError(
+            -32603,  // INTERNAL_ERROR per JSON-RPC 2.0
+            s"Init handler error: ${e.getMessage}",
+            null
+          )
+        )
+      )
+      resp.setStatusCode(500)
+      resp.putHeader("Content-Type", "application/json")
+      resp.end(errorJson)
+      return
+    }
     if (initResult == null) {
       req.response.setStatusCode(500).end("""{"error":"init timeout"}""")
       sessions.remove(sessionId)
@@ -327,7 +408,6 @@ final class McpHttpRoute private[sm8] (
     val respJson = mapper.writeValueAsString(
       McpSchema.JSONRPCResponse.result(jsonrpcReq.id(), initResult)
     )
-    val resp = req.response
     resp.setStatusCode(200)
     resp.putHeader("Content-Type", "application/json")
     resp.putHeader(io.modelcontextprotocol.spec.HttpHeaders.MCP_SESSION_ID, sessionId)
