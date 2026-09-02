@@ -53,20 +53,34 @@ When `--mcp-transport stdio` is set:
 3. **stdout must be 100% JSON-RPC** — every other log path is already `System.err` or the 4 we redirect in this PR. Per bonehound's r1 Q4 catch: the smoke must parse every stdout line as JSON-RPC, not just check for `^sm8: ` prefix (a future `log4j-core` binding would default to stdout and corrupt the stream silently otherwise).
 4. The Restate HTTP ingress binds BEFORE the stdio transport. The stdio lifecycle's JVM shutdown hook sequences the close INSIDE one Runnable (per ADR-014 r1 fix + retriever's r1 catch): MCP stdio `closeGracefully()` → MCP HTTP `stop()` → `HttpTransport.stop()`. Sequencing within a SINGLE Runnable per hook (each Runnable internally ordered: stdio close → HTTP stop → Restate stop). The existing PR-258 / PR-263 / PR-260 hooks remain separate (3-4 JVM hooks total); the new stdio hook is a 4th independent Runnable that does stdio close ONLY. Cross-hook ordering is NOT guaranteed; in-flight stdio tool calls to the in-process Restate ingress may fail if ingress closes first. The implementation PR accepts this v1 limitation (documented in §Open questions) and ships a v2 follow-up to merge all hooks into one Runnable. **Note for v2 (NOT in this PR)**: combine all 4 shutdown hooks into one shared Runnable that orders (stdio close) → (metrics stop) → (HTTP stop) → (Restate stop). The stdio transport's `closeGracefully()` returns `Mono<Void>`; we block 5s for it to complete (drains in-flight JSON-RPC responses). The HTTP transport's `stop()` is idempotent (verified by the existing PR-258 tests).
 
-**Mutex precedence (per bonehound r1 Q5)**: when BOTH `--mcp-transport stdio` AND `--mcp-http-port N` are set, the CLI emits `CliError.UnknownFlag("--mcp-transport")` to stderr and exits 2. The stdio path is the one rejected (the user's stated directive was "in-process stdio" which is the v1 priority; HTTP MCP is the PR-263 orthogonal path and its loss is the natural default in a conflict). No winner-pick logic; deterministic exit.
+**Mutex precedence (per bonehound r1 Q5 + retriever r2 F3)**: a NEW sealed case
+`CliError.MutuallyExclusive(flag1, flag2)` is added to `Main.scala`. When BOTH
+`--mcp-transport stdio` AND `--mcp-http-port N > 0` are set, the CLI emits
+`CliError.MutuallyExclusive("--mcp-transport", "--mcp-http-port")` to stderr
+and exits 2. The rule is **symmetric**: neither flag is "the winner" — both
+are rejected, and the user must pick one or neither (just like ADR-014's
+existing `--mcp-http-port` validation). The inverse case (`--mcp-transport http`
++ `--mcp-http-port 0`) is also rejected via the same sealed case.
 
 ## Files changed
 
 ```
 sm8-server/src/main/scala/io/sm8/server/Main.scala      (+15 LOC: 4 println→System.err, --mcp-transport flag + parse)
 sm8-platform/src/main/scala/io/sm8/platform/query/
-    McpStdioRoute.scala                                (NEW ~100 LOC, mirror of McpHttpRoute)
+    McpStdioRoute.scala                                (NEW ~100 LOC, mirror of McpHttpRoute;
+                                                       owns the stdio lifecycle: builds the
+                                                       HttpIngressClient + invokes Sm8ToolHandlers)
+sm8-platform/src/main/scala/io/sm8/platform/query/
+    HttpIngressClient.scala                            (MOVED from sm8-mcp/ to sm8-platform/ per
+                                                       the Q3 r1 dep-cycle fix; both McpStdioRoute
+                                                       and the standalone sm8-mcp binary reference it
+                                                       from sm8-platform/)
 sm8-platform/src/test/scala/io/sm8/platform/query/
     McpStdioRouteSpec.scala                             (NEW ~6 tests: stdio round-trip with real pipes)
 sm8-mcp/src/main/scala/io/sm8/mcp/
     Sm8ToolHandlers.scala                              (REFACTOR: extract tools to a public list;
-                                                       McpStdioRoute builds the HttpIngressClient
-                                                       and calls Sm8ToolHandlers.build(tools, client))
+                                                       McpStdioRoute and sm8-mcp both call
+                                                       Sm8ToolHandlers.build(tools, client))
 scripts/smoke-mcp-stdio.sh                             (NEW ~40 LOC: spawn sm8-server with --mcp-transport stdio,
                                                        pipe initialize + tools/list, assert 5 tools + JSON-RPC envelope
                                                        is the ONLY stdout content)
@@ -80,7 +94,7 @@ Total: ~150 LOC new + ~10 LOC refactor.
 2. **stdio round-trip**: `initialize` + `notifications/initialized` + `tools/list` works via subprocess pipe. Verifiable by smoke.
 3. **No regression on PR-263**: `--mcp-http-port` mode (Streamable HTTP) still works. Verifiable by re-running `scripts/smoke-mcp-http.sh`.
 4. **No regression on PR-260**: the standalone `sm8-mcp` binary still works. Verifiable by re-running `scripts/smoke-mcp.sh`.
-5. **Mutual exclusion**: `--mcp-transport stdio` + `--mcp-http-port N` together → typed CLI error (one of the two — same pattern as PR-263's stdio-vs-http mutual exclusion note in ADR-013 §Decision).
+5. **Mutual exclusion**: `--mcp-transport stdio` + `--mcp-http-port N` together → typed CLI error (one of the two — same pattern as PR-263's stdio-vs-http mutual exclusion note in ADR-014 §CLI surface).
 6. **Layer discipline**: `McpStdioRoute` lives in sm8-platform, `Sm8ToolHandlers` is refactored to expose a public `tools: Seq[ToolSpec]` list. sm8-server has no new transport code beyond the flag + a 3-line startup of the route.
 
 ## Open questions / risks
