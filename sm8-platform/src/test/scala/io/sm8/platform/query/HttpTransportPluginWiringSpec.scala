@@ -130,69 +130,12 @@ class HttpTransportPluginWiringSpec extends AnyFunSuite with Matchers {
   private def stubContext(requestBody: dev.restate.common.Slice): HandlerContext = {
     val otelContext = io.opentelemetry.context.Context.root()
     val stubRequest = new dev.restate.sdk.common.HandlerRequest(
-      null,
+      io.sm8.platform.query.TestHandlerStubs.newInvocationId(),
       otelContext,
       requestBody,
       java.util.Map.of()
     )
-    new HandlerContext {
-      override def objectKey: String = ""
-      override def request: dev.restate.sdk.common.HandlerRequest = stubRequest
-      override def writeOutput(s: dev.restate.common.Slice) =
-        java.util.concurrent.CompletableFuture.completedFuture(null: java.lang.Void)
-      override def writeOutput(e: dev.restate.sdk.common.TerminalException) =
-        java.util.concurrent.CompletableFuture.completedFuture(null: java.lang.Void)
-      override def get(key: String) =
-        throw new UnsupportedOperationException("not used in unit test")
-      override def getKeys() =
-        throw new UnsupportedOperationException("not used in unit test")
-      override def clear(key: String) =
-        throw new UnsupportedOperationException("not used in unit test")
-      override def clearAll() =
-        throw new UnsupportedOperationException("not used in unit test")
-      override def set(key: String, value: dev.restate.common.Slice) =
-        throw new UnsupportedOperationException("not used in unit test")
-      override def timer(d: java.time.Duration, key: String) =
-        throw new UnsupportedOperationException("not used in unit test")
-      override def call(target: dev.restate.common.Target, value: dev.restate.common.Slice, key: String,
-          headers: java.util.Collection[java.util.Map.Entry[String, String]]) =
-        throw new UnsupportedOperationException("not used in unit test")
-      override def send(target: dev.restate.common.Target, value: dev.restate.common.Slice, key: String,
-          headers: java.util.Collection[java.util.Map.Entry[String, String]],
-          delay: java.time.Duration) =
-        throw new UnsupportedOperationException("not used in unit test")
-      override def submitRun(name: String, completer: java.util.function.Consumer[
-          HandlerContext.RunCompleter]) =
-        throw new UnsupportedOperationException("not used in unit test")
-      override def awakeable() =
-        throw new UnsupportedOperationException("not used in unit test")
-      override def resolveAwakeable(id: String, value: dev.restate.common.Slice) =
-        throw new UnsupportedOperationException("not used in unit test")
-      override def rejectAwakeable(id: String, e: dev.restate.sdk.common.TerminalException) =
-        throw new UnsupportedOperationException("not used in unit test")
-      override def promise(name: String) =
-        throw new UnsupportedOperationException("not used in unit test")
-      override def peekPromise(name: String) =
-        throw new UnsupportedOperationException("not used in unit test")
-      override def resolvePromise(name: String, value: dev.restate.common.Slice) =
-        throw new UnsupportedOperationException("not used in unit test")
-      override def rejectPromise(name: String, e: dev.restate.sdk.common.TerminalException) =
-        throw new UnsupportedOperationException("not used in unit test")
-      override def cancelInvocation(id: String) =
-        throw new UnsupportedOperationException("not used in unit test")
-      override def attachInvocation(id: String) =
-        throw new UnsupportedOperationException("not used in unit test")
-      override def getInvocationOutput(id: String) =
-        throw new UnsupportedOperationException("not used in unit test")
-      override def fail(t: Throwable): Unit =
-        throw new UnsupportedOperationException("not used in unit test")
-      override def createAnyAsyncResult(args: java.util.List[
-          dev.restate.sdk.endpoint.definition.AsyncResult[_]]) =
-        throw new UnsupportedOperationException("not used in unit test")
-      override def createAllAsyncResult(args: java.util.List[
-          dev.restate.sdk.endpoint.definition.AsyncResult[_]]) =
-        throw new UnsupportedOperationException("not used in unit test")
-    }
+TestHandlerStubs.newHandlerContext(stubRequest)
   }
 
   private def queryServiceRunQueryHandler(

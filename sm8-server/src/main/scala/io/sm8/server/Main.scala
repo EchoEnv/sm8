@@ -132,7 +132,15 @@ object Main {
       // standard deployment shape; sm8-stdio + sm8-server may share
       // the same process or be on different hosts).
       ingressUrl:     String               = "http://127.0.0.1:8080",
-      requestTimeout: java.time.Duration    = java.time.Duration.ofSeconds(30)
+      requestTimeout: java.time.Duration    = java.time.Duration.ofSeconds(30),
+      // Skip the startup ingress reachability probe (stdio boot
+      // path only — see ADR-015 §Open questions; the --mcp-http-port
+      // path uses --ingress-url pointing at the same process's --port
+      // where misconfiguration is less likely). Defaults to false
+      // (probe runs) so operators get the diagnostic at boot;
+      // operators prioritizing fast cold-start over misconfiguration
+      // detection can pass --skip-ingress-probe.
+      skipIngressProbe: Boolean            = false
   )
 
   /** Typed CLI parse failure — `reason` goes to stderr. */
@@ -186,6 +194,9 @@ object Main {
       |  --request-timeout <secs>  Per-tool-call HTTP timeout in SECONDS
       |                            (default 30). MUST match the unit of
       |                            sm8-mcp's --request-timeout (also seconds).
+      |  --skip-ingress-probe    Skip the startup ingress reachability probe
+      |                            (--mcp-transport stdio only). Faster cold-
+      |                            start, no startup misconfig warning.
       |  --engine <name>     default engine (default: first discovered
       |                      EngineProvider on the classpath)
       |  --connector-url <u> optional connector URL (e.g.
@@ -301,6 +312,10 @@ object Main {
           try loop(rest, acc.copy(requestTimeout = java.time.Duration.ofSeconds(value.toLong)))
           catch { case _: NumberFormatException => Left(CliError.BadInt("--request-timeout", value)) }
         case "--request-timeout" :: Nil => Left(CliError.MissingValue("--request-timeout"))
+        case "--skip-ingress-probe" :: Nil =>
+          loop(Nil, acc.copy(skipIngressProbe = true))
+        case "--skip-ingress-probe" :: _ =>
+          Left(CliError.UnknownFlag("--skip-ingress-probe (takes no value)"))
         case other :: _ => Left(CliError.UnknownFlag(other))
       }
     // Per the stdio design §Mutex precedence (symmetric): reject
@@ -446,9 +461,10 @@ object Main {
    * because in some deployment shapes the ingress is co-located with
    * sm8-server and may bind a fraction of a second later.
    *
-   * Note on response classification: the Restate SDK 2.1.1 ingress
-   * returns 405 (Method Not Allowed) for any non-POST method
-   * (verified via curl on a real Restate deployment). So any HTTP
+   * Note on response classification: the Restate ingress replies to
+   * a bare `HEAD /` with a non-2xx status (typically 404 — the
+   * EndpointRequestHandler only matches `/invoke/Service/Handler`,
+   * `/discover`, or `/health`; a proxy may answer 405). So any HTTP
    * response at all — 200, 404, 405, 500 — is treated as "server
    * accepted the TCP connection and an HTTP-speaking process
    * answered". We warn ONLY on connect-level failures (refused,
@@ -477,14 +493,9 @@ object Main {
       .build()
     try {
       val resp = probeClient.send(probeReq, java.net.http.HttpResponse.BodyHandlers.discarding())
-      // The Restate SDK 2.1.1 ingress returns 404 for a bare HEAD /
-      // (the EndpointRequestHandler only matches `/invoke/Service/Handler`
-      // or `/discover` or `/health`). So a 4xx response is the EXPECTED
-      // status from a healthy ingress and does NOT warrant a warning.
-      // We warn only on 5xx (server unhealthy). 2xx/3xx/4xx are treated
-      // as "reachable" with no alarm. Per pr267-r2-de-001 — empirically
-      // verified via `curl -X HEAD http://127.0.0.1:18111/` returning
-      // HTTP/1.1 404 from a real Restate ingress.
+      // A 4xx response is the EXPECTED status from a healthy Restate
+      // ingress (bare HEAD / matches no handler path). We warn only on
+      // 5xx (server unhealthy); 2xx/3xx/4xx are treated as "reachable".
       val status = resp.statusCode()
       if (status >= 500) {
         System.err.println(s"sm8: WARNING — ingress reachable but returned $status: $ingressUrl (tools/call may fail)")
@@ -712,7 +723,12 @@ object Main {
                       // works; the ingress may be co-located with
                       // sm8-server and start a beat later in some
                       // deployment shapes.
-                      probeIngressOrWarn(cli.ingressUrl)
+                      // Per --skip-ingress-probe:
+                      // operators prioritizing fast cold-start disable the
+                      // probe entirely; default false preserves the
+                      // diagnostic on every healthy boot.
+                      if (!cli.skipIngressProbe)
+                        probeIngressOrWarn(cli.ingressUrl)
                       val tools = io.sm8.platform.mcp.Sm8ToolHandlers.build(client)
                       val stdio = io.sm8.platform.mcp.McpStdioRoute(
                         "sm8", "0.1.0-SNAPSHOT", tools
