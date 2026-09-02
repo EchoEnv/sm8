@@ -82,7 +82,7 @@ object Sm8ToolHandlers {
  case NonFatal(e) =>
  return McpSchema.CallToolResult.builder()
  .addTextContent(
- s"sm8-mcp: failed to POST $path: ${e.getClass.getSimpleName}: ${e.getMessage}"
+ s"sm8: failed to POST $path: ${e.getClass.getSimpleName}: ${e.getMessage}"
 )
  .isError(java.lang.Boolean.TRUE)
  .build()

@@ -140,6 +140,12 @@ object Main {
     final case class MissingValue(flag: String) extends CliError {
       val reason = s"sm8: flag $flag expects a value"
     }
+    final case class MutuallyExclusive(flag1: String, flag2: String) extends CliError {
+      val reason = s"sm8: $flag1 and $flag2 are mutually exclusive (set one or the other, not both)"
+    }
+    final case class BadUrl(flag: String, value: String) extends CliError {
+      val reason = s"sm8: $flag expects a URL, got '$value'"
+    }
   }
 
   private val Usage: String =
@@ -216,16 +222,43 @@ object Main {
         case "--mcp-http-disallow-delete" :: Nil =>
           loop(Nil, acc.copy(mcpHttpDisallowDelete = true))
         case "--mcp-transport" :: value :: rest =>
-          // Per the stdio design §Mutex precedence: when --mcp-transport is
-          // set AND --mcp-http-port > 0, the stdio path is REJECTED
-          // (CliError.UnknownFlag("--mcp-transport"), exit 2). The
-          // stdio path is the v1 priority per the user's directive;
-          // the HTTP path loss is the natural default in a conflict.
-          if (acc.mcpHttpPort > 0) Left(CliError.UnknownFlag("--mcp-transport"))
-          else loop(rest, acc.copy(mcpTransport = Some(value)))
+          // The mutex check is performed post-loop (see below) so
+          // the rule is symmetric regardless of argv order.
+          loop(rest, acc.copy(mcpTransport = Some(value)))
         case "--mcp-transport" :: Nil => Left(CliError.MissingValue("--mcp-transport"))
         case "--ingress-url" :: value :: rest =>
-          loop(rest, acc.copy(ingressUrl = value))
+          // Validate URL parse eagerly so the operator sees a typed
+          // CLI error at boot, not a deferred IllegalArgumentException
+          // on the first tool call. Per the stdio design r2 Q4:
+          // BadUrl(flag, value) is the typed surface.
+          //
+          // Per pig's PR-265 de-review H1: `new URI(value).toURL`
+          // throws java.net.URISyntaxException (a checked Exception,
+          // NOT a RuntimeException subclass) for malformed schemes
+          // such as `--ingress-url 127.0.0.1:8080` (no scheme). The
+          // previous catch listed only MalformedURLException +
+          // IllegalArgumentException, missing URISyntaxException
+          // entirely — the exception propagated out of parseArgs
+          // (which declares Either, no throws clause) and crashed
+          // run() with a stack trace instead of the typed
+          // Left(CliError.BadUrl(...)). The Non-fatal catch wraps
+          // all three + any future URL/URI Exception types under
+          // the same typed-error contract.
+          try {
+            val u = new java.net.URI(value).toURL
+            // PR-265 de-review L2: restrict to http(s) so the
+            // --ingress-url flag cannot silently accept ftp://, file://,
+            // jar://, etc. The HTTP ingress client only knows HTTP.
+            // The protocol whitelist is the CLI-side complement to
+            // the runtime check that would otherwise surface as a
+            // confusing tool-call failure much later.
+            val proto = u.getProtocol
+            if (proto == null || proto.isEmpty || (proto != "http" && proto != "https"))
+              Left(CliError.BadUrl("--ingress-url", value))
+            else loop(rest, acc.copy(ingressUrl = value))
+          } catch { case NonFatal(_) =>
+            Left(CliError.BadUrl("--ingress-url", value))
+          }
         case "--ingress-url" :: Nil => Left(CliError.MissingValue("--ingress-url"))
         case "--request-timeout" :: value :: rest =>
           try loop(rest, acc.copy(requestTimeout = java.time.Duration.ofMillis(value.toLong)))
@@ -233,7 +266,16 @@ object Main {
         case "--request-timeout" :: Nil => Left(CliError.MissingValue("--request-timeout"))
         case other :: _ => Left(CliError.UnknownFlag(other))
       }
-    loop(args, CliArgs(modelPath = None))
+    // Per the stdio design §Mutex precedence (symmetric): reject
+    // when BOTH --mcp-transport stdio AND --mcp-http-port > 0 are
+    // set, regardless of argv order. The check is at end-of-parse
+    // (post-loop) so it sees both flags no matter which the user
+    // wrote first.
+    loop(args, CliArgs(modelPath = None)).flatMap { cli =>
+      if (cli.mcpTransport.isDefined && cli.mcpHttpPort > 0)
+        Left(CliError.MutuallyExclusive("--mcp-transport stdio", "--mcp-http-port"))
+      else Right(cli)
+    }
   }
 
   /** Discover providers via ServiceLoader. Driver-side, once at boot.
@@ -478,7 +520,7 @@ object Main {
                 // pattern as MetricsHttpRoute. The 5 MCP tools
                 // (a prior PR) are wired via the in-process stdio
                 // transport (see below) and ALSO via this Streamable
-                // HTTP transport (PR-260 follow-up); both share the
+                // HTTP transport (the stdio transport follow-up); both share the
                 // same `Sm8ToolHandlers` factory in sm8-platform.
                 if (cli.mcpHttpPort > 0) {
                   try {
