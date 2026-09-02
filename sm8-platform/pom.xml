@@ -80,6 +80,37 @@
             <version>${project.version}</version>
             <scope>test</scope>
         </dependency>
+
+        <!-- Per ADR-014 (PR-261): Streamable HTTP MCP transport in
+             McpHttpRoute. The `mcp` bundle (mcp-core + mcp-json-jackson3)
+             brings Jackson 3 (tools.jackson.core). We rely on the
+             jackson-databind version managed by the parent pom (2.15.2)
+             — sm8-platform's existing Jackson 2 Serde path (Restate's
+             sdk-serde-jackson + jackson-module-scala 2.15.2) REQUIRES
+             databind < 2.16.0 (per the JacksonModule.setupModule
+             compatibility check; tested in PR-260 r0 + again in PR-263
+             r0). The MCP SDK's tools.jackson.databind 3.x can
+             coexist with Jackson 2 databind 2.15.2 IF the tools.jackson
+             classes resolve their own annotation/databind needs at
+             runtime; if a runtime NoClassDefFoundError surfaces
+             (specifically JsonSerializeAs, added in jackson-annotations
+             2.19+), we add an explicit jackson-annotations 2.21 dep
+             without bumping databind. See PR-260 for the prior
+             version-coupling dance.
+
+             Also: json-schema-validator MUST be 3.0.6+ (the parent
+             pom manages 1.5.2 which lacks the Dialects class the SDK
+             uses at .build() time). Override here. -->
+        <dependency>
+            <groupId>io.modelcontextprotocol.sdk</groupId>
+            <artifactId>mcp</artifactId>
+            <version>2.0.1</version>
+        </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-annotations</artifactId>
+            <version>2.21</version>
+        </dependency>
         <!-- Semantic Graph Plugin (TEST scope only — the regression specs
              for the 3 inert plugins exercise the orchestrator end-to-end
              through the production entry point). -->

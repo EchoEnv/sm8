@@ -111,6 +111,9 @@ object Main {
       metricsPort:   Int    = 9090,
       engine:        Option[String]        = None,
       connectorUrl:  Option[String]        = None,
+      mcpHttpPort:   Int                   = 0,  // 0 = disabled; set to enable per ADR-014
+      mcpHttpEndpoint: String              = "/mcp",
+      mcpHttpDisallowDelete: Boolean       = false
   )
 
   /** Typed CLI parse failure — `reason` goes to stderr. */
@@ -138,6 +141,10 @@ object Main {
       |  --model <path>   model manifest (YAML, schema-validated)
       |  --port <n>       TCP port (default 8080; 0 = ephemeral)
       |  --metrics-port <n>  TCP port for Prometheus /metrics (default 9090)
+      |  --mcp-http-port <n>   TCP port for Streamable HTTP MCP transport
+      |                         (default 0 = disabled; per ADR-014 PR-263)
+      |  --mcp-http-endpoint <path>  MCP endpoint path (default /mcp)
+      |  --mcp-http-disallow-delete  DELETE /mcp returns 405 instead of 200
       |  --engine <name>     default engine (default: first discovered
       |                      EngineProvider on the classpath)
       |  --connector-url <u> optional connector URL (e.g.
@@ -186,6 +193,15 @@ object Main {
         case "--connector-url" :: value :: rest =>
           loop(rest, acc.copy(connectorUrl = Some(value)))
         case "--connector-url" :: Nil => Left(CliError.MissingValue("--connector-url"))
+        case "--mcp-http-port" :: value :: rest =>
+          try loop(rest, acc.copy(mcpHttpPort = value.toInt))
+          catch { case _: NumberFormatException => Left(CliError.BadInt("--mcp-http-port", value)) }
+        case "--mcp-http-port" :: Nil => Left(CliError.MissingValue("--mcp-http-port"))
+        case "--mcp-http-endpoint" :: value :: rest =>
+          loop(rest, acc.copy(mcpHttpEndpoint = value))
+        case "--mcp-http-endpoint" :: Nil => Left(CliError.MissingValue("--mcp-http-endpoint"))
+        case "--mcp-http-disallow-delete" :: Nil =>
+          loop(Nil, acc.copy(mcpHttpDisallowDelete = true))
         case other :: _ => Left(CliError.UnknownFlag(other))
       }
     loop(args, CliArgs(modelPath = None))
@@ -426,6 +442,43 @@ object Main {
                   case e: IllegalStateException =>
                     System.err.println(s"sm8: ${e.getMessage} — continuing without metrics")
                 }
+
+                // PR-263: Streamable HTTP MCP transport (per ADR-014).
+                // Bound only if --mcp-http-port is non-zero. The same
+                // shutdown-hook-before-bind + AtomicReference slot
+                // pattern as MetricsHttpRoute. Tool list is empty in
+                // v1 (the 5 MCP tools from PR-260 are wired via the
+                // stdio subprocess server in sm8-mcp, not via this
+                // Streamable HTTP transport — a follow-up PR will
+                // bridge them); the HTTP server still answers
+                // `tools/list` (returns empty array) and `initialize`.
+                if (cli.mcpHttpPort > 0) {
+                  try {
+                    val (mcpHttpServer, mcpSyncServer, _) = io.sm8.platform.query.McpHttpRoute.start(
+                      cli.mcpHttpPort,
+                      io.sm8.platform.query.McpHttpRoute.Config(
+                        endpointPath   = cli.mcpHttpEndpoint,
+                        disallowDelete = cli.mcpHttpDisallowDelete
+                      ),
+                      "sm8", "0.1.0-SNAPSHOT", Seq.empty
+                    )
+                    println(s"sm8: MCP Streamable HTTP endpoint listening on port ${cli.mcpHttpPort} (path ${cli.mcpHttpEndpoint})")
+                    // Stop hook (separate from metrics/Restate hooks;
+                    // JVM hook order is not guaranteed, but each hook
+                    // is independent).
+                    Runtime.getRuntime().addShutdownHook(new Thread(
+                      new Runnable {
+                        def run(): Unit =
+                          io.sm8.platform.query.McpHttpRoute.stop(mcpHttpServer, mcpSyncServer)
+                      },
+                      "sm8-mcp-http-shutdown"
+                    ))
+                  } catch {
+                    case e: IllegalStateException =>
+                      System.err.println(s"sm8: ${e.getMessage} — continuing without MCP HTTP")
+                  }
+                }
+
                 // Block the main thread; the shutdown hooks stop the servers.
                 Thread.currentThread().join()
                 0
