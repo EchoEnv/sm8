@@ -98,6 +98,16 @@ import scala.util.control.NonFatal
  */
 object Main {
 
+  /** Stdio transport drain delay. After `awaitClose` returns, give
+    * the SDK's outbound scheduler (single-thread executor) time to
+    * drain the last JSON-RPC frame before `System.exit(0)`. Belt-
+    * and-suspenders in production; important for the smoke tests
+    * where the subprocess reads stdout before EOF on its stdin.
+    *
+    * Per C5-de-L2: previously a magic `Thread.sleep(500)` inline.
+    */
+  private val StdioDrainDelayMs: Long = 500L
+
   /** CLI shape. Parsed once; pure data (scala-data-drivenrefactor).
     *
     * `modelPath` is `None` when `--model` was absent — the empty
@@ -146,6 +156,12 @@ object Main {
     final case class BadUrl(flag: String, value: String) extends CliError {
       val reason = s"sm8: $flag expects a URL, got '$value'"
     }
+    // Per C5-de-L4: typed error for flag values that must be one of
+    // a known enum (e.g., --mcp-transport must be "stdio" today).
+    // Distinguishes from BadInt (numeric) and BadUrl (URL).
+    final case class BadValue(flag: String, value: String, hint: String) extends CliError {
+      val reason = s"sm8: $flag expects $hint, got '$value'"
+    }
   }
 
   private val Usage: String =
@@ -164,6 +180,12 @@ object Main {
       |                         "stdio" = JSON-RPC over stdin/stdout.
       |                         Mutually exclusive with --mcp-http-port
       |                         (stdio rejected if both set; exit 2).
+      |  --ingress-url <url>   Restate ingress base URL for the 5 MCP tools
+      |                        (default http://127.0.0.1:8080; http or https).
+      |                        Used only when --mcp-transport stdio is set.
+      |  --request-timeout <secs>  Per-tool-call HTTP timeout in SECONDS
+      |                            (default 30). MUST match the unit of
+      |                            sm8-mcp's --request-timeout (also seconds).
       |  --engine <name>     default engine (default: first discovered
       |                      EngineProvider on the classpath)
       |  --connector-url <u> optional connector URL (e.g.
@@ -222,9 +244,19 @@ object Main {
         case "--mcp-http-disallow-delete" :: Nil =>
           loop(Nil, acc.copy(mcpHttpDisallowDelete = true))
         case "--mcp-transport" :: value :: rest =>
-          // The mutex check is performed post-loop (see below) so
-          // the rule is symmetric regardless of argv order.
-          loop(rest, acc.copy(mcpTransport = Some(value)))
+          // Per C5-de-L4: validate the value at parseArgs time so a
+          // bad value (e.g., `--mcp-transport http` when the operator
+          // meant the Streamable HTTP transport via --mcp-http-port)
+          // fails fast instead of running the full boot (model load,
+          // plugin discovery, transport.start, metrics bind) before
+          // the unknown-value error.
+          if (value != "stdio")
+            Left(CliError.BadValue("--mcp-transport", value, "expected 'stdio'"))
+          else {
+            // The mutex check is performed post-loop (see below) so
+            // the rule is symmetric regardless of argv order.
+            loop(rest, acc.copy(mcpTransport = Some(value)))
+          }
         case "--mcp-transport" :: Nil => Left(CliError.MissingValue("--mcp-transport"))
         case "--ingress-url" :: value :: rest =>
           // Validate URL parse eagerly so the operator sees a typed
@@ -261,7 +293,12 @@ object Main {
           }
         case "--ingress-url" :: Nil => Left(CliError.MissingValue("--ingress-url"))
         case "--request-timeout" :: value :: rest =>
-          try loop(rest, acc.copy(requestTimeout = java.time.Duration.ofMillis(value.toLong)))
+          // Per C5-arch-H1: this previously parsed as ofMillis while the
+          // default (line 125) is ofSeconds(30) and sm8-mcp's equivalent
+          // (sm8-mcp/.../Main.scala:117) uses ofSeconds. Operator passing
+          // "--request-timeout 30" would get a 30-MILLISECOND HTTP timeout
+          // and every tool call would fail. Units MUST match the default.
+          try loop(rest, acc.copy(requestTimeout = java.time.Duration.ofSeconds(value.toLong)))
           catch { case _: NumberFormatException => Left(CliError.BadInt("--request-timeout", value)) }
         case "--request-timeout" :: Nil => Left(CliError.MissingValue("--request-timeout"))
         case other :: _ => Left(CliError.UnknownFlag(other))
@@ -402,7 +439,12 @@ object Main {
     * pure + testable, returns an exit code instead of sys.exit). */
   def run(args: List[String]): Int = {
     if (args.contains("--help") || args.contains("-h") || args.isEmpty) {
-      println(Usage); return if (args.isEmpty) 2 else 0
+      // Per C5-arch-L4: --help must go to stderr so launching
+      // `sm8-server --help` under `--mcp-transport stdio` (e.g.
+      // Claude Desktop spawning us to discover the tool list) does
+      // NOT corrupt the stdio JSON-RPC stream. The 4 startup banners
+      // were correctly redirected in PR-264; --help was missed.
+      System.err.println(Usage); return if (args.isEmpty) 2 else 0
     }
     parseArgs(args) match {
       case Left(err) =>
@@ -467,13 +509,44 @@ object Main {
                 // `server.isDefined == false`; EngineProvider.close()
                 // is a no-op default for non-Spark connectors.
                 installShutdownHook(transport, realized)
-                val boundPort = try transport.start(cli.port)
-                catch {
-                  case e: IllegalStateException =>
-                    System.err.println(s"sm8: ${e.getMessage}"); return 3
+                // Per C5-de-M2: when --mcp-transport stdio is set,
+                // the stdio MCP path does NOT need the Restate HTTP
+                // ingress. Tool calls go via a separate plain JDK
+                // HttpClient (HttpIngressClient.Impl). Starting the
+                // HTTP transport here would bind an unnecessary port
+                // (which could conflict with `--port` or `--metrics-port`)
+                // and a port-bind failure would kill the stdio MCP
+                // before it even starts. Skip transport.start when
+                // stdio mode is enabled; the transport still gets
+                // cleaned up via installShutdownHook on JVM exit.
+                // C5-r2-de-L1: `.contains("stdio")` is intentional
+                // rather than `.isDefined` — parseArgs rejects every
+                // other value today, but the explicit comparison
+                // keeps the invariant LOCAL to this check (a future
+                // parseArgs relaxation cannot silently route a new
+                // transport value through the stdio boot path).
+                val stdioMode = cli.mcpTransport.contains("stdio")
+                val boundPort: Int =
+                  if (stdioMode) {
+                    System.err.println(s"sm8: stdio MCP transport mode (model=${model.name}, version=${model.version}); skipping HTTP ingress bind")
+                    // C5-r2-de-L4: no "server listening on port"
+                    // banner in stdio mode — nothing is listening on
+                    // a port; the skip banner above is the truth. The
+                    // smoke asserts on 'sm8:.*listening on port' in
+                    // stderr, which the metrics banner still provides
+                    // (metrics stays bound when metricsPort > 0).
+                    -1
+                  } else {
+                    try transport.start(cli.port)
+                    catch {
+                      case e: IllegalStateException =>
+                        System.err.println(s"sm8: ${e.getMessage}"); return 3
+                    }
+                  }
+                if (!stdioMode) {
+                  System.err.println(s"sm8: server listening on port $boundPort " +
+                    s"(model=${model.name}, version=${model.version})")
                 }
-                System.err.println(s"sm8: server listening on port $boundPort " +
-                  s"(model=${model.name}, version=${model.version})")
                 // Standalone Prometheus metrics HttpServer on a
                 // SEPARATE port (`--metrics-port`, default 9090),
                 // per `docs/adr/0012-b-export-prometheus-metrics.md`.
@@ -577,6 +650,27 @@ object Main {
                         "sm8", "0.1.0-SNAPSHOT", tools
                       )
                       stdio.buildServer()
+                      // Per C5-de-H1: install a JVM shutdown hook that
+                      // wakes the stdio close latch so SIGTERM during
+                      // `awaitClose(timeoutSeconds=30)` exits within
+                      // milliseconds instead of blocking the full 30s.
+                      // CountDownLatch.await is NOT interruptible, and
+                      // without this hook the JVM would wait for the
+                      // timeout before exiting. The HTTP transport path
+                      // got its equivalent hook at line 544-550; this
+                      // mirrors the pattern for the stdio path.
+                      Runtime.getRuntime().addShutdownHook(new Thread(
+                        new Runnable {
+                          def run(): Unit = {
+                            // Wake the latch so awaitClose returns;
+                            // then dispose the SDK executors.
+                            stdio.signalClose()
+                            try stdio.stop()
+                            catch { case NonFatal(_) => () }
+                          }
+                        },
+                        "sm8-stdio-shutdown"
+                      ))
                       // The SDK's inbound loop calls
                       // `session.close()` on stdin EOF, which counts
                       // down our latch. After awaitClose returns we
@@ -589,7 +683,14 @@ object Main {
                       if (!ok) {
                         System.err.println("sm8: MCP stdio transport did not close within 30s; forcing exit")
                       }
-                      Thread.sleep(500)
+                      // Per C5-de-L2: extract magic 500ms to a named
+                      // constant. The intent is to give the SDK's
+                      // outbound scheduler (single-thread executor)
+                      // time to drain the last JSON-RPC frame before
+                      // System.exit(0). Belt-and-suspenders in
+                      // production but important for tests where the
+                      // subprocess reads stdout before EOF.
+                      Thread.sleep(StdioDrainDelayMs)
                       System.exit(0)
                       0
                     } catch {

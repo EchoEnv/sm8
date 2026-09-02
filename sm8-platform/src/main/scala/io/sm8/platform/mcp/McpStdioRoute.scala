@@ -149,8 +149,25 @@ final class McpStdioRoute private (
  *
  * Returns the McpSyncServer so the caller can add it to its
  * shutdown hook chain.
+ *
+ * Per C5-r2-de-M1: the JVM-singleton guard is acquired by `apply`,
+ * but the failure-prone work (SDK builder chain, transport ctor)
+ * happens HERE, after apply has already returned. If buildServer
+ * throws, the guard would leak at 1 and block all future
+ * constructions in the JVM. On NonFatal we release the guard before
+ * rethrowing so the factory invariant holds end-to-end
+ * (apply + buildServer) as a single acquire/release unit.
  */
  def buildServer(): McpSyncServer = {
+ try buildServerInner()
+ catch {
+ case NonFatal(e) =>
+ McpStdioRoute.INSTANCE_COUNT.set(0)
+ throw e
+ }
+ }
+
+ private def buildServerInner(): McpSyncServer = {
  JsonMapper = new JacksonMcpJsonMapper(
  tools.jackson.databind.json.JsonMapper.builder().build()
 )
@@ -238,11 +255,18 @@ final class McpStdioRoute private (
  * (pipe scripts, hosts that close stdin immediately after the
  * last request) would lose the final responses. Delegating the
  * real session's `handle` (via the factory wrapper) to run
- * synchronously makes sendMessage run on the inbound loop
- * thread itself: every response is on the wire before the next
- * read, so EOF can never strand a frame. The delegate's
- * outbound sink receives nothing; its isClosing race becomes
- * irrelevant.
+ * synchronously makes the write happen INSIDE the caller's
+ * `sendMessage` invocation, before its Mono is even returned:
+ * every response is on the wire before the next step of the
+ * request-handling chain, so EOF can never strand a frame.
+ * Per C5-r2-arch-001 (correcting the earlier claim): the caller
+ * thread is the SDK session's request-handling thread, NOT the
+ * inbound loop thread — the inbound loop only reads. The SDK's
+ * outbound scheduler is bypassed entirely because our sendMessage
+ * returns without enqueueing (the delegate's outbound sink
+ * receives nothing; its isClosing race becomes irrelevant). The
+ * `Out.synchronized` block serializes writes regardless of which
+ * caller thread performs them.
  *
  * `handle` therefore wraps `delegate.handle(msg)` in
  * `.then()` AFTER writing — the SDK's sendMessage is a no-op
@@ -304,11 +328,19 @@ final class McpStdioRoute private (
     * already subscribes the SDK's Mono. However it does NOT wait
     * for the outbound scheduler to drain its Reactor thread; we
     * additionally subscribe the underlying transport's
-    * `closeGracefully()` Mono (which completes after the outbound
-    * loop's doOnComplete fires `outboundScheduler.dispose()` per
-    * mcp-core 2.0.1 StdioServerTransportProvider.java:316) and
-    * `.block(2s)` it. Without this, 2 of 3 McpStdioRouteSpec tests
-    * leak non-daemon threads across JVMs (PR-265 HIGH-3 fix). */
+    * `closeGracefully()` Mono and `.block(2s)` it. Without this, 2 of
+    * 3 McpStdioRouteSpec tests leak non-daemon threads across JVMs
+    * (PR-265 HIGH-3 fix).
+    *
+    * Per C5-de-H3 (downgraded to MEDIUM — comment-only): the 2s
+    * `.block(2s)` is misleading because `Mono.fromRunnable` fires
+    * SYNCHRONOUSLY on subscribe (it just sets `isClosing=true` +
+    * `inboundSink.tryEmitComplete()`). The actual executor disposal
+    * happens via the SDK's reactor chain: inboundSink.tryEmitComplete
+    * → doOnTerminate fires outboundSink.tryEmitComplete + disposes
+    * inboundScheduler → outboundFlux completes → its doOnComplete
+    * fires outboundScheduler.dispose(). We rely on that chain. The
+    * 2s wait is belt-and-suspenders in case the chain is delayed. */
  def stop(): Unit = {
  if (syncServer != null) {
  try syncServer.closeGracefully()
@@ -324,6 +356,27 @@ final class McpStdioRoute private (
  // PR-265 de-L6: release the JVM-singleton guard so a subsequent
  // instance can be constructed (tests + repl-friendly).
  McpStdioRoute.INSTANCE_COUNT.set(0)
+ }
+
+ /** Signal the close latch without disposing the server. Used by the
+ * JVM shutdown hook in `sm8-server/Main.scala` so SIGTERM during
+ * `awaitClose(...)` wakes the main thread within milliseconds
+ * instead of forcing the operator to wait for the full
+ * `timeoutSeconds` window.
+ *
+ * Per C5-de-H1: before this method existed, SIGTERM during
+ * `stdio.awaitClose(timeoutSeconds=30)` parked the main thread on
+ * `CountDownLatch.await` for the full 30s because CountDownLatch.await
+ * is not interruptible AND the shutdown hook had no path to countDown
+ * the latch. The HTTP transport path got its own hook at
+ * Main.scala:544-550; this method is the equivalent for stdio.
+ *
+ * After signaling, the operator is responsible for calling `stop()`
+ * (or letting the JVM exit) to dispose the SDK executors. The
+ * shutdown hook itself can call `stop()` because `stop()` is idempotent.
+ */
+ def signalClose(): Unit = {
+ closeLatch.countDown()
  }
 }
 
@@ -345,6 +398,13 @@ object McpStdioRoute {
  * `Sm8ToolHandlers` factory in sm8-platform (moved from sm8-mcp
  * by a prior PR cleanup). The factory enforces the JVM-singleton
  * invariant (PR-265 de-L6).
+ *
+ * Per C5-de-M3: the constructor previously did not decrement
+ * INSTANCE_COUNT if `new McpStdioRoute(...)` threw (e.g., schema
+ * validation failure, jackson mapper init failure). The counter
+ * would remain at 1 forever, blocking all future McpStdioRoute
+ * constructions in the JVM. Wrapped in try/catch to release the
+ * guard on construction failure.
  */
  def apply(
  serverName: String,
@@ -357,6 +417,12 @@ object McpStdioRoute {
  "io.sm8.platform.mcp.McpStdioRoute: only one instance per JVM is allowed (stdio transport reads System.in, a single fd-0; concurrent instances would interleave reads and corrupt the JSON-RPC stream). Call stop() on the previous instance before constructing a new one."
  )
  }
+ try {
  new McpStdioRoute(serverName, serverVersion, toolSpecs, sessionTimeoutSeconds)
+ } catch {
+ case NonFatal(e) =>
+ INSTANCE_COUNT.set(0)
+ throw e
+ }
  }
 }

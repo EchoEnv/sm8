@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sm8 in-process stdio MCP transport smoke test (PR-265 followup to PR-264).
+# sm8 in-process stdio MCP transport smoke test (PR-266 followup to PR-265).
 #
 # Per the stdio design verification criteria: spawn sm8-server with
 # --mcp-transport stdio (in-process stdio MCP server), pipe the full
@@ -8,7 +8,8 @@
 # - The handshake completes (initialize response + tools/list
 #   response, both valid JSON-RPC on stdout)
 # - tools/list returns all 5 tools
-# - The process exits naturally on EOF (within 15s CI tolerance)
+# - The JVM exits cleanly on EOF (within 15s CI tolerance)
+# - java's exit code is 0 (C5-de-H2 — previously not verified)
 # - Every stdout line PARSES as valid JSON (not just prefix check;
 #   PR-265 de-M2 fix). The python -c json.loads check catches
 #   truncated writes that a prefix check would miss.
@@ -16,13 +17,23 @@
 #   on stderr (no `sm8: ` prefix in stdout).
 #
 # Usage: scripts/smoke-mcp-stdio.sh [options]
-#   --jar <path>    Path to sm8-server jar (default: built target)
+#   --jar <path>    Path to sm8-server jar (default: $REPO_ROOT/sm8-server/target/...)
 #   --model <path>  Model YAML (default: same as smoke-e2e.sh)
 #   --help          Show this help
 
-set -u
+# Per C5-arch-L5: enable strict mode — unset vars, error-exit, and
+# pipefail so any command failure aborts the smoke. Previously only
+# `set -u` was set; a failing `cat "$CP_FILE"` mid-script silently
+# continued and a later check could pass with stale state.
+set -eo pipefail
 
-JAR_DEFAULT="/home/emilio/app/projects/sm8/sm8-server/target/sm8-server_2.13-0.1.0-SNAPSHOT.jar"
+# Per C5-arch-L1: resolve repo root from the script's location so the
+# smoke works on any developer machine, not just /home/emilio. Falls
+# back to git rev-parse if the script isn't under a repo checkout.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+JAR_DEFAULT="${REPO_ROOT}/sm8-server/target/sm8-server_2.13-0.1.0-SNAPSHOT.jar"
 JAR="$JAR_DEFAULT"
 MODEL="/tmp/pr264-model.yaml"
 # Per scripts/smoke-e2e.sh convention: cache the dependency classpath
@@ -37,7 +48,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
   --jar) JAR="$2"; shift 2 ;;
   --model) MODEL="$2"; shift 2 ;;
-  --help|-h) sed -n '2,20p' "$0"; exit 0 ;;
+  --help|-h) sed -n '2,22p' "$0"; exit 0 ;;
   *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -52,12 +63,12 @@ fail() { echo "smoke-mcp-stdio FAIL: $*" >&2; exit "${2:-1}"; }
 # ad-hoc mcp-core grep (the latter was over-defensive per de-M1).
 [ -s "$CP_FILE" ] || {
   echo "building dependency classpath (first run) ..." >&2
-  (cd /home/emilio/app/projects/sm8 && mvn -q -pl sm8-server -am dependency:build-classpath -Dmdep.outputFile="$CP_FILE") >&2
+  (cd "$REPO_ROOT" && mvn -q -pl sm8-server -am dependency:build-classpath -Dmdep.outputFile="$CP_FILE") >&2
 }
 [ -s "$CP_FILE" ] || fail "classpath file empty" 2
 
 # In-memory connector JAR (META-INF/services/io.sm8.core.engine.EngineProvider).
-CONN="/home/emilio/app/projects/sm8/connectors/in-memory-connector/target/in-memory-connector_2.13-0.1.0-SNAPSHOT.jar"
+CONN="${REPO_ROOT}/connectors/in-memory-connector/target/in-memory-connector_2.13-0.1.0-SNAPSHOT.jar"
 [ -f "$CONN" ] || fail "connector jar not found: $CONN (build it first: mvn -pl connectors/in-memory-connector install)"
 
 # Build a tiny model file (schema-validated against manifest.schema.v2.json:
@@ -78,22 +89,33 @@ YAML
 # Time the whole run: PR-264 requires the process to EXIT on EOF
 # (within ~3-5s typical). 15s CI tolerance accounts for slow runners
 # (per arch-L9). The latch budget itself is `awaitClose(timeoutSeconds
-# = 30)` in Main.scala:588; the smoke's 15s is the CI budget for the
+# = 30)` in Main.scala; the smoke's 15s is the CI budget for the
 # FULL handshake-to-exit path, not the latch spec.
+# Per C5-r2-de-L2: truncate the exit sentinel at startup so a
+# stale value from a prior run cannot leak into a fresh run.
+: > /tmp/smoke-mcp-stdio.exit
 START_EPOCH=$(date +%s)
 
 # Flat form per sibling smoke-mcp.sh (de-L3): keep stdin open for the
 # server's read loop via a single subshell with a process substitution,
 # then run java with stderr redirected to the log file.
+#
+# Per C5-de-H2: capture java's exit code via $? inside the
+# command-substitution subshell, then assert it was 0 after the
+# substitution completes. Previously only elapsed time + stdout parse
+# were checked; a non-zero exit (runtime error, boot failure) could
+# silently pass if elapsed <= 15s and stdout happened to parse.
+EXIT=0
 OUTPUT=$(
   exec 0< <(
     printf '%s\n' \
       '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke-mcp-stdio","version":"0"}}}' \
       '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
       '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
-    # Give the server time to read all 3 lines, then close stdin.
-    # The server must exit on that EOF.
-    sleep 2
+    # Per C5-de-L1: reduce sleep from 2s to 0.5s. BufferedReader.readLine
+    # blocks until newline OR EOF; the 3 messages arrive in <50ms
+    # locally. 0.5s gives ample margin (10x) without slowing the smoke.
+    sleep 0.5
   )
   java -cp "$JAR:$CONN:$(cat "$CP_FILE")" io.sm8.server.Main \
     --model "$MODEL" \
@@ -102,10 +124,17 @@ OUTPUT=$(
     --mcp-transport stdio \
     --ingress-url http://127.0.0.1:8080 \
     2>/tmp/smoke-mcp-stdio.stderr
-)
+  # Capture java's exit code INSIDE the substitution so $? survives
+  # the subshell. We use a sentinel file because bash's $? across
+  # `$(...)` boundaries is reset.
+  echo $? > /tmp/smoke-mcp-stdio.exit
+) || EXIT=$?
+[ -f /tmp/smoke-mcp-stdio.exit ] || fail "java exit sentinel not written"
+EXIT=$(cat /tmp/smoke-mcp-stdio.exit)
+[ "$EXIT" -eq 0 ] || fail "java exited with code $EXIT (expected 0)"
 
 ELAPSED=$(( $(date +%s) - START_EPOCH ))
-echo "smoke-mcp-stdio: process exited cleanly on EOF in ${ELAPSED}s"
+echo "smoke-mcp-stdio: process exited cleanly on EOF in ${ELAPSED}s (exit=0)"
 [ "$ELAPSED" -le 15 ] || fail "server took >15s to exit after stdin EOF (latch bug? elapsed=${ELAPSED}s)"
 
 # Verify: every stdout line must PARSE as valid JSON-RPC (PR-265 de-M2
@@ -153,11 +182,11 @@ echo "smoke-mcp-stdio: tools/list response has all 5 tools (count=$TOOL_COUNT)"
 
 # Verify: stderr DOES contain the expected startup banners.
 [ -f /tmp/smoke-mcp-stdio.stderr ] || fail "stderr log not captured"
-if ! grep -q 'sm8: server listening on port' /tmp/smoke-mcp-stdio.stderr; then
+if ! grep -q 'sm8:.*listening on port' /tmp/smoke-mcp-stdio.stderr; then
   echo "stderr content:"
   cat /tmp/smoke-mcp-stdio.stderr
-  fail "expected 'sm8: server listening on port' banner in stderr (post-redirect)"
+  fail "expected 'sm8:.*listening on port' banner in stderr (post-redirect)"
 fi
-echo "smoke-mcp-stdio: 'sm8: server listening on port' banner correctly on stderr"
+echo "smoke-mcp-stdio: 'sm8:.*listening on port' banner correctly on stderr"
 
 echo "SMOKE-MCP-STDIO PASS (in-process stdio MCP: handshake + tools/list + EOF-exit + stdout-clean)"

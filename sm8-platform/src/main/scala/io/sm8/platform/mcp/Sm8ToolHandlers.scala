@@ -110,16 +110,27 @@ object Sm8ToolHandlers {
  .inputSchema(McpSchema.JsonSchema.builder()
  .`type`("object")
  .properties(java.util.Map.of(
- "modelName", McpSchema.JsonSchema.builder().`type`("string").build(),
- "measures", new java.util.LinkedHashMap[String, Object]() {{
- put("type", "array"); put("items", new java.util.LinkedHashMap[String, Object]() {{ put("type", "string"); }});
-}},
- "dimensions", new java.util.LinkedHashMap[String, Object]() {{
- put("type", "array"); put("items", new java.util.LinkedHashMap[String, Object]() {{ put("type", "string"); }});
-}},
- "where", McpSchema.JsonSchema.builder().`type`("string").build(),
- "engine", McpSchema.JsonSchema.builder().`type`("string").build()
-))
+   "modelName", McpSchema.JsonSchema.builder().`type`("string").build(),
+   // Per C5-arch-M3 (REVISED after javap on mcp-core-2.0.1.jar):
+   // `McpSchema.JsonSchema.Builder` does NOT expose a typed
+   // `.items(...)` method. So nested schemas (e.g., for `array`
+   // types) must be expressed as raw `LinkedHashMap<String, Object>`.
+   // The MCP host's JSON-Schema parser sees the resulting map and
+   // treats it as a regular schema. The "inconsistency" between
+   // typed-builder properties and raw-map properties is forced by
+   // the SDK API itself, not by us. Tightening to a typed
+   // array/items builder requires an SDK upgrade (or contribution).
+   "measures", new java.util.LinkedHashMap[String, Object]() {{
+     put("type", "array");
+     put("items", new java.util.LinkedHashMap[String, Object]() {{ put("type", "string"); }});
+   }},
+   "dimensions", new java.util.LinkedHashMap[String, Object]() {{
+     put("type", "array");
+     put("items", new java.util.LinkedHashMap[String, Object]() {{ put("type", "string"); }});
+   }},
+   "where", McpSchema.JsonSchema.builder().`type`("string").build(),
+   "engine", McpSchema.JsonSchema.builder().`type`("string").build()
+ ))
  .required(java.util.List.of("modelName"))
  .build())
  .build()
@@ -289,8 +300,14 @@ object Sm8ToolHandlers {
  }
 
  /** Copy a string-list arg from `args` to `dst` under `key`.
- * Accepts a Java `List<Object>` or a Scala `List[String]`.
- * No-op if missing. */
+   * Accepts a `java.util.List<Object>` (the type produced by Jackson 3
+   * deserialization of a JSON array on the MCP wire). Per C5-arch-M2:
+   * a Scala `scala.collection.immutable.List[String]` is NOT a
+   * `java.util.List` (Scala `Seq` does not extend `java.util.List`),
+   * so the previous docstring claim was misleading. The wire path is
+   * always Jackson-deserialized into Java collections so this doesn't
+   * manifest as a runtime bug today, but the docstring was wrong.
+   * No-op if missing. */
  private def copyList(
  args: java.util.Map[String, Object],
  key: String,

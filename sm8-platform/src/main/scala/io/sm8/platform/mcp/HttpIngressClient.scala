@@ -64,9 +64,30 @@ object HttpIngressClient {
  .build()
 
  /** Base URL of the Restate ingress. Includes the scheme +
- * host:port; per-tool methods append the path. */
- private val baseUrl: String =
- if (ingressUrl.endsWith("/")) ingressUrl.dropRight(1) else ingressUrl
+ * host:port; per-tool methods append the path.
+ *
+ * Per C5-r2-de-L3: the reconstruction DROPS any userinfo
+ * component (http://user:pass@host -> http://host). The Restate
+ * ingress does not use basic auth, so this is safe; passing
+ * credentials in the URL is intentionally unsupported.
+ *
+ * Per C5-arch-L3: strip the path component as well as trailing slash
+ * so `--ingress-url http://host:8080/api` doesn't produce requests
+ * to `/api/QueryService/runQuery`. The CLI surface is documented
+ * as 'Restate ingress base URL' but tools append their own paths
+ * (`/QueryService/runQuery`, etc.); the operator must be able to
+ * pass either a host root or a host:port without path-stripping
+ * surprises.
+ */
+ // private[mcp] (not private): exposed to the package for the
+ // C5-r2-arch-002 regression test (HttpIngressClientSpec).
+ private[mcp] val baseUrl: String = {
+ val parsed = new java.net.URI(ingressUrl)
+ val hostAndPort =
+   if (parsed.getPort > 0) s"${parsed.getScheme}://${parsed.getHost}:${parsed.getPort}"
+   else s"${parsed.getScheme}://${parsed.getHost}"
+ hostAndPort
+ }
 
  /** POST `jsonBody` to `path` (e.g. `/QueryService/runQuery`).
  * Returns the parsed JSON body and HTTP status. Throws on

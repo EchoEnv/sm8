@@ -777,6 +777,53 @@ class MainSpec extends AnyFunSuite with Matchers {
     r shouldBe Left(Main.CliError.BadUrl("--ingress-url", ""))
   }
 
+  // Per C5-arch-H1: previously --request-timeout parsed as MILLIS while
+  // the default is SECONDS (Duration.ofSeconds(30) at line 125). An
+  // operator passing --request-timeout 30 would get a 30-MILLISECOND
+  // timeout and every tool call would fail. Fixed to ofSeconds; this
+  // test pins the new contract.
+  test("parseArgs: --request-timeout 30 parses as SECONDS (not millis), matching the 30s default") {
+    val r = Main.parseArgs(List("--model", "m.yaml", "--request-timeout", "30"))
+    r match {
+      case Right(cli) =>
+        cli.requestTimeout shouldBe java.time.Duration.ofSeconds(30)
+      case Left(err) =>
+        fail(s"expected Right, got Left($err)")
+    }
+  }
+
+  test("parseArgs: --request-timeout 1 yields a 1-second timeout (smoke-friendly)") {
+    val r = Main.parseArgs(List("--model", "m.yaml", "--request-timeout", "1"))
+    r match {
+      case Right(cli) =>
+        cli.requestTimeout shouldBe java.time.Duration.ofSeconds(1)
+      case Left(err) =>
+        fail(s"expected Right, got Left($err)")
+    }
+  }
+
+  // Per C5-de-L4: --mcp-transport must be validated at parseArgs
+  // time. Previously any string was accepted and the error came at
+  // boot, wasting 1-2s on startup. Now an unknown value fails
+  // immediately with CliError.BadValue.
+  test("parseArgs: --mcp-transport with unknown value 'http' fails fast with BadValue (not runtime)") {
+    val r = Main.parseArgs(List("--model", "m.yaml", "--mcp-transport", "http"))
+    r shouldBe Left(Main.CliError.BadValue("--mcp-transport", "http", "expected 'stdio'"))
+  }
+
+  test("parseArgs: --mcp-transport with unknown value 'sse' fails fast with BadValue") {
+    val r = Main.parseArgs(List("--model", "m.yaml", "--mcp-transport", "sse"))
+    r shouldBe Left(Main.CliError.BadValue("--mcp-transport", "sse", "expected 'stdio'"))
+  }
+
+  test("parseArgs: --mcp-transport stdio is accepted (positive case)") {
+    val r = Main.parseArgs(List("--model", "m.yaml", "--mcp-transport", "stdio"))
+    r match {
+      case Right(cli) => cli.mcpTransport shouldBe Some("stdio")
+      case Left(err) => fail(s"expected Right, got Left($err)")
+    }
+  }
+
   test("[C2] wire: sm8-server no longer imports io.sm8.core.EngineImpl (layer discipline)") {
     // Per audit [C2]: the layer-boundary leak was the direct
     // `new io.sm8.core.EngineImpl()` in `Main.run()`. After the fix,
