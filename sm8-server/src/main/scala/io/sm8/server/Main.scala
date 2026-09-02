@@ -435,6 +435,66 @@ object Main {
     }
   }
 
+  /**
+   * Probe the Restate ingress URL with a short-timeout HEAD request
+   * and print a warning to stderr if it is not reachable. Without
+   * this, an operator who misconfigures `--ingress-url` would only
+   * learn via silent `isError=true` on every `tools/call` — a
+   * failure mode that can take hours to diagnose.
+   *
+   * The probe is best-effort: a failure does NOT abort startup,
+   * because in some deployment shapes the ingress is co-located with
+   * sm8-server and may bind a fraction of a second later.
+   *
+   * Note on response classification: the Restate SDK 2.1.1 ingress
+   * returns 405 (Method Not Allowed) for any non-POST method
+   * (verified via curl on a real Restate deployment). So any HTTP
+   * response at all — 200, 404, 405, 500 — is treated as "server
+   * accepted the TCP connection and an HTTP-speaking process
+   * answered". We warn ONLY on connect-level failures (refused,
+   * DNS, timeout). This means the probe does NOT detect "Restate up
+   * but misrouted", but it also does NOT false-positive on every
+   * healthy boot (which a stricter "warn on 4xx/5xx" rule would do).
+   * The trade-off is documented in the ADR §Deployment shape section.
+   *
+   * @param ingressUrl the URL to probe; the path is irrelevant — we
+   *                   hit the host root
+   */
+  // Package-private (private[server]) so MainSpec can exercise the
+  // probe directly without spawning a subprocess (per pr267-arch-002:
+  // unit-test coverage of the warning paths). Callers within the same
+  // file (the stdio boot path) invoke it unchanged.
+  private[server] def probeIngressOrWarn(ingressUrl: String): Unit = {
+    val probeTimeout = java.time.Duration.ofSeconds(3)
+    val probeClient = java.net.http.HttpClient.newBuilder()
+      .connectTimeout(probeTimeout)
+      .build()
+    val probeReq = java.net.http.HttpRequest.newBuilder(
+      java.net.URI.create(ingressUrl)
+    )
+      .timeout(probeTimeout)
+      .method("HEAD", java.net.http.HttpRequest.BodyPublishers.noBody())
+      .build()
+    try {
+      val resp = probeClient.send(probeReq, java.net.http.HttpResponse.BodyHandlers.discarding())
+      // The Restate SDK 2.1.1 ingress returns 404 for a bare HEAD /
+      // (the EndpointRequestHandler only matches `/invoke/Service/Handler`
+      // or `/discover` or `/health`). So a 4xx response is the EXPECTED
+      // status from a healthy ingress and does NOT warrant a warning.
+      // We warn only on 5xx (server unhealthy). 2xx/3xx/4xx are treated
+      // as "reachable" with no alarm. Per pr267-r2-de-001 — empirically
+      // verified via `curl -X HEAD http://127.0.0.1:18111/` returning
+      // HTTP/1.1 404 from a real Restate ingress.
+      val status = resp.statusCode()
+      if (status >= 500) {
+        System.err.println(s"sm8: WARNING — ingress reachable but returned $status: $ingressUrl (tools/call may fail)")
+      }
+    } catch {
+      case NonFatal(e) =>
+        System.err.println(s"sm8: WARNING — ingress unreachable: $ingressUrl (${e.getClass.getSimpleName}: ${e.getMessage}); tools/call will fail until the ingress is up")
+    }
+  }
+
   /** Entry point. `main` delegates here (pattern from sm8-cli Main:
     * pure + testable, returns an exit code instead of sys.exit). */
   def run(args: List[String]): Int = {
@@ -645,6 +705,14 @@ object Main {
                       val client = new io.sm8.platform.mcp.HttpIngressClient.Impl(
                         cli.ingressUrl, cli.requestTimeout
                       )
+                      // Probe the ingress with a short-timeout HEAD so
+                      // operators learn about misconfiguration at boot
+                      // rather than on the first tools/call. Failures
+                      // are a warning, not a fatal — stdio MCP itself
+                      // works; the ingress may be co-located with
+                      // sm8-server and start a beat later in some
+                      // deployment shapes.
+                      probeIngressOrWarn(cli.ingressUrl)
                       val tools = io.sm8.platform.mcp.Sm8ToolHandlers.build(client)
                       val stdio = io.sm8.platform.mcp.McpStdioRoute(
                         "sm8", "0.1.0-SNAPSHOT", tools

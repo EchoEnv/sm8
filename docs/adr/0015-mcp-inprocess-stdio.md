@@ -97,8 +97,28 @@ Total: ~150 LOC new + ~10 LOC refactor.
 5. **Mutual exclusion**: `--mcp-transport stdio` + `--mcp-http-port N` together → typed CLI error (one of the two — same pattern as PR-263's stdio-vs-http mutual exclusion note in ADR-014 §CLI surface).
 6. **Layer discipline**: `McpStdioRoute` lives in sm8-platform, `Sm8ToolHandlers` is refactored to expose a public `tools: Seq[ToolSpec]` list. sm8-server has no new transport code beyond the flag + a 3-line startup of the route.
 
+## Deployment shape: stdio mode skips the HTTP ingress bind
+
+When `--mcp-transport stdio` is set, sm8-server does **not** bind the Restate HTTP ingress on `--port`. The stdio MCP transport uses `HttpIngressClient` internally (a plain JDK `HttpClient`) to forward the 5 tool calls to a separate ingress, but does not start an embedded Restate server. The reasoning:
+
+- Stdio MCP is targeted at local-host subprocess clients (Claude Desktop, editors, CLI). The MCP host owns the lifecycle of the sm8-server process; the host also owns its stdin/stdout. Binding an HTTP ingress on a port adds an attack surface and a port-collision failure mode for no benefit.
+- The tool calls go to a separate ingress that the operator (or the orchestrator) starts intentionally. The default `--ingress-url` is `http://127.0.0.1:8080` — pointing at a co-located sm8-server started **without** `--mcp-transport stdio`, in the same Docker network, or via a sidecar.
+- On startup, sm8-server prints a single banner that names the chosen transport and the skipped bind: `sm8: stdio MCP transport mode (model=..., version=...); skipping HTTP ingress bind`. A startup probe `HEAD`s `--ingress-url` with a 3 s timeout; any HTTP response (including 405 — Restate SDK 2.1.1 returns 405 for non-POST methods) is treated as "the server is up and answering". Only connect-level failures (refused, DNS error, timeout) produce a stderr WARNING. This avoids a false-positive WARNING on every healthy boot (Restate's natural reply to HEAD is 405, not 200). The probe does NOT distinguish "Restate up but misrouted" from "Restate healthy" — a v2 probe that POSTs to a known-safe service endpoint could close that gap at the cost of one inbound request per boot.
+
+The startup probe fires only when `--mcp-transport stdio` is set. In `--mcp-http-port` (Streamable HTTP) mode, `--ingress-url` typically points at the same process's `--port` (loopback), so misconfiguration is less likely; the v2 enhancement could add a probe to that path too.
+
+The probe may block startup for up to 3 seconds when the ingress is unreachable (firewall DROP / TCP connect timeout). Connection refusals on localhost fail near-instantly. This is intentional — co-located ingress containers may bind a fraction of a second after the stdio process — but operators should expect the latency in shape #2 cold-start scenarios. A `--skip-ingress-probe` flag is a v2 enhancement for operators who want fast startup at the cost of no startup misconfiguration detection.
+
+**Two deployment shapes are valid:**
+
+1. **In-process everything (single binary, dual boot):** start one sm8-server with `--mcp-transport stdio` and a separate sm8-server **without** that flag (default mode binds `--port 8080`). The stdio process reaches the ingress over loopback.
+2. **Two-container split:** run a container that hosts only the Restate ingress (sm8-server with no MCP flag) and a separate container that exposes stdio (sm8-server with `--mcp-transport stdio --ingress-url http://ingress:8080`). The MCP side has no listening ports.
+
+Operators with existing scripts that relied on stdio mode binding `--port` must adjust to deployment shape (1) or (2). The startup banner makes the new behavior obvious.
+
 ## Open questions / risks
 
+- **Startup latency when ingress is unreachable**: the 3-second probe timeout in deployment shape §1 (above) means an sm8-server started with `--mcp-transport stdio --ingress-url http://unreachable:8080` blocks for 3 s before the stdio MCP starts accepting JSON-RPC on stdin. In a healthy deployment the ingress is already up and the probe completes in milliseconds; in two-container split deployments where the sidecar may start a beat later, the probe provides visibility into the race. A future revision could add a `--skip-ingress-probe` flag for operators who prioritize fast cold-start over misconfiguration detection; today's default is the safer option.
 - **slf4j/log4j startup noise**: the implementation PR must `mvn -pl sm8-server dependency:tree` to identify the real logging provider (log4j-api 2.20.0 is in the parent pom's dependencyManagement, but no `log4j-core` is declared — so no provider binds by default; slf4j with no binding is a no-op). If a future commit adds `log4j-core` (or any other provider that defaults to stdout), the smoke's stricter assertion (every stdout line parses as JSON-RPC — see criterion #1 above) catches the regression. The smoke therefore doesn't NEED to verify the current state (since no provider binds); it only needs to PROTECT against future regressions. The "Restate SDK 2.1.1: slf4j default is stderr (verified)" claim in §Sources is misleading — it should be "no slf4j binding is currently declared, so logs are silently discarded; if one is added, default must be stderr".
 - **stdio stdin EOF**: the SDK's `StdioServerTransportProvider` exits cleanly on stdin EOF. The JVM hook calls `closeGracefully()` to drain pending responses before exit. Tested by smoke (close stdin → assert process exits with code 0 within 2s).
 - **In-process + slf4j binding**: when running as a Claude Desktop subprocess, the parent's stdout is fully owned by us. We DO NOT redirect slf4j globally (only the 4 startup banners) — that's a v2 concern if any library logs to stdout.
