@@ -1,5 +1,5 @@
 /*
- * SM8 Platform — Main (Step 11 production entry point, per ADR-006).
+ * SM8 Platform — Main (Step 11 production entry point, per the deployment-shape design).
  *
  * The runnable process that wires the SM8 MCP server:
  *
@@ -9,7 +9,7 @@
  *   3. discover EngineProviders via Java ServiceLoader
  *      (`META-INF/services/io.sm8.core.engine.EngineProvider`)
  *   4. build EngineRegistry (fail-loud at boot per design §4.1)
- *   5. install the JVM shutdown hook (PR-215, audit 2026-08-30
+ *   5. install the JVM shutdown hook (a prior PR, audit 2026-08-30
  *      L4: BEFORE transport.start so SIGTERM during start() or
  *      before this point still triggers cleanup)
  *   6. start HttpTransport (binds the actual socket)
@@ -35,7 +35,7 @@
  *
  * - Shutdown hook: `transport.stop()` on JVM exit (idempotent —
  *   HttpTransport.stop() is a no-op when never started OR already
- *   stopped). Registered BEFORE `transport.start()` (PR-215) so
+ *   stopped). Registered BEFORE `transport.start()` (a prior PR) so
  *   SIGTERM during start() or before this point still triggers
  *   cleanup; otherwise the socket stays bound (TIME_WAIT ~60s) and
  *   the SparkSession is orphaned.
@@ -75,6 +75,8 @@ import io.sm8.platform.query.{HttpTransport, MetricsHttpRoute, PlatformModelLoad
 
 import java.nio.file.{Path, Paths}
 import java.util.ServiceLoader
+import scala.jdk.CollectionConverters._
+import scala.util.control.NonFatal
 
 /**
  * Production entry point for the SM8 MCP server.
@@ -111,9 +113,16 @@ object Main {
       metricsPort:   Int    = 9090,
       engine:        Option[String]        = None,
       connectorUrl:  Option[String]        = None,
-      mcpHttpPort:   Int                   = 0,  // 0 = disabled; set to enable per ADR-014
+      mcpHttpPort:   Int                   = 0,  // 0 = disabled; set to enable per the design
       mcpHttpEndpoint: String              = "/mcp",
-      mcpHttpDisallowDelete: Boolean       = false
+      mcpHttpDisallowDelete: Boolean       = false,
+      mcpTransport:  Option[String]        = None, // None = disabled; "stdio" = in-process stdio MCP per the stdio design
+      // For --mcp-transport stdio: where to forward the 5 tool calls.
+      // Default points at a local sm8-server ingress at 8080 (the
+      // standard deployment shape; sm8-stdio + sm8-server may share
+      // the same process or be on different hosts).
+      ingressUrl:     String               = "http://127.0.0.1:8080",
+      requestTimeout: java.time.Duration    = java.time.Duration.ofSeconds(30)
   )
 
   /** Typed CLI parse failure — `reason` goes to stderr. */
@@ -134,7 +143,7 @@ object Main {
   }
 
   private val Usage: String =
-    """sm8-server — SM8 MCP server (Step 11, ADR-006)
+    """sm8-server — SM8 MCP server (Step 11, the design)
       |
       |Usage: sm8-server --model <yaml-path> [--port <n>] [--engine <name>]
       |
@@ -142,9 +151,13 @@ object Main {
       |  --port <n>       TCP port (default 8080; 0 = ephemeral)
       |  --metrics-port <n>  TCP port for Prometheus /metrics (default 9090)
       |  --mcp-http-port <n>   TCP port for Streamable HTTP MCP transport
-      |                         (default 0 = disabled; per ADR-014 PR-263)
+      |                         (default 0 = disabled; per the HTTP-MCP design a prior PR)
       |  --mcp-http-endpoint <path>  MCP endpoint path (default /mcp)
       |  --mcp-http-disallow-delete  DELETE /mcp returns 405 instead of 200
+      |  --mcp-transport <mode>  in-process MCP transport (per the stdio design):
+      |                         "stdio" = JSON-RPC over stdin/stdout.
+      |                         Mutually exclusive with --mcp-http-port
+      |                         (stdio rejected if both set; exit 2).
       |  --engine <name>     default engine (default: first discovered
       |                      EngineProvider on the classpath)
       |  --connector-url <u> optional connector URL (e.g.
@@ -202,6 +215,22 @@ object Main {
         case "--mcp-http-endpoint" :: Nil => Left(CliError.MissingValue("--mcp-http-endpoint"))
         case "--mcp-http-disallow-delete" :: Nil =>
           loop(Nil, acc.copy(mcpHttpDisallowDelete = true))
+        case "--mcp-transport" :: value :: rest =>
+          // Per the stdio design §Mutex precedence: when --mcp-transport is
+          // set AND --mcp-http-port > 0, the stdio path is REJECTED
+          // (CliError.UnknownFlag("--mcp-transport"), exit 2). The
+          // stdio path is the v1 priority per the user's directive;
+          // the HTTP path loss is the natural default in a conflict.
+          if (acc.mcpHttpPort > 0) Left(CliError.UnknownFlag("--mcp-transport"))
+          else loop(rest, acc.copy(mcpTransport = Some(value)))
+        case "--mcp-transport" :: Nil => Left(CliError.MissingValue("--mcp-transport"))
+        case "--ingress-url" :: value :: rest =>
+          loop(rest, acc.copy(ingressUrl = value))
+        case "--ingress-url" :: Nil => Left(CliError.MissingValue("--ingress-url"))
+        case "--request-timeout" :: value :: rest =>
+          try loop(rest, acc.copy(requestTimeout = java.time.Duration.ofMillis(value.toLong)))
+          catch { case _: NumberFormatException => Left(CliError.BadInt("--request-timeout", value)) }
+        case "--request-timeout" :: Nil => Left(CliError.MissingValue("--request-timeout"))
         case other :: _ => Left(CliError.UnknownFlag(other))
       }
     loop(args, CliArgs(modelPath = None))
@@ -224,7 +253,7 @@ object Main {
   /** Realize a discovered provider against a connector URL. Legacy
     * 2-arg signature preserved for backward compat with MainSpec.
     *
-    * Per RFC §3 + ADR-006: the deployment holds only the URL string.
+    * Per the layering RFC §3 + the deployment-shape design: the deployment holds only the URL string.
     * For each discovered provider, `realize(url)` is invoked;
     * `Some(p)` replaces the stub, `None` keeps the stub as-is.
     * Available providers are kept as-is (already realized).
@@ -240,10 +269,10 @@ object Main {
     }
   }
 
-  /** PR-15 typed-error realize. Returns `List[Either[EngineError,
+  /** the typed-error realize. Returns `List[Either[EngineError,
     * EngineProvider]]` per provider.
     *
-    * Per [[scala-error-handling-mindset]] §1 + ADR-008-Q §C1: every
+    * Per [[scala-error-handling-mindset]] §1 + the error-handling design §C1: every
     * provider gets a typed result. Replaces the legacy 2-arg
     * `realize(providers, connectorUrl)` (which silently downgraded
     * to stubs when a connector URL was given); see audit findings
@@ -296,7 +325,7 @@ object Main {
       // fall back to the legacy "no EngineProvider discovered" message
       // only if no providers were even attempted (empty providers list
       // from the caller). This restores the typed-error story that
-      // ADR-008-Q §C1 promised.
+      // the error-handling design §C1 promised.
       typedErrors.headOption match {
         case Some(err) =>
           Left(s"sm8: engine realization failed: ${err.message}")
@@ -348,7 +377,7 @@ object Main {
           case Left(modelErr) =>
             System.err.println(s"sm8: model load failed: ${modelErr.toString}"); 1
           case Right(model) =>
-            // Composite root (RFC §11a): load plugins via the ServiceLoader
+            // Composite root (the layering RFC §11a): load plugins via the ServiceLoader
             // portal + append the deployment-local MetaCaptureObserver so
             // the MetaInspectorService serves the most recent request's
             // Context.meta. The plugins are threaded into HttpTransport,
@@ -362,7 +391,7 @@ object Main {
             // of `semantic-layer-engine-architecture.md` §3 (Core Boundary).
             // The factory is the inward-facing seam that insulates this
             // deployment wiring from future refactors of `EngineImpl`.
-            // Per ADR-012-b-followup (= PR-256): wire the MetricsSink
+            // Per the metrics-shim (= a prior PR): wire the MetricsSink
             // BEFORE PluginDiscovery so the cache plugin's hit/miss
             // handlers see the registered QueryMetrics (and tick the
             // counters). If not registered, the trait defaults to NoOp
@@ -385,7 +414,7 @@ object Main {
               case Left(bootErr) =>
                 System.err.println(bootErr); 3
               case Right((_, transport, realized)) =>
-                // PR-215 (audit 2026-08-30 L4): install the JVM
+                // a prior PR (audit 2026-08-30 L4): install the JVM
                 // shutdown hook BEFORE transport.start() so SIGTERM
                 // arriving during start() or before this point still
                 // triggers cleanup. Previously the hook was installed
@@ -401,7 +430,7 @@ object Main {
                   case e: IllegalStateException =>
                     System.err.println(s"sm8: ${e.getMessage}"); return 3
                 }
-                println(s"sm8: server listening on port $boundPort " +
+                System.err.println(s"sm8: server listening on port $boundPort " +
                   s"(model=${model.name}, version=${model.version})")
                 // Standalone Prometheus metrics HttpServer on a
                 // SEPARATE port (`--metrics-port`, default 9090),
@@ -409,7 +438,7 @@ object Main {
                 // Per [[scala-jvm-safety-mindset]], install a SECOND
                 // shutdown hook BEFORE MetricsHttpRoute.start() so a
                 // SIGTERM arriving during bind() still closes the
-                // socket — same ordering invariant as the PR-215
+                // socket — same ordering invariant as the a prior PR
                 // hook (the pre-existing hook for transport +
                 // providers is preserved unchanged). The slot is an
                 // AtomicReference so the hook (installed first) can
@@ -437,32 +466,36 @@ object Main {
                 try {
                   metricsSlot.set(MetricsHttpRoute.start(cli.metricsPort,
                     io.sm8.platform.query.MetricsService.startedAtInstant))
-                  println(s"sm8: metrics endpoint listening on port ${cli.metricsPort}")
+                  System.err.println(s"sm8: metrics endpoint listening on port ${cli.metricsPort}")
                 } catch {
                   case e: IllegalStateException =>
                     System.err.println(s"sm8: ${e.getMessage} — continuing without metrics")
                 }
 
-                // PR-263: Streamable HTTP MCP transport (per ADR-014).
+                // a prior PR: Streamable HTTP MCP transport (per the HTTP-MCP design).
                 // Bound only if --mcp-http-port is non-zero. The same
                 // shutdown-hook-before-bind + AtomicReference slot
-                // pattern as MetricsHttpRoute. Tool list is empty in
-                // v1 (the 5 MCP tools from PR-260 are wired via the
-                // stdio subprocess server in sm8-mcp, not via this
-                // Streamable HTTP transport — a follow-up PR will
-                // bridge them); the HTTP server still answers
-                // `tools/list` (returns empty array) and `initialize`.
+                // pattern as MetricsHttpRoute. The 5 MCP tools
+                // (a prior PR) are wired via the in-process stdio
+                // transport (see below) and ALSO via this Streamable
+                // HTTP transport (PR-260 follow-up); both share the
+                // same `Sm8ToolHandlers` factory in sm8-platform.
                 if (cli.mcpHttpPort > 0) {
                   try {
+                    val tools = io.sm8.platform.mcp.Sm8ToolHandlers.build(
+                      new io.sm8.platform.mcp.HttpIngressClient.Impl(
+                        cli.ingressUrl, cli.requestTimeout
+                      )
+                    )
                     val (mcpHttpServer, mcpSyncServer, _) = io.sm8.platform.query.McpHttpRoute.start(
                       cli.mcpHttpPort,
                       io.sm8.platform.query.McpHttpRoute.Config(
                         endpointPath   = cli.mcpHttpEndpoint,
                         disallowDelete = cli.mcpHttpDisallowDelete
                       ),
-                      "sm8", "0.1.0-SNAPSHOT", Seq.empty
+                      "sm8", "0.1.0-SNAPSHOT", tools
                     )
-                    println(s"sm8: MCP Streamable HTTP endpoint listening on port ${cli.mcpHttpPort} (path ${cli.mcpHttpEndpoint})")
+                    System.err.println(s"sm8: MCP Streamable HTTP endpoint listening on port ${cli.mcpHttpPort} (path ${cli.mcpHttpEndpoint})")
                     // Stop hook (separate from metrics/Restate hooks;
                     // JVM hook order is not guaranteed, but each hook
                     // is independent).
@@ -477,6 +510,56 @@ object Main {
                     case e: IllegalStateException =>
                       System.err.println(s"sm8: ${e.getMessage} — continuing without MCP HTTP")
                   }
+                }
+
+                // In-process stdio MCP transport (per the stdio design).
+                // Bound only if --mcp-transport is Some (mutually
+                // exclusive with --mcp-http-port > 0; parseArgs
+                // already rejects that combination). The stdio
+                // transport reuses the same Sm8ToolHandlers factory
+                // (5 a prior PR tools). The main thread blocks on
+                // a CountDownLatch that the SDK's
+                // `closeGracefully()` completes on EOF (per the
+                // stdio design §Wiring — Thread.join() never wakes
+                // on EOF because EOF doesn't invoke JVM shutdown
+                // hooks). The Process exits naturally when the MCP
+                // session closes.
+                cli.mcpTransport match {
+                  case Some("stdio") =>
+                    try {
+                      val client = new io.sm8.platform.mcp.HttpIngressClient.Impl(
+                        cli.ingressUrl, cli.requestTimeout
+                      )
+                      val tools = io.sm8.platform.mcp.Sm8ToolHandlers.build(client)
+                      val stdio = io.sm8.platform.mcp.McpStdioRoute(
+                        "sm8", "0.1.0-SNAPSHOT", tools
+                      )
+                      stdio.buildServer()
+                      // The SDK's inbound loop calls
+                      // `session.close()` on stdin EOF, which counts
+                      // down our latch. After awaitClose returns we
+                      // give the SDK's outbound scheduler (running on
+                      // a dedicated executor) time to drain the last
+                      // JSON-RPC frames, then exit the JVM — non-daemon
+                      // threads (Vert.x / Restate ingress) would keep
+                      // the JVM alive forever otherwise.
+                      val ok = stdio.awaitClose(timeoutSeconds = 30)
+                      if (!ok) {
+                        System.err.println("sm8: MCP stdio transport did not close within 30s; forcing exit")
+                      }
+                      Thread.sleep(500)
+                      System.exit(0)
+                      0
+                    } catch {
+                      case NonFatal(e) =>
+                        System.err.println(s"sm8: ${e.getClass.getSimpleName}: ${e.getMessage}")
+                        return 1
+                    }
+                  case Some(other) =>
+                    System.err.println(s"sm8: unknown --mcp-transport value: $other (expected 'stdio')")
+                    return 2
+                  case None =>
+                    // No in-process stdio MCP; just block the main thread.
                 }
 
                 // Block the main thread; the shutdown hooks stop the servers.
@@ -498,13 +581,13 @@ object Main {
    * Install the JVM shutdown hook that releases the HTTP transport
    * + closes all realized engine providers on JVM exit.
    *
-   * Per ADR-008-O: the hook releases BOTH the socket AND any
+   * Per the shutdown-hook design: the hook releases BOTH the socket AND any
    * realized engine providers. A SIGTERM without this hook leaves
    * the cluster's executor processes orphaned.
    *
-   * Per PR-215 (audit 2026-08-30 L4): this is registered BEFORE
+   * Per a prior PR (audit 2026-08-30 L4): this is registered BEFORE
    * `transport.start()` from `run()` so SIGTERM during start() or
-   * before this point still triggers cleanup. The pre-PR-215
+   * before this point still triggers cleanup. The pre-a prior PR
    * ordering (`transport.start → sys.addShutdownHook`) exposed a
    * race window where a SIGTERM arriving between the two calls
    * orphaned the resources.
