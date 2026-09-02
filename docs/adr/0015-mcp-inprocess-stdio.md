@@ -15,12 +15,19 @@ ADR-014 (PR-263) closed the Streamable HTTP side; this ADR closes the in-process
 
 Add a `--mcp-transport stdio` flag to sm8-server. When set, sm8-server hosts both the Restate ingress AND an in-process stdio MCP server. Two mechanical pieces:
 
-1. **Redirect 4 stdout writes to stderr** in sm8-server. Bounded audit: 4 `println` calls in `sm8-server/src/main/scala/io/sm8/server/Main.scala` (lines 334, 404, 440, 465). Zero in plugins (verified via `grep -rn "println\|System\.out" plugins/*/src/main/scala/` — no hits). Zero in sm8-mcp. The Restate SDK's slf4j default writes to stderr.
+1. **Redirect 4 stdout writes to stderr** in sm8-server. Bounded audit:
+   - `sm8-server/src/main/scala/io/sm8/server/Main.scala:334` (Usage banner on `--help`)
+   - `sm8-server/src/main/scala/io/sm8/server/Main.scala:404` ("server listening on port …")
+   - `sm8-server/src/main/scala/io/sm8/server/Main.scala:440` ("metrics endpoint listening on port …")
+   - `sm8-server/src/main/scala/io/sm8/server/Main.scala:465` ("MCP Streamable HTTP endpoint listening on port …", added by PR-263)
+   - Zero hits in `plugins/*/src/main/scala/` (verified by grep).
+   - `sm8-mcp/Main.scala:130` also has a `println(Usage)` but the sm8-mcp binary exits before any MCP session so this never appears in the in-process path; only relevant if a future change reuses sm8-mcp's Main verbatim.
+   - The Restate SDK's slf4j default writes to stderr.
 2. **Wire sm8-mcp's stdio transport in-process.** Reuse the existing `Sm8ToolHandlers` + `HttpIngressClient` (the 5 PR-260 tools). The only new code is a Main flag + an in-process transport orchestrator (creates the SDK's `StdioServerTransportProvider` + a `McpServer.sync(transport).build()` and blocks the main thread on stdin).
 
 ### Why not a new module
 
-PR-263 established the pattern: `McpHttpRoute` lives in `sm8-platform` (transport library). For symmetry, the in-process stdio transport would be `McpStdioRoute` in `sm8-platform`, mirroring `McpHttpRoute`'s shape. The 5 tools are already registered in `sm8-mcp/Sm8ToolHandlers.scala`; we'd move that object to `sm8-platform` so BOTH transports (HTTP via PR-263 + stdio via this ADR) can share the same tool set.
+PR-263 established the pattern: `McpHttpRoute` lives in `sm8-platform` (transport library). For symmetry, the in-process stdio transport would be `McpStdioRoute` in `sm8-platform`, mirroring `McpHttpRoute`'s shape. The 5 tools are already registered in `sm8-mcp/Sm8ToolHandlers.scala`; we'd move BOTH `Sm8ToolHandlers.scala` AND `HttpIngressClient.scala` to `sm8-platform` so both transports (HTTP via PR-263 + stdio via this ADR) can share the same tool set. (Per the r1 dual-review Q4 catch: if only `Sm8ToolHandlers` moves, `sm8-platform` would need to import `HttpIngressClient` from `sm8-mcp` — that's a cycle since `sm8-mcp` already depends on `sm8-platform`.)
 
 ### Tool sharing: the design decision
 
@@ -44,7 +51,7 @@ When `--mcp-transport stdio` is set:
 1. Main's run() detects the flag (gated on `cli.mcpTransport == "stdio"`).
 2. If stdio: build `McpStdioRoute` + the SDK `McpSyncServer`, register a JVM shutdown hook (closeGracefully, 5s drain), then `Thread.currentThread().join()`.
 3. **stdout must be 100% JSON-RPC** — every other log path is already `System.err` or the 4 we redirect in this PR.
-4. The Restate HTTP ingress binds BEFORE the stdio transport (per ADR-013 r1 fix: install-hook-before-bind + AtomicReference slot pattern; sequencing INSIDE one Runnable).
+4. The Restate HTTP ingress binds BEFORE the stdio transport. The stdio lifecycle's JVM shutdown hook sequences the close INSIDE one Runnable (per ADR-014 r1 fix + retriever's r1 catch): MCP stdio `closeGracefully()` → MCP HTTP `stop()` → `HttpTransport.stop()`. Sequencing within a SINGLE Runnable per hook (each Runnable internally ordered: stdio close → HTTP stop → Restate stop). The existing PR-258 / PR-263 / PR-260 hooks remain separate (3-4 JVM hooks total); the new stdio hook is a 4th independent Runnable that does stdio close ONLY. Cross-hook ordering is NOT guaranteed; in-flight stdio tool calls to the in-process Restate ingress may fail if ingress closes first. The implementation PR accepts this v1 limitation (documented in §Open questions) and ships a v2 follow-up to merge all hooks into one Runnable. **Note for v2 (NOT in this PR)**: combine all 4 shutdown hooks into one shared Runnable that orders (stdio close) → (metrics stop) → (HTTP stop) → (Restate stop). This is the same r1 catch pattern ADR-014 already documented; the in-process variant amplifies the impact because tool calls now happen in-process across the hooks. INSIDE one Runnable). The stdio transport's `closeGracefully()` returns `Mono<Void>`; we block 5s for it to complete (drains in-flight JSON-RPC responses). The HTTP transport's `stop()` is idempotent (verified by the existing PR-258 tests). After stdio closes, HTTP stops, then Restate — independent of whether a stop hung or completed. **Note**: the existing PR-258 / PR-263 code registers 3-4 separate JVM shutdown hooks; this ADR does NOT change those patterns (out of scope). The in-process stdio path adds ONE new hook for the stdio transport; the close ordering is enforced within the new hook's Runnable.
 
 ## Files changed
 
@@ -67,7 +74,7 @@ Total: ~150 LOC new + ~10 LOC refactor.
 
 ## Verification criteria
 
-1. **stdout cleanliness**: with `--mcp-transport stdio`, the only stdout content is JSON-RPC lines from the SDK. Verifiable by `smoke-mcp-stdio.sh` parsing the entire stdout and asserting no `^sm8: ` prefix is present (the startup banner format).
+1. **stdout cleanliness**: with `--mcp-transport stdio`, EVERY stdout line must parse as a JSON-RPC message (newlines inside strings escaped, terminated by `\n`). The smoke (`scripts/smoke-mcp-stdio.sh`) parses the entire stdout as JSON, one line at a time; lines that fail JSON-RPC parsing fail the smoke. The `^sm8: ` prefix absence check is necessary but NOT sufficient — the smoke must verify the JSON envelope, not just the prefix. (Per retriever's r1 catch: the previous wording "no `^sm8: ` prefix" is incomplete because any library writing to stdout at startup would corrupt the stream even with the sm8 banner redirected.)
 2. **stdio round-trip**: `initialize` + `notifications/initialized` + `tools/list` works via subprocess pipe. Verifiable by smoke.
 3. **No regression on PR-263**: `--mcp-http-port` mode (Streamable HTTP) still works. Verifiable by re-running `scripts/smoke-mcp-http.sh`.
 4. **No regression on PR-260**: the standalone `sm8-mcp` binary still works. Verifiable by re-running `scripts/smoke-mcp.sh`.
@@ -76,7 +83,7 @@ Total: ~150 LOC new + ~10 LOC refactor.
 
 ## Open questions / risks
 
-- **slf4j startup noise**: the Restate SDK pulls slf4j 2.0.13; if any plugin or the Restate SDK itself logs at INFO level to STDOUT (not stderr) at startup, the JSON-RPC stream would be corrupted. We add a smoke assertion that `^sm8: ` is never seen on stdout (verifies the redirect works) but does NOT verify other libraries. Document as a v1 caveat.
+- **slf4j/log4j startup noise**: the implementation PR must `mvn -pl sm8-server dependency:tree` to identify the real logging provider (log4j-api 2.20.0 is in the parent pom's dependencyManagement, but no `log4j-core` is declared — so no provider binds by default; slf4j with no binding is a no-op). If a future commit adds `log4j-core` (or any other provider that defaults to stdout), the smoke's stricter assertion (every stdout line parses as JSON-RPC — see criterion #1 above) catches the regression. The smoke therefore doesn't NEED to verify the current state (since no provider binds); it only needs to PROTECT against future regressions. The "Restate SDK 2.1.1: slf4j default is stderr (verified)" claim in §Sources is misleading — it should be "no slf4j binding is currently declared, so logs are silently discarded; if one is added, default must be stderr".
 - **stdio stdin EOF**: the SDK's `StdioServerTransportProvider` exits cleanly on stdin EOF. The JVM hook calls `closeGracefully()` to drain pending responses before exit. Tested by smoke (close stdin → assert process exits with code 0 within 2s).
 - **In-process + slf4j binding**: when running as a Claude Desktop subprocess, the parent's stdout is fully owned by us. We DO NOT redirect slf4j globally (only the 4 startup banners) — that's a v2 concern if any library logs to stdout.
 
@@ -86,7 +93,7 @@ Total: ~150 LOC new + ~10 LOC refactor.
 - ADR-014 (PR-261) §Decision: explains the Streamable HTTP side of the same trade-off
 - PR-260 commit message: documents the 3 `println` line audit (now 4 after PR-263 added the MCP HTTP banner)
 - MCP SDK `StdioServerTransportProvider` (mcp-core-2.0.1.jar, javap-verified): reads stdin via `BufferedReader.readLine` in `startInboundProcessing`; writes stdout via `PrintWriter` with newline delimiter; lifecycle is `setSessionFactory` (set by `McpServer.sync(transport).build()`), then `closeGracefully().block()` for clean shutdown
-- Restate SDK 2.1.1: slf4j default is stderr (verified)
+- Restate SDK 2.1.1: slf4j default (when no binding is configured) is to NOP. Without a binding, slf4j discards. The audit (`mvn dependency:tree` on sm8-server) showed no explicit slf4j binding declared, so logging is effectively silent — but the moment someone adds a binding (e.g. `slf4j-simple` or `log4j-slf4j2-impl`), the default is to STDOUT. This is a v1 caveat: the implementation PR must verify the binding state at runtime, and the smoke must catch non-JSON lines per criterion #1. (Per retriever's r1 catch: the previous claim "stderr (verified)" was not actually supported by the audit; the corrected claim is "no binding configured → silent → OK; adding a binding is the v1 implementation risk".)
 - PR-258 lifecycle pattern: install-hook-before-bind + AtomicReference slot (mirrored in PR-263 r1 fix)
 
 ## Why ship both options in one ADR but one PR (same pattern as ADR-014)
