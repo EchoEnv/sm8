@@ -29,28 +29,24 @@
 #                              is its container, not the host)
 #                          (b) the success message so the operator can open
 #                              the Restate web UI from their laptop
-#                          Defaults to "localhost" (works for in-process
-#                          testing on the same machine).
+#                          Defaults to auto-detect: host's main interface
+#                          IPv4 (via `ip -4 route get 1.0.0.0`). Falls back
+#                          to the docker bridge gateway 172.17.0.1 if no
+#                          non-loopback IPv4 is present (rare).
+#                          Note: "localhost" does NOT work under bridge
+#                          networking — restate's loopback is its container's.
 #   --sm8-port <n>         TCP port for sm8 (default 9090)
 #   --restate-image <img>  Docker image to use (default restatedev/restate:1.5)
 #   --help                 Show this help + exit 0
-# Default --external-ip: prefer the host's main interface IP (not
-# 127.0.0.1 — restate in a container cannot reach host loopback).
-# Falls back to "localhost" only if the host has no non-loopback IPv4
-# (unusual — the smoke is typically run on a server with a NIC).
-EXTERNAL_IP="${EXTERNAL_IP_OVERRIDE:-}"
-if [ -z "$EXTERNAL_IP" ]; then
-  EXTERNAL_IP="$(ip -4 route get 1.0.0.0 2>/dev/null \
-    | awk '/src/{print $7; exit}' \
-    | grep -E '^[0-9]+\.' || true)"
-fi
-if [ -z "$EXTERNAL_IP" ]; then
-  EXTERNAL_IP="localhost"
-fi
 EXTERNAL_IP_OVERRIDE=""
 SM8_PORT_DEFAULT=9090
 RESTATE_IMAGE_DEFAULT="restatedev/restate:1.5"
 while [ "$#" -gt 0 ]; do
+  case "$1" in
+  --external-ip|--sm8-port|--restate-image)
+    [ $# -ge 2 ] || { echo "missing value for $1" >&2; exit 2; }
+    ;;
+  esac
   case "$1" in
   --external-ip) EXTERNAL_IP_OVERRIDE="$2"; shift 2 ;;
   --sm8-port)    SM8_PORT_DEFAULT="$2"; shift 2 ;;
@@ -59,6 +55,44 @@ while [ "$#" -gt 0 ]; do
   *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
+
+# Default --external-ip: prefer the host's main interface IP (not
+# 127.0.0.1 — restate in a container cannot reach host loopback).
+# Fallback order: override env/CLI -> route-based auto-detect ->
+# docker0 bridge gateway -> hard fail with guidance to pass
+# --external-ip. "localhost" is never picked automatically under
+# bridge networking because restate's loopback is its container's.
+# Order matters: arg parse FIRST so --external-ip override wins.
+EXTERNAL_IP="${EXTERNAL_IP_OVERRIDE:-}"
+if [ -z "$EXTERNAL_IP" ]; then
+  EXTERNAL_IP="$(ip -4 route get 1.0.0.0 2>/dev/null \
+    | awk '/src/{print $7; exit}' \
+    | grep -E '^[0-9]+\.' || true)"
+fi
+if [ -z "$EXTERNAL_IP" ]; then
+  # Auto-detect found nothing. Under always-bridge networking, "localhost"
+  # re-instantiates the exact bug this PR fixes (restate's container
+  # loopback != host loopback). Try the docker bridge gateway (default
+  # docker0 host IP), then warn loudly. Operator can still pass
+  # --external-ip explicitly.
+  EXTERNAL_IP="$(ip -4 addr show docker0 2>/dev/null \
+    | awk '/inet /{split($2,a,"/"); print a[1]; exit}' \
+    | grep -E '^[0-9]+\.' || true)"
+  if [ -z "$EXTERNAL_IP" ]; then
+    echo "SMOKE-E2E FAIL: cannot auto-detect a non-loopback IPv4. Pass --external-ip <addr>" >&2
+    exit 2
+  fi
+fi
+# Defence-in-depth: EXTERNAL_IP is interpolated into a JSON body and a
+# curl URL. Auto-detect produces dotted-quad or "172.17.0.1" (grep-guarded),
+# but operator overrides (env EXTERNAL_IP_OVERRIDE, --external-ip) must
+# also be validated. Allow dotted-quad IPv4 or RFC-1123 hostname; reject
+# anything else so a malformed override cannot break JSON parsing or
+# inject a URL fragment.
+if ! printf '%s' "$EXTERNAL_IP" | grep -Eq '^(([0-9]{1,3}\.){3}[0-9]{1,3}|localhost|[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*)$'; then
+  echo "SMOKE-E2E FAIL: invalid --external-ip value: '$EXTERNAL_IP' (must be dotted-quad IPv4 or RFC-1123 hostname)" >&2
+  exit 2
+fi
 SM8_PORT="${SMOKE_SM8_PORT:-$SM8_PORT_DEFAULT}"
 RESTATE_IMAGE="${SMOKE_RESTATE_IMAGE:-${RESTATE_IMAGE_OVERRIDE:-$RESTATE_IMAGE_DEFAULT}}"
 RESTATE_INGRESS_PORT=8080
@@ -86,10 +120,13 @@ echo "sm8:     port=$SM8_PORT"
 command -v docker > /dev/null || fail "docker not found on PATH" 2
 docker info > /dev/null 2>&1 || fail "docker daemon not reachable" 2
 
-# Stale containers from previous failed runs hold port 5122 (restate
-# admin RPC) which causes the new container to fail binding with
-# "Address already in use". Pre-flight cleanup ensures every run
-# starts from a clean slate.
+# Stale containers from previous failed runs hold published ports
+# (restate ingress 8080 / admin 9070) which makes the new container
+# fail to bind. Pre-flight cleanup ensures every run starts from a
+# clean slate. NOTE: matches ALL sm8-smoke-e2e-restate-* containers,
+# so two CONCURRENT runs of this script kill each other's restate.
+# The smoke is designed for one run at a time (operator-run or
+# serialized CI); do not run it concurrently.
 echo "cleaning stale smoke-e2e containers (if any) ..."
 for cid in $(docker ps -aq --filter "name=^sm8-smoke-e2e-restate-" 2>/dev/null); do
   docker stop "$cid" >/dev/null 2>&1 || true
@@ -240,7 +277,7 @@ echo "registering sm8 (uri=$REG_URI) with restate ..."
 reg_code="$(curl -s -o "$REGISTRATION_BODY.reg" -w '%{http_code}' --max-time 30 \
   -X POST -H "Content-Type: application/json" \
   --data @"$REGISTRATION_BODY" \
-  "http://$EXTERNAL_IP:$RESTATE_ADMIN_PORT/deployments")"
+  "http://127.0.0.1:$RESTATE_ADMIN_PORT/deployments")"
 [ "$reg_code" = "200" ] || [ "$reg_code" = "201" ] || {
   echo "--- registration response: ---" >&2
   cat "$REGISTRATION_BODY.reg" >&2
