@@ -849,4 +849,88 @@ class MainSpec extends AnyFunSuite with Matchers {
     Main.getClass.getName shouldBe "io.sm8.server.Main$"
     succeed
   }
+
+  // Per pr267-arch-002: probeIngressOrWarn is package-private so we
+  // can exercise the warning paths directly. Three tests cover:
+  // (1) reachable URL with 2xx — silent (no WARNING printed);
+  // (2) reachable URL with 405 (Restate SDK's normal HEAD reply) —
+  //     silent (per pr267-r2-de-HIGH: treating 4xx as a warning
+  //     would false-positive on every healthy boot);
+  // (3) unreachable URL — WARNING printed.
+  // We capture stderr by routing System.err through a PrintStream.
+  test("probeIngressOrWarn is silent when the ingress returns 2xx") {
+    val probeServer = com.sun.net.httpserver.HttpServer.create(
+      new java.net.InetSocketAddress("127.0.0.1", 0), 0)
+    probeServer.createContext("/", new com.sun.net.httpserver.HttpHandler {
+      def handle(ex: com.sun.net.httpserver.HttpExchange): Unit = {
+        ex.sendResponseHeaders(200, -1)
+        ex.getResponseBody.close()
+      }
+    })
+    probeServer.setExecutor(java.util.concurrent.Executors.newSingleThreadExecutor())
+    probeServer.start()
+    val url = s"http://127.0.0.1:${probeServer.getAddress.getPort}"
+    val captured = new java.io.ByteArrayOutputStream()
+    val orig = System.err
+    System.setErr(new java.io.PrintStream(captured))
+    try {
+      Main.probeIngressOrWarn(url)
+    } finally {
+      System.setErr(orig)
+      probeServer.stop(0)
+    }
+    captured.toString should not include "WARNING"
+  }
+
+  test("probeIngressOrWarn is silent on 405 (Restate's normal HEAD response)") {
+    // Per pr267-r2-de-HIGH: the Restate SDK 2.1.1 ingress returns
+    // 405 for any non-POST method. The probe must NOT treat 405 as a
+    // misconfiguration (the ingress is up and answering) — otherwise
+    // every healthy boot prints a WARNING. Only connect-level failures
+    // (refused, DNS, timeout) trigger the warning.
+    val probeServer = com.sun.net.httpserver.HttpServer.create(
+      new java.net.InetSocketAddress("127.0.0.1", 0), 0)
+    probeServer.createContext("/", new com.sun.net.httpserver.HttpHandler {
+      def handle(ex: com.sun.net.httpserver.HttpExchange): Unit = {
+        ex.sendResponseHeaders(405, -1)
+        ex.getResponseBody.close()
+      }
+    })
+    probeServer.setExecutor(java.util.concurrent.Executors.newSingleThreadExecutor())
+    probeServer.start()
+    val url = s"http://127.0.0.1:${probeServer.getAddress.getPort}"
+    val captured = new java.io.ByteArrayOutputStream()
+    val orig = System.err
+    System.setErr(new java.io.PrintStream(captured))
+    try {
+      Main.probeIngressOrWarn(url)
+    } finally {
+      System.setErr(orig)
+      probeServer.stop(0)
+    }
+    captured.toString should not include "WARNING"
+  }
+
+  test("probeIngressOrWarn prints WARNING when the ingress is unreachable") {
+    // Bind a server, capture its port, immediately close it so the
+    // port is (very likely) still free but unbound. This avoids any
+    // flake from probing a port that another test process owns.
+    val sentinel = com.sun.net.httpserver.HttpServer.create(
+      new java.net.InetSocketAddress("127.0.0.1", 0), 0)
+    sentinel.start()
+    val port = sentinel.getAddress.getPort
+    sentinel.stop(0)
+
+    val captured = new java.io.ByteArrayOutputStream()
+    val orig = System.err
+    System.setErr(new java.io.PrintStream(captured))
+    try {
+      Main.probeIngressOrWarn(s"http://127.0.0.1:$port")
+    } finally {
+      System.setErr(orig)
+    }
+    val out = captured.toString
+    out should include ("WARNING")
+    out should include ("unreachable")
+  }
 }

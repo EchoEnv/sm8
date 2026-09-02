@@ -7,19 +7,26 @@
  * (initialize + notifications/initialized + tools/list), closes
  * stdin (EOF), and verifies the responses + clean process exit.
  *
- * 3 tests:
+ * 4 tests:
  * 1. End-to-end stdio handshake: initialize returns serverInfo.name=sm8
  * 2. tools/list returns a result with the tools array
  * 3. Closing stdin triggers EOF path + process exits within timeout
+ * 4. tools/call delegates to the Restate ingress and returns a result
+ *    (uses an in-process mock HTTP server as the ingress; closes the
+ *    coverage gap from C5-de-M1 where tool execution was untested)
  */
 package io.sm8.platform.mcp
+
+import com.sun.net.httpserver.{HttpExchange, HttpHandler, HttpServer}
 
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
 import java.io.{BufferedReader, InputStreamReader, PrintWriter}
+import java.net.InetSocketAddress
 import java.nio.charset.StandardCharsets
-import java.util.concurrent.TimeUnit
+import java.util.concurrent.{ConcurrentLinkedQueue, Executors, TimeUnit}
+import scala.jdk.CollectionConverters._
 
 class StdioEndToEndSpec extends AnyFunSuite with Matchers {
 
@@ -114,9 +121,8 @@ class StdioEndToEndSpec extends AnyFunSuite with Matchers {
     }
   }
 
-  // PR-265 MEDIUM-6: edge-case coverage. Per arch-M6 the MCP
-  // protocol requires the server to: tolerate garbage input without
-  // crashing the JVM. PR-265 verification: the SDK's
+  // Edge-case coverage: the MCP protocol requires the server to
+  // tolerate garbage input without crashing the JVM. The SDK's
   // StdioServerTransportProvider catch on deserializeJsonRpcMessage
   // throws -> break (per mcp-core 2.0.1 source line ~258); this is
   // SDK policy: a single unparseable message closes the session. The
@@ -280,6 +286,127 @@ class StdioEndToEndSpec extends AnyFunSuite with Matchers {
         proc.waitFor(2, TimeUnit.SECONDS)
       }
       java.nio.file.Files.deleteIfExists(modelFile)
+    }
+  }
+
+  // The stdio MCP transport's load-bearing contract is that a
+  // tools/call request reaches the Restate ingress and returns the
+  // ingress's response. The sibling tests cover only the handshake +
+  // tools/list metadata; tool execution was delegated to
+  // scripts/smoke-e2e.sh (which bypasses the stdio MCP layer entirely).
+  // This test exercises the full stdio → MCP → HttpIngressClient →
+  // Restate ingress path by:
+  // 1. starting an in-process HTTP server as the "ingress",
+  // 2. pointing the spawned sm8-server at that local URL,
+  // 3. sending a tools/call for `list_models` over stdio,
+  // 4. asserting the ingress received the expected POST and the stdio
+  //    response carries the ingress's body verbatim.
+  test("End-to-end tools/call: list_models reaches the ingress and the response is relayed back over stdio") {
+    classpathOrSkip().foreach { cp =>
+      val capturedBodies = new ConcurrentLinkedQueue[String]()
+      val capturedPaths  = new ConcurrentLinkedQueue[String]()
+
+      // Mock Restate ingress: replies 200 with a fixed JSON body on any
+      // POST. Records what it got so the test can assert on the path +
+      // body the sm8-server forwarded. GET/HEAD are short-circuited with
+      // a 204 so the probeIngressOrWarn HEAD at startup doesn't pollute
+      // the capturedPaths assertion.
+      val mockServer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0)
+      mockServer.createContext("/", new HttpHandler {
+        def handle(ex: HttpExchange): Unit = {
+          val method = ex.getRequestMethod
+          if (method == "HEAD" || method == "GET") {
+            ex.sendResponseHeaders(204, -1)
+            ex.getResponseBody.close()
+            return
+          }
+          val body = new String(ex.getRequestBody.readAllBytes(), StandardCharsets.UTF_8)
+          capturedBodies.add(body)
+          capturedPaths.add(ex.getRequestURI.getPath)
+          val responseBody =
+            """{"models":[{"name":"m1"},{"name":"m2"}]}"""
+          val bytes = responseBody.getBytes(StandardCharsets.UTF_8)
+          ex.getResponseHeaders.add("Content-Type", "application/json")
+          ex.sendResponseHeaders(200, bytes.length)
+          ex.getResponseBody.write(bytes)
+          ex.getResponseBody.close()
+        }
+      })
+      val mockExecutor = Executors.newSingleThreadExecutor()
+      mockServer.setExecutor(mockExecutor)
+      mockServer.start()
+      val mockPort = mockServer.getAddress.getPort
+      val ingressUrl = s"http://127.0.0.1:$mockPort"
+
+      try {
+        val modelFile = java.nio.file.Files.createTempFile("sm8-e2e-tools-call-", ".yaml")
+        java.nio.file.Files.writeString(
+          modelFile,
+          "name: e2e-tools-call-model\nversion: 1\nsource:\n  byName:\n    table: e2e_tools_call_table\n"
+        )
+        val pb = new ProcessBuilder(
+          "java",
+          "-cp", cp,
+          "io.sm8.server.Main",
+          "--model", modelFile.toString,
+          "--port", "0",
+          "--metrics-port", "0",
+          "--mcp-transport", "stdio",
+          "--ingress-url", ingressUrl
+        )
+        pb.directory(new java.io.File(repoRoot))
+        val proc = pb.start()
+        val writer = new PrintWriter(proc.getOutputStream, true)
+        val reader = new BufferedReader(new InputStreamReader(proc.getInputStream, StandardCharsets.UTF_8))
+        try {
+          // Send 4 messages: initialize, notifications/initialized, tools/list (warmup), tools/call
+          writer.println("""{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"sm8-e2e-tools-call","version":"0"}}}""")
+          writer.println("""{"jsonrpc":"2.0","method":"notifications/initialized"}""")
+          writer.println("""{"jsonrpc":"2.0","id":2,"method":"tools/list"}""")
+          writer.println("""{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_models","arguments":{}}}""")
+          writer.close()
+
+          // Read responses until we have all 3 expected (initialize,
+          // tools/list, tools/call) or the deadline expires.
+          val messages = scala.collection.mutable.ListBuffer.empty[String]
+          val deadline = System.currentTimeMillis + 8000L
+          while (messages.size < 3 && System.currentTimeMillis < deadline) {
+            if (reader.ready()) {
+              val line = reader.readLine()
+              if (line != null && line.nonEmpty) messages += line
+            } else Thread.sleep(50)
+          }
+
+          val toolCallResp = messages.find(_.contains("\"id\":3")).getOrElse("(no tools/call response)")
+          toolCallResp should include ("\"result\"")
+          // The ingress body is wrapped twice: once by the Restate SDK
+          // (JSON object) and once by the MCP SDK (text field with the
+          // Restate body stringified + escaped). So the model names
+          // appear with escaped quotes (\"m1\", \"m2\"), not raw.
+          toolCallResp should include ("\\\"m1\\\"")
+          toolCallResp should include ("\\\"m2\\\"")
+          toolCallResp should include ("\"isError\":false")
+
+          // The ingress should have received exactly one POST (from
+          // the tools/call); tools/list does not POST. The path is
+          // the Restate SDK convention `<Service>/<Method>`, here
+          // `/ModelService/listModels` (singular "Model", per
+          // Sm8ToolHandlers.scala).
+          val paths = capturedPaths.asScala.toList
+          paths should have size 1
+          paths.head should (include ("ModelService").and(include ("listModels")))
+        } finally {
+          if (proc.isAlive) {
+            proc.destroyForcibly()
+            proc.waitFor(2, TimeUnit.SECONDS)
+          }
+          java.nio.file.Files.deleteIfExists(modelFile)
+        }
+      } finally {
+        mockServer.stop(0)
+        mockExecutor.shutdown()
+        mockExecutor.awaitTermination(2, TimeUnit.SECONDS)
+      }
     }
   }
 }
