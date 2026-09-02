@@ -43,11 +43,25 @@
       <artifactId>sm8-platform_2.13</artifactId>
       <version>${project.version}</version>
     </dependency>
+    <!-- PR-263 (ADR-014): the MCP SDK (transitive from sm8-platform)
+         uses json-schema-validator 3.0.6's Dialects class at .build()
+         time. sm8-core's ManifestValidator uses the same package but
+         with 1.5.2's SpecVersion.VersionFlag class. The two versions
+         can't coexist (same package, different shapes), so we DON'T
+         put json-schema-validator here — McpHttpRoute.buildServer
+         disables tool-input validation (.validateToolInputs(false))
+         which removes the SDK's call to getSchemaValidator() entirely.
+         v1 ships with an empty tool list; no schema needed. -->
     <dependency>
-      <groupId>org.scalatest</groupId>
-      <artifactId>scalatest_${scala.binary.version}</artifactId>
-      <version>${scalatest.version}</version>
-      <scope>test</scope>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-annotations</artifactId>
+        <version>2.21</version>
+    </dependency>
+    <dependency>
+        <groupId>org.scalatest</groupId>
+        <artifactId>scalatest_${scala.binary.version}</artifactId>
+        <version>${scalatest.version}</version>
+        <scope>test</scope>
     </dependency>
   </dependencies>
   <build>
