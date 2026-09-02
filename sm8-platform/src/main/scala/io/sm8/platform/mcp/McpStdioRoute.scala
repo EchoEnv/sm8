@@ -293,31 +293,70 @@ final class McpStdioRoute private (
  closeLatch.await(timeoutSeconds, TimeUnit.SECONDS)
  }
 
- /** Stop the McpStdioRoute's McpSyncServer. The caller is expected
- * to also call `awaitClose(...)` afterwards (or rely on the
- * latch + JVM hook chain). */
+ /** Stop the McpStdioRoute's McpSyncServer. Blocks the calling
+    * thread until the SDK's underlying transport executors dispose,
+    * so the SDK's non-daemon inbound + outbound single-thread
+    * executors (verified: StdioServerTransportProvider.java:170
+    * `Executors.newSingleThreadExecutor` × 2) do not leak.
+    *
+    * The `McpSyncServer.closeGracefully()` method runs
+    * `asyncServer.closeGracefully().block()` — so the void return
+    * already subscribes the SDK's Mono. However it does NOT wait
+    * for the outbound scheduler to drain its Reactor thread; we
+    * additionally subscribe the underlying transport's
+    * `closeGracefully()` Mono (which completes after the outbound
+    * loop's doOnComplete fires `outboundScheduler.dispose()` per
+    * mcp-core 2.0.1 StdioServerTransportProvider.java:316) and
+    * `.block(2s)` it. Without this, 2 of 3 McpStdioRouteSpec tests
+    * leak non-daemon threads across JVMs (PR-265 HIGH-3 fix). */
  def stop(): Unit = {
  if (syncServer != null) {
  try syncServer.closeGracefully()
  catch { case NonFatal(_) => () }
  }
+ if (transport != null) {
+ try {
+ val drainMono = transport.closeGracefully()
+ if (drainMono != null) drainMono.toFuture.get(2L, TimeUnit.SECONDS)
+ } catch { case NonFatal(_) => () }
+ }
+ closeLatch.countDown()
+ // PR-265 de-L6: release the JVM-singleton guard so a subsequent
+ // instance can be constructed (tests + repl-friendly).
+ McpStdioRoute.INSTANCE_COUNT.set(0)
  }
 }
 
 object McpStdioRoute {
+
+ // JVM-singleton counter: the stdio transport reads System.in,
+ // a single fd-0; constructing two McpStdioRoute instances in the
+ // same JVM would interleave their reads and corrupt the JSON-RPC
+ // stream. AtomicInteger.compareAndSet(0,1) gives us a cheap
+ // monotonic guard with no synchronization story beyond the CAS.
+ // PR-265 de-L6 fix.
+ private[mcp] val INSTANCE_COUNT = new java.util.concurrent.atomic.AtomicInteger(0)
 
  /** Factory: build + return the route. Caller is responsible for
  * calling `buildServer()` (which starts the SDK's read loop)
  * and `awaitClose(...)` to block the main thread.
  *
  * Per the stdio design §Files changed: the 5 tools come from the SHARED
- * `Sm8ToolHandlers` factory (now in sm8-platform, moved from
- * sm8-mcp per the r2 Q3 cycle fix). */
+ * `Sm8ToolHandlers` factory in sm8-platform (moved from sm8-mcp
+ * by a prior PR cleanup). The factory enforces the JVM-singleton
+ * invariant (PR-265 de-L6).
+ */
  def apply(
  serverName: String,
  serverVersion: String,
  toolSpecs: Seq[McpServerFeatures.SyncToolSpecification],
  sessionTimeoutSeconds: Long = 30
-): McpStdioRoute =
+): McpStdioRoute = {
+ if (!INSTANCE_COUNT.compareAndSet(0, 1)) {
+ throw new IllegalStateException(
+ "io.sm8.platform.mcp.McpStdioRoute: only one instance per JVM is allowed (stdio transport reads System.in, a single fd-0; concurrent instances would interleave reads and corrupt the JSON-RPC stream). Call stop() on the previous instance before constructing a new one."
+ )
+ }
  new McpStdioRoute(serverName, serverVersion, toolSpecs, sessionTimeoutSeconds)
+ }
 }

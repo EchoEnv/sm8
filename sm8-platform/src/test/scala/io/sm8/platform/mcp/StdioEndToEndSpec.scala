@@ -79,6 +79,79 @@ class StdioEndToEndSpec extends AnyFunSuite with Matchers {
     }
   }
 
+  // PR-265 MEDIUM-6: edge-case coverage. Per arch-M6 the MCP
+  // protocol requires the server to: tolerate garbage input without
+  // crashing the JVM. PR-265 verification: the SDK's
+  // StdioServerTransportProvider catch on deserializeJsonRpcMessage
+  // throws -> break (per mcp-core 2.0.1 source line ~258); this is
+  // SDK policy: a single unparseable message closes the session. The
+  // test asserts that:
+  // (a) the JVM stays alive (no SIGException)
+  // (b) the initialize response is returned (the message arrived
+  //     before the garbage)
+  // (c) the process exits cleanly on EOF
+  // We do NOT assert that the tools/list message is processed after
+  // the garbage — that's documented SDK behavior to close on bad
+  // JSON, and fighting it would mean either wrapping every SDK read
+  // with our own recover-or-die (out of scope) or pushing an upstream
+  // PR. The "no crash" assertion is the load-bearing contract.
+  test("garbage JSON input does not crash the server (the SDK closes the session, which is the documented policy)") {
+    val cp = classpathOrSkip()
+    cp.foreach { c =>
+      val modelFile = java.nio.file.Files.createTempFile("sm8-e2e-garbage-", ".yaml")
+      java.nio.file.Files.writeString(
+        modelFile,
+        "name: e2e-spec-model\nversion: 1\nsource:\n  byName:\n    table: e2e_spec_table\n"
+      )
+      val pb = new ProcessBuilder(
+        "java", "-cp", c, "io.sm8.server.Main",
+        "--model", modelFile.toString,
+        "--port", "0",
+        "--metrics-port", "0",
+        "--mcp-transport", "stdio",
+        "--ingress-url", "http://127.0.0.1:8080"
+      )
+      pb.directory(new java.io.File(repoRoot))
+      val proc = pb.start()
+      val writer = new PrintWriter(proc.getOutputStream, true)
+      val reader = new BufferedReader(new InputStreamReader(proc.getInputStream, StandardCharsets.UTF_8))
+      try {
+        // Send: initialize, valid ack, garbage. The SDK's catch
+        // closes the session after the garbage. We expect the
+        // initialize response (arrived before the garbage) and a
+        // clean exit on EOF.
+        writer.println("""{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}""")
+        writer.println("""{"jsonrpc":"2.0","method":"notifications/initialized"}""")
+        writer.println("this is not valid json {[(")
+        writer.close()
+
+        val messages = scala.collection.mutable.ListBuffer.empty[String]
+        val deadline = System.currentTimeMillis() + 5000L
+        while (messages.size < 1 && System.currentTimeMillis() < deadline) {
+          if (reader.ready()) {
+            val line = reader.readLine()
+            if (line != null && line.nonEmpty) messages += line
+          } else Thread.sleep(50)
+        }
+        withClue(s"server must return initialize response even after garbage (got ${messages.size}): ${messages.mkString("\n")}") {
+          messages.size shouldBe 1
+        }
+        messages.head should include ("\"serverInfo\"")
+        // JVM exits cleanly (exit code 0, no SIGException). Per
+        // McpStdioRoute's CountDownLatch + System.exit(0).
+        val exited = proc.waitFor(5, TimeUnit.SECONDS)
+        exited shouldBe true
+        proc.exitValue() shouldBe 0
+      } finally {
+        if (proc.isAlive) {
+          proc.destroyForcibly()
+          proc.waitFor(2, TimeUnit.SECONDS)
+        }
+        java.nio.file.Files.deleteIfExists(modelFile)
+      }
+    }
+  }
+
   // Shared runner: spawn Java, send handshake, close stdin, wait, assert.
   private def runSmoke(
       cp: String,

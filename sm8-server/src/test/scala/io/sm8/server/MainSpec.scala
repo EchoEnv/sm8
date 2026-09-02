@@ -735,6 +735,48 @@ class MainSpec extends AnyFunSuite with Matchers {
     installIdx should be < startIdx
   }
 
+  // PR-265 de-review H2 (verified fix): --mcp-transport stdio AND --mcp-http-port > 0 
+  // are mutually exclusive per ADR-015 u00a7Mutex precedence, and the rule is SYMMETRIC 
+  // (works regardless of argv order per the post-loop flatMap in parseArgs). 
+  test("parseArgs: --mcp-transport stdio + --mcp-http-port 8080 is rejected (mutex)") {
+    val r = Main.parseArgs(List("--model", "m.yaml", "--mcp-transport", "stdio", "--mcp-http-port", "8080"))
+    r shouldBe Left(Main.CliError.MutuallyExclusive("--mcp-transport stdio", "--mcp-http-port"))
+  }
+  test("parseArgs: --mcp-http-port 8080 + --mcp-transport stdio is rejected (mutex SYMMETRIC)") {
+    val r = Main.parseArgs(List("--model", "m.yaml", "--mcp-http-port", "8080", "--mcp-transport", "stdio"))
+    r shouldBe Left(Main.CliError.MutuallyExclusive("--mcp-transport stdio", "--mcp-http-port"))
+  }
+  test("parseArgs: --mcp-transport stdio alone is accepted (no mutex)") {
+    val r = Main.parseArgs(List("--model", "m.yaml", "--mcp-transport", "stdio"))
+    r shouldBe Right(Main.CliArgs(modelPath = Some(java.nio.file.Paths.get("m.yaml")), mcpTransport = Some("stdio")))
+  }
+  // PR-265 de-review H1 (verified fix): URI(value).toURL throws URISyntaxException
+  // (a checked Exception, NOT a RuntimeException subclass). The catch must
+  // include it (or wrap in NonFatal) to preserve the typed-error contract.
+  test("parseArgs: --ingress-url without scheme is a typed BadUrl error (not a stack trace)") {
+    // E.g. user typo: --ingress-url 127.0.0.1:8080 (no scheme)
+    val r = Main.parseArgs(List("--model", "m.yaml", "--ingress-url", "127.0.0.1:8080"))
+    r shouldBe Left(Main.CliError.BadUrl("--ingress-url", "127.0.0.1:8080"))
+  }
+  test("parseArgs: --ingress-url with garbage string is a typed BadUrl error") {
+    val r = Main.parseArgs(List("--model", "m.yaml", "--ingress-url", "garbage"))
+    r shouldBe Left(Main.CliError.BadUrl("--ingress-url", "garbage"))
+  }
+  test("parseArgs: --ingress-url with valid http URL is accepted") {
+    val r = Main.parseArgs(List("--model", "m.yaml", "--ingress-url", "http://127.0.0.1:8080"))
+    r shouldBe Right(Main.CliArgs(modelPath = Some(java.nio.file.Paths.get("m.yaml")), ingressUrl = "http://127.0.0.1:8080"))
+  }
+  test("parseArgs: --ingress-url with non-http(s) scheme (e.g. ftp://) is a typed BadUrl error") {
+    val r = Main.parseArgs(List("--model", "m.yaml", "--ingress-url", "ftp://example.com"))
+    r shouldBe Left(Main.CliError.BadUrl("--ingress-url", "ftp://example.com"))
+  }
+
+  test("parseArgs: --ingress-url with empty string is a typed BadUrl error (no scheme)") {
+    val r = Main.parseArgs(List("--model", "m.yaml", "--ingress-url", ""))
+    // Empty URI has no scheme, the protocol-check arm rejects it.
+    r shouldBe Left(Main.CliError.BadUrl("--ingress-url", ""))
+  }
+
   test("[C2] wire: sm8-server no longer imports io.sm8.core.EngineImpl (layer discipline)") {
     // Per audit [C2]: the layer-boundary leak was the direct
     // `new io.sm8.core.EngineImpl()` in `Main.run()`. After the fix,

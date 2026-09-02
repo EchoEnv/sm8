@@ -51,6 +51,7 @@
 package io.sm8.mcp
 
 import io.modelcontextprotocol.server.McpServer
+import io.sm8.platform.mcp.{Sm8ToolHandlers, HttpIngressClient}
 import io.modelcontextprotocol.server.McpServerFeatures
 import io.modelcontextprotocol.server.McpSyncServer
 import io.modelcontextprotocol.server.transport.StdioServerTransportProvider
