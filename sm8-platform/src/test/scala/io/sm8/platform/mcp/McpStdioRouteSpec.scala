@@ -30,12 +30,24 @@
  */
 package io.sm8.platform.mcp
 
+import io.modelcontextprotocol.server.McpServerFeatures
+import org.scalatest.BeforeAndAfterEach
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
 import java.time.Duration
+import scala.util.control.NonFatal
 
-class McpStdioRouteSpec extends AnyFunSuite with Matchers {
+class McpStdioRouteSpec extends AnyFunSuite with Matchers with BeforeAndAfterEach {
+
+  // Per C5-de-M5: previously tests relied on test ordering (1, 2, 3, 4)
+  // and test 4 directly poked `INSTANCE_COUNT.set(0)` to recover from a
+  // failed prior run. ScalaTest does NOT guarantee ordering, so this
+  // was fragile. Reset the counter before every test to give each one
+  // a clean slate.
+  override def beforeEach(): Unit = {
+    McpStdioRoute.INSTANCE_COUNT.set(0)
+  }
 
   // The SDK never calls the ingress client during initialize /
   // tools/list, so an unroutable port is fine for these tests.
@@ -87,10 +99,10 @@ class McpStdioRouteSpec extends AnyFunSuite with Matchers {
     // stdio transport reads from System.in, a single fd-0). Two
     // concurrent McpStdioRoute instances would interleave reads and
     // corrupt the JSON-RPC stream. Enforce this at the factory.
-    // Note: ScalaTest does NOT guarantee test ordering, so we
-    // explicitly reset the singleton counter at the start of this
-    // test to give it a clean slate.
-    McpStdioRoute.INSTANCE_COUNT.set(0)
+    //
+    // Per C5-de-M5: the singleton counter is now reset in
+    // beforeEach() (BeforeAndAfterEach trait), so this test no longer
+    // needs to poke INSTANCE_COUNT directly.
     val route1 = newRoute("sm8-platform-mcp-spec-singleton")
     route1.buildServer()
     try {
@@ -105,6 +117,98 @@ class McpStdioRouteSpec extends AnyFunSuite with Matchers {
         s"unexpected message: ${thrown.getMessage}")
     } finally {
       route1.stop()
+    }
+  }
+
+  // Per C5-de-H1: a new method `signalClose()` was added so the JVM
+  // shutdown hook can wake `awaitClose(...)` within milliseconds
+  // instead of waiting for the full timeout. This test asserts the
+  // contract: signalClose() must wake a blocked awaitClose within
+  // milliseconds, even without calling stop().
+  test("signalClose() wakes awaitClose() without invoking stop()") {
+    val route = newRoute("sm8-platform-mcp-spec-signal-close")
+    route.buildServer()
+    try {
+      val t0 = System.currentTimeMillis()
+      // Run awaitClose on a background thread (it would otherwise
+      // block for the full timeout).
+      val awaiter = new Thread(() => route.awaitClose(timeoutSeconds = 30))
+      awaiter.start()
+      Thread.sleep(100) // give awaiter time to actually start waiting
+      route.signalClose()
+      awaiter.join(5000)
+      val elapsed = System.currentTimeMillis() - t0
+      assert(!awaiter.isAlive, s"awaiter thread should have terminated; elapsed=${elapsed}ms")
+      assert(elapsed < 1000, s"signalClose() should wake within milliseconds, took ${elapsed}ms")
+    } finally {
+      route.stop()
+    }
+  }
+
+  // Per C5-de-M3 + C5-r2-de-M1: the factory must release the JVM-singleton
+  // guard if the underlying `new McpStdioRoute(...)` throws. The current
+  // constructor doesn't itself throw (it's only field init), but the
+  // apply() guard exists for FUTURE invariants (e.g., constructor-time
+  // validation). This test verifies the guard is wired correctly by:
+  // (a) constructing an instance (counter goes 0 -> 1),
+  // (b) verifying the counter is at 1,
+  // (c) calling stop() which resets the counter via the test-clean path,
+  // (d) verifying a fresh construction succeeds (counter back to 1 then
+  //     0 after stop()).
+  //
+  // The actual NonFatal catch path is hard to trigger in pure unit tests
+  // because the constructor has no throw paths today. We assert the
+  // invariant empirically: the singleton guard is RELEASED by stop() so
+  // a subsequent apply() succeeds (this is the same code path the catch
+  // block invokes: `INSTANCE_COUNT.set(0)`).
+  test("apply() releases INSTANCE_COUNT after stop() (proves the guard release path)") {
+    val route1 = newRoute("sm8-platform-mcp-spec-factory-1")
+    route1.buildServer()
+    // After construction, the guard is at 1 (CAS succeeded).
+    assert(McpStdioRoute.INSTANCE_COUNT.get == 1,
+      s"counter should be 1 after construction, was ${McpStdioRoute.INSTANCE_COUNT.get}")
+    route1.stop()
+    // After stop(), the guard is released back to 0.
+    assert(McpStdioRoute.INSTANCE_COUNT.get == 0,
+      s"counter should be 0 after stop(), was ${McpStdioRoute.INSTANCE_COUNT.get}")
+    // A fresh apply() now succeeds.
+    val route2 = newRoute("sm8-platform-mcp-spec-factory-2")
+    route2.buildServer()
+    try {
+      assert(McpStdioRoute.INSTANCE_COUNT.get == 1)
+    } finally {
+      route2.stop()
+    }
+  }
+
+  // Per C5-r2-de-M1: exercise the REAL release path. `apply()` acquires
+  // the guard but the failure-prone SDK builder chain runs in
+  // `buildServer()` (after apply returns). buildServer now catches
+  // NonFatal and releases the guard before rethrowing. We force a
+  // buildServer failure with a null tool spec (the SDK's builder
+  // chain NPEs on it) and assert:
+  // (a) buildServer throws,
+  // (b) the guard is released (counter back to 0),
+  // (c) a subsequent valid apply + buildServer succeeds.
+  test("buildServer() releases INSTANCE_COUNT when the SDK builder throws") {
+    val badRoute = McpStdioRoute(
+      "sm8-platform-mcp-spec-bad", "0.1.0-TEST",
+      Seq(null.asInstanceOf[McpServerFeatures.SyncToolSpecification])
+    )
+    val thrown = try {
+      badRoute.buildServer()
+      None
+    } catch { case NonFatal(e) => Some(e) }
+    assert(thrown.isDefined, "expected buildServer() to throw for a null tool spec")
+    assert(McpStdioRoute.INSTANCE_COUNT.get == 0,
+      s"counter should be released after buildServer failure, was ${McpStdioRoute.INSTANCE_COUNT.get}")
+    // The JVM is not poisoned: a fresh valid construction succeeds.
+    val goodRoute = newRoute("sm8-platform-mcp-spec-after-failure")
+    goodRoute.buildServer()
+    try {
+      assert(McpStdioRoute.INSTANCE_COUNT.get == 1)
+    } finally {
+      goodRoute.stop()
     }
   }
 }

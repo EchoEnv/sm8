@@ -34,7 +34,42 @@ class StdioEndToEndSpec extends AnyFunSuite with Matchers {
 
   private def cpFile: String = s"$scratchDir/sm8-smoke-cp.txt"
 
-  private def repoRoot: String = "/home/emilio/app/projects/sm8"
+  // Per C5-arch-L1: previously hardcoded `/home/emilio/app/projects/sm8`.
+  // Now resolves via SM8_REPO_ROOT env var > system property > walking
+  // up from user.dir looking for a pom.xml with `<modules>` (the
+  // sm8 root). Module-level pom.xml files (sm8-platform/pom.xml, etc.)
+  // do NOT have a <modules> section; the root pom.xml does. We want
+  // the root.
+  private def repoRoot: String = {
+    Option(System.getenv("SM8_REPO_ROOT")).filter(_.nonEmpty)
+      .orElse(Option(System.getProperty("sm8.repoRoot")).filter(_.nonEmpty))
+      .getOrElse {
+        def isRepoRoot(f: java.io.File): Boolean = {
+          if (!f.isDirectory || !new java.io.File(f, "pom.xml").exists()) return false
+          // The root pom.xml has a `<modules>` section; module pom.xml
+          // files do not. Detect by reading for `<module>` in pom.xml.
+          val src = scala.io.Source.fromFile(new java.io.File(f, "pom.xml"))
+          try src.mkString.contains("<modules>") finally src.close()
+        }
+        var dir = new java.io.File(System.getProperty("user.dir"))
+        // Walk up at most 6 levels looking for the root pom.xml.
+        var i = 0
+        while (i < 6 && !isRepoRoot(dir)) {
+          val parent = dir.getParentFile
+          if (parent == null) sys.error(
+            "sm8 repo root not found: walked up from " + System.getProperty("user.dir") +
+            " without finding a root pom.xml (one with <modules>). Set SM8_REPO_ROOT or -Dsm8.repoRoot=<path>."
+          )
+          dir = parent
+          i += 1
+        }
+        if (!isRepoRoot(dir)) sys.error(
+          "sm8 repo root not found within 6 levels of " + System.getProperty("user.dir") +
+          ". Set SM8_REPO_ROOT or -Dsm8.repoRoot=<path>."
+        )
+        dir.getAbsolutePath
+      }
+  }
 
   private def classpathOrSkip(): Option[String] = {
     def tryRegen(): Unit = {
@@ -210,8 +245,25 @@ class StdioEndToEndSpec extends AnyFunSuite with Matchers {
       }
       if (assertToolsList) {
         val toolsResp = messages.find(_.contains("\"id\":2")).orElse(messages.lastOption).getOrElse("(no messages)")
+        // Per C5-arch-L2: the previous `should include ("\"tools\":")`
+        // would pass even for an empty `"tools":[]` array. Parse the
+        // JSON (via jackson, the same mapper the MCP wire uses) and
+        // assert the actual count matches the smoke script's
+        // expectation of 5 tools.
+        val mapper = new com.fasterxml.jackson.databind.ObjectMapper()
+        val toolCount = try {
+          val parsed = mapper.readTree(toolsResp)
+          if (parsed.has("result") && parsed.get("result").has("tools")) {
+            parsed.get("result").get("tools").size()
+          } else 0
+        } catch {
+          case _: Throwable => 0
+        }
         toolsResp should include ("\"result\"")
         toolsResp should include ("\"tools\":")
+        withClue(s"tools/list response should have 5 tools, got $toolCount: $toolsResp") {
+          toolCount shouldBe 5
+        }
       }
 
       if (assertProcessExit) {
