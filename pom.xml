@@ -89,26 +89,42 @@
         <artifactId>json-schema-validator</artifactId>
         <version>1.5.2</version>
       </dependency>
-      <!-- Restate SDK v2.1.1 (PR-C-final handler-class wiring). -->
+      <!-- Restate SDK v2.9.4 (PR-268 upgrade: was v2.1.1).
+           All 5 artifacts (sdk-api / sdk-common / sdk-core /
+           sdk-http-vertx / sdk-serde-jackson) ship together at the
+           same version. API surface verified compatible via javap:
+           - dev.restate.sdk.HandlerRunner.of signature unchanged
+           - dev.restate.sdk.endpoint.Endpoint still in
+             sdk-common-2.9.4.jar
+           - dev.restate.sdk.endpoint.definition.{HandlerDefinition,
+             HandlerType, ServiceDefinition, ServiceType} unchanged
+           - dev.restate.sdk.http.vertx.RestateHttpServer.fromEndpoint(
+             Endpoint): HttpServer still exists (new listen(...)
+             static variants added; we don't use them)
+           - dev.restate.sdk.common.TerminalException unchanged.
+           maven MCP confirmed 2.9.4 is the latest stable (29
+           versions on Maven Central). 0 CVEs at 2.1.1 → 0 CVEs at
+           2.9.4 (no security bump required, only feature parity +
+           bug fixes). -->
       <dependency>
         <groupId>dev.restate</groupId>
         <artifactId>sdk-api</artifactId>
-        <version>2.1.1</version>
+        <version>2.9.4</version>
       </dependency>
       <dependency>
         <groupId>dev.restate</groupId>
         <artifactId>sdk-common</artifactId>
-        <version>2.1.1</version>
+        <version>2.9.4</version>
       </dependency>
       <dependency>
         <groupId>dev.restate</groupId>
         <artifactId>sdk-core</artifactId>
-        <version>2.1.1</version>
+        <version>2.9.4</version>
       </dependency>
       <dependency>
         <groupId>dev.restate</groupId>
         <artifactId>sdk-http-vertx</artifactId>
-        <version>2.1.1</version>
+        <version>2.9.4</version>
       </dependency>
       <!-- sdk-serde-jackson: SPI-auto-loaded via
            META-INF/services/dev.restate.serde.provider.DefaultSerdeFactoryProvider.
@@ -116,7 +132,7 @@
       <dependency>
         <groupId>dev.restate</groupId>
         <artifactId>sdk-serde-jackson</artifactId>
-        <version>2.1.1</version>
+        <version>2.9.4</version>
       </dependency>
       <!-- jackson-module-scala for Scala case-class serde
            (NOT bundled with sdk-serde-jackson; required for

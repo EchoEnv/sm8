@@ -824,6 +824,32 @@ class MainSpec extends AnyFunSuite with Matchers {
     }
   }
 
+  // Per PR-268 v2 backlog: --skip-ingress-probe defaults to false
+  // (probe runs) and can be flipped to true. These two tests pin
+  // both branches at the parseArgs level.
+  test("parseArgs: --skip-ingress-probe defaults to false (probe runs)") {
+    val r = Main.parseArgs(List("--model", "m.yaml"))
+    r match {
+      case Right(cli) =>
+        cli.skipIngressProbe shouldBe false
+      case Left(err) => fail(s"expected Right, got Left($err)")
+    }
+  }
+
+  test("parseArgs: --skip-ingress-probe sets the flag to true") {
+    val r = Main.parseArgs(List("--model", "m.yaml", "--skip-ingress-probe"))
+    r match {
+      case Right(cli) =>
+        cli.skipIngressProbe shouldBe true
+      case Left(err) => fail(s"expected Right, got Left($err)")
+    }
+  }
+
+  test("parseArgs: --skip-ingress-probe rejects a value (it's a switch)") {
+    val r = Main.parseArgs(List("--model", "m.yaml", "--skip-ingress-probe", "true"))
+    r shouldBe Left(Main.CliError.UnknownFlag("--skip-ingress-probe (takes no value)"))
+  }
+
   test("[C2] wire: sm8-server no longer imports io.sm8.core.EngineImpl (layer discipline)") {
     // Per audit [C2]: the layer-boundary leak was the direct
     // `new io.sm8.core.EngineImpl()` in `Main.run()`. After the fix,
