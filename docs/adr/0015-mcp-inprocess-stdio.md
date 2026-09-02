@@ -107,7 +107,7 @@ When `--mcp-transport stdio` is set, sm8-server does **not** bind the Restate HT
 
 The startup probe fires only when `--mcp-transport stdio` is set. In `--mcp-http-port` (Streamable HTTP) mode, `--ingress-url` typically points at the same process's `--port` (loopback), so misconfiguration is less likely; the v2 enhancement could add a probe to that path too.
 
-The probe blocks startup for up to 3 seconds when the ingress is unreachable. This is intentional — co-located ingress containers may bind a fraction of a second after the stdio process — but operators should expect the latency in shape #2 cold-start scenarios. A `--skip-ingress-probe` flag is a v2 enhancement for operators who want fast startup at the cost of no startup misconfiguration detection.
+The probe may block startup for up to 3 seconds when the ingress is unreachable (firewall DROP / TCP connect timeout). Connection refusals on localhost fail near-instantly. This is intentional — co-located ingress containers may bind a fraction of a second after the stdio process — but operators should expect the latency in shape #2 cold-start scenarios. A `--skip-ingress-probe` flag is a v2 enhancement for operators who want fast startup at the cost of no startup misconfiguration detection.
 
 **Two deployment shapes are valid:**
 

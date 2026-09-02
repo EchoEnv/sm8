@@ -867,7 +867,8 @@ class MainSpec extends AnyFunSuite with Matchers {
         ex.getResponseBody.close()
       }
     })
-    probeServer.setExecutor(java.util.concurrent.Executors.newSingleThreadExecutor())
+    val probeExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+    probeServer.setExecutor(probeExecutor)
     probeServer.start()
     val url = s"http://127.0.0.1:${probeServer.getAddress.getPort}"
     val captured = new java.io.ByteArrayOutputStream()
@@ -896,7 +897,8 @@ class MainSpec extends AnyFunSuite with Matchers {
         ex.getResponseBody.close()
       }
     })
-    probeServer.setExecutor(java.util.concurrent.Executors.newSingleThreadExecutor())
+    val probeExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+    probeServer.setExecutor(probeExecutor)
     probeServer.start()
     val url = s"http://127.0.0.1:${probeServer.getAddress.getPort}"
     val captured = new java.io.ByteArrayOutputStream()
@@ -907,6 +909,8 @@ class MainSpec extends AnyFunSuite with Matchers {
     } finally {
       System.setErr(orig)
       probeServer.stop(0)
+      probeExecutor.shutdown()
+      probeExecutor.awaitTermination(2, java.util.concurrent.TimeUnit.SECONDS)
     }
     captured.toString should not include "WARNING"
   }
