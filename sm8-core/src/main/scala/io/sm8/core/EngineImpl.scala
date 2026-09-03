@@ -2,7 +2,7 @@
  * SM8 Core — EngineImpl.
  * Concrete implementation of the `io.sm8.sdk.Engine` trait. Lives in
  * `io.sm8.core` (internal — not SDK). Plugin authors get an Engine
- * via `EngineImpl()` or via a factory method in a future step.
+ * via `EngineFactory.create(plugins)` — `EngineImpl` is internal.
  * Audit fixes (Step 3 audit), per [[scala-jvm-safety-mindset]]:
  * - `seenPlugins` is now a `ConcurrentHashMap.newKeySet` (was
  *   `mutable.Set[Plugin]` — non-thread-safe under concurrent `use()`)
