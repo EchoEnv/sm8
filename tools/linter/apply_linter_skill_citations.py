@@ -1,26 +1,28 @@
 #!/usr/bin/env python3
 """
-Strip bare `Per scala-X` skill-citations in .scala source.
+Strip leading `Per <skill-name>` clauses in .scala source.
 
-Replaces PR-247's previous behavior (which converted bare form to the
-`[[scala-X-mindset]]` wiki-link form). Per the scala2-scaladoc skill:
-no internal process noise — skill names, whether bare or bracketed, are
-internal process metadata. The correct Scaladoc describes the behavior
-without citing an internal skill name.
+The leading clause names an internal skill; per the scala2-scaladoc skill,
+Scaladoc describes behavior without citing an internal skill name. Both
+bare form (`Per scala-X §N`) and bracket form (`Per [[scala-X-mindset]]`)
+are noise and are dropped wholesale. Typo drift forms (`karphyaguids*`,
+`scala-data-driven-refacer`) are dropped too.
 
-Rules (replacement is the empty string, dropping the leading clause):
+Rules (replacement is the empty string):
 
-  Per scala-X                    -> '' (empty)
+  Per scala-X                    -> ''
   Per scala-X-mindset            -> ''
   Per scala-X §N                 -> ''
-  Per scala-X-mindset §N         -> ''
-  Per scala-X-mindset mantra #N  -> ''
-  Per scala-X section N          -> ''
-  Per [[scala-X-mindset]] ...     -> '' (the bracket form is also noise)
-  Per [[karphyaguidsmindset]] ... -> '' (typo names)
-  Per [[scala-data-driven-refacer]] -> '' (typo names)
+  Per [[scala-X-mindset]] ...    -> ''
+  Per [[karphyaguidsmindset]]    -> ''
+  Per scala-data-driven-refacer  -> ''
+  Per karpathy-guidelines-mindset (bare or bracketed) -> ''
+  Per debug-mantra (bare or bracketed) -> ''
 
 The trailing whitespace after the dropped clause is also collapsed.
+Only the lines that contained a stripped clause are touched — Scaladoc
+indentation in `@param` lists, `* Build...` continuations, and aligned
+column text elsewhere in the file is preserved byte-for-byte.
 
 Reads a list of files (or directory trees of .scala) on argv, rewrites in place.
 """
@@ -79,37 +81,73 @@ ANY_BRACKET_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-ALL_PATTERNS = [SKILL_PATTERN, TYPO_PATTERN, ANY_BRACKET_PATTERN]
+# Bare form of skills that don't start with `scala-` (karpathy-* and
+# debug-mantra). Without this, `Per karpathy-guidelines-mindset` (no
+# brackets) escapes the strip and lingers in Scaladoc.
+OTHER_BARE_PATTERN = re.compile(
+    r"\b(?P<per>per)\s+"
+    r"(?:karpathy-(?:guidelines|app-design)(?:-mindset)?"
+    r"|debug-mantra(?:-mindset)?)"
+    r"(?P<trailing>\s+(?:§\s*\d+|mantra\s*#\s*\d+|section\s+\d+))?"
+    r"\s*:?\s*",
+    re.IGNORECASE,
+)
+
+ALL_PATTERNS = [SKILL_PATTERN, TYPO_PATTERN, ANY_BRACKET_PATTERN, OTHER_BARE_PATTERN]
 
 
 def rewrite(text: str) -> tuple[str, int]:
-    """Return (rewritten_text, count_of_replacements)."""
+    """Return (rewritten_text, count_of_replacements).
+
+    Only the lines whose `Per <skill>...` clause was actually stripped
+    get whitespace cleanup. Lines that did not match a pattern are
+    returned byte-for-byte, so Scaladoc indentation (`@param` lists,
+    `* Build...` continuations, aligned columns) is preserved.
+    """
     # Apply patterns sequentially (each pattern strips its own clauses).
     # Sequential application avoids group-name collisions when patterns
-    # are combined via `|` alternation.
+    # are combined via `|` alternation. Collect the set of 0-indexed line
+    # numbers whose contents were touched by any pattern; whitespace
+    # cleanup is restricted to those lines.
+    touched: set[int] = set()
     count = 0
     for pattern in ALL_PATTERNS:
         chunks: list[str] = []
         last_end = 0
         for m in pattern.finditer(text):
+            # Record every line that the match span intersects.
+            start_line = text.count("\n", 0, m.start())
+            end_line = text.count("\n", 0, m.end())
+            for ln in range(start_line, end_line + 1):
+                touched.add(ln)
             chunks.append(text[last_end:m.start()])
             last_end = m.end()
             count += 1
         chunks.append(text[last_end:])
         text = "".join(chunks)
-    # Collapse runs of 3+ spaces into a single space (defensive: in case
-    # the dropped clause left double-spaces around the colon).
-    text = re.sub(r"   +", " ", text)
-    # Collapse runs of leading non-letter punctuation on comment lines
-    # whose first non-whitespace, non-`/` char is now the start of the
-    # actual Scaladoc sentence (not the dropped `Per X:` prefix). This
-    # trims the `//   this object has no mutable state.` residue back to
-    # `// this object has no mutable state.`.
-    text = re.sub(
-        r"(?m)^([ \t]*/+[ \t]+)[ \t]+(?=[A-Za-z(])",
-        r"\1",
-        text,
-    )
+
+    # Whitespace cleanup is scoped to touched lines so untouched
+    # Scaladoc blocks (indented `*`, `@param` alignment, etc.) keep
+    # their column positions.
+    if touched:
+        lines = text.split("\n")
+        for ln in touched:
+            if ln < len(lines):
+                # Collapse double-spaces left at the seam where the
+                # dropped clause used to be. The seam is identified
+                # by a non-space char followed by 2+ spaces followed
+                # by another non-space char (i.e. mid-line whitespace,
+                # NOT leading indent).
+                lines[ln] = re.sub(r"(\S) {2,}(?=\S)", r"\1 ", lines[ln])
+                # Trim leading whitespace inside the `//` (or `/*`) of
+                # the touched comment line, restoring single space.
+                lines[ln] = re.sub(
+                    r"(?m)^([ \t]*/+[ \t]+)[ \t]+(?=[A-Za-z(])",
+                    r"\1",
+                    lines[ln],
+                )
+        text = "\n".join(lines)
+
     return text, count
 
 

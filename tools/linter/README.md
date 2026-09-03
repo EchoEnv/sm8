@@ -19,9 +19,13 @@ Modifications from the upstream skill:
    `\[\[[a-z0-9]+(-[a-z0-9]+)+\]\]` only catches the `[[...]]`
    wiki-link form. PR-246 added a bare-form catch. PR-288 reverses
    PR-247's bracket carve-out: BOTH bare and bracket forms are
-   noise. The new rule catches `per scala-X` (any of the 7 valid
-   skill names) AND typos like `karphyaguids` / `scala-data-driven-refactor`.
-   Correct Scaladoc cites no internal skill at all.
+   noise. The new bare-form rule catches `per scala-X` typos
+   (`karphyaguids`, `scala-data-driven-refactor`, `mindset-…`) AND
+   non-scala skill forms (`karpathy-guidelines`, `karpathy-app-design`,
+   `debug-mantra`). It does NOT catch the 7 valid `scala-*` skill names
+   in bare form (those are allowed; correct Scaladoc cites no internal
+   skill at all, so the bracket form is the noise form that needs to be
+   stripped).
 
 ## `check_md_doc_narration.py` (new file, sibling)
 
@@ -44,9 +48,9 @@ Patterns:
 
 ## Test fixtures
 
-- `test_fixtures/lint_clean.scala` — synthetic .scala with
-  legitimate (non-narration) comments. Linter should report
-  "Clean — no noise patterns found."
+- `test_fixtures/lint_clean.scala` — clean control fixture. Plain
+  prose .scala comments with no flagged noise patterns. Linter should
+  report "Clean — no noise patterns found."
 - `test_fixtures/should_be_flagged.scala` — synthetic .scala with
   examples of the new patterns. Linter should report exit 1 + each
   comment flagged.

@@ -3,7 +3,7 @@
  * tools/linter/apply_linter_skill_citations.py.
  *
  * Run:
- * python3 tools/linter/apply_linter_skill_citations.py tools/linter/test_fixtures/skill_citations_input.scala
+ *   python3 tools/linter/apply_linter_skill_citations.py tools/linter/test_fixtures/skill_citations_input.scala
  *
  * Expected output: 9 replacements (per the per-line fixtures below).
  * Expected content: tools/linter/test_fixtures/skill_citations_expected.scala
