@@ -19,13 +19,15 @@ Modifications from the upstream skill:
    `\[\[[a-z0-9]+(-[a-z0-9]+)+\]\]` only catches the `[[...]]`
    wiki-link form. PR-246 added a bare-form catch. PR-288 reverses
    PR-247's bracket carve-out: BOTH bare and bracket forms are
-   noise. The new bare-form rule catches `per scala-X` typos
-   (`karphyaguids`, `scala-data-driven-refactor`, `mindset-…`) AND
-   non-scala skill forms (`karpathy-guidelines`, `karpathy-app-design`,
-   `debug-mantra`). It does NOT catch the 7 valid `scala-*` skill names
-   in bare form (those are allowed; correct Scaladoc cites no internal
-   skill at all, so the bracket form is the noise form that needs to be
-   stripped).
+   noise. The new bare-form rule catches typo / drift forms
+   (`karphyaguids`, `scala-data-driven-refacer`, `mindset-…`, drift
+   like `scala-jvm-safety-typo`). Bare valid skill names (the 10
+   `scala-*` skills + `karpathy-guidelines` + `karpathy-app-design`
+   + `debug-mantra`) are allowed by the linter because the bracket
+   wiki-link form is the noise form the linter focuses on; the
+   stripper (`apply_linter_skill_citations.py`) catches bare forms at
+   rewrite time. The correct Scaladoc per the scala2-scaladoc skill
+   cites no internal skill at all.
 
 ## `check_md_doc_narration.py` (new file, sibling)
 

@@ -60,7 +60,7 @@ NOISE_PATTERNS = [
     # symbol or external URL, never an internal skill name.
     (r"\[\[[a-z0-9]+([_-][a-z0-9]+)*\]\]", "double-bracket reference to internal skill/tool name (e.g. [[scala-X-mindset]]) — the skill wiki-link convention is internal noise; describe the behavior or link to an external symbol instead"),
     # Bare skill-citation form: `per scala-X §N` or `scala-X-mindset`
-    # without the brackets. The legitimate set is the 7 named scala-*
+    # without the brackets. The legitimate set is the 10 named scala-*
     # skills + karpathy-guidelines + debug-mantra + karpathy-app-design.
     # Anything else is a typo (`karphyaguidsmindset`,
     # `scala-data-driven-refacer`) or a drift of a valid name
@@ -68,9 +68,10 @@ NOISE_PATTERNS = [
     # end-of-skill-name by requiring whitespace, end-of-string, or
     # end-of-line after the candidate, so drift forms like
     # `scala-jvm-safety-typo` (where `jvm-safety` is followed by `-`,
-    # not whitespace) are flagged. We catch BOTH the bare form (this
-    # rule) and the bracket form (the previous rule).
-    (r"\bper\s+(?:scala-(?!jvm-safety(?=\s|\Z|[.,:§)])|spark-batch-bugs(?=\s|\Z|[.,:§)])|error-handling(?=\s|\Z|[.,:§)])|data-driven-refactor(?=\s|\Z|[.,:§)])|jar-packaging(?=\s|\Z|[.,:§)])|perf-testing(?=\s|\Z|[.,:§)])|2-scaladoc(?=\s|\Z|[.,:§)]))|karphyaguids|mindset-|karpathy-(?!guidelines(?=\s|\Z|[.,:§)])|app-design(?=\s|\Z|[.,:§)]))|debug-mantra-)[\w-]*", "bare skill-citation in .scala source — typo skill name or unknown skill (allowed: scala-jvm-safety, scala-spark-batch-bugs, scala-error-handling, scala-data-driven-refactor, scala-jar-packaging, scala-perf-testing, scala2-scaladoc, karpathy-guidelines, debug-mantra, karpathy-app-design); link to a Scala symbol or external URL instead"),
+    # not whitespace) are flagged. The linter is lenient with bare
+    # valid forms (they're stripped by `apply_linter_skill_citations.py`
+    # at rewrite time); only typos / drift / bracket form are flagged.
+    (r"\bper\s+(?:scala-(?!jvm-safety(?=\s|\Z|[.,:§)])|spark-batch-bugs(?=\s|\Z|[.,:§)])|error-handling(?=\s|\Z|[.,:§)])|data-driven-refactor(?=\s|\Z|[.,:§)])|jar-packaging(?=\s|\Z|[.,:§)])|perf-testing(?=\s|\Z|[.,:§)])|2-scaladoc(?=\s|\Z|[.,:§)])|bug-hunting(?=\s|\Z|[.,:§)])|chaos-testing(?=\s|\Z|[.,:§)])|impact-analysis(?=\s|\Z|[.,:§)]))|karphyaguids|mindset-|karpathy-(?!guidelines(?=\s|\Z|[.,:§)])|app-design(?=\s|\Z|[.,:§)]))|debug-mantra-)[\w-]*", "bare skill-citation in .scala source — typo skill name or unknown skill (allowed: scala-jvm-safety, scala-spark-batch-bugs, scala-error-handling, scala-data-driven-refactor, scala-jar-packaging, scala-perf-testing, scala2-scaladoc, scala-bug-hunting, scala-chaos-testing, scala-impact-analysis, karpathy-guidelines, debug-mantra, karpathy-app-design); link to a Scala symbol or external URL instead"),
 ]
 
 COMPILED = [(re.compile(p, re.IGNORECASE), reason) for p, reason in NOISE_PATTERNS]

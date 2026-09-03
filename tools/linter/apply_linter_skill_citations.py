@@ -43,7 +43,8 @@ SKILL_PATTERN = re.compile(
     r"(?:\[\[)?"
     r"scala-"
     r"(?P<skill>jvm-safety|spark-batch-bugs|error-handling|data-driven-refactor|"
-    r"jar-packaging|perf-testing|2-scaladoc)"
+    r"jar-packaging|perf-testing|2-scaladoc|"
+    r"bug-hunting|chaos-testing|impact-analysis)"
     r"(?P<suffix>-(?P<mindset>mindset)|(?P<typo_mindset>mindset))?"
     r"(?P<bracket_close>\]\])?"
     r"(?P<trailing>\s+(?:§\s*\d+|mantra\s*#\s*\d+|section\s+\d+))?"
@@ -70,7 +71,8 @@ ANY_BRACKET_PATTERN = re.compile(
     r"\b(?P<per>per)\s+"
     r"\[\[(?:"
     r"scala-(?:jvm-safety|spark-batch-bugs|error-handling|data-driven-refactor|"
-    r"jar-packaging|perf-testing|2-scaladoc)(?:-mindset)?"
+    r"jar-packaging|perf-testing|2-scaladoc|"
+    r"bug-hunting|chaos-testing|impact-analysis)(?:-mindset)?"
     r"|karphyaguids(?:mindset)?"
     r"|scala-data-driven-refacer"
     r"|debug-mantra(?:-mindset)?"
@@ -93,7 +95,44 @@ OTHER_BARE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-ALL_PATTERNS = [SKILL_PATTERN, TYPO_PATTERN, ANY_BRACKET_PATTERN, OTHER_BARE_PATTERN]
+# Drift forms: a valid scala-* skill name followed by an additional
+# hyphenated suffix that's NOT `-mindset` (e.g. `scala-jvm-safety-typo`,
+# `scala-bug-hunting-whatever`). Without this, SKILL_PATTERN matches
+# only the valid prefix and leaves the `-typo:` residue.
+DRIFT_PATTERN = re.compile(
+    r"\b(?P<per>per)\s+"
+    r"(?:\[\[)?"
+    r"scala-(?:jvm-safety|spark-batch-bugs|error-handling|data-driven-refactor|"
+    r"jar-packaging|perf-testing|2-scaladoc|"
+    r"bug-hunting|chaos-testing|impact-analysis)"
+    r"(?<!-mindset)-(?P<drift>[a-z][a-z0-9-]*)"
+    r"(?P<bracket_close>\]\])?"
+    r"(?P<trailing>\s+(?:§\s*\d+|mantra\s*#\s*\d+|section\s+\d+))?"
+    r"\s*:?\s*",
+    re.IGNORECASE,
+)
+
+# Drift forms: a valid scala-* skill name followed by an additional
+# hyphenated suffix that's NOT `-mindset` (e.g. `scala-jvm-safety-typo`,
+# `scala-bug-hunting-whatever`). Without this, SKILL_PATTERN matches
+# only the valid prefix and leaves the `-typo:` residue. Listed
+# before SKILL_PATTERN so the drift case wins.
+DRIFT_PATTERN = re.compile(
+    r"\b(?P<per>per)\s+"
+    r"(?:\[\[)?"
+    r"scala-(?:jvm-safety|spark-batch-bugs|error-handling|data-driven-refactor|"
+    r"jar-packaging|perf-testing|2-scaladoc|"
+    r"bug-hunting|chaos-testing|impact-analysis)"
+    r"(?<!-mindset)-(?P<drift>[a-z][a-z0-9]*)"
+    r"(?P<bracket_close>\]\])?"
+    r"(?P<trailing>\s+(?:§\s*\d+|mantra\s*#\s*\d+|section\s+\d+))?"
+    r"\s*:?\s*",
+    re.IGNORECASE,
+)
+
+# Catch patterns in priority order: drift first (to grab the full
+# `scala-X-typo` form), then the rest.
+ALL_PATTERNS = [DRIFT_PATTERN, SKILL_PATTERN, TYPO_PATTERN, ANY_BRACKET_PATTERN, OTHER_BARE_PATTERN]
 
 
 def rewrite(text: str) -> tuple[str, int]:
