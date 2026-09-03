@@ -68,6 +68,12 @@ object EngineFactory {
   /**
    * Construct an Engine pre-wired with the given plugins.
    *
+   * Thread-safe: each call constructs a fresh `EngineImpl` and
+   * there is no shared state in the factory itself. Concurrent
+   * callers each get their own engine; the `EngineImpl.use`
+   * thread-safety (the `seenPlugins` `ConcurrentHashMap.newKeySet`
+   * fix from main) applies inside each engine.
+   *
    * @param plugins plugins to register on the engine via
    *                `engine.use(plugin)`. Empty Seq is allowed
    *                (matches the unit-test path).

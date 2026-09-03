@@ -10,7 +10,9 @@ The C6 audit (map #270) and the AGENTS.md "Common gotchas" entry both flag
 that `sm8-platform/src/main/scala/io/sm8/platform/query/QueryService.scala:143`
 constructs `EngineImpl` directly inside the platform layer — a layer-leak
 that contradicts RFC §3 ("adapters / core / plugins / hooks" decoupling)
-and the AGENTS.md RULE#1 ("sole outward seam from adapters"). The single
+and the AGENTS.md "Common gotchas" entry (which lists two outward seams:
+`EngineFactory.create` for construction, `PluginDiscovery.discoverFromConfig`
+for discovery). The single
 call site is the only `new EngineImpl` outside `sm8-core/src/main` today
 (verified by `grep -rn 'new EngineImpl' sm8-{server,platform,cli,mcp}/src/main`).
 
@@ -36,30 +38,32 @@ the existing `PluginDiscovery` object.
 ```scala
 package io.sm8.core
 
+import io.sm8.sdk.Engine
 import io.sm8.sdk.Plugin
 
 /**
  * Factory for constructing fully-wired `Engine` instances.
  *
- * Sole outward seam from the adapter layer (sm8-server, sm8-platform,
- * sm8-cli, sm8-mcp) for engine construction. Adapters MUST call
- * `EngineFactory.create(plugins)` instead of `new EngineImpl`; the
- * concrete `EngineImpl` class is implementation detail of sm8-core.
- *
- * Per [[karpathy-app-design-mindset]] §3.1 (protocols before
- * implementations) + RFC §3 Core Boundary. PR-272.
+ * Sole outward seam from the adapter layer for engine construction.
+ * Adapters MUST NOT construct `EngineImpl` directly.
  */
 object EngineFactory {
 
   /**
    * Construct an Engine pre-wired with the given plugins.
    *
+   * Thread-safe: each call constructs a fresh `EngineImpl` and
+   * there is no shared state in the factory itself. Concurrent
+   * callers each get their own engine; the `EngineImpl.use`
+   * thread-safety (the `seenPlugins` `ConcurrentHashMap.newKeySet`
+   * fix from main) applies inside each engine.
+   *
    * @param plugins plugins to register on the engine via
    *                `engine.use(plugin)`. Empty Seq is allowed
    *                (matches the unit-test path).
-   * @return the wired Engine. Currently `EngineImpl`; the return
-   *         type is the SDK `Engine` trait so callers don't bind
-   *         to the concrete class.
+   * @return the wired Engine. The return type is the SDK `Engine`
+   *         trait so callers don't bind to the concrete
+   *         `EngineImpl` class.
    */
   def create(plugins: Seq[Plugin]): Engine = {
     val engine = new EngineImpl

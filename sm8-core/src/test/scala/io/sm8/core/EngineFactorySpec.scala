@@ -31,6 +31,14 @@ class EngineFactorySpec extends AnyFlatSpec with Matchers {
   // Test plugin: counts how many times setup() was called.
   private final class CounterPlugin extends Plugin {
     var setupCount: Int = 0
+    /** Records the setup() invocation. Body is intentionally
+      * trivial: the test reads setupCount after EngineFactory.create.
+      *
+      * @param engine the engine the plugin is being registered on.
+      *              Not used by the counter — the assertion is on
+      *              the side-effect (setupCount increment), not the
+      *              engine reference.
+      */
     override def setup(engine: Engine): Unit = {
       setupCount += 1
     }
@@ -83,5 +91,26 @@ class EngineFactorySpec extends AnyFlatSpec with Matchers {
     EngineFactory.create(Seq(p))
     assert(p.setupCount == 2,
       "plugin.setup() should fire on every create() call, not once")
+  }
+
+  it should "swallow NonFatal exceptions from plugin.setup() (per karpathy-app-design §4.2)" in {
+    // The contract inherited from EngineImpl.use: a plugin whose
+    // setup() throws NonFatal is warned-and-dropped, not propagated.
+    // The factory must NOT re-throw — that would break server boot
+    // when one plugin is buggy (bad plugins warn, never crash).
+    val throwing = new Plugin {
+      /** Plugin-side setup that throws NonFatal. The factory must
+        * inherit EngineImpl.use's swallow behavior — see the test
+        * name + karpathy-app-design §4.2 (bad plugins warn, never crash).
+        *
+        * @param engine the engine the plugin is being registered on.
+        *              Not used — this implementation always throws.
+        */
+      override def setup(engine: Engine): Unit =
+        throw new RuntimeException("boom from test plugin")
+    }
+    // Should not throw — factory inherits EngineImpl.use's swallow.
+    val engine = EngineFactory.create(Seq(throwing))
+    assert(engine != null, "engine should still be returned after a NonFatal plugin exception")
   }
 }
