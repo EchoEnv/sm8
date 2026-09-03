@@ -15,13 +15,19 @@ Modifications from the upstream skill:
    `\bpr-\w*(?=[a-zA-Z]\w*\d|\d\w*[a-zA-Z])\w*` matches mixed-letter
    handles like `PR-O4g`, `PR-2A` while correctly rejecting
    digit-only `PR-123`.
-2. **Bare skill-citation in .scala source** — original
+2. **Bare + bracket skill-citation in .scala source** — the original
    `\[\[[a-z0-9]+(-[a-z0-9]+)+\]\]` only catches the `[[...]]`
-   wiki-link form. C4 T6 flagged that the bare form
-   (e.g. `Per scala-jvm-safety §3` without brackets) bypasses the
-   linter. New pattern:
-   `\bper\s+scala-(?:jvm-safety|spark-batch-bugs|error-handling|data-drivenrefactor|jar-packaging|perf-testing|scala2-scaladoc)(?:\s+§\d+|\b)` —
-   catches the bare form. Bracket form remains OK.
+   wiki-link form. PR-246 added a bare-form catch. PR-288 reverses
+   PR-247's bracket carve-out: BOTH bare and bracket forms are
+   noise. The new bare-form rule catches typo / drift forms
+   (`karphyaguids`, `scala-data-driven-refacer`, `mindset-…`, drift
+   like `scala-jvm-safety-typo`). Bare valid skill names (the 11
+   `scala-*` skills + `karpathy-guidelines` + `karpathy-app-design`
+   + `debug-mantra`) are allowed by the linter because the bracket
+   wiki-link form is the noise form the linter focuses on; the
+   stripper (`apply_linter_skill_citations.py`) catches bare forms at
+   rewrite time. The correct Scaladoc per the scala2-scaladoc skill
+   cites no internal skill at all.
 
 ## `check_md_doc_narration.py` (new file, sibling)
 
@@ -44,9 +50,9 @@ Patterns:
 
 ## Test fixtures
 
-- `test_fixtures/lint_clean.scala` — synthetic .scala with
-  legitimate (non-narration) comments. Linter should report
-  "Clean — no noise patterns found."
+- `test_fixtures/lint_clean.scala` — clean control fixture. Plain
+  prose .scala comments with no flagged noise patterns. Linter should
+  report "Clean — no noise patterns found."
 - `test_fixtures/should_be_flagged.scala` — synthetic .scala with
   examples of the new patterns. Linter should report exit 1 + each
   comment flagged.
@@ -69,8 +75,13 @@ python3 tools/linter/check_scaladoc_noise.py <file_or_dir>
 # PR-246 new sibling (in this repo; .md only)
 python3 tools/linter/check_md_doc_narration.py <file_or_dir>
 
-# PR-247 rewrite helper: convert bare `Per scala-X` citations to `[[scala-X-mindset]]`
-# wiki-link form. Rewrites in place; verify the diff before committing.
+# PR-288 strip helper: remove `Per scala-X` skill-citations from
+# .scala source (both bare form and bracket wiki-link form). Per the
+# scala2-scaladoc skill: no internal process noise — skill names,
+# whether bare or bracketed, are internal process metadata. PR-247 had
+# converted bare form to `[[scala-X-mindset]]`; PR-288 inverts that:
+# the correct Scaladoc describes behavior without citing an internal skill.
+# Rewrites in place; verify the diff before committing.
 python3 tools/linter/apply_linter_skill_citations.py <file_or_dir>
 
 # CI integration (suggested)
@@ -86,28 +97,37 @@ mvn -q \
 (The CI integration example isn't wired up in this PR — that's a
 follow-up if the team wants lint-as-CI.)
 
-## PR-247: skill-citation carve-out + rewrite helper
+## PR-288: skill-citation stripping (replaces PR-247's bracket-rewrite)
 
-The `[[scala-X-mindset]]` wiki-link form is the sm8 convention for skill
-citations (used 30+ times across the codebase). The generic
-"double-bracket reference" pattern in `check_scaladoc_noise.py` would
-otherwise flag every wiki-link form, contradicting the bare-citation pattern
-that says "use `[[scala-X]]` form."
+Per the scala2-scaladoc skill ("no internal process noise"), skill
+names are internal process metadata regardless of form. Both the
+bare form (`Per scala-jvm-safety §3`) and the bracket wiki-link form
+(`Per [[scala-jvm-safety-mindset]] §3`) reference internal skills by name.
 
-PR-247 adds a precise carve-out in `check_scaladoc_noise.py`: the
-`[[scala-X-mindset]]` and `[[scala-X]]` forms for the 7 known skill names
-(jvm-safety, spark-batch-bugs, error-handling, data-driven-refactor,
-jar-packaging, perf-testing, 2-scaladoc) are NOT flagged. Any other
-double-bracket reference (including `[[scala-foo-bar-baz]]` for an
-unknown skill) still matches.
+PR-247's approach was to convert bare → bracket form (treating the
+bracket form as canonical sm8 convention). PR-288 reverses that
+decision: skill citations are stripped entirely. The correct Scaladoc
+describes the behavior or links to an external symbol; it never cites
+an internal skill by name.
 
-The `apply_linter_skill_citations.py` script mechanically converts bare
-`Per scala-X` and `Per scala-X §N` citations to the wiki-link form, and
-also fixes the pre-existing `Per scala-error-handlingmindset` typo (missing
-hyphen between `handling` and `mindset`).
+Changes from PR-247:
 
-### PR-247 fixture
+- `check_scaladoc_noise.py` — the bracket-form carve-out for the 7 known
+  `scala-*` skill names is **removed**. Every `[[scala-X-mindset]]` /
+  `[[karphyaguidsmindset]]` / etc. is now flagged as internal noise.
+- The bare-form rule is updated: it now flags BOTH valid skill names
+  (the 7 in the allowlist) AND typo skill names
+  (`karphyaguids*`, `scala-data-driven-refactor`).
+- `apply_linter_skill_citations.py` — instead of converting bare → bracket
+  form, it now **strips** the leading citation clause entirely. Bare
+  form, bracket form, and typo forms are all stripped.
 
-- `test_fixtures/skill_citations_input.scala` — input fixture with 6 variants
-  (bare, `§N`, `-mindset`, `-mindset mantra #N`, typo, lowercase `per`).
-- `test_fixtures/skill_citations_expected.scala` — expected output.
+### PR-288 fixtures
+
+- `test_fixtures/skill_citations_input.scala` — input fixture with 9 variants
+  (bare, `§N`, `-mindset`, `-mindset mantra #N`, typo, lowercase `per`,
+  bracket form, typo bracket form, typo bare form).
+- `test_fixtures/skill_citations_expected.scala` — expected output
+  (all citations stripped, header comments preserved).
+- `test_fixtures/should_be_flagged.scala` — updated to flag the bracket
+  form as noise (PR-247 originally carved it out).

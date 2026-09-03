@@ -1,11 +1,11 @@
 /*
- * Linter fixture: examples that should be REWRITTEN by
+ * Linter fixture: examples that should be STRIPPED by
  * tools/linter/apply_linter_skill_citations.py.
  *
  * Run:
  *   python3 tools/linter/apply_linter_skill_citations.py tools/linter/test_fixtures/skill_citations_input.scala
  *
- * Expected output: 6 replacements.
+ * Expected output: 9 replacements (per the per-line fixtures below).
  * Expected content: tools/linter/test_fixtures/skill_citations_expected.scala
  */
 
@@ -26,3 +26,12 @@
 
 // Lowercase "per":
  * per scala-perf-testing: warm the JIT before measuring.
+
+// Bracket form (also stripped per PR-288):
+ * Per [[scala-jar-packaging-mindset]] §1: tooling artifacts.
+
+// Typo bracket form:
+ * Per [[karphyaguidsmindset]]: typo.
+
+// Typo bare form:
+ * Per scala-data-driven-refacer: typo.

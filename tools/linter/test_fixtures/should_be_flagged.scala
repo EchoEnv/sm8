@@ -1,11 +1,16 @@
 /*
- * Linter fixture: examples that should be FLAGGED by the linter
- * extensions added in PR-246.
+ * Linter fixture: examples that should be FLAGGED by the linter.
  *
- * Each comment below matches one of the new patterns:
+ * Each comment below matches one of the noise patterns:
  *   1. Mixed-letter PR handle (e.g. PR-O4g, PR-2A)
- *   2. Bare skill-citation in .scala source (e.g. "per scala-jvm-safety §3")
- *   3. Stable-doc PR handle with process-narration context
+ *   2. Bare skill-citation in .scala source (e.g. "Per scala-jvm-safety §3")
+ *   3. Bracket-form skill wiki-link (e.g. "[[scala-jvm-safety-mindset]]") —
+ *      PR-247 originally carved these out; PR-288 reverses that — the
+ *      bracket form is also noise per the scala2-scaladoc skill
+ *      ("no internal process noise"; skill names are internal process
+ *      metadata regardless of form).
+ *   4. Typo skill names (karphyaguidsmindset, scala-data-driven-refacer)
+ *   5. Stable-doc PR handle with process-narration context
  *      (e.g. "was added in PR-O4g", "introduced in PR-NNN")
  *
  * Run `python3 tools/linter/check_scaladoc_noise.py tools/linter/test_fixtures/should_be_flagged.scala`
@@ -20,7 +25,8 @@
 
 /* 2. Bare skill-citation in .scala source. The linter extension
  * added in PR-246 catches the bare form (without the `[[...]]`
- * wiki-link brackets). The bracket form is OK. */
+ * wiki-link brackets).
+ */
 
 // 2b. Other bare skill-citation forms (matches the broader regex).
 // Per scala-spark-batch-bugs §1 we mirror the bare form.
@@ -28,15 +34,24 @@
 // Per scala-data-driven-refactor §2 to prove the typo fix.
 // Per scala-2-scaladoc §3 to prove the 2-scaladoc form is caught.
 
-// 2c. Skill wiki-links (carve-out from pattern [27] — MUST NOT be flagged).
-// * Per [[scala-jvm-safety-mindset]]: this is intentional.
-// * Per [[scala-perf-testing-mindset]] §3.
-// * Per [[scala-data-driven-refactor]]: bare skill wiki-link also ok.
+/* 3. Bracket-form skill wiki-link (PR-288 reverses PR-247's carve-out;
+// the bracket form is internal noise).
+// * Per [[scala-jvm-safety-mindset]]: should be flagged now.
+// * Per [[scala-perf-testing-mindset]] §3: should be flagged.
+// * Per [[scala-data-driven-refactor]]: bare skill wiki-link also flagged.
+ */
 
-/* 3. Stable-doc PR handle with process-narration context
+/* 4. Typo skill names. PR-288 catches `karphyaguids*` and
+ * `scala-data-driven-refacer` as drift from the allowlist.
+ */
+// * Per [[karphyaguidsmindset]]: typo, should be flagged.
+// * Per scala-data-driven-refacer §2: typo, should be flagged.
+
+/* 5. Stable-doc PR handle with process-narration context
  * (this is the .md linter's scope, but a process-narration
  * phrase + PR handle in a .scala comment should also be caught
- * by the .scala linter's existing rules). */
+ * by the .scala linter's existing rules).
+ */
 
-/* 3b. Other "fixed in PR-NNN" form */
+/* 5b. Other "fixed in PR-NNN" form */
 class Foo
