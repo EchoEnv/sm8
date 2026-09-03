@@ -71,7 +71,7 @@ import scala.util.control.NonFatal
  *
  * @param hooks the SDK hook manager (sorted by priority on read)
  */
-final class EngineHookDispatcher private (hooks: HookManager) extends io.sm8.sdk.HookRunner {
+final class EngineHookDispatcher private (val hooks: HookManager) extends io.sm8.sdk.HookRunner {
 
   /**
    * Run a request through the PreExecute → execute → PostExecute

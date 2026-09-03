@@ -35,14 +35,31 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 JAR_DEFAULT="${REPO_ROOT}/sm8-server/target/sm8-server_2.13-0.1.0-SNAPSHOT.jar"
 JAR="$JAR_DEFAULT"
-MODEL="/tmp/pr264-model.yaml"
-# Per scripts/smoke-e2e.sh convention: cache the dependency classpath
-# in $JCODE_SCRATCH_DIR.
+# Default the model + log + sentinel paths under $JCODE_SCRATCH_DIR
+# so the smoke doesn't litter /tmp/ on every run. Falls back to /tmp/
+# when JCODE_SCRATCH_DIR is unset, matching the scripts/smoke-e2e.sh
+# convention.
 JCODE_SCRATCH_DIR="${JCODE_SCRATCH_DIR:-/tmp}"
+MODEL_DEFAULT="${JCODE_SCRATCH_DIR}/sm8-smoke-mcp-stdio-model.yaml"
+MODEL="$MODEL_DEFAULT"
+STDERR_LOG="${JCODE_SCRATCH_DIR}/smoke-mcp-stdio.stderr"
+EXIT_SENTINEL="${JCODE_SCRATCH_DIR}/smoke-mcp-stdio.exit"
 CP_FILE="${JCODE_SCRATCH_DIR}/sm8-smoke-cp.txt"
-# PR-265 de-L4: truncate the stderr log at script start so the
-# "stderr log not captured" precondition is unambiguous.
-: > /tmp/smoke-mcp-stdio.stderr
+# Truncate the stderr log + exit sentinel at script start so the
+# "stderr log not captured" + "exit sentinel" preconditions are
+# unambiguous across reruns.
+: > "$STDERR_LOG"
+: > "$EXIT_SENTINEL"
+
+# Best-effort cleanup on EXIT/INT/TERM: reap any java process spawned
+# for this JAR so a smoke timeout / SIGTERM does not leave a hung JVM
+# until the harness reaps it. Scoped to the JAR basename via pkill -f.
+cleanup() {
+  local rc=$?
+  pkill -f "java .*${JAR##*/}" 2>/dev/null || true
+  exit $rc
+}
+trap cleanup EXIT INT TERM
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -54,7 +71,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ -f "$JAR" ] || { echo "smoke-mcp-stdio FAIL: jar not found: $JAR" >&2; exit 1; }
-[ -f "$MODEL" ] || { echo "smoke-mcp-stdio FAIL: model not found: $MODEL" >&2; exit 1; }
+# $MODEL is created by the heredoc below; no pre-existence check.
 
 fail() { echo "smoke-mcp-stdio FAIL: $*" >&2; exit "${2:-1}"; }
 
@@ -91,9 +108,7 @@ YAML
 # (per arch-L9). The latch budget itself is `awaitClose(timeoutSeconds
 # = 30)` in Main.scala; the smoke's 15s is the CI budget for the
 # FULL handshake-to-exit path, not the latch spec.
-# Per C5-r2-de-L2: truncate the exit sentinel at startup so a
-# stale value from a prior run cannot leak into a fresh run.
-: > /tmp/smoke-mcp-stdio.exit
+# Exit sentinel truncated at startup; see init block above.
 START_EPOCH=$(date +%s)
 
 # Flat form per sibling smoke-mcp.sh (de-L3): keep stdin open for the
@@ -123,14 +138,14 @@ OUTPUT=$(
     --metrics-port 0 \
     --mcp-transport stdio \
     --ingress-url http://127.0.0.1:8080 \
-    2>/tmp/smoke-mcp-stdio.stderr
+    2>"$STDERR_LOG"
   # Capture java's exit code INSIDE the substitution so $? survives
   # the subshell. We use a sentinel file because bash's $? across
   # `$(...)` boundaries is reset.
-  echo $? > /tmp/smoke-mcp-stdio.exit
+  echo $? > "$EXIT_SENTINEL"
 ) || EXIT=$?
-[ -f /tmp/smoke-mcp-stdio.exit ] || fail "java exit sentinel not written"
-EXIT=$(cat /tmp/smoke-mcp-stdio.exit)
+[ -f "$EXIT_SENTINEL" ] || fail "java exit sentinel not written"
+EXIT=$(cat "$EXIT_SENTINEL")
 [ "$EXIT" -eq 0 ] || fail "java exited with code $EXIT (expected 0)"
 
 ELAPSED=$(( $(date +%s) - START_EPOCH ))
@@ -181,10 +196,10 @@ TOOL_COUNT=$(echo "$TOOLS_RESP" | python3 -c 'import json,sys; d=json.loads(sys.
 echo "smoke-mcp-stdio: tools/list response has all 5 tools (count=$TOOL_COUNT)"
 
 # Verify: stderr DOES contain the expected startup banners.
-[ -f /tmp/smoke-mcp-stdio.stderr ] || fail "stderr log not captured"
-if ! grep -q 'sm8:.*listening on port' /tmp/smoke-mcp-stdio.stderr; then
+[ -f "$STDERR_LOG" ] || fail "stderr log not captured"
+if ! grep -q 'sm8:.*listening on port' "$STDERR_LOG"; then
   echo "stderr content:"
-  cat /tmp/smoke-mcp-stdio.stderr
+  cat "$STDERR_LOG"
   fail "expected 'sm8:.*listening on port' banner in stderr (post-redirect)"
 fi
 echo "smoke-mcp-stdio: 'sm8:.*listening on port' banner correctly on stderr"

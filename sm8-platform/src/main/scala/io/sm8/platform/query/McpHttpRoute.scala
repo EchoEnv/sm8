@@ -244,6 +244,14 @@ final class McpHttpRoute private[sm8] (
         val sb = new java.lang.StringBuilder()
         req.bodyHandler(new io.vertx.core.Handler[Buffer] {
           def handle(buf: Buffer): Unit = {
+            // Guard against oversized payloads. 16MB matches the SDK
+            // bound; reject earlier so we don't grow the StringBuilder
+            // unbounded across chunked uploads.
+            if (sb.length + buf.length() > 16L * 1024L * 1024L) {
+              try req.response.setStatusCode(413).end("payload too large")
+              catch { case NonFatal(_) => () }
+              return
+            }
             sb.append(buf.toString("UTF-8"))
             try handlePostBody(req, sb.toString)
             catch { case NonFatal(e) =>

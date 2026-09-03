@@ -106,11 +106,46 @@
         <testSourceDirectory>src/test/scala</testSourceDirectory>
 
         <plugins>
-            <!-- Per the parent pom's standard scala-maven-plugin
-                 config; same conventions as sm8-server. -->
+            <!-- Per ADR-013 (PR-259) and the parent pom's standard
+                 scala-maven-plugin config; same conventions as
+                 sm8-server. -->
             <plugin>
                 <groupId>net.alchim31.maven</groupId>
                 <artifactId>scala-maven-plugin</artifactId>
+            </plugin>
+
+            <!--
+              Zero-Spark invariant per ADR-008-AD v1.1.
+              Maven inheritance semantics — <build><plugins> in parent
+              does NOT auto-apply executions, so this block is REQUIRED
+              per-module. Template mirrors sm8-cli/pom.xml:80-124.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <version>3.4.1</version>
+                <executions>
+                    <execution>
+                        <id>enforce-no-spark</id>
+                        <goals><goal>enforce</goal></goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <rules>
+                        <bannedDependencies>
+                            <excludes>
+                                <exclude>org.apache.spark:*</exclude>
+                            </excludes>
+                            <message>
+                                sm8-mcp must remain Spark-free. Spark
+                                classes live in connectors/spark-connector,
+                                not in the MCP server transport. Move the
+                                offending dep there when the connector
+                                lands.
+                            </message>
+                        </bannedDependencies>
+                    </rules>
+                </configuration>
             </plugin>
 
             <!-- Build a fat jar so the MCP server can be spawned as a
@@ -145,6 +180,39 @@
                         </configuration>
                     </execution>
                 </executions>
+            </plugin>
+
+            <!--
+              Enforce zero-Spark at build-time. Template matches the
+              other reactor modules. Per [[scala-jar-packaging-mindset]]
+              "audit jar contents": `org.apache.spark:*` is a connector-
+              only groupId, never a tool/CLI/MCP dependency.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <version>3.4.1</version>
+                <executions>
+                    <execution>
+                        <id>enforce-no-spark</id>
+                        <goals><goal>enforce</goal></goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <rules>
+                        <bannedDependencies>
+                            <excludes>
+                                <exclude>org.apache.spark:*</exclude>
+                            </excludes>
+                            <message>
+                                sm8-mcp must remain Spark-free. Spark
+                                classes live in connectors/spark-connector,
+                                not in the MCP transport. Move the
+                                offending dep there when needed.
+                            </message>
+                        </bannedDependencies>
+                    </rules>
+                </configuration>
             </plugin>
         </plugins>
     </build>

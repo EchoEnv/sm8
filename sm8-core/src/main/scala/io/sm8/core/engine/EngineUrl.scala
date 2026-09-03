@@ -12,14 +12,13 @@
  *
  * trait + match". The case-class set is fixed, small, known-at-compile-time;
  * each new reference engine adds one more `case class` next to the
- * existing 3 (Spark, Trino, InMemory; the trait is `sealed` so the
- * compiler enforces exhaustiveness). External connectors do NOT extend
- * the sealed trait — they use the `EngineUrlParser` SPI to validate
- * their grammar and realize against the existing 3 cases. (One
- * exception: the in-process DuckDB engine needed a 4th case
- * because its URL must carry the wire-stable name on the typed
- * carrier for audit + routing correctness — the
- * `InMemory(seed)` slot would have lied about the engine name.)
+ * existing 4 (Spark, Trino, DuckDb, InMemory; the trait is `sealed`
+ * so the compiler enforces exhaustiveness). External connectors do
+ * NOT extend the sealed trait — they use the `EngineUrlParser` SPI
+ * to validate their grammar and realize against the existing 4
+ * cases. (The DuckDB engine was promoted to a dedicated case (not
+ * the `InMemory(seed)` slot) because the in-memory case would
+ * have lied about the engine name in audit + routing events.)
  *
  * ==Why NOT put the grammar parser in the core companion==
  *
@@ -39,7 +38,7 @@
  *
  * ==Wire-stable shape ==
  *
- * The 3 case classes carry ONLY the typed fields needed for the
+ * The 4 case classes carry ONLY the typed fields needed for the
  * engine-specific realization (master URL, JDBC URL, or no-arg for
  * embedded). No `String` parser output leaks into core.
  */

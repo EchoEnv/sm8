@@ -114,9 +114,17 @@ object TestHandlerStubs {
     override def objectKey: String = ""
     override def request: HandlerRequest = req
     override def writeOutput(s: Slice): CompletableFuture[Void] =
-      CompletableFuture.completedFuture(null: Void)
+      throw new UnsupportedOperationException(
+        "writeOutput(Slice) is not exercised in this unit test; " +
+        "HandlerRunner writes are stubbed to throw so accidental " +
+        "execution fails loudly. Use a real HandlerContext for " +
+        "integration tests that exercise journal/output writes.")
     override def writeOutput(e: TerminalException): CompletableFuture[Void] =
-      CompletableFuture.completedFuture(null: Void)
+      throw new UnsupportedOperationException(
+        "writeOutput(TerminalException) is not exercised in this unit test; " +
+        "HandlerRunner error writes are stubbed to throw so accidental " +
+        "execution fails loudly. Use a real HandlerContext for " +
+        "integration tests that exercise journal/output writes.")
 
     // --- State/journal methods (return safe defaults; throw if exercised) ---
     override def get(key: String)

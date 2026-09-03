@@ -14,7 +14,7 @@
  *      before this point still triggers cleanup)
  *   6. start HttpTransport (binds the actual socket)
  *
- * ==Per karphyaguidsmindset "smallest correct change"==
+ * ==Per karpathy-guidelines-mindset "smallest correct change"==
  *
  * Pure composition. Every piece already exists: PlatformModelLoader,
  * EngineRegistry, HttpTransport. Main adds NO engine logic.
@@ -733,6 +733,20 @@ object Main {
                       val stdio = io.sm8.platform.mcp.McpStdioRoute(
                         "sm8", "0.1.0-SNAPSHOT", tools
                       )
+                      // Per C6 audit (T3.7): install shutdown hook
+                      // BEFORE buildServer so a SIGTERM arriving in
+                      // the buildServer window also triggers
+                      // signalClose. Mirrors the HTTP transport
+                      // pattern at line 544-550.
+                      Runtime.getRuntime().addShutdownHook(new Thread(
+                        new Runnable {
+                          def run(): Unit = {
+                            stdio.signalClose()
+                            stdio.stop()
+                          }
+                        },
+                        "sm8-stdio-shutdown"
+                      ))
                       stdio.buildServer()
                       // Per C5-de-H1: install a JVM shutdown hook that
                       // wakes the stdio close latch so SIGTERM during
