@@ -110,6 +110,12 @@ import scala.util.control.NonFatal
  */
 object ModelLoader {
 
+ // Public label passed as `source` to `fromStream` when the caller
+ // has no real origin (e.g. tests, programmatic construction).
+ // Promoted to a constant so the magic string lives in exactly one
+ // place; callers and error-message consumers can reference it.
+ val InMemorySource: String = "<in-memory>"
+
  private val mapper: ObjectMapper =
  new ObjectMapper(new YAMLFactory())
 
@@ -117,7 +123,7 @@ object ModelLoader {
  def fromString(yaml: String): Either[ManifestError, Model] =
  fromStream(
  new ByteArrayInputStream(yaml.getBytes(StandardCharsets.UTF_8)),
- source = "<in-memory>"
+ source = InMemorySource
  )
 
  /** Load from an `InputStream`. Caller is responsible for stream
@@ -125,12 +131,11 @@ object ModelLoader {
  * (so the operator sees WHICH stream failed — a path, a URL,
  * a memory buffer, etc.).
  *
- * Per C7-T3 (#282) + RFC §3: sm8-core is I/O-free. The previous
- * `fromPath(Path)` method opened a file here, which violated the
- * layer boundary. That responsibility now lives in
- * `sm8-platform/.../PlatformModelLoader.fromPath`, which calls
- * this method with the opened InputStream and a `path.toString`
- * label.
+ * @param stream the InputStream containing the YAML manifest
+ * @param source a human-readable label included in error
+ *               messages (e.g. a path, URL, or `InMemorySource`)
+ * @return      `Right(Model)` on success;
+ *              `Left(ManifestError)` on parse failure
  */
  def fromStream(stream: InputStream, source: String): Either[ManifestError, Model] =
  try {

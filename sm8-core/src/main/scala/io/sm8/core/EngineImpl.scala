@@ -119,7 +119,7 @@ final class EngineImpl extends Engine {
   discoverAll()
  } else {
   try {
-  val allowed = scala.io.Source.fromInputStream(stream, "UTF-8").getLines().map(_.trim).filter(s => s.nonEmpty && !s.startsWith("#")).toSet
+  val allowed = readAllowlist(stream)
   discover(allowed)
   } catch {
   case NonFatal(e) =>
@@ -128,6 +128,34 @@ final class EngineImpl extends Engine {
    List.empty
   } finally stream.close()
  }
+ }
+
+ /**
+ * Read the `sm8.plugins.allowed` allowlist from a stream, one
+ * `groupId:artifactId` per line. `#` comments and blank lines are
+ * skipped. UTF-8 only.
+ *
+ * sm8-core is filesystem-IO-free: the caller opens the stream and
+ * passes it in. This method uses plain `BufferedReader` +
+ * `InputStreamReader` + `StandardCharsets.UTF_8` — all JDK, no
+ * third-party I/O wrapper.
+ *
+ * The caller (`discoverFromConfig`) is responsible for closing the
+ * stream after this method returns (per the existing try/finally
+ * block above).
+ */
+ private def readAllowlist(stream: java.io.InputStream): Set[String] = {
+  val reader = new java.io.BufferedReader(
+   new java.io.InputStreamReader(stream, java.nio.charset.StandardCharsets.UTF_8)
+  )
+  try {
+   reader.lines()
+    .iterator()
+    .asScala
+    .map(_.trim)
+    .filter(s => s.nonEmpty && !s.startsWith("#"))
+    .toSet
+  } finally reader.close()
  }
 
  /**

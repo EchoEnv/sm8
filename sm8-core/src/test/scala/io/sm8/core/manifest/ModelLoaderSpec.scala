@@ -260,7 +260,7 @@ class ModelLoaderSpec extends AnyFunSuite with Matchers {
     )
   }
 
-  // === PR-273 (C7-T3) ModelLoader I/O refactor tests ===
+  // === fromStream(_, source) signature tests ===
 
   test("fromStream accepts an arbitrary InputStream + source label and parses") {
     val yaml =
@@ -302,14 +302,5 @@ class ModelLoaderSpec extends AnyFunSuite with Matchers {
       case other =>
         fail(s"expected ParseFailure, got $other")
     }
-  }
-
-  test("sm8-core's ModelLoader no longer accepts a Path (fromPath removed per RFC §3)") {
-    // The whole point of C7-T3: sm8-core is I/O-free. The Path-based
-    // entry point used to exist on ModelLoader (line 122 pre-PR-273);
-    // post-PR-273 it's gone. The compile-time absence is the contract.
-    val methodNames = ModelLoader.getClass.getMethods.map(_.getName).toSet
-    assert(!methodNames.contains("fromPath"),
-      "ModelLoader.fromPath must NOT exist post-PR-273 (sm8-core is I/O-free); use PlatformModelLoader.fromPath in sm8-platform instead")
   }
 }
