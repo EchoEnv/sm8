@@ -60,19 +60,20 @@ private[core] final case class HookEntry[T](
  */
 final class HookManagerImpl extends HookManager {
 
- // ADDITIVE in C10-PR-A: thread-local set by `EngineImpl.use(plugin)`
- // before invoking `plugin.setup(engine)`. Hook registration reads it
- // to attribute each hook to the registering plugin. Cleared by
- // `EngineImpl.use` in a `finally` block. Falls back to "<core>" if
+ // ADDITIVE in C10-PR-A: ambient thread-local set by
+ // `EngineImpl.use(plugin)` before invoking `plugin.setup(engine)`.
+ // Hook registration reads it to attribute each hook to the
+ // registering plugin. Cleared by `EngineImpl.use` in a `finally`
+ // block. Falls back to `HookManagerImpl.DefaultPluginName` if
  // registration happens outside any `use(plugin)` call (defensive;
  // not the supported path).
  //
  // FIX C10-PR-A final-gate F1 (HIGH): use InheritableThreadLocal so
  // child threads spawned during a plugin's setup() inherit the
  // ambient plugin name. Plain ThreadLocal silently mis-attributes
- // hooks registered from worker threads to "<core>".
+ // hooks registered from worker threads to the fallback.
  private[core] val currentPlugin: InheritableThreadLocal[String] = new InheritableThreadLocal[String] {
-  override def initialValue(): String = "<core>"
+  override def initialValue(): String = HookManagerImpl.DefaultPluginName
  }
 
  // Per-stage hook buffers. Sort key: (priority ASC, seq ASC).
@@ -196,4 +197,21 @@ final class HookManagerImpl extends HookManager {
   // bodies themselves.
   buf.toSeq.sortBy(e => (e.priority, e.seq)).map(e => (e.hook, e.priority))
  }
+}
+
+/**
+ * ADDITIVE in C10-PR-A final-gate Rat F1 fix: companion object
+ * exposes the fallback plugin-name constant so callers (notably
+ * the test suite) can reference it via `HookManagerImpl.DefaultPluginName`
+ * without needing an instance.
+ */
+object HookManagerImpl {
+ /**
+  * ADDITIVE in C10-PR-A: the fallback plugin name surfaced when a
+  * hook is registered outside any `EngineImpl.use(plugin)` window.
+  * Hoisted to a companion constant so the test suite and the impl
+  * stay in sync if the fallback ever changes (e.g. "anonymous" vs
+  * "<core>").
+  */
+ val DefaultPluginName: String = "<core>"
 }

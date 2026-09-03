@@ -58,7 +58,7 @@ class HookManagerListAllHooksSpec extends AnyFlatSpec with Matchers {
     hooks.head.name       shouldBe "audit-pre"
     hooks.head.stage      shouldBe HookStage.PreExecute
     hooks.head.priority   shouldBe 50
-    hooks.head.pluginName shouldBe "<core>" // no EngineImpl.use() wrapping
+    hooks.head.pluginName shouldBe HookManagerImpl.DefaultPluginName // no EngineImpl.use() wrapping
   }
 
   it should "enumerate across all 8 stages when hooks are registered in each" in {
@@ -89,7 +89,7 @@ class HookManagerListAllHooksSpec extends AnyFlatSpec with Matchers {
     )
     val hooks = engine.hooks.asInstanceOf[HookManagerImpl].listAllHooks()
     hooks.find(_.name == "resolve-validator") shouldBe defined
-    hooks.find(_.name == "resolve-validator").map(_.pluginName) shouldBe Some("<core>")
+    hooks.find(_.name == "resolve-validator").map(_.pluginName) shouldBe Some(HookManagerImpl.DefaultPluginName)
   }
 
   it should "attribute hooks registered INSIDE use(plugin).setup() to the registering plugin" in {
