@@ -19,6 +19,7 @@ package io.sm8.core
 import java.util.ServiceLoader
 import java.util.concurrent.ConcurrentHashMap
 
+import scala.jdk.CollectionConverters._
 import scala.util.control.NonFatal
 
 import io.sm8.sdk._
@@ -119,7 +120,7 @@ final class EngineImpl extends Engine {
   discoverAll()
  } else {
   try {
-  val allowed = scala.io.Source.fromInputStream(stream, "UTF-8").getLines().map(_.trim).filter(s => s.nonEmpty && !s.startsWith("#")).toSet
+  val allowed = readAllowlist(stream)
   discover(allowed)
   } catch {
   case NonFatal(e) =>
@@ -128,6 +129,38 @@ final class EngineImpl extends Engine {
    List.empty
   } finally stream.close()
  }
+ }
+
+ /**
+ * Read the `sm8.plugins.allowed` allowlist from a stream, one
+ * `groupId:artifactId` per line. `#` comments and blank lines are
+ * skipped. UTF-8 only.
+ *
+ * sm8-core is filesystem-IO-free: the caller opens the stream and
+ * passes it in. This method uses plain `BufferedReader` +
+ * `InputStreamReader` + `StandardCharsets.UTF_8` — all JDK, no
+ * third-party I/O wrapper.
+ *
+ * The caller (`discoverFromConfig`) is responsible for closing the
+ * stream after this method returns (per the existing try/finally
+ * block above).
+ */
+ private def readAllowlist(stream: java.io.InputStream): Set[String] = {
+  val reader = new java.io.BufferedReader(
+   new java.io.InputStreamReader(stream, java.nio.charset.StandardCharsets.UTF_8)
+  )
+  try {
+   // java.util.stream.Stream<String> -> collect to List -> asScala.
+   // The intermediate List allocation is bounded by the allowlist
+   // size (typically a few dozen entries per deployment), so the
+   // memory cost is negligible.
+   val lines: java.util.List[String] =
+    reader.lines().collect(java.util.stream.Collectors.toList[String]())
+   lines.asScala
+    .map(_.trim)
+    .filter(s => s.nonEmpty && !s.startsWith("#"))
+    .toSet
+  } finally reader.close()
  }
 
  /**

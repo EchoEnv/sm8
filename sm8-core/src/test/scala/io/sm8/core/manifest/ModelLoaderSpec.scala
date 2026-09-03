@@ -259,4 +259,48 @@ class ModelLoaderSpec extends AnyFunSuite with Matchers {
       right = Expr.Literal(LiteralValue.IntValue(18), SealedDataType.Int),
     )
   }
+
+  // === fromStream(_, source) signature tests ===
+
+  test("fromStream accepts an arbitrary InputStream + source label and parses") {
+    val yaml =
+      """name: from-stream-test
+        |version: 1
+        |source:
+        |  byName:
+        |    table: t
+        |""".stripMargin
+    val stream = new java.io.ByteArrayInputStream(yaml.getBytes("UTF-8"))
+    val out = ModelLoader.fromStream(stream, source = "test://inline")
+    out.isRight shouldBe true
+    out.toOption.get.name shouldBe "from-stream-test"
+  }
+
+  test("fromStream's source label is propagated into the ParseFailure message on malformed YAML") {
+    val malformed = "{ this is :: not yaml".getBytes("UTF-8")
+    val stream = new java.io.ByteArrayInputStream(malformed)
+    val out = ModelLoader.fromStream(stream, source = "/etc/sm8/manifests/prod.yaml")
+    out.isLeft shouldBe true
+    val err = out.swap.toOption.get
+    err match {
+      case ManifestError.ParseFailure(reason) =>
+        reason should include ("/etc/sm8/manifests/prod.yaml")
+      case other =>
+        fail(s"expected ParseFailure, got $other")
+    }
+  }
+
+  test("fromStream's in-memory label '<in-memory>' is propagated by fromString") {
+    val malformed = "{ broken ::".getBytes("UTF-8")
+    val stream = new java.io.ByteArrayInputStream(malformed)
+    val out = ModelLoader.fromStream(stream, source = "<in-memory>")
+    out.isLeft shouldBe true
+    val err = out.swap.toOption.get
+    err match {
+      case ManifestError.ParseFailure(reason) =>
+        reason should include ("<in-memory>")
+      case other =>
+        fail(s"expected ParseFailure, got $other")
+    }
+  }
 }

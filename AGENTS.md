@@ -26,6 +26,17 @@ Repository-level guidelines for any AI agent working on the sm8 project.
   calls from adapters.
 - **No transitive plugin-impl dep** in adapter `pom.xml` files. Adapter
   `pom.xml`s should reference only `sm8-core` and `sm8-platform`.
+- **sm8-core is IO-free.** No `java.nio.file.*`, no `java.io.File`,
+  no `scala.io.Source`. Methods that touch a `Path` or open a file
+  live in `sm8-platform/.../PlatformModelLoader`; core exposes
+  `InputStream`-typed entry points (e.g. `ModelLoader.fromStream(stream,
+  source)`) and a `String` overload (`fromString`) for in-memory
+  tests. The previous `ModelLoader.fromPath(Path)` and
+  `scala.io.Source.fromInputStream` usage in
+  `EngineImpl.discoverFromConfig` were removed because both violated
+  RFC §3 ("zero I/O in core"); the latter was replaced with a
+  `BufferedReader` + `InputStreamReader` chain (still JDK-only,
+  no `scala.io`).
 
 ## Working conventions (RULE#5 dual-review)
 

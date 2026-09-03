@@ -69,7 +69,6 @@ import io.sm8.core.model.{FilterSpec, Model, ModelBuilder, ModelStatus, SourceRe
 
 import java.io.{ByteArrayInputStream, InputStream}
 import java.nio.charset.StandardCharsets
-import java.nio.file.{Files, Path}
 
 import scala.util.control.NonFatal
 
@@ -111,41 +110,40 @@ import scala.util.control.NonFatal
  */
 object ModelLoader {
 
+ // Public label passed as `source` to `fromStream` when the caller
+ // has no real origin (e.g. tests, programmatic construction).
+ // Promoted to a constant so the magic string lives in exactly one
+ // place; callers and error-message consumers can reference it.
+ val InMemorySource: String = "<in-memory>"
+
  private val mapper: ObjectMapper =
  new ObjectMapper(new YAMLFactory())
 
- /** Load from a `Path`. Returns `Right(Model)` on success;
- * `Left(ManifestError)` on parse failure. Validation failures
- * (e.g. blank name) surface as `ModelValidationError` from
- * `Model.of(.)` — wrapped in `ManifestError.InvalidYaml` here
- * so callers see a single error type from the loader. */
- def fromPath(path: Path): Either[ManifestError, Model] = {
- if (!Files.exists(path))
-  Left(ManifestError.InvalidYaml(s"file not found: $path"))
- else {
-  val stream: InputStream = Files.newInputStream(path)
-  try fromStream(stream)
-  catch {
-  case NonFatal(e) =>
-   Left(ManifestError.ParseFailure(e.getMessage))
-  } finally stream.close()
- }
- }
-
  /** Load from a `String` (for tests + in-memory manifests). */
  def fromString(yaml: String): Either[ManifestError, Model] =
- fromStream(new ByteArrayInputStream(yaml.getBytes(StandardCharsets.UTF_8)))
+ fromStream(
+ new ByteArrayInputStream(yaml.getBytes(StandardCharsets.UTF_8)),
+ source = InMemorySource
+ )
 
  /** Load from an `InputStream`. Caller is responsible for stream
- * lifecycle EXCEPT for the case of `fromPath` (which manages
- * its own stream). */
- def fromStream(stream: InputStream): Either[ManifestError, Model] =
+ * lifecycle. The `source` label is used only in error messages
+ * (so the operator sees WHICH stream failed — a path, a URL,
+ * a memory buffer, etc.).
+ *
+ * @param stream the InputStream containing the YAML manifest
+ * @param source a human-readable label included in error
+ *               messages (e.g. a path, URL, or `InMemorySource`)
+ * @return      `Right(Model)` on success;
+ *              `Left(ManifestError)` on parse failure
+ */
+ def fromStream(stream: InputStream, source: String): Either[ManifestError, Model] =
  try {
   val root = mapper.readValue(stream, classOf[java.util.Map[_, _]])
   buildModel(root)
  } catch {
   case NonFatal(e) =>
-  Left(ManifestError.ParseFailure(e.getMessage))
+  Left(ManifestError.ParseFailure(s"$source: ${e.getMessage}"))
  }
 
  /** Construct the `Model` from the parsed YAML map. */
