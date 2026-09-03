@@ -539,13 +539,19 @@ object Main {
             // which registers them on QueryService.definition's dispatcher.
             val latestMeta: java.util.concurrent.atomic.AtomicReference[Map[String, Any]] =
               new java.util.concurrent.atomic.AtomicReference[Map[String, Any]](Map.empty)
-            // Per the audit (2026-08-27 [C2]): use the `PluginDiscovery`
-            // factory (sm8-core) instead of `new EngineImpl().discoverFromConfig()`.
-            // sm8-server is the deployment layer; depending on the
-            // concrete `EngineImpl` class violates the layer discipline
-            // of `semantic-layer-engine-architecture.md` §3 (Core Boundary).
-            // The factory is the inward-facing seam that insulates this
-            // deployment wiring from future refactors of `EngineImpl`.
+            // Per the audit (2026-08-27 [C2]): use the
+            // `PluginDiscovery` factory (sm8-core) for plugin
+            // discovery. sm8-server is the deployment layer; depending
+            // on the concrete `EngineImpl` class violates the layer
+            // discipline of `semantic-layer-engine-architecture.md` §3
+            // (Core Boundary). The factory is the inward-facing seam
+            // that insulates this deployment wiring from future
+            // refactors of `EngineImpl`. Post-PR-272 the Engine is
+            // constructed via `EngineFactory.create(plugins)`
+            // (sm8-platform); this site only does the discovery.
+            // Post-PR-273 / #286 sm8-core is filesystem-IO-free; the
+            // `discoverFromConfig()` path reads the `sm8.plugins.allowed`
+            // resource via JDK `BufferedReader`, not `scala.io.Source`.
             // Per the metrics-shim (= a prior PR): wire the MetricsSink
             // BEFORE PluginDiscovery so the cache plugin's hit/miss
             // handlers see the registered QueryMetrics (and tick the
