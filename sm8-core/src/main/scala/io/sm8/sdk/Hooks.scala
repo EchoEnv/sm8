@@ -174,27 +174,102 @@ trait Transformer {
  */
 sealed trait HookStage
 object HookStage {
- case object PreParse extends HookStage
- case object PostParse extends HookStage
- case object PreResolve extends HookStage
+
+ case object PreParse    extends HookStage
+ case object PostParse   extends HookStage
+ case object PreResolve  extends HookStage
  case object PostResolve extends HookStage
- case object PreExecute extends HookStage
+ case object PreExecute  extends HookStage
  case object PostExecute extends HookStage
- case object PreFormat extends HookStage
- case object PostFormat extends HookStage
+ case object PreFormat   extends HookStage
+ case object PostFormat  extends HookStage
+
+ /**
+  * ADDITIVE in C10-PR-A: derived `Ordering` so `sortBy(t =>
+  * (h.stage, h.priority, ...))` works in `listAllHooks()`.
+  * Declaration-order: pre:*, then post:*, with the per-stage
+  * pipeline order preserved.
+  */
+ implicit val ordering: Ordering[HookStage] = new Ordering[HookStage] {
+  def compare(x: HookStage, y: HookStage): Int = {
+   val rank = (s: HookStage) => s match {
+    case PreParse    => 0
+    case PostParse   => 1
+    case PreResolve  => 2
+    case PostResolve => 3
+    case PreExecute  => 4
+    case PostExecute => 5
+    case PreFormat   => 6
+    case PostFormat  => 7
+   }
+   rank(x).compare(rank(y))
+  }
+ }
+
+ /** ADDITIVE in C10-PR-A: ordered Seq of all 8 stages (for
+  * `listAllHooks` iteration). Sorted by stage declaration order.
+  */
+ val values: Seq[HookStage] = Seq(
+  PreParse,    PostParse,
+  PreResolve,  PostResolve,
+  PreExecute,  PostExecute,
+  PreFormat,   PostFormat
+ )
 
  /** Wire name (e.g. `pre:execute`) for the hook registry. */
  def wireName(stage: HookStage): String = stage match {
- case PreParse => "pre:parse"
- case PostParse => "post:parse"
- case PreResolve => "pre:resolve"
- case PostResolve => "post:resolve"
- case PreExecute => "pre:execute"
- case PostExecute => "post:execute"
- case PreFormat => "pre:format"
- case PostFormat => "post:format"
+  case PreParse    => "pre:parse"
+  case PostParse   => "post:parse"
+  case PreResolve  => "pre:resolve"
+  case PostResolve => "post:resolve"
+  case PreExecute  => "pre:execute"
+  case PostExecute => "post:execute"
+  case PreFormat   => "pre:format"
+  case PostFormat  => "post:format"
+ }
+
+ /**
+  * ADDITIVE in C10-PR-A: the inverse wire-name lookup (for
+  * `listAllHooks` responses that come back as strings from
+  * downstream surfaces). Kept here for symmetry with `wireName`.
+  */
+ def fromWireName(wire: String): Option[HookStage] = wire match {
+  case "pre:parse"    => Some(PreParse)
+  case "post:parse"   => Some(PostParse)
+  case "pre:resolve"  => Some(PreResolve)
+  case "post:resolve" => Some(PostResolve)
+  case "pre:execute"  => Some(PreExecute)
+  case "post:execute" => Some(PostExecute)
+  case "pre:format"   => Some(PreFormat)
+  case "post:format"  => Some(PostFormat)
+  case _              => None
  }
 }
+
+/**
+ * ADDITIVE in C10-PR-A: a hook + its registration metadata, surfaced
+ * by `HookManager.listAllHooks()` for `list_hooks` transport
+ * surfaces (PR-B). Wire-stable; serializes via Jackson +
+ * `DefaultScalaModule`.
+ *
+ * @param name       the hook's self-declared name (per the `PreHook` /
+ *                  `PostHook` trait)
+ * @param stage      which pipeline stage this hook is bound to
+ * @param priority   the priority (RFC §8 ranges: 0-99 core, 100-899 first-party, 900+ community)
+ * @param origin     typed origin (RFC §8 conformance)
+ * @param pluginName the name of the Plugin that registered this hook
+ *                  (via `EngineImpl.use(plugin).setup(engine)`); pulled
+ *                  from the thread-local set by `EngineImpl` during
+ *                  plugin setup
+ */
+final case class RegisteredHook(
+  name:       String,
+  stage:      HookStage,
+  priority:   Int,
+  origin:     HookOrigin,
+  pluginName: String
+) extends Product with Serializable
+
 /**
  * The per-stage hook runner protocol (ADR-010-a).
  *

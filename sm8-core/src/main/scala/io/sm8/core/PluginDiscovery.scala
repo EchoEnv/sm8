@@ -44,7 +44,7 @@
  */
 package io.sm8.core
 
-import io.sm8.sdk.Plugin
+import io.sm8.sdk.{Plugin, SetupStatus}
 
 /**
  * Factory for plugin discovery. The single outward-facing entry
@@ -76,4 +76,27 @@ object PluginDiscovery {
    */
   def discoverFromConfig(): List[Plugin] =
     new EngineImpl().discoverFromConfig()
+
+  /**
+   * ADDITIVE in C10-PR-A: discover every Plugin on the classpath
+   * (permissive — no allowlist gate) with its setup status.
+   * Returns `(Plugin, SetupStatus)` pairs so callers can surface
+   * "discovered but never registered" vs "registered and live" in
+   * the `list_plugins` transport surface (PR-B).
+   *
+   * For `discoverFromConfig()` the gating is allowlist-driven; for
+   * `discoverAll()` the gating is permissive (every SPI entry is
+   * surfaced). Both methods tolerate SPI failures and return what
+   * they can; partial discovery is better than none.
+   *
+   * @return every discovered Plugin + its SetupStatus (Registered if
+   *         the discover loop could instantiate it, NotRegistered
+   *         otherwise)
+   */
+  def discoverAll(): Seq[(Plugin, SetupStatus)] = {
+    val raw = new EngineImpl().discoverAll()
+    raw.map { p =>
+      (p, SetupStatus.Registered(p.name): SetupStatus)
+    }
+  }
 }

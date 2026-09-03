@@ -24,7 +24,7 @@ import org.scalatest.matchers.should.Matchers
 
 import io.sm8.sdk.{Plugin, PreHook, HookStage, Context, Engine}
 
-private final class FixturePlugin(val name: String) extends Plugin {
+private final class FixturePlugin(override val name: String) extends Plugin {
 
   val captured: java.util.concurrent.atomic.AtomicInteger =
     new java.util.concurrent.atomic.AtomicInteger(0)

@@ -74,4 +74,33 @@ trait Plugin extends java.io.Serializable {
  * unless the method is called).
  */
  def closedOverVars: Seq[String] = Seq.empty
+
+ /**
+  * ADDITIVE in C10-PR-A: the plugin's human-readable name for
+  * diagnostic surfaces (`list_plugins`, the meta-inspector, debug
+  * logs). Default returns the simple class name — Plugin authors
+  * SHOULD override with a stable identity (e.g. `"semantic-graph"`,
+  * `"cache"`) that survives refactors.
+  *
+  * Source-compatible: existing Plugins compile unchanged (they
+  * inherit the `getClass.getSimpleName` default). Binary-compatible
+  * per the JVM trait-vtable semantics documented on
+  * `closedOverVars` above.
+  */
+ def name: String = getClass.getSimpleName
+
+ /**
+  * ADDITIVE in C10-PR-A: Maven-coordinate metadata for this Plugin.
+  * Default returns a synthetic `PluginMetadata("io.sm8.plugins",
+  * "<simpleClassName>", "0.0.0")` so the trait is non-breaking
+  * for legacy Plugins that don't ship `plugin.properties`. Plugin
+  * authors SHOULD override with the real coordinates from their
+  * `META-INF/sm8/plugin.properties`.
+  */
+ def metadata: PluginMetadata =
+   PluginMetadata(
+     groupId    = "io.sm8.plugins",
+     artifactId = getClass.getSimpleName,
+     version    = "0.0.0"
+   )
 }

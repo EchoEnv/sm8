@@ -38,14 +38,15 @@ import io.sm8.sdk.{HookManager, HookOrigin, HookStage, Plugin, PostHook, PreHook
 
 /**
  * HookEntry — case class for a registered hook plus its scheduling
- * data (priority + sequence + origin). Per RFC §8 priority ranges
+ * data (priority + sequence + origin + plugin). Per RFC §8 priority ranges
  * the HookManager is the only owner.
  */
 private[core] final case class HookEntry[T](
  hook: T,
  priority: Int,
  seq: Long,
- origin: HookOrigin
+ origin: HookOrigin,
+ pluginName: String
 )
 
 /**
@@ -59,12 +60,27 @@ private[core] final case class HookEntry[T](
  */
 final class HookManagerImpl extends HookManager {
 
+ // ADDITIVE in C10-PR-A: ambient thread-local set by
+ // `EngineImpl.use(plugin)` before invoking `plugin.setup(engine)`.
+ // Hook registration reads it to attribute each hook to the
+ // registering plugin. Cleared by `EngineImpl.use` in a `finally`
+ // block. Falls back to `HookManagerImpl.DefaultPluginName` if
+ // registration happens outside any `use(plugin)` call (defensive;
+ // not the supported path).
+ //
+ // FIX C10-PR-A final-gate F1 (HIGH): use InheritableThreadLocal so
+ // child threads spawned during a plugin's setup() inherit the
+ // ambient plugin name. Plain ThreadLocal silently mis-attributes
+ // hooks registered from worker threads to the fallback.
+ private[core] val currentPlugin: InheritableThreadLocal[String] = new InheritableThreadLocal[String] {
+  override def initialValue(): String = HookManagerImpl.DefaultPluginName
+ }
+
  // Per-stage hook buffers. Sort key: (priority ASC, seq ASC).
  private val preHooks: scala.collection.mutable.Map[HookStage, scala.collection.mutable.Buffer[HookEntry[PreHook]]] = scala.collection.mutable.Map.empty
  private val postHooks: scala.collection.mutable.Map[HookStage, scala.collection.mutable.Buffer[HookEntry[PostHook]]] = scala.collection.mutable.Map.empty
 
  // AtomicLong so concurrent register* don't share a sequence slot.
- //
  private val nextSeq: AtomicLong = new AtomicLong(0L)
 
  /**
@@ -79,7 +95,7 @@ final class HookManagerImpl extends HookManager {
  */
  override def registerPreHook(stage: HookStage, hook: PreHook, priority: Int): HookManager = {
  require(priority >= 0, s"sm8: priority must be non-negative, got $priority")
- val entry = HookEntry(hook, priority, nextSeq.incrementAndGet(), HookOrigin.FirstParty)
+ val entry = HookEntry(hook, priority, nextSeq.incrementAndGet(), HookOrigin.FirstParty, currentPlugin.get)
  preHooks.getOrElseUpdate(stage, scala.collection.mutable.Buffer.empty) += entry
  this
  }
@@ -96,14 +112,14 @@ final class HookManagerImpl extends HookManager {
   case Left(msg) =>
   throw new IllegalArgumentException(s"sm8: $msg [stage=$stage hook=${hook.name}]")
  }
- val entry = HookEntry(hook, priority, nextSeq.incrementAndGet(), origin)
+ val entry = HookEntry(hook, priority, nextSeq.incrementAndGet(), origin, currentPlugin.get)
  preHooks.getOrElseUpdate(stage, scala.collection.mutable.Buffer.empty) += entry
  this
  }
 
  override def registerPostHook(stage: HookStage, hook: PostHook, priority: Int): HookManager = {
  require(priority >= 0, s"sm8: priority must be non-negative, got $priority")
- val entry = HookEntry(hook, priority, nextSeq.incrementAndGet(), HookOrigin.FirstParty)
+ val entry = HookEntry(hook, priority, nextSeq.incrementAndGet(), HookOrigin.FirstParty, currentPlugin.get)
  postHooks.getOrElseUpdate(stage, scala.collection.mutable.Buffer.empty) += entry
  this
  }
@@ -114,7 +130,7 @@ final class HookManagerImpl extends HookManager {
   case Left(msg) =>
   throw new IllegalArgumentException(s"sm8: $msg [stage=$stage hook=${hook.name}]")
  }
- val entry = HookEntry(hook, priority, nextSeq.incrementAndGet(), origin)
+ val entry = HookEntry(hook, priority, nextSeq.incrementAndGet(), origin, currentPlugin.get)
  postHooks.getOrElseUpdate(stage, scala.collection.mutable.Buffer.empty) += entry
  this
  }
@@ -134,6 +150,39 @@ final class HookManagerImpl extends HookManager {
  hooksForStage(postHooks, stage)
 
  /**
+ * ADDITIVE in C10-PR-A: override the SDK's default `listAllHooks()`
+ * with an impl that preserves the actual `origin` and `pluginName`
+ * recorded at registration time. The SDK default returns
+ * `HookOrigin.FirstParty` + `"<unknown>"` — good enough for clients
+ * that don't override, but the impl has the real data.
+  */
+ override def listAllHooks(): Seq[io.sm8.sdk.RegisteredHook] = {
+ val pre = HookStage.values.toSeq.flatMap { stage =>
+  preHooks.get(stage).toSeq.flatten.map { e =>
+   io.sm8.sdk.RegisteredHook(
+    name       = e.hook.name,
+    stage      = stage,
+    priority   = e.priority,
+    origin     = e.origin,
+    pluginName = e.pluginName
+   )
+  }
+ }
+ val post = HookStage.values.toSeq.flatMap { stage =>
+  postHooks.get(stage).toSeq.flatten.map { e =>
+   io.sm8.sdk.RegisteredHook(
+    name       = e.hook.name,
+    stage      = stage,
+    priority   = e.priority,
+    origin     = e.origin,
+    pluginName = e.pluginName
+   )
+  }
+ }
+ (pre ++ post).sortBy(h => (h.stage, h.priority, h.pluginName, h.name))
+ }
+
+ /**
  * Sort-by-read helper. `Map` is parametric over the hook type T
  * (PreHook | PostHook); each call site knows its concrete T.
  */
@@ -148,4 +197,21 @@ final class HookManagerImpl extends HookManager {
   // bodies themselves.
   buf.toSeq.sortBy(e => (e.priority, e.seq)).map(e => (e.hook, e.priority))
  }
+}
+
+/**
+ * ADDITIVE in C10-PR-A final-gate Rat F1 fix: companion object
+ * exposes the fallback plugin-name constant so callers (notably
+ * the test suite) can reference it via `HookManagerImpl.DefaultPluginName`
+ * without needing an instance.
+ */
+object HookManagerImpl {
+ /**
+  * ADDITIVE in C10-PR-A: the fallback plugin name surfaced when a
+  * hook is registered outside any `EngineImpl.use(plugin)` window.
+  * Hoisted to a companion constant so the test suite and the impl
+  * stay in sync if the fallback ever changes (e.g. "anonymous" vs
+  * "<core>").
+  */
+ val DefaultPluginName: String = "<core>"
 }
