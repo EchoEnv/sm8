@@ -9,8 +9,8 @@
  *
  * Loaded from a properties file (data, not code).
  *
- * the boundary — empty groupId / artifactId are rejected (programmer
- * error on the Plugin author's part).
+ * Rejected at the boundary — empty groupId, artifactId, or version
+ * are programmer errors on the Plugin author's part.
  */
 package io.sm8.sdk
 
@@ -24,7 +24,7 @@ package io.sm8.sdk
 final case class PluginMetadata(
     groupId:    String,
     artifactId: String,
-    version:    String
+    version:    String = "0.0.0"
 ) {
 
  require(groupId.nonEmpty, "sm8: plugin groupId must not be empty")

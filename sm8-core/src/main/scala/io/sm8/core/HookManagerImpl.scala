@@ -66,7 +66,12 @@ final class HookManagerImpl extends HookManager {
  // `EngineImpl.use` in a `finally` block. Falls back to "<core>" if
  // registration happens outside any `use(plugin)` call (defensive;
  // not the supported path).
- private[core] val currentPlugin: ThreadLocal[String] = new ThreadLocal[String] {
+ //
+ // FIX C10-PR-A final-gate F1 (HIGH): use InheritableThreadLocal so
+ // child threads spawned during a plugin's setup() inherit the
+ // ambient plugin name. Plain ThreadLocal silently mis-attributes
+ // hooks registered from worker threads to "<core>".
+ private[core] val currentPlugin: InheritableThreadLocal[String] = new InheritableThreadLocal[String] {
   override def initialValue(): String = "<core>"
  }
 
@@ -75,7 +80,6 @@ final class HookManagerImpl extends HookManager {
  private val postHooks: scala.collection.mutable.Map[HookStage, scala.collection.mutable.Buffer[HookEntry[PostHook]]] = scala.collection.mutable.Map.empty
 
  // AtomicLong so concurrent register* don't share a sequence slot.
- //
  private val nextSeq: AtomicLong = new AtomicLong(0L)
 
  /**
