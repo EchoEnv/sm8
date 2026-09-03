@@ -58,7 +58,6 @@ import dev.restate.sdk.endpoint.definition.{
 import dev.restate.serde.jackson.JacksonSerdeFactory
 import io.sm8.core.engine.EngineRegistry
 import io.sm8.core.model.Model
-import io.sm8.core.{EngineImpl, HookManagerImpl}
 import io.sm8.platform.query.hooks.{EngineHookDispatcher, HookRunnerOrchestration}
 import io.sm8.sdk.Plugin
 /**
@@ -132,7 +131,7 @@ object QueryService {
     val requestSerde = jacksonSerdeFactory.create(classOf[QueryRequest])
     val resultSerde  = jacksonSerdeFactory.create(classOf[QueryResult])
 
-    // -- Construct EngineImpl + register caller-supplied plugins --
+    // -- Construct Engine + register caller-supplied plugins --
     // Per [[scala-data-driven-refactor-mindset]] "Plugin unit of
     // extension": each plugin's `setup(engine)` registers its
     // hooks via `engine.hooks.registerPreHook` / `registerPostHook`.
@@ -140,8 +139,14 @@ object QueryService {
     // caller passes a `Seq[Plugin]`. For production, plugins are
     // loaded via the SDK's `META-INF/services/io.sm8.sdk.Plugin`
     // portal (Step 7 / Step 9). For tests, pass `Nil`.
-    val engine: EngineImpl = new EngineImpl
-    plugins.foreach(engine.use)
+    //
+    // The concrete Engine implementation is now an sm8-core
+    // implementation detail; `EngineFactory.create(plugins)` is
+    // the sole outward seam from adapters per AGENTS.md "Common
+    // gotchas" + RFC §3. `engine.hooks` access still compiles
+    // because `Engine` (the SDK trait) exposes
+    // `hooks: HookManager`.
+    val engine: io.sm8.sdk.Engine = io.sm8.core.EngineFactory.create(plugins)
     val dispatcher: HookRunnerOrchestration = HookRunnerOrchestration(EngineHookDispatcher(engine.hooks))
 
     val handlerRunner: HandlerRunner[QueryRequest, QueryResult] =

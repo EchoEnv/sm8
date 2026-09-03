@@ -18,8 +18,10 @@ Repository-level guidelines for any AI agent working on the sm8 project.
 - **Never** import a plugin's IMPLEMENTATION class from an adapter. Only the
   SDK interfaces (in `core`) may be referenced.
 - **Never** use `new io.sm8.core.EngineImpl()` from adapters. Use
-  `io.sm8.core.PluginDiscovery.discoverFromConfig()` factory (sole outward
-  seam).
+  `io.sm8.core.EngineFactory.create(plugins)` to construct a wired
+  Engine, and `io.sm8.core.PluginDiscovery.discoverFromConfig()` to
+  load the plugin set. Each is the sole outward seam from adapters
+  for its concern (construction vs discovery) per RFC §3.
 - **Hooks fire only via** `HookRunnerOrchestration` (sm8-platform), not direct
   calls from adapters.
 - **No transitive plugin-impl dep** in adapter `pom.xml` files. Adapter
