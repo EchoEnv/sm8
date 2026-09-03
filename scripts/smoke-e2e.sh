@@ -418,7 +418,7 @@ echo "  /services/MetricsService has snapshot handler (ADR-012-b; PR-256 wired r
 # show invocations.total >= 1 AND invocations.succeeded >= 1.
 metrics_snapshot=$(curl --http2-prior-knowledge -s --max-time 10 \
   -X POST -H "Content-Type: application/json" -H "Accept: application/json" \
-  -d '{}' "http://127.0.0.1:8080/MetricsService/snapshot")
+  -d '{}' "http://127.0.0.1:${RESTATE_INGRESS_PORT}/MetricsService/snapshot")
 echo "  MetricsService/snapshot body: $metrics_snapshot"
 echo "$metrics_snapshot" | grep -qE '"total"[[:space:]]*:[[:space:]]*[1-9][0-9]*' \
   || fail "MetricsService invocations.total should be >= 1 after smoke; got: $metrics_snapshot"

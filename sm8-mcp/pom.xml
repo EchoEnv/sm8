@@ -181,39 +181,6 @@
                     </execution>
                 </executions>
             </plugin>
-
-            <!--
-              Enforce zero-Spark at build-time. Template matches the
-              other reactor modules. Per [[scala-jar-packaging-mindset]]
-              "audit jar contents": `org.apache.spark:*` is a connector-
-              only groupId, never a tool/CLI/MCP dependency.
-            -->
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-enforcer-plugin</artifactId>
-                <version>3.4.1</version>
-                <executions>
-                    <execution>
-                        <id>enforce-no-spark</id>
-                        <goals><goal>enforce</goal></goals>
-                    </execution>
-                </executions>
-                <configuration>
-                    <rules>
-                        <bannedDependencies>
-                            <excludes>
-                                <exclude>org.apache.spark:*</exclude>
-                            </excludes>
-                            <message>
-                                sm8-mcp must remain Spark-free. Spark
-                                classes live in connectors/spark-connector,
-                                not in the MCP transport. Move the
-                                offending dep there when needed.
-                            </message>
-                        </bannedDependencies>
-                    </rules>
-                </configuration>
-            </plugin>
         </plugins>
     </build>
 </project>

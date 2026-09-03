@@ -51,9 +51,15 @@ CP_FILE="${JCODE_SCRATCH_DIR}/sm8-smoke-cp.txt"
 : > "$STDERR_LOG"
 : > "$EXIT_SENTINEL"
 
-# Best-effort cleanup on EXIT/INT/TERM: reap any java process spawned
-# for this JAR so a smoke timeout / SIGTERM does not leave a hung JVM
-# until the harness reaps it. Scoped to the JAR basename via pkill -f.
+# java runs synchronously inside the OUTPUT=$(...) substitution
+# below; the trap fires AFTER the substitution completes, so it
+# cannot catch a hung java (java will already be gone or hung on
+# its own). Best-effort: reap any orphan java whose cmdline contains
+# the JAR basename. The pkill -f pattern is acceptable here because
+# the smoke is single-purpose: there is exactly one java invocation
+# in this script, and the JAR basename is the build version
+# (sm8-server_2.13-0.1.0-SNAPSHOT.jar) — collisions with unrelated
+# JVMs are extremely unlikely in CI.
 cleanup() {
   local rc=$?
   pkill -f "java .*${JAR##*/}" 2>/dev/null || true
