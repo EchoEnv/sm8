@@ -19,6 +19,7 @@ package io.sm8.core
 import java.util.ServiceLoader
 import java.util.concurrent.ConcurrentHashMap
 
+import scala.jdk.CollectionConverters._
 import scala.util.control.NonFatal
 
 import io.sm8.sdk._
@@ -149,9 +150,13 @@ final class EngineImpl extends Engine {
    new java.io.InputStreamReader(stream, java.nio.charset.StandardCharsets.UTF_8)
   )
   try {
-   reader.lines()
-    .iterator()
-    .asScala
+   // java.util.stream.Stream<String> -> collect to List -> asScala.
+   // The intermediate List allocation is bounded by the allowlist
+   // size (typically a few dozen entries per deployment), so the
+   // memory cost is negligible.
+   val lines: java.util.List[String] =
+    reader.lines().collect(java.util.stream.Collectors.toList[String]())
+   lines.asScala
     .map(_.trim)
     .filter(s => s.nonEmpty && !s.startsWith("#"))
     .toSet
