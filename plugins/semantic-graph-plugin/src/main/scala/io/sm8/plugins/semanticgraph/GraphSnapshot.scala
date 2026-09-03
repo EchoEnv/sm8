@@ -72,18 +72,33 @@ final case class GraphSnapshot(
       Map("node" -> Map("model" -> node.model, "field" -> node.field),
           "dependents" -> deps.map(d => Map("model" -> d.model, "field" -> d.field)))
     }.toList
-      .sortBy(m => (m("node").asInstanceOf[Map[String, Any]]("model").toString,
-                     m("node").asInstanceOf[Map[String, Any]]("field").toString)),
+      .sortBy(m => nodeKey(m, "node")),
     "joinCardinalities" -> joinCardinalities.map { case ((from, to), est) =>
       Map("from" -> Map("model" -> from.model, "field" -> from.field),
           "to"   -> Map("model" -> to.model,   "field" -> to.field),
           "estimatedRows" -> est)
     }.toList
-      .sortBy(m => (m("from").asInstanceOf[Map[String, Any]]("model").toString,
-                     m("from").asInstanceOf[Map[String, Any]]("field").toString,
-                     m("to").asInstanceOf[Map[String, Any]]("model").toString,
-                     m("to").asInstanceOf[Map[String, Any]]("field").toString))
+      .sortBy(m => (nodeKey(m, "from"), nodeKey(m, "to")))
   )
+
+  /**
+   * Extracts the deterministic sort key for an inner `node` (or
+   * `from`/`to`) map: `(model, field)` as a `(String, String)` pair.
+   *
+   * Centralizes the once-unchecked `asInstanceOf[Map[String, Any]]`
+   * that the prior sort lambdas relied on. If the literal shape
+   * ever drifts away from `Map("model" -> String, "field" -> String)`,
+   * the cast fails fast and locally — not silently at every sort site.
+   *
+   * @param inner the inner map keyed by `"model"` and `"field"`
+   * @param key   the outer key whose value is the inner map
+   *              (`"node"`, `"from"`, or `"to"`)
+   * @return      the `(model, field)` pair for sorting
+   */
+  private def nodeKey(inner: Map[String, Any], key: String): (String, String) = {
+    val m = inner(key).asInstanceOf[Map[String, Any]]
+    (m("model").toString, m("field").toString)
+  }
 }
 
 object GraphSnapshot {
