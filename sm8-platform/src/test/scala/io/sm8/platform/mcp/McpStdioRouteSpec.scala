@@ -212,3 +212,73 @@ class McpStdioRouteSpec extends AnyFunSuite with Matchers with BeforeAndAfterEac
     }
   }
 }
+
+/** Unit tests for `TrackingInputStream` (the wrapper around `System.in`
+ * that flags EOF-mid-frame so the close path can emit a JSON-RPC
+ * `-32700 ParseError`). The class is package-private to `mcp` (same
+ * package as `McpStdioRoute`) so the test class lives here too.
+ *
+ * Cases cover both `read()` overloads the SDK actually invokes
+ * (single-byte `read()` and bulk `read(byte[], int, int)`) against
+ * in-memory `ByteArrayInputStream`s.
+ */
+class TrackingInputStreamSpec extends AnyFunSuite with Matchers {
+
+  private def newTracking(bytes: Array[Byte]): TrackingInputStream =
+    new TrackingInputStream(new java.io.ByteArrayInputStream(bytes))
+
+  test("EOF after a newline leaves partialFramePending = false (clean frame boundary)") {
+    val t = newTracking("{\"jsonrpc\":\"2.0\"}\n".getBytes("UTF-8"))
+    while (t.read() != -1) ()
+    assert(t.partialFramePending == false)
+  }
+
+  test("EOF mid-frame (last byte is non-newline) leaves partialFramePending = true") {
+    val t = newTracking("{\"jsonrpc\":\"2.0\",\"meth".getBytes("UTF-8"))
+    while (t.read() != -1) ()
+    assert(t.partialFramePending == true)
+  }
+
+  test("EOF after '}' but before newline leaves partialFramePending = true") {
+    val t = newTracking("{\"jsonrpc\":\"2.0\"}".getBytes("UTF-8"))
+    while (t.read() != -1) ()
+    assert(t.partialFramePending == true)
+  }
+
+  test("Empty stream (no bytes read) leaves partialFramePending = false") {
+    val t = newTracking(Array.empty[Byte])
+    while (t.read() != -1) ()
+    assert(t.partialFramePending == false)
+  }
+
+  test("Two complete frames then EOF on newline leaves partialFramePending = false") {
+    val t = newTracking("{\"id\":1}\n{\"id\":2}\n".getBytes("UTF-8"))
+    while (t.read() != -1) ()
+    assert(t.partialFramePending == false)
+  }
+
+  test("Two complete frames then EOF mid-frame leaves partialFramePending = true") {
+    val t = newTracking("{\"id\":1}\n{\"id\":2,\"meth".getBytes("UTF-8"))
+    while (t.read() != -1) ()
+    assert(t.partialFramePending == true)
+  }
+
+  test("Bulk read(byte[]) path behaves the same as single-byte read (mid-frame)") {
+    val payload = "{\"jsonrpc\":\"2.0\",\"meth".getBytes("UTF-8")
+    val t = newTracking(payload)
+    val buf = new Array[Byte](16)
+    var r = 0
+    while ({ r = t.read(buf, 0, buf.length); r != -1 }) ()
+    assert(r == -1)
+    assert(t.partialFramePending == true)
+  }
+
+  test("Bulk read on a newline-terminated frame leaves partialFramePending = false") {
+    val payload = "{\"id\":1}\n".getBytes("UTF-8")
+    val t = newTracking(payload)
+    val buf = new Array[Byte](16)
+    var r = 0
+    while ({ r = t.read(buf, 0, buf.length); r != -1 }) ()
+    assert(t.partialFramePending == false)
+  }
+}
