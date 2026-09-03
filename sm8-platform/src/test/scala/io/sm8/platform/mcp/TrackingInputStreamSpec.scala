@@ -2,10 +2,9 @@
  * SM8 Platform — TrackingInputStreamSpec.
  *
  * Per the stdio design verification criteria for the partial-frame
- * EOF handler introduced in PR-271 (C6 ticket #274): unit tests for
- * the `TrackingInputStream` wrapper around `System.in`. The wrapper
- * is package-private to `mcp` (same package as `McpStdioRoute`), so
- * the test class lives here too.
+ * EOF handler: unit tests for the `TrackingInputStream` wrapper
+ * around `System.in`. The wrapper is package-private to `mcp` (same
+ * package as `McpStdioRoute`), so the test class lives here too.
  *
  * 8 tests:
  * 1. EOF on newline -> partialFramePending = false (clean boundary)

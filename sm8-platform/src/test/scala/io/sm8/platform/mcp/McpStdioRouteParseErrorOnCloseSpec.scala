@@ -1,12 +1,13 @@
 /*
  * SM8 Platform — McpStdioRouteParseErrorOnCloseSpec.
  *
- * End-to-end coverage for PR-271 (C6 ticket #274): when the host
- * closes stdin mid-frame, the close path emits a JSON-RPC `-32700
- * ParseError` envelope to stderr BEFORE countDown. This spec
- * exercises the full wiring — `McpStdioRoute.triggerParseErrorOnClose`
- * — not just the `TrackingInputStream` state machine in isolation
- * (that coverage lives in TrackingInputStreamSpec).
+ * End-to-end coverage for the partial-frame EOF handler. When the
+ * host closes stdin mid-frame (no trailing newline), the close path
+ * emits a JSON-RPC `-32700 ParseError` envelope to stderr BEFORE
+ * countDown. This spec exercises the full wiring —
+ * `McpStdioRoute.triggerParseErrorOnClose` — not just the
+ * `TrackingInputStream` state machine in isolation (that coverage
+ * lives in TrackingInputStreamSpec).
  *
  * The regression vector this guards against: someone deletes one of
  * the two `writePartialFrameParseErrorIfPending()` call sites at
@@ -61,13 +62,19 @@ class McpStdioRouteParseErrorOnCloseSpec
   // constructed McpStdioRoute. The field is package-private
   // (`private[mcp]`) — same package access works, but the field name
   // itself is private to the instance so we still need reflection.
-  private def installTrackingInput(
+  // Drains the wrapped stream so `partialFramePending` reflects the
+  // actual bytes consumed (EOF state is set during the last read()
+  // call, not at construction time).
+  private def installAndDrainTrackingInput(
     route: McpStdioRoute,
-    source: ByteArrayInputStream
+    bytes: Array[Byte]
   ): TrackingInputStream = {
     val field = classOf[McpStdioRoute].getDeclaredField("trackingInput")
     field.setAccessible(true)
-    val wrapper = new TrackingInputStream(source)
+    val wrapper = new TrackingInputStream(new ByteArrayInputStream(bytes))
+    // Drain so EOF is observed and partialFramePending is set based
+    // on whether the last byte was '\n' or not.
+    while (wrapper.read() != -1) ()
     field.set(route, wrapper)
     wrapper
   }
@@ -76,7 +83,7 @@ class McpStdioRouteParseErrorOnCloseSpec
     // Partial JSON: no trailing newline (the host closed stdin mid-frame).
     val partial = "{\"jsonrpc\":\"2.0\",\"meth".getBytes("UTF-8")
     val route = newRoute("sm8-platform-parse-error-on-close")
-    installTrackingInput(route, new ByteArrayInputStream(partial))
+    installAndDrainTrackingInput(route, partial)
     try {
       route.triggerParseErrorOnClose()
       val stderr = errCapture.toString("UTF-8")
@@ -93,7 +100,7 @@ class McpStdioRouteParseErrorOnCloseSpec
   test("clean EOF (frame ends on newline) does NOT emit a ParseError") {
     val clean = "{\"jsonrpc\":\"2.0\"}\n".getBytes("UTF-8")
     val route = newRoute("sm8-platform-parse-error-clean-eof")
-    installTrackingInput(route, new ByteArrayInputStream(clean))
+    installAndDrainTrackingInput(route, clean)
     try {
       route.triggerParseErrorOnClose()
       val stderr = errCapture.toString("UTF-8")
@@ -106,7 +113,7 @@ class McpStdioRouteParseErrorOnCloseSpec
   test("double-trigger is idempotent: second close emits no additional envelope") {
     val partial = "{\"id\":1,\"meth".getBytes("UTF-8")
     val route = newRoute("sm8-platform-parse-error-double-trigger")
-    installTrackingInput(route, new ByteArrayInputStream(partial))
+    installAndDrainTrackingInput(route, partial)
     try {
       route.triggerParseErrorOnClose()
       val firstStderr = errCapture.toString("UTF-8")
@@ -130,16 +137,8 @@ class McpStdioRouteParseErrorOnCloseSpec
   // Test factory: build a real McpStdioRoute instance without
   // calling buildServer(). We never call buildServer() in this spec
   // because the test only exercises the close-path helper.
-  private def newRoute(name: String): McpStdioRoute = {
-    import io.modelcontextprotocol.server.McpServerFeatures
-    import io.modelcontextprotocol.server.McpServerFeatures.SyncToolSpecification
-    import io.modelcontextprotocol.spec.McpSchema
-    val toolSpec = new SyncToolSpecification(
-      "noop",
-      "no-op tool for testing",
-      new McpSchema.Tool("noop", "no-op tool for testing", new McpSchema.JsonSchema("object", java.util.Map.of(), java.util.List.of(), false, java.util.List.of(), java.util.Map.of())),
-      (exchange, args) => exchange.closeGracefully().block()
-    )
-    McpStdioRoute(name, "0.0.0-test", Seq(toolSpec), 30L)
-  }
+  // Empty toolSpecs is fine — the constructor accepts any Seq, and
+  // the test path doesn't invoke .tools(...) on the SDK builder.
+  private def newRoute(name: String): McpStdioRoute =
+    McpStdioRoute(name, "0.0.0-test", Seq.empty, 30L)
 }
