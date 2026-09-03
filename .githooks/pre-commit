@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Format-on-touch: scalafmt any staged .scala files before commit.
+#
+# Setup: `git config core.hooksPath .githooks` (one-time per clone).
+# Without this hook, scalafmt won't run on commit and devs must remember
+# to format manually. Existing code is intentionally left unformatted
+# (97% of .scala files don't conform to .scalafmt.conf today); only
+# touched files get reformatted on each commit.
+#
+# Failure modes (all warn-and-continue; the hook never blocks commits):
+#   - scalafmt missing from PATH: skip formatting, commit proceeds.
+#   - scalafmt binary too old (<3.10.7 to match .scalafmt.conf): skip
+#     and warn — see docs/dev/scalafmt-policy.md for how to upgrade.
+#   - scalafmt fails on a particular file: skip that file, continue
+#     with the rest. CI is not configured to fail on formatting.
+
+set -e
+
+# Find staged .scala files
+STAGED_SCALA_FILES=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '\.scala$' || true)
+
+if [ -z "$STAGED_SCALA_FILES" ]; then
+  exit 0
+fi
+
+# Resolve scalafmt binary. Prefer coursier-installed.
+SCALAFMT_BIN=""
+if command -v scalafmt >/dev/null 2>&1; then
+  SCALAFMT_BIN="scalafmt"
+elif [ -x "$HOME/.local/share/coursier/bin/scalafmt" ]; then
+  SCALAFMT_BIN="$HOME/.local/share/coursier/bin/scalafmt"
+fi
+
+if [ -z "$SCALAFMT_BIN" ]; then
+  echo "pre-commit: scalafmt not in PATH; skipping format-on-touch." >&2
+  echo "  install with: cs install scalafmt:3.10.7" >&2
+  exit 0
+fi
+
+echo "pre-commit: formatting staged .scala files with scalafmt..."
+
+# Format each staged file in-place, then re-stage.
+# Use while-read with -r to handle filenames containing whitespace
+# or shell metacharacters (unquoted for-loop splits on $IFS).
+while IFS= read -r f; do
+  if [ -f "$f" ]; then
+    "$SCALAFMT_BIN" --config .scalafmt.conf "$f" >/dev/null 2>&1 || {
+      echo "pre-commit: scalafmt failed on $f; leaving as-is." >&2
+      continue
+    }
+    git add "$f"
+  fi
+done <<< "$STAGED_SCALA_FILES"
+
+exit 0
