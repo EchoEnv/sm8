@@ -83,7 +83,7 @@ object Expr {
  * `SemanticScope.all(name)` form). Resolves to the value of the
  * named measure at the OUTER aggregation scope (sum across all
  * rows of the current group).
- * Per scala-data-driven-refacer §1: the data is "the total of
+ * Per scala-data-driven-refactor §1: the data is "the total of
  * measure `measureName` across the current grouping". The
  * engine-specific lowerer (window function in Spark, `OVER ()`
  * in Trino + DuckDB) lives in the engine adapter. The portable

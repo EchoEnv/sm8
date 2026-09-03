@@ -54,20 +54,20 @@
 package io.sm8.platform.query
 
 import io.sm8.core.cache._
-import io.sm8.platform.query.cache.CacheBridge
-import io.sm8.core.cache._
-import io.sm8.platform.query.cache.CacheBridge
 import io.sm8.core.engine.{
+  EngineContext,
   EngineError,
+  EngineHookRequest,
+  EngineHookResult,
   EngineProvider,
   EngineRegistry,
-  PortableQueryResult
+  PortableQueryResult,
+  QueryRequest => CoreQueryRequest
 }
-import io.sm8.core.engine.{ QueryRequest => CoreQueryRequest }
 import io.sm8.core.model.{FilterSpec, Model}
-import io.sm8.core.engine.EngineContext
-import io.sm8.core.engine.{ EngineHookRequest, EngineHookResult }
+import io.sm8.platform.query.cache.CacheBridge
 import io.sm8.sdk.{Context, HookRunner, PipelineStage}
+
 import scala.util.control.NonFatal
 /**
  * Engine-portable path entry point. PR-C5a ships the engine

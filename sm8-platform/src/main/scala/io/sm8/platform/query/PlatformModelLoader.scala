@@ -14,7 +14,7 @@
  * BEFORE the `parse → resolve → execute → format` pipeline. It
  * produces the `Model` input that `parse` consumes.
  *
- * ==Per karphyaguids-mindset "smallest correct change"==
+ * ==Per karpathy-guidelines-mindset "smallest correct change"==
  *
  * We had originally mapped `ManifestError` (parse-layer) directly
  * to `EngineError.ProviderInvocationFailed` (engine-layer) at
@@ -118,7 +118,7 @@ object PlatformModelError {
 /**
  * Loads an engine-portable `Model` from a YAML file.
  *
- * Per karphyaguids-mindset "smallest correct change":
+ * Per karpathy-guidelines-mindset "smallest correct change":
  * - reuses `io.sm8.core.manifest.ModelLoader` (no copy)
  * - surfaces parse failures as `Left[PlatformModelError]`
  * - exposes `toEngineError(...)` for callers that prefer to

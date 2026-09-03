@@ -146,7 +146,7 @@ final case class QueryRequest(
  /** Engine-portable typed filters, applied AFTER the model's
   * compile-time filters and BEFORE where (the raw SQL
   * field). Each FilterSpec carries a name (for diagnostics)
-  * and an Expr predicate. Per scala-data-driven-refacer:
+  * and an Expr predicate. Per scala-data-driven-refactor:
   * Expr is pure data; the engine-specific compile is in the
   * adapter. Per [[scala-error-handling-mindset]]: at the IO boundary,
   * unsupported filter shapes surface as typed

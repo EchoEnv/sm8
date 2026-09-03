@@ -6,7 +6,7 @@
  * + Vert.x `listen(port)` to get a properly bound, lifecycle-managed
  * server.
  *
- * ==Per karphyaguidsmindset "smallest correct change"==
+ * ==Per karpathy-guidelines-mindset "smallest correct change"==
  *
  * This file does NOT duplicate handler logic. It composes the
  * existing pieces. The HTTP server is just the wire-binding layer.
@@ -70,7 +70,7 @@ import io.vertx.core.http.HttpServer
 /**
  * HTTP transport for the SM8 MCP server (per ADR-006).
  *
- * Per karphyaguidsmindset "smallest correct change": composes
+ * Per karpathy-guidelines-mindset "smallest correct change": composes
  * the existing `QueryService.definition(...)` + Restate's
  * `RestateHttpServer.fromEndpoint(...)` (which returns the Vert.x
  * `HttpServer` handle for proper lifecycle management).

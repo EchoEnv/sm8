@@ -36,13 +36,17 @@
 #                          Note: "localhost" does NOT work under bridge
 #                          networking — restate's loopback is its container's.
 #   --sm8-port <n>         TCP port for sm8 (default 9090)
+#   --restate-ingress-port <n>  Restate ingress port (default 8080)
+#   --restate-admin-port <n>    Restate admin port (default 9070)
 #   --restate-image <img>  Docker image to use (default restatedev/restate:1.5)
 #   --help                 Show this help + exit 0
 SM8_PORT_DEFAULT=9090
 RESTATE_IMAGE_DEFAULT="restatedev/restate:1.5"
+RESTATE_INGRESS_PORT_DEFAULT=8080
+RESTATE_ADMIN_PORT_DEFAULT=9070
 while [ "$#" -gt 0 ]; do
   case "$1" in
-  --external-ip|--sm8-port|--restate-image)
+  --external-ip|--sm8-port|--restate-image|--restate-ingress-port|--restate-admin-port)
     [ $# -ge 2 ] || { echo "missing value for $1" >&2; exit 2; }
     ;;
   esac
@@ -50,6 +54,8 @@ while [ "$#" -gt 0 ]; do
   --external-ip) EXTERNAL_IP_OVERRIDE="$2"; shift 2 ;;
   --sm8-port)    SM8_PORT_DEFAULT="$2"; shift 2 ;;
   --restate-image) RESTATE_IMAGE_OVERRIDE="$2"; shift 2 ;;
+  --restate-ingress-port) RESTATE_INGRESS_PORT_DEFAULT="$2"; shift 2 ;;
+  --restate-admin-port)   RESTATE_ADMIN_PORT_DEFAULT="$2"; shift 2 ;;
   --help|-h) sed -n '2,40p' "$0"; exit 0 ;;
   *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
@@ -94,8 +100,8 @@ if ! printf '%s' "$EXTERNAL_IP" | grep -Eq '^(([0-9]{1,3}\.){3}[0-9]{1,3}|localh
 fi
 SM8_PORT="${SMOKE_SM8_PORT:-$SM8_PORT_DEFAULT}"
 RESTATE_IMAGE="${SMOKE_RESTATE_IMAGE:-${RESTATE_IMAGE_OVERRIDE:-$RESTATE_IMAGE_DEFAULT}}"
-RESTATE_INGRESS_PORT=8080
-RESTATE_ADMIN_PORT=9070
+RESTATE_INGRESS_PORT="${SMOKE_RESTATE_INGRESS_PORT:-$RESTATE_INGRESS_PORT_DEFAULT}"
+RESTATE_ADMIN_PORT="${SMOKE_RESTATE_ADMIN_PORT:-$RESTATE_ADMIN_PORT_DEFAULT}"
 START_TIMEOUT="${START_TIMEOUT:-90}"
 CURL_TIMEOUT=10
 
@@ -412,7 +418,7 @@ echo "  /services/MetricsService has snapshot handler (ADR-012-b; PR-256 wired r
 # show invocations.total >= 1 AND invocations.succeeded >= 1.
 metrics_snapshot=$(curl --http2-prior-knowledge -s --max-time 10 \
   -X POST -H "Content-Type: application/json" -H "Accept: application/json" \
-  -d '{}' "http://127.0.0.1:8080/MetricsService/snapshot")
+  -d '{}' "http://127.0.0.1:${RESTATE_INGRESS_PORT}/MetricsService/snapshot")
 echo "  MetricsService/snapshot body: $metrics_snapshot"
 echo "$metrics_snapshot" | grep -qE '"total"[[:space:]]*:[[:space:]]*[1-9][0-9]*' \
   || fail "MetricsService invocations.total should be >= 1 after smoke; got: $metrics_snapshot"

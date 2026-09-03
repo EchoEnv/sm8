@@ -42,11 +42,12 @@
  *   `UnsupportedOperationException` so a test that accidentally
  *   exercises it fails LOUD rather than silently returning
  *   null. The four methods the test DOES need (`request`,
- *   `objectKey`, both `writeOutput` overloads) are wired to safe defaults.
- * - scala-error-handling: writeOutput returns completed-null
- *   futures (the SDK's contract for "no extra output
- *   emitted") instead of `null`, which would NPE the
- *   HandlerRunner.
+ *   `objectKey`, both `writeOutput` overloads) all throw — the
+ *   loud-fail rule beats the SDK's "completed-null future for
+ *   no output" convention because tests that accidentally call
+ *   writeOutput would otherwise silently succeed.
+ * - scala-error-handling: writeOutput throws rather than
+ *   returning `null` (which would NPE the HandlerRunner).
  * - scala2-scaladoc: this file's class + method Scaladoc
  *   follows the conventions (one-sentence summary, @param
  *   tags, no PR-/ticket-narration in comments).
@@ -88,19 +89,17 @@ object TestHandlerStubs {
 
   /** Build a no-op HandlerContext backed by the given HandlerRequest.
     *
-    * All 34 abstract methods of HandlerContext are stubbed. The
-    * four methods the tests actually need are wired to safe
-    * defaults:
-    * - `request()` → `req` (the HandlerRequest the test constructed)
-    * - `objectKey()` → `""` (no journal key in unit tests)
-    * - `writeOutput(Slice)` → completed-null future (SDK contract
-    *   for "no extra output emitted")
-    * - `writeOutput(TerminalException)` → completed-null future
-    *
-    * All other 30 methods throw `UnsupportedOperationException` so
-    * a test that accidentally exercises an unsupported path
-    * fails loudly with a clear message rather than silently
-    * returning null (which would NPE the HandlerRunner).
+    * All 34 abstract methods of HandlerContext are stubbed.
+    * Every method — including the four the tests otherwise need
+    * (`request`, `objectKey`, both `writeOutput` overloads) —
+    * throws `UnsupportedOperationException` so a test that
+    * accidentally exercises any HandlerContext path fails
+    * loudly with a clear message rather than silently
+    * returning null (which would NPE the HandlerRunner). The
+    * `request` and `objectKey` overrides below carry a real
+    * implementation so the SDK's internal ContextImpl
+    * construction doesn't NPE; the `writeOutput` overrides
+    * throw by design (loud-fail consistency).
     *
     * @param req the HandlerRequest the test constructed (must
     *            have a non-null InvocationId; use
@@ -114,9 +113,17 @@ object TestHandlerStubs {
     override def objectKey: String = ""
     override def request: HandlerRequest = req
     override def writeOutput(s: Slice): CompletableFuture[Void] =
-      CompletableFuture.completedFuture(null: Void)
+      throw new UnsupportedOperationException(
+        "writeOutput(Slice) is not exercised in this unit test; " +
+        "HandlerRunner writes are stubbed to throw so accidental " +
+        "execution fails loudly. Use a real HandlerContext for " +
+        "integration tests that exercise journal/output writes.")
     override def writeOutput(e: TerminalException): CompletableFuture[Void] =
-      CompletableFuture.completedFuture(null: Void)
+      throw new UnsupportedOperationException(
+        "writeOutput(TerminalException) is not exercised in this unit test; " +
+        "HandlerRunner error writes are stubbed to throw so accidental " +
+        "execution fails loudly. Use a real HandlerContext for " +
+        "integration tests that exercise journal/output writes.")
 
     // --- State/journal methods (return safe defaults; throw if exercised) ---
     override def get(key: String)

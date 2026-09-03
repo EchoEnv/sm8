@@ -14,7 +14,7 @@
  *      before this point still triggers cleanup)
  *   6. start HttpTransport (binds the actual socket)
  *
- * ==Per karphyaguidsmindset "smallest correct change"==
+ * ==Per karpathy-guidelines-mindset "smallest correct change"==
  *
  * Pure composition. Every piece already exists: PlatformModelLoader,
  * EngineRegistry, HttpTransport. Main adds NO engine logic.
@@ -741,7 +741,7 @@ object Main {
                       // CountDownLatch.await is NOT interruptible, and
                       // without this hook the JVM would wait for the
                       // timeout before exiting. The HTTP transport path
-                      // got its equivalent hook at line 544-550; this
+                      // got its equivalent hook at line ~688; this
                       // mirrors the pattern for the stdio path.
                       Runtime.getRuntime().addShutdownHook(new Thread(
                         new Runnable {
