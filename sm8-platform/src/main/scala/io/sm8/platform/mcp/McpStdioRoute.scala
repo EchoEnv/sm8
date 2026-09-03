@@ -389,6 +389,20 @@ final class McpStdioRoute private (
  closeLatch.countDown()
  }
 
+ /** Test seam: invokes the same close-path check that
+ * `LatchOnCloseTransport.close()` and `closeGracefully()` run before
+ * countDown. Lets `McpStdioRouteParseErrorOnCloseSpec` exercise the
+ * stderr ParseError envelope end-to-end without spinning up the full
+ * SDK builder chain (which requires a live `StdioServerTransportProvider`
+ * and a real `BufferedReader` on the inbound loop).
+ *
+ * Package-private (same access rationale as `HttpIngressClient.baseUrl`):
+ * exposed to the mcp package for the regression test only.
+ */
+ private[mcp] def triggerParseErrorOnClose(): Unit = {
+ writePartialFrameParseErrorIfPending()
+ }
+
  /** If the host closed stdin mid-frame, write a JSON-RPC `-32700
  * ParseError` envelope to stderr so the host learns the connection
  * terminated on a malformed frame instead of wondering why the
@@ -416,6 +430,10 @@ final class McpStdioRoute private (
  java.lang.System.err.print(envelope)
  java.lang.System.err.flush()
  } catch { case NonFatal(_) => () }
+ // Clear after write so a second invocation (theoretical: both
+ // close() and closeGracefully() run during a full shutdown)
+ // does not emit a duplicate envelope.
+ trackingInput.partialFramePending = false
  }
  }
 }
@@ -436,14 +454,24 @@ private final class TrackingInputStream(in: java.io.InputStream)
  extends java.io.FilterInputStream(in) {
 
  // The last byte the most recent read() returned. -1 means no byte
- // yet or EOF already reached. We only care about byte value 0x0A
- // ('\n'); any other byte leaves partialFramePending = true.
- @volatile var lastByte: Int = -1
+ // yet or EOF already reached. We use it to decide whether EOF
+ // landed on a frame boundary (last byte == '\n') or mid-frame
+ // (last byte != '\n', or no bytes read at all means "clean EOF
+ // with empty buffer").
+ // private[mcp] (not private): same access rationale as
+ // HttpIngressClient.scala:82-84 — exposed to the mcp package so
+ // McpStdioRoute (same package, same file) and TrackingInputStreamSpec
+ // (same package, different file) can read the state.
+ @volatile private[mcp] var lastByte: Int = -1
 
  // Flipped to true by read() when EOF is reached and the prior byte
- // was not a newline. Volatile because close() may run from a
- // different thread (the JVM shutdown hook) than read().
- @volatile var partialFramePending: Boolean = false
+ // was not a newline. Volatile for defense-in-depth: the close path
+ // reads this field after EOF, and although in practice both happen
+ // on the SDK's inbound single-thread executor, future refactors
+ // could move the close to another thread (e.g. the JVM shutdown
+ // hook). The volatile guarantees happens-before visibility.
+ // private[mcp] — see lastByte above for the access rationale.
+ @volatile private[mcp] var partialFramePending: Boolean = false
 
  override def read(): Int = {
  val b = in.read()
