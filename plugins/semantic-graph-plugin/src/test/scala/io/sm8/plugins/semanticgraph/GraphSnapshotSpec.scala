@@ -20,15 +20,18 @@
  * typing fix. The existing `GraphPostResolveObserverSpec` does NOT
  * call `toMetaValue` (it asserts on typed `GraphSnapshot` fields),
  * so this spec fills the coverage gap.
+ *
+ * Per AGENTS.md and the established project convention, this spec
+ * uses `AnyFlatSpec with Matchers` (not `AnyFunSuite`).
  */
 package io.sm8.plugins.semanticgraph
 
 import io.sm8.core.engine.EngineError
 
-import org.scalatest.funsuite.AnyFunSuite
+import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
-class GraphSnapshotSpec extends AnyFunSuite with Matchers {
+class GraphSnapshotSpec extends AnyFlatSpec with Matchers {
 
   // Fixture helpers
 
@@ -51,7 +54,7 @@ class GraphSnapshotSpec extends AnyFunSuite with Matchers {
 
   // nodeKey behavior — verified through the public toMetaValue surface
 
-  test("toMetaValue: dependents is sorted by (node.model, node.field)") {
+  "GraphSnapshot.toMetaValue" should "sort dependents by (node.model, node.field)" in {
     // Inserted out-of-order on purpose; expected order = alpha by (model, field).
     val nA = node("a", "x")
     val nB = node("b", "x")
@@ -70,7 +73,7 @@ class GraphSnapshotSpec extends AnyFunSuite with Matchers {
     dependentsWire.map(k) shouldBe List(("a", "x"), ("a", "y"), ("b", "x"))
   }
 
-  test("toMetaValue: joinCardinalities is sorted by ((from.model, from.field), (to.model, to.field))") {
+  it should "sort joinCardinalities by ((from.model, from.field), (to.model, to.field))" in {
     val from1 = node("orders", "id")
     val to1 = node("users", "id")
     val from2 = node("orders", "customer_id")
@@ -93,7 +96,7 @@ class GraphSnapshotSpec extends AnyFunSuite with Matchers {
     )
   }
 
-  test("toMetaValue: sort is deterministic across calls (same input → same output)") {
+  it should "be deterministic across calls (same input → same output)" in {
     val n1 = node("m", "a")
     val n2 = node("m", "b")
     val n3 = node("m", "c")
@@ -107,7 +110,7 @@ class GraphSnapshotSpec extends AnyFunSuite with Matchers {
     first("joinCardinalities") shouldBe second("joinCardinalities")
   }
 
-  test("toMetaValue: cycleError: Option[EngineError] round-trips through .toString") {
+  it should "round-trip cycleError: Option[EngineError] via .toString" in {
     val s = GraphSnapshot(
       vertices = Nil,
       edges = Nil,
@@ -128,7 +131,7 @@ class GraphSnapshotSpec extends AnyFunSuite with Matchers {
     cycleStr should include ("test cycle")
   }
 
-  test("toMetaValue: cycleError: None when no cycle") {
+  it should "have cycleError = None when there is no cycle" in {
     val s = GraphSnapshot(
       vertices = Nil,
       edges = Nil,
@@ -139,7 +142,7 @@ class GraphSnapshotSpec extends AnyFunSuite with Matchers {
     s.toMetaValue("cycleError") shouldBe None
   }
 
-  test("toMetaValue: empty dependents / joinCardinalities produce empty sorted lists") {
+  it should "produce empty sorted lists for empty dependents / joinCardinalities" in {
     val s = snapshot()
     val wire = s.toMetaValue
     wire("dependents") shouldBe Nil
