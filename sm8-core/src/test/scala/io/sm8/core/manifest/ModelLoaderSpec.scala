@@ -259,4 +259,57 @@ class ModelLoaderSpec extends AnyFunSuite with Matchers {
       right = Expr.Literal(LiteralValue.IntValue(18), SealedDataType.Int),
     )
   }
+
+  // === PR-273 (C7-T3) ModelLoader I/O refactor tests ===
+
+  test("fromStream accepts an arbitrary InputStream + source label and parses") {
+    val yaml =
+      """name: from-stream-test
+        |version: 1
+        |source:
+        |  byName:
+        |    table: t
+        |""".stripMargin
+    val stream = new java.io.ByteArrayInputStream(yaml.getBytes("UTF-8"))
+    val out = ModelLoader.fromStream(stream, source = "test://inline")
+    out.isRight shouldBe true
+    out.toOption.get.name shouldBe "from-stream-test"
+  }
+
+  test("fromStream's source label is propagated into the ParseFailure message on malformed YAML") {
+    val malformed = "{ this is :: not yaml".getBytes("UTF-8")
+    val stream = new java.io.ByteArrayInputStream(malformed)
+    val out = ModelLoader.fromStream(stream, source = "/etc/sm8/manifests/prod.yaml")
+    out.isLeft shouldBe true
+    val err = out.swap.toOption.get
+    err match {
+      case ManifestError.ParseFailure(reason) =>
+        reason should include ("/etc/sm8/manifests/prod.yaml")
+      case other =>
+        fail(s"expected ParseFailure, got $other")
+    }
+  }
+
+  test("fromStream's in-memory label '<in-memory>' is propagated by fromString") {
+    val malformed = "{ broken ::".getBytes("UTF-8")
+    val stream = new java.io.ByteArrayInputStream(malformed)
+    val out = ModelLoader.fromStream(stream, source = "<in-memory>")
+    out.isLeft shouldBe true
+    val err = out.swap.toOption.get
+    err match {
+      case ManifestError.ParseFailure(reason) =>
+        reason should include ("<in-memory>")
+      case other =>
+        fail(s"expected ParseFailure, got $other")
+    }
+  }
+
+  test("sm8-core's ModelLoader no longer accepts a Path (fromPath removed per RFC §3)") {
+    // The whole point of C7-T3: sm8-core is I/O-free. The Path-based
+    // entry point used to exist on ModelLoader (line 122 pre-PR-273);
+    // post-PR-273 it's gone. The compile-time absence is the contract.
+    val methodNames = ModelLoader.getClass.getMethods.map(_.getName).toSet
+    assert(!methodNames.contains("fromPath"),
+      "ModelLoader.fromPath must NOT exist post-PR-273 (sm8-core is I/O-free); use PlatformModelLoader.fromPath in sm8-platform instead")
+  }
 }
