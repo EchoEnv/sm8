@@ -24,7 +24,9 @@ import org.jgrapht.alg.cycle.CycleDetector
 import org.jgrapht.alg.shortestpath.DijkstraShortestPath
 import org.jgrapht.graph.DefaultDirectedWeightedGraph
 import org.jgrapht.graph.DefaultWeightedEdge
-import org.jgrapht.graph.concurrent.AsSynchronizedGraph
+// AsSynchronizedGraph wrapper was removed in C9-T6 (cow @ #300): per-request
+// graphs are single-thread by construction; the sync wrapper paid for
+// synchronization that never happens.
 
 /**
  * Engine-portable semantic graph over one or more validated `Model`s.
@@ -36,13 +38,14 @@ import org.jgrapht.graph.concurrent.AsSynchronizedGraph
  *    or a caller-supplied cost, e.g. estimated row count)
  *
  * Built per request (no cache, per ADR-008-AI v1.1 fix 1). The
- * underlying JGraphT graph is wrapped in `AsSynchronizedGraph` for
- * additional defense — at no measurable cost for typical model sizes.
+ * underlying JGraphT graph is a plain `DefaultDirectedWeightedGraph`
+ * — per-request builds are single-thread by construction, so no
+ * synchronization wrapper is needed.
  *
  * NOT thread-isolated: per ADR-008-AI v1.1 the proposal dropped the
  * cache. Callers that share a graph across threads should re-build.
  *
- * @param g the synchronized graph (constructed via the companion factory)
+ * @param g the underlying JGraphT graph (constructed via the companion factory)
  * @param loadedModelNames the set of model names that were passed in
  * @param estimatedPairs the join-edge endpoint pairs that carry a
  *                       user-supplied estimate (a membership predicate,
@@ -50,7 +53,7 @@ import org.jgrapht.graph.concurrent.AsSynchronizedGraph
  *                       1.0 and a real estimate of 1 row share a weight)
  */
 final class SemanticGraph private[semanticgraph] (
-    private val g: AsSynchronizedGraph[GraphNode, DefaultWeightedEdge],
+    private val g: DefaultDirectedWeightedGraph[GraphNode, DefaultWeightedEdge],
     loadedModelNames: Set[String],
     private val estimatedPairs: Set[(GraphNode, GraphNode)]
 ) {
@@ -276,7 +279,7 @@ object SemanticGraphBuilder {
     val raw = new DefaultDirectedWeightedGraph[GraphNode, DefaultWeightedEdge](
       classOf[DefaultWeightedEdge]
     )
-    val g = new AsSynchronizedGraph(raw)
+    val g = raw
 
     def addNode(n: GraphNode): Unit = if (!g.containsVertex(n)) g.addVertex(n)
 
