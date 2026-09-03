@@ -3,8 +3,8 @@
 ## scalafmt (format-on-touch)
 
 The project ships `.scalafmt.conf` at the repo root (scala213 dialect,
-v3.10.7) and a `scalafmt-maven-plugin` entry in the parent POM
-(com.spotify.fmt:2.5.4, `<skip>true</skip>` by default).
+v3.10.7) and a `fmt-maven-plugin` entry in the parent POM
+(com.spotify.fmt:2.29, `<skip>true</skip>` by default).
 
 **Policy**: format-on-touch, not format-everything. Existing code is
 intentionally left unformatted — 97% of `.scala` files don't conform
