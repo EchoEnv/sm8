@@ -21,7 +21,7 @@ Modifications from the upstream skill:
    PR-247's bracket carve-out: BOTH bare and bracket forms are
    noise. The new bare-form rule catches typo / drift forms
    (`karphyaguids`, `scala-data-driven-refacer`, `mindset-…`, drift
-   like `scala-jvm-safety-typo`). Bare valid skill names (the 10
+   like `scala-jvm-safety-typo`). Bare valid skill names (the 11
    `scala-*` skills + `karpathy-guidelines` + `karpathy-app-design`
    + `debug-mantra`) are allowed by the linter because the bracket
    wiki-link form is the noise form the linter focuses on; the
