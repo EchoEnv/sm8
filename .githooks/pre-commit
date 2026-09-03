@@ -7,11 +7,12 @@
 # (97% of .scala files don't conform to .scalafmt.conf today); only
 # touched files get reformatted on each commit.
 #
-# Failure modes:
-#   - scalafmt missing from PATH: warn and continue (don't block commit).
-#   - mvn missing from PATH: warn and continue.
-#   - formatting fails for any reason: warn, leave staged files alone,
-#     let the commit proceed (CI is not configured to fail on formatting).
+# Failure modes (all warn-and-continue; the hook never blocks commits):
+#   - scalafmt missing from PATH: skip formatting, commit proceeds.
+#   - scalafmt binary too old (<3.10.7 to match .scalafmt.conf): skip
+#     and warn — see docs/dev/scalafmt-policy.md for how to upgrade.
+#   - scalafmt fails on a particular file: skip that file, continue
+#     with the rest. CI is not configured to fail on formatting.
 
 set -e
 
@@ -39,14 +40,16 @@ fi
 echo "pre-commit: formatting staged .scala files with scalafmt..."
 
 # Format each staged file in-place, then re-stage.
-for f in $STAGED_SCALA_FILES; do
+# Use while-read with -r to handle filenames containing whitespace
+# or shell metacharacters (unquoted for-loop splits on $IFS).
+while IFS= read -r f; do
   if [ -f "$f" ]; then
-    $SCALAFMT_BIN --config .scalafmt.conf "$f" >/dev/null 2>&1 || {
+    "$SCALAFMT_BIN" --config .scalafmt.conf "$f" >/dev/null 2>&1 || {
       echo "pre-commit: scalafmt failed on $f; leaving as-is." >&2
       continue
     }
     git add "$f"
   fi
-done
+done <<< "$STAGED_SCALA_FILES"
 
 exit 0

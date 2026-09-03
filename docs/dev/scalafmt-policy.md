@@ -20,6 +20,27 @@ git config core.hooksPath .githooks
 cs install scalafmt:3.10.7   # if scalafmt is not already in PATH
 ```
 
+After setup, verify the version matches `.scalafmt.conf`:
+
+```bash
+scalafmt --version   # must print "scalafmt 3.10.7"
+```
+
+If your version is older (e.g., 3.8.0 from a stale coursier install),
+upgrade explicitly:
+
+```bash
+cs uninstall scalafmt
+cs install scalafmt:3.10.7
+```
+
+An older scalafmt binary will refuse to read `.scalafmt.conf` (it
+errors out with "version 3.10.7 is not supported by binary 3.8.0").
+The hook catches the error and proceeds with unformatted code (warn
++ skip), so a stale binary silently disables formatting without
+breaking the commit. Check the version before assuming the hook is
+working.
+
 The hook:
 - Reads `git diff --cached --name-only` for staged `.scala` files.
 - Runs `scalafmt --config .scalafmt.conf <file>` on each.

@@ -200,6 +200,7 @@ Before opening a PR:
 1. `mvn -pl <your-module> -am test` is green.
 2. If your module adds a Spark dependency, document why in the module's `pom.xml` comment and verify the inverted-enforcer pattern holds.
 3. Update the relevant ADR in `docs/adr/` if the change is architecturally significant.
+4. **Style policy** — `.scala` files are formatted via scalafmt (3.10.7) on commit. Run `git config core.hooksPath .githooks` once per clone to enable the format-on-touch hook. See [`docs/dev/scalafmt-policy.md`](docs/dev/scalafmt-policy.md) for details.
 
 ## Contributors
 
