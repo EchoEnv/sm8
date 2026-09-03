@@ -52,12 +52,21 @@ NOISE_PATTERNS = [
     (r"\(was\s+a\b", "narrates a diff (\"was a ...\") instead of describing current state"),
     (r"\bis\s+replaced\s+with\b", "narrates a diff (\"replaced with\") instead of describing current state"),
     (r"\bearlier\s+internal-only\s+version", "references internal version history"),
-    # Carve out the 7 known scala-* skill wiki-links (per the skill allowlist in pattern [28])
-    # from the generic "double-bracket reference" rule. The negative lookahead matches
-    # the FULL [[scala-X-mindset]] or [[scala-X]] form, then blocks it; any other
-    # [[X-Y-Z]] form still matches (e.g. [[scala-foo-bar-baz]] for an unknown skill).
-    (r"\[\[(?!scala-(?:jvm-safety|spark-batch-bugs|error-handling|data-driven-refactor|jar-packaging|perf-testing|2-scaladoc)(?:-mindset)?\]\])[a-z0-9]+(-[a-z0-9]+)+\]\]", "double-bracket reference looks like a skill/tool name, not a Scala symbol (excluding `[[scala-X-mindset]]` skill wiki-links)"),
-    (r"\bper\s+scala-(?:jvm-safety|spark-batch-bugs|error-handling|data-driven-refactor|jar-packaging|perf-testing|2-scaladoc)(?:\s+§\d+|\b)", "bare skill-citation in .scala source (per scala-X §N) — should use `[[scala-X]]` wiki-link form instead"),
+    # ALL double-bracket [[X-Y]] style references are internal noise.
+    # Per the scala2-scaladoc skill: "no internal process noise";
+    # the bracket form was a skill wiki-link convention that
+    # generated parallel noise classes (1 per skill name). The
+    # correct form per the skill is a plain Scaladoc link to a
+    # symbol or external URL, never an internal skill name.
+    (r"\[\[[a-z0-9]+(-[a-z0-9]+)+\]\]", "double-bracket reference to internal skill/tool name (e.g. [[scala-X-mindset]]) — the skill wiki-link convention is internal noise; describe the behavior or link to an external symbol instead"),
+    # Bare skill-citation form: `per scala-X §N` or `scala-X-mindset`
+    # without the brackets. The legitimate set is the 7 named scala-*
+    # skills + karpathy-guidelines + debug-mantra + karpathy-app-design.
+    # Anything else is a typo (e.g. `karphyaguidsmindset`,
+    # `scala-data-driven-refacer`) or a drift from the allowlist.
+    # We catch BOTH the bare form (this rule) and the bracket form
+    # (the previous rule).
+    (r"\bper\s+(?:scala-(?!(?:jvm-safety|spark-batch-bugs|error-handling|data-driven-refactor|jar-packaging|perf-testing|2-scaladoc)\b)|karphyaguids|mindset-|scala-data-driven-refacer)(?:[\s-]\w+)*", "bare skill-citation in .scala source — typo skill name or unknown skill (allowed: scala-jvm-safety, scala-spark-batch-bugs, scala-error-handling, scala-data-driven-refactor, scala-jar-packaging, scala-perf-testing, scala2-scaladoc, karpathy-guidelines, debug-mantra, karpathy-app-design); link to a Scala symbol or external URL instead"),
 ]
 
 COMPILED = [(re.compile(p, re.IGNORECASE), reason) for p, reason in NOISE_PATTERNS]
