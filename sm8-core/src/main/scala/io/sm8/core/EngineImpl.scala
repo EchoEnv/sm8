@@ -44,6 +44,12 @@ final class EngineImpl extends Engine {
 
  override def use(plugin: Plugin): Engine = {
  if (!seenPlugins.add(plugin)) return this // already seen → idempotent no-op
+ // ADDITIVE in C10-PR-A: attribute registered hooks to this plugin's
+ // name via the HookManager thread-local. Cleared in `finally` to
+ // restore the post-call default ("<core>") for any code that
+ // registers hooks outside of a `use(plugin)` call.
+ val previousPlugin = _hooks.currentPlugin.get
+ _hooks.currentPlugin.set(plugin.name)
  try {
   plugin.setup(this)
  } catch {
@@ -58,6 +64,8 @@ final class EngineImpl extends Engine {
   seenPlugins.remove(plugin)
   Thread.currentThread().interrupt()
   throw new InterruptedException("sm8: plugin setup interrupted")
+ } finally {
+  _hooks.currentPlugin.set(previousPlugin)
  }
  this
  }
@@ -234,7 +242,8 @@ final class EngineImpl extends Engine {
   props.load(stream)
   Some(PluginMetadata(
    props.getProperty(PluginMetadata.GroupIdKey, ""),
-   props.getProperty(PluginMetadata.ArtifactIdKey, "")
+   props.getProperty(PluginMetadata.ArtifactIdKey, ""),
+   props.getProperty(PluginMetadata.VersionKey, "0.0.0")
   ))
   } catch {
   case NonFatal(_) => None

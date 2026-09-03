@@ -87,4 +87,42 @@ trait HookManager {
  * PostHooks registered.
  */
  def postHooksFor(stage: HookStage): Seq[(PostHook, Int)]
+
+ /**
+  * ADDITIVE in C10-PR-A: every hook that has been registered on this
+  * manager (across all 8 stages), with full registration metadata.
+  * Sorted by `(stage, priority ASC, pluginName, name)`. Returns the
+  * accumulated buffer (no eviction per ADR-008-AE v1.0); empty if
+  * nothing registered.
+  *
+  * Backs the `list_hooks` transport surface in PR-B.
+  * Source-compatible default impl: derived from the existing
+  * `preHooksFor` / `postHooksFor` accessors, so non-`HookManagerImpl`
+  * implementations need not override.
+  */
+ def listAllHooks(): Seq[RegisteredHook] = {
+  val pre = HookStage.values.toSeq.flatMap { stage =>
+   preHooksFor(stage).map { case (hook, p) =>
+    RegisteredHook(
+     name       = hook.name,
+     stage      = stage,
+     priority   = p,
+     origin     = HookOrigin.FirstParty, // best-effort; override for exactness
+     pluginName = "<unknown>"
+    )
+   }
+  }
+  val post = HookStage.values.toSeq.flatMap { stage =>
+   postHooksFor(stage).map { case (hook, p) =>
+    RegisteredHook(
+     name       = hook.name,
+     stage      = stage,
+     priority   = p,
+     origin     = HookOrigin.FirstParty, // best-effort; override for exactness
+     pluginName = "<unknown>"
+    )
+   }
+  }
+  (pre ++ post).sortBy(h => (h.stage, h.priority, h.pluginName, h.name))
+ }
 }

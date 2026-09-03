@@ -38,14 +38,15 @@ import io.sm8.sdk.{HookManager, HookOrigin, HookStage, Plugin, PostHook, PreHook
 
 /**
  * HookEntry — case class for a registered hook plus its scheduling
- * data (priority + sequence + origin). Per RFC §8 priority ranges
+ * data (priority + sequence + origin + plugin). Per RFC §8 priority ranges
  * the HookManager is the only owner.
  */
 private[core] final case class HookEntry[T](
  hook: T,
  priority: Int,
  seq: Long,
- origin: HookOrigin
+ origin: HookOrigin,
+ pluginName: String
 )
 
 /**
@@ -58,6 +59,16 @@ private[core] final case class HookEntry[T](
  * reads `preHooksFor` / `postHooksFor` on the request path.
  */
 final class HookManagerImpl extends HookManager {
+
+ // ADDITIVE in C10-PR-A: thread-local set by `EngineImpl.use(plugin)`
+ // before invoking `plugin.setup(engine)`. Hook registration reads it
+ // to attribute each hook to the registering plugin. Cleared by
+ // `EngineImpl.use` in a `finally` block. Falls back to "<core>" if
+ // registration happens outside any `use(plugin)` call (defensive;
+ // not the supported path).
+ private[core] val currentPlugin: ThreadLocal[String] = new ThreadLocal[String] {
+  override def initialValue(): String = "<core>"
+ }
 
  // Per-stage hook buffers. Sort key: (priority ASC, seq ASC).
  private val preHooks: scala.collection.mutable.Map[HookStage, scala.collection.mutable.Buffer[HookEntry[PreHook]]] = scala.collection.mutable.Map.empty
@@ -79,7 +90,7 @@ final class HookManagerImpl extends HookManager {
  */
  override def registerPreHook(stage: HookStage, hook: PreHook, priority: Int): HookManager = {
  require(priority >= 0, s"sm8: priority must be non-negative, got $priority")
- val entry = HookEntry(hook, priority, nextSeq.incrementAndGet(), HookOrigin.FirstParty)
+ val entry = HookEntry(hook, priority, nextSeq.incrementAndGet(), HookOrigin.FirstParty, currentPlugin.get)
  preHooks.getOrElseUpdate(stage, scala.collection.mutable.Buffer.empty) += entry
  this
  }
@@ -96,14 +107,14 @@ final class HookManagerImpl extends HookManager {
   case Left(msg) =>
   throw new IllegalArgumentException(s"sm8: $msg [stage=$stage hook=${hook.name}]")
  }
- val entry = HookEntry(hook, priority, nextSeq.incrementAndGet(), origin)
+ val entry = HookEntry(hook, priority, nextSeq.incrementAndGet(), origin, currentPlugin.get)
  preHooks.getOrElseUpdate(stage, scala.collection.mutable.Buffer.empty) += entry
  this
  }
 
  override def registerPostHook(stage: HookStage, hook: PostHook, priority: Int): HookManager = {
  require(priority >= 0, s"sm8: priority must be non-negative, got $priority")
- val entry = HookEntry(hook, priority, nextSeq.incrementAndGet(), HookOrigin.FirstParty)
+ val entry = HookEntry(hook, priority, nextSeq.incrementAndGet(), HookOrigin.FirstParty, currentPlugin.get)
  postHooks.getOrElseUpdate(stage, scala.collection.mutable.Buffer.empty) += entry
  this
  }
@@ -114,7 +125,7 @@ final class HookManagerImpl extends HookManager {
   case Left(msg) =>
   throw new IllegalArgumentException(s"sm8: $msg [stage=$stage hook=${hook.name}]")
  }
- val entry = HookEntry(hook, priority, nextSeq.incrementAndGet(), origin)
+ val entry = HookEntry(hook, priority, nextSeq.incrementAndGet(), origin, currentPlugin.get)
  postHooks.getOrElseUpdate(stage, scala.collection.mutable.Buffer.empty) += entry
  this
  }
@@ -132,6 +143,39 @@ final class HookManagerImpl extends HookManager {
  */
  override def postHooksFor(stage: HookStage): Seq[(PostHook, Int)] =
  hooksForStage(postHooks, stage)
+
+ /**
+ * ADDITIVE in C10-PR-A: override the SDK's default `listAllHooks()`
+ * with an impl that preserves the actual `origin` and `pluginName`
+ * recorded at registration time. The SDK default returns
+ * `HookOrigin.FirstParty` + `"<unknown>"` — good enough for clients
+ * that don't override, but the impl has the real data.
+  */
+ override def listAllHooks(): Seq[io.sm8.sdk.RegisteredHook] = {
+ val pre = HookStage.values.toSeq.flatMap { stage =>
+  preHooks.get(stage).toSeq.flatten.map { e =>
+   io.sm8.sdk.RegisteredHook(
+    name       = e.hook.name,
+    stage      = stage,
+    priority   = e.priority,
+    origin     = e.origin,
+    pluginName = e.pluginName
+   )
+  }
+ }
+ val post = HookStage.values.toSeq.flatMap { stage =>
+  postHooks.get(stage).toSeq.flatten.map { e =>
+   io.sm8.sdk.RegisteredHook(
+    name       = e.hook.name,
+    stage      = stage,
+    priority   = e.priority,
+    origin     = e.origin,
+    pluginName = e.pluginName
+   )
+  }
+ }
+ (pre ++ post).sortBy(h => (h.stage, h.priority, h.pluginName, h.name))
+ }
 
  /**
  * Sort-by-read helper. `Map` is parametric over the hook type T
