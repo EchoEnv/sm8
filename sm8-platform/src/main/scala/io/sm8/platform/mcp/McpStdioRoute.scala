@@ -136,6 +136,13 @@ final class McpStdioRoute private (
  private var transport: StdioServerTransportProvider = _
  private var syncServer: McpSyncServer = _
 
+ // Byte-counting wrapper around System.in: tracks whether the last
+ // byte read before EOF was a newline. Exposes partialFramePending so
+ // the close path can emit a JSON-RPC ParseError (-32700) to stderr
+ // when the host closes stdin mid-frame instead of leaving the host
+ // to wonder why the connection dropped silently.
+ private var trackingInput: TrackingInputStream = _
+
  // JSON mapper + unbuffered fd-1 sink, created in buildServer(). The
  // LatchOnCloseTransport writes response frames synchronously through
  // these (see its scaladoc, a prior PR fix #2).
@@ -189,9 +196,10 @@ final class McpStdioRoute private (
  // synchronously from LatchOnCloseTransport.sendMessage (see its
  // scaladoc) — this transport arg still matters because the SDK's
  // read loop uses the InputStream we pass.
+ trackingInput = new TrackingInputStream(System.in)
  transport = new StdioServerTransportProvider(
  JsonMapper,
- System.in,
+ trackingInput,
  Out
 )
  val server = McpServer.sync(new EofObservingProvider(transport))
@@ -288,11 +296,13 @@ final class McpStdioRoute private (
  }
 
  override def closeGracefully(): reactor.core.publisher.Mono[Void] = {
+ writePartialFrameParseErrorIfPending()
  closeLatch.countDown()
  delegate.closeGracefully()
  }
 
  override def close(): Unit = {
+ writePartialFrameParseErrorIfPending()
  closeLatch.countDown()
  delegate.close()
  }
@@ -377,6 +387,110 @@ final class McpStdioRoute private (
  */
  def signalClose(): Unit = {
  closeLatch.countDown()
+ }
+
+ /** Test seam: invokes the same close-path check that
+ * `LatchOnCloseTransport.close()` and `closeGracefully()` run before
+ * countDown. Lets `McpStdioRouteParseErrorOnCloseSpec` exercise the
+ * stderr ParseError envelope end-to-end without spinning up the full
+ * SDK builder chain (which requires a live `StdioServerTransportProvider`
+ * and a real `BufferedReader` on the inbound loop).
+ *
+ * Package-private (same access rationale as `HttpIngressClient.baseUrl`):
+ * exposed to the mcp package for the regression test only.
+ */
+ private[mcp] def triggerParseErrorOnClose(): Unit = {
+ writePartialFrameParseErrorIfPending()
+ }
+
+ /** If the host closed stdin mid-frame, write a JSON-RPC `-32700
+ * ParseError` envelope to stderr so the host learns the connection
+ * terminated on a malformed frame instead of wondering why the
+ * server dropped out silently. No-op when the last byte before EOF
+ * was a newline (frame boundary was clean) or when no bytes were
+ * read at all (clean shutdown, no in-flight frame).
+ *
+ * Why stderr not stdout: per MCP spec the host reserves fd 1 at
+ * startup for the JSON-RPC stream. Writing a ParseError to stdout
+ * mid-EOF would be interleaved with whatever the host expected to
+ * receive as a final response, and the host's frame parser may
+ * already have given up by then. stderr is the documented
+ * diagnostic channel.
+ *
+ * The envelope itself has `"id": null` because we don't know the
+ * id of the malformed frame (the SDK's BufferedReader.readLine()
+ * consumed the partial bytes before we could parse them). JSON-RPC
+ * 2.0 permits null id on a ParseError notification per §5.1.
+ */
+ private def writePartialFrameParseErrorIfPending(): Unit = {
+ if (trackingInput != null && trackingInput.partialFramePending) {
+ val envelope =
+ "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32700,\"message\":\"Parse error: connection closed with partial JSON-RPC frame in input buffer\"},\"id\":null}\n"
+ try {
+ java.lang.System.err.print(envelope)
+ java.lang.System.err.flush()
+ } catch { case NonFatal(_) => () }
+ // Clear after write so a second invocation (theoretical: both
+ // close() and closeGracefully() run during a full shutdown)
+ // does not emit a duplicate envelope.
+ trackingInput.partialFramePending = false
+ }
+ }
+}
+
+/** `FilterInputStream` wrapper around `System.in` that tracks whether
+ * the last byte read before EOF was a newline. JSON-RPC 2.0 frames
+ * are newline-delimited (per MCP stdio framing), so `EOF after a
+ * non-newline byte` == `the host closed stdin mid-frame`.
+ *
+ * Thread-safety: this is single-threaded. The SDK's
+ * `StdioMcpSessionTransport` reads from one thread (the inbound
+ * single-thread executor); close paths run on the same thread
+ * after EOF triggers `session.close()`. No concurrent readers.
+ *
+ * @param in the underlying input stream (typically `System.in`)
+ */
+private final class TrackingInputStream(in: java.io.InputStream)
+ extends java.io.FilterInputStream(in) {
+
+ // The last byte the most recent read() returned. -1 means no byte
+ // yet or EOF already reached. We use it to decide whether EOF
+ // landed on a frame boundary (last byte == '\n') or mid-frame
+ // (last byte != '\n', or no bytes read at all means "clean EOF
+ // with empty buffer").
+ // private[mcp] (not private): same access rationale as
+ // HttpIngressClient.scala:82-84 — exposed to the mcp package so
+ // McpStdioRoute (same package, same file) and TrackingInputStreamSpec
+ // (same package, different file) can read the state.
+ @volatile private[mcp] var lastByte: Int = -1
+
+ // Flipped to true by read() when EOF is reached and the prior byte
+ // was not a newline. Volatile for defense-in-depth: the close path
+ // reads this field after EOF, and although in practice both happen
+ // on the SDK's inbound single-thread executor, future refactors
+ // could move the close to another thread (e.g. the JVM shutdown
+ // hook). The volatile guarantees happens-before visibility.
+ // private[mcp] — see lastByte above for the access rationale.
+ @volatile private[mcp] var partialFramePending: Boolean = false
+
+ override def read(): Int = {
+ val b = in.read()
+ if (b == -1) {
+ if (lastByte != -1 && lastByte != '\n') partialFramePending = true
+ } else {
+ lastByte = b
+ }
+ b
+ }
+
+ override def read(b: Array[Byte], off: Int, len: Int): Int = {
+ val n = in.read(b, off, len)
+ if (n == -1) {
+ if (lastByte != -1 && lastByte != '\n') partialFramePending = true
+ } else if (n > 0) {
+ lastByte = b(off + n - 1) & 0xFF
+ }
+ n
  }
 }
 
