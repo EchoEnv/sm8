@@ -397,6 +397,12 @@ object Main {
       plugins:      Seq[io.sm8.sdk.Plugin] = Nil,
       metaInspectorEngineFn: Option[() => Map[String, Any]] = None,
       registryInspectorFn: Option[io.sm8.platform.query.RegistrySources] = None,
+      // ADDITIVE in C10-PR-C2: when defined, HttpTransport passes this
+      // pre-built engine to QueryService.definition instead of letting
+      // it call EngineFactory.create. The deployment typically builds
+      // the engine once at boot and shares it across surfaces; if
+      // `None`, HttpTransport falls back to the legacy factory path.
+      engineFn: Option[() => io.sm8.sdk.Engine] = None,
   ): Either[String, (EngineRegistry, HttpTransport, List[EngineProvider])] = {
     // Per the audit (2026-08-27 [C1]): use the TYPED 5-arg realize so
     // engine-realization failures surface as `EngineError.ConnectionFailed`
@@ -444,7 +450,8 @@ object Main {
             io.sm8.core.cache.ResultCache.NoOp,
             plugins,
             metaInspectorEngineFn,
-            registryInspectorFn
+            registryInspectorFn,
+            engineFn
           ), realized))
         } catch {
           case e: IllegalArgumentException => Left(e.getMessage)
@@ -566,13 +573,19 @@ object Main {
               io.sm8.core.PluginDiscovery.discoverFromConfig()
             val plugins: List[io.sm8.sdk.Plugin] =
               discovered :+ new MetaCaptureObserver(latestMeta)
-            // ADDITIVE in C10-PR-C: build a 2nd engine instance from
-            // the same plugins list, for the registry inspector
-            // (`listPlugins` / `listHooks`). `EngineFactory.create`
-            // registers every plugin via `use(plugin)` at construction,
-            // so this parallel engine's HookManager mirrors the live
-            // engine's registry at boot (same plugin instances, same
-            // setup calls). Read-only diagnostic surface.
+            // ADDITIVE in C10-PR-C (and re-shaped in C10-PR-C2): build
+            // ONE engine instance from the same plugins list, shared
+            // between QueryService (via engineFn) + RegistryInspectorService
+            // (via registryEngine.hooks / registeredPlugins). The
+            // closures captured below dereference `registryEngine` only
+            // at call time (after the engine is fully constructed),
+            // so the lazy evaluation is safe.
+            //
+            // EngineFactory.create registers every plugin via
+            // use(plugin) at construction; the resulting HookManager
+            // is shared by both the live QueryService and the
+            // registry inspector — the C10 final-gate "parallel
+            // engine" caveat is closed.
             val registryEngine: io.sm8.sdk.Engine =
               io.sm8.core.EngineFactory.create(plugins)
             // ADDITIVE in C10-PR-C1: consult the engine's actual
@@ -582,14 +595,11 @@ object Main {
             // EngineImpl.use(); reporting Registered(name) for it
             // would be a silent lie.
             //
-            // PR-C2 (follow-up): today `registryEngine` is a parallel
-            // engine — the LIVE engine is constructed later inside
-            // `QueryService.definition` and not exposed here, so
-            // this check only validates the registry engine's own
-            // setup. PR-C2 will thread a single shared engine to
-            // both surfaces, eliminating the parallel-engine
-            // construction. Until then, this is the most accurate
-            // signal we can give.
+            // ADDITIVE in C10-PR-C2: registryEngine is now the SAME
+            // engine passed to QueryService via engineFn — there is
+            // no longer a parallel engine. The pluginsFn closure
+            // reads the LIVE seenPlugins set, so the wire field is
+            // 100% accurate (no caveat).
             val registrySources: io.sm8.platform.query.RegistrySources =
               io.sm8.platform.query.RegistrySources(
                 hooksFn = () => registryEngine.hooks.listAllHooks(),
@@ -624,7 +634,11 @@ object Main {
               cli.connectorUrl,
               plugins,
               Some(() => latestMeta.get()),
-              Some(registrySources)
+              Some(registrySources),
+              // C10-PR-C2: thread the shared engine through to
+              // QueryService.definition. This closes the parallel-
+              // engine construction (the C10 final-gate MEDIUM).
+              Some(() => registryEngine)
             ) match {
               case Left(bootErr) =>
                 System.err.println(bootErr); 3
