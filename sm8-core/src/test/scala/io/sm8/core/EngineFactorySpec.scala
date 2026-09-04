@@ -20,8 +20,7 @@
  */
 package io.sm8.core
 
-import io.sm8.sdk.Engine
-import io.sm8.sdk.Plugin
+import io.sm8.sdk.{Engine, Plugin, PluginMetadata}
 
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -91,6 +90,39 @@ class EngineFactorySpec extends AnyFlatSpec with Matchers {
     EngineFactory.create(Seq(p))
     assert(p.setupCount == 2,
       "plugin.setup() should fire on every create() call, not once")
+  }
+
+  // ADDITIVE in C10-PR-C1: the new SDK accessor surfaces the
+  // post-setup `seenPlugins` set for diagnostic uses. The
+  // contract: `registeredPlugins` is the set of plugins whose
+  // setup() succeeded (those removed by `EngineImpl.use` on
+  // NonFatal are absent).
+  it should "expose registeredPlugins as the post-setup seenPlugins set" in {
+    val p1 = new CounterPlugin
+    val p2 = new CounterPlugin
+    val engine = EngineFactory.create(Seq(p1, p2))
+    val registered = engine.registeredPlugins
+    registered.length shouldBe 2
+    registered.toSet shouldBe Set(p1, p2)
+    // Deterministic ordering (by class name) for wire-shape stability.
+    registered shouldBe registered.sortBy(_.getClass.getName)
+  }
+
+  it should "exclude plugins whose setup() threw NonFatal from registeredPlugins" in {
+    // Regression test for the C10-PR-C1 fix: setup() failures
+    // must NOT be reported as Registered (a silent lie).
+    val throwing = new Plugin {
+      override def setup(engine: Engine): Unit =
+        throw new RuntimeException("boom from test plugin")
+      override val name: String = "throwing-plugin"
+      override def metadata: PluginMetadata =
+        PluginMetadata("io.sm8.plugins", "ThrowingPlugin", "0.0.0")
+    }
+    val ok = new CounterPlugin
+    val engine = EngineFactory.create(Seq(throwing, ok))
+    val registered = engine.registeredPlugins.toSet
+    registered shouldBe Set(ok) // NOT Set(throwing, ok)
+    registered should not contain throwing
   }
 
   it should "swallow NonFatal exceptions from plugin.setup() (per karpathy-app-design §4.2)" in {
