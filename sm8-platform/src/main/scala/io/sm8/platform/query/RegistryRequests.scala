@@ -86,8 +86,11 @@ final case class HookEntry(
  * Response payload for the `listHooks` handler.
  *
  * @param count the number of hooks returned
- * @param hooks the entries, sorted by `(stage, priority, pluginName,
- *              name)` (the core `listAllHooks` ordering)
+ * @param hooks the entries in the core `listAllHooks()` ordering
+ *              (pre-hooks then post-hooks, each stage-group in
+ *              (priority, seq) order — NOT globally re-sorted by
+ *              the transport; the transport preserves the core
+ *              ordering verbatim)
  */
 final case class ListHooksResponse(
     count: Int,

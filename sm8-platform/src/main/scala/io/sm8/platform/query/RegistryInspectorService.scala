@@ -54,6 +54,23 @@ import com.fasterxml.jackson.module.scala.DefaultScalaModule
 import io.sm8.sdk.{Plugin, SetupStatus, HookStage}
 
 /**
+ * ADDITIVE in C10-PR-B final-gate (architect F5): named container for
+ * the two deployment-supplied registry closures, replacing the
+ * anonymous Option-tuple so call sites self-document
+ * (`RegistrySources(hooksFn = ..., pluginsFn = ...)`) and future
+ * fields can be added without breaking positional destructuring.
+ *
+ * @param hooksFn   per-call source of the engine's registered hooks
+ *                  (typically `() => engine.hooks.listAllHooks()`)
+ * @param pluginsFn per-call source of the discovered plugins with
+ *                  their setup status
+ */
+final case class RegistrySources(
+    hooksFn:   () => Seq[io.sm8.sdk.RegisteredHook],
+    pluginsFn: () => Seq[(Plugin, SetupStatus)]
+)
+
+/**
  * Service definition for the `listPlugins` + `listHooks` handlers.
  *
  * @param hooksFn   closure returning the engine's registered hooks
@@ -113,8 +130,7 @@ object RegistryInspectorService {
    *                  the rationale above)
    */
   def definition(
-      hooksFn:   () => Seq[io.sm8.sdk.RegisteredHook],
-      pluginsFn: () => Seq[(Plugin, SetupStatus)]
+      sources: RegistrySources
   ): ServiceDefinition = {
     // Per the convention from QueryService.scala + MetricsService:
     // explicit `DefaultScalaModule` registration — the SDK's
@@ -136,7 +152,7 @@ object RegistryInspectorService {
     val listPluginsRunner: HandlerRunner[ListPluginsRequest, ListPluginsResponse] =
       HandlerRunner.of(
         (_: dev.restate.sdk.Context, _: ListPluginsRequest) => {
-          val entries = pluginsFn()
+          val entries = sources.pluginsFn()
             .map { case (p, s) => toPluginEntry(p, s) }
             .sortBy(_.name)
           ListPluginsResponse(count = entries.size, plugins = entries)
@@ -148,7 +164,7 @@ object RegistryInspectorService {
     val listHooksRunner: HandlerRunner[ListHooksRequest, ListHooksResponse] =
       HandlerRunner.of(
         (_: dev.restate.sdk.Context, _: ListHooksRequest) => {
-          val entries = hooksFn().map(toHookEntry)
+          val entries = sources.hooksFn().map(toHookEntry)
           ListHooksResponse(count = entries.size, hooks = entries)
         },
         jacksonSerdeFactory,

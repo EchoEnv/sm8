@@ -102,12 +102,9 @@ final class HttpTransport(
     val metaInspectorEngineFn: Option[() => Map[String, Any]] = None,
     // ADDITIVE in C10-PR-B: when defined, binds RegistryInspectorService
     // so `listPlugins` / `listHooks` are served on the same endpoint.
-    // The first closure returns the engine's registered hooks; the
-    // second returns the discovered plugins + setup status. Both are
-    // boot-stable state owned by the deployment.
-    val registryInspectorFn: Option[
-      (() => Seq[io.sm8.sdk.RegisteredHook], () => Seq[(io.sm8.sdk.Plugin, io.sm8.sdk.SetupStatus)])
-    ] = None
+    // Boot-stable state owned by the deployment, wrapped in the named
+    // RegistrySources container (self-documenting call sites).
+    val registryInspectorFn: Option[RegistrySources] = None
 ) {
 
   // The bound Vert.x HttpServer handle. Per scala-jvm-safemindset:
@@ -157,8 +154,8 @@ final class HttpTransport(
     // deployment supplies the closures. Read-only diagnostic surface
     // (SERVICE + SHARED) — same rationale as MetaInspectorService.
     val withRegistry: Endpoint.Builder = registryInspectorFn match {
-      case Some((hooksFn, pluginsFn)) =>
-        baseEndpoint.bind(RegistryInspectorService.definition(hooksFn, pluginsFn))
+      case Some(sources) =>
+        baseEndpoint.bind(RegistryInspectorService.definition(sources))
       case None => baseEndpoint
     }
     val withMeta: Endpoint.Builder = metaInspectorEngineFn match {

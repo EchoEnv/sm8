@@ -106,7 +106,9 @@ class RegistryInspectorServiceSpec extends AnyFlatSpec with Matchers {
 
   "RegistryInspectorService.definition" should
     "expose a ServiceDefinition named RegistryInspectorService with 2 handlers" in {
-    val defn = RegistryInspectorService.definition(hooksFn, pluginsFn)
+    val defn = RegistryInspectorService.definition(
+      RegistrySources(hooksFn = hooksFn, pluginsFn = pluginsFn)
+    )
     defn.getServiceName shouldBe "RegistryInspectorService"
     // ServiceType.SERVICE per the MetaInspectorService rationale.
     defn.getServiceType shouldBe dev.restate.sdk.endpoint.definition.ServiceType.SERVICE
@@ -116,6 +118,33 @@ class RegistryInspectorServiceSpec extends AnyFlatSpec with Matchers {
     handlers.map(_.getName).toSet shouldBe Set("listPlugins", "listHooks")
     handlers.foreach { h =>
       h.getHandlerType shouldBe dev.restate.sdk.endpoint.definition.HandlerType.SHARED
+    }
+  }
+
+  it should "project all 8 HookStage values to their wire names (F4 coverage)" in {
+    // Per C10-PR-B final-gate (architect F4): every stage must
+    // round-trip through HookStage.wireName. Tabular over all 8.
+    val allStages = Seq(
+      HookStage.PreParse    -> "pre:parse",
+      HookStage.PostParse   -> "post:parse",
+      HookStage.PreResolve  -> "pre:resolve",
+      HookStage.PostResolve -> "post:resolve",
+      HookStage.PreExecute  -> "pre:execute",
+      HookStage.PostExecute -> "post:execute",
+      HookStage.PreFormat   -> "pre:format",
+      HookStage.PostFormat  -> "post:format"
+    )
+    allStages.foreach { case (stage, wire) =>
+      val entry = RegistryInspectorService.toHookEntry(
+        RegisteredHook(
+          name       = "x",
+          stage      = stage,
+          priority   = 0,
+          origin     = HookOrigin.Core,
+          pluginName = "<core>"
+        )
+      )
+      entry.stage shouldBe wire
     }
   }
 
