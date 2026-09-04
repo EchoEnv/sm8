@@ -396,6 +396,7 @@ object Main {
       connectorUrl: Option[String] = None,
       plugins:      Seq[io.sm8.sdk.Plugin] = Nil,
       metaInspectorEngineFn: Option[() => Map[String, Any]] = None,
+      registryInspectorFn: Option[io.sm8.platform.query.RegistrySources] = None,
   ): Either[String, (EngineRegistry, HttpTransport, List[EngineProvider])] = {
     // Per the audit (2026-08-27 [C1]): use the TYPED 5-arg realize so
     // engine-realization failures surface as `EngineError.ConnectionFailed`
@@ -442,7 +443,8 @@ object Main {
             registry,
             io.sm8.core.cache.ResultCache.NoOp,
             plugins,
-            metaInspectorEngineFn
+            metaInspectorEngineFn,
+            registryInspectorFn
           ), realized))
         } catch {
           case e: IllegalArgumentException => Left(e.getMessage)
@@ -564,13 +566,31 @@ object Main {
               io.sm8.core.PluginDiscovery.discoverFromConfig()
             val plugins: List[io.sm8.sdk.Plugin] =
               discovered :+ new MetaCaptureObserver(latestMeta)
+            // ADDITIVE in C10-PR-C: build a 2nd engine instance from
+            // the same plugins list, for the registry inspector
+            // (`listPlugins` / `listHooks`). `EngineFactory.create`
+            // registers every plugin via `use(plugin)` at construction,
+            // so this parallel engine's HookManager mirrors the live
+            // engine's registry at boot (same plugin instances, same
+            // setup calls). Read-only diagnostic surface.
+            val registryEngine: io.sm8.sdk.Engine =
+              io.sm8.core.EngineFactory.create(plugins)
+            val registrySources: io.sm8.platform.query.RegistrySources =
+              io.sm8.platform.query.RegistrySources(
+                hooksFn = () => registryEngine.hooks.listAllHooks(),
+                pluginsFn = () =>
+                  discovered.map { p =>
+                    p -> io.sm8.sdk.SetupStatus.Registered(p.name)
+                  }
+              )
             wire(
               model,
               discoverProviders(Thread.currentThread().getContextClassLoader),
               cli.engine,
               cli.connectorUrl,
               plugins,
-              Some(() => latestMeta.get())
+              Some(() => latestMeta.get()),
+              Some(registrySources)
             ) match {
               case Left(bootErr) =>
                 System.err.println(bootErr); 3
