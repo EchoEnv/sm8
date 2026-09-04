@@ -48,8 +48,10 @@ import scala.util.control.NonFatal
 
 object Sm8ToolHandlers {
 
- /** Build all 5 SyncToolSpecification instances for the
- * `McpServer.sync(...).tools(...)` builder. */
+ /** Build all 7 SyncToolSpecification instances for the
+ * `McpServer.sync(...).tools(...)` builder. C10-PR-C adds
+ * list_plugins + list_hooks (registry inspector handlers from
+ * PR-B). */
  def build(client: HttpIngressClient.Impl)
  : Seq[McpServerFeatures.SyncToolSpecification] = {
  // Plain Jackson 2 ObjectMapper (no ScalaModule): the request
@@ -63,7 +65,10 @@ object Sm8ToolHandlers {
  buildListModelsTool(client, mapper),
  buildDescribeModelTool(client, mapper),
  buildListEnginesTool(client, mapper),
- buildGetMetricsTool(client, mapper)
+ buildGetMetricsTool(client, mapper),
+ // C10-PR-C: registry inspector surfaces (PR-B handlers).
+ buildListPluginsTool(client, mapper),
+ buildListHooksTool(client, mapper)
 )
  }
 
@@ -282,6 +287,67 @@ object Sm8ToolHandlers {
  req: McpSchema.CallToolRequest
 ): McpSchema.CallToolResult =
  callAndWrap(client, mapper, "/MetricsService/snapshot", new java.util.LinkedHashMap[String, Object]())
+ })
+ .build()
+ }
+
+ // ----- list_plugins (C10-PR-C) -----
+
+ private def buildListPluginsTool(
+ client: HttpIngressClient.Impl,
+ mapper: ObjectMapper
+): McpServerFeatures.SyncToolSpecification = {
+ val tool = McpSchema.Tool.builder()
+ .name("list_plugins")
+ .title("List discovered sm8 plugins")
+ .description(
+ "List the plugins the sm8 deployment discovered at boot, " +
+ "with a per-plugin `registered` flag (true = hooks are live " +
+ "via Engine.use). Forwards to POST /RegistryInspectorService/listPlugins " +
+ "on the Restate ingress. No arguments required."
+)
+ .inputSchema(McpSchema.JsonSchema.builder().`type`("object").build())
+ .build()
+ McpServerFeatures.SyncToolSpecification.builder()
+ .tool(tool)
+ .callHandler(new java.util.function.BiFunction[
+ McpSyncServerExchange, McpSchema.CallToolRequest, McpSchema.CallToolResult] {
+ def apply(
+ exch: McpSyncServerExchange,
+ req: McpSchema.CallToolRequest
+): McpSchema.CallToolResult =
+ callAndWrap(client, mapper, "/RegistryInspectorService/listPlugins", new java.util.LinkedHashMap[String, Object]())
+ })
+ .build()
+ }
+
+ // ----- list_hooks (C10-PR-C) -----
+
+ private def buildListHooksTool(
+ client: HttpIngressClient.Impl,
+ mapper: ObjectMapper
+): McpServerFeatures.SyncToolSpecification = {
+ val tool = McpSchema.Tool.builder()
+ .name("list_hooks")
+ .title("List registered sm8 hooks")
+ .description(
+ "List every hook registered on the sm8 engine (name, pipeline " +
+ "stage, priority, origin, registering plugin). Useful for " +
+ "debugging hook ordering and plugin wiring. Forwards to POST " +
+ "/RegistryInspectorService/listHooks on the Restate ingress. " +
+ "No arguments required."
+)
+ .inputSchema(McpSchema.JsonSchema.builder().`type`("object").build())
+ .build()
+ McpServerFeatures.SyncToolSpecification.builder()
+ .tool(tool)
+ .callHandler(new java.util.function.BiFunction[
+ McpSyncServerExchange, McpSchema.CallToolRequest, McpSchema.CallToolResult] {
+ def apply(
+ exch: McpSyncServerExchange,
+ req: McpSchema.CallToolRequest
+): McpSchema.CallToolResult =
+ callAndWrap(client, mapper, "/RegistryInspectorService/listHooks", new java.util.LinkedHashMap[String, Object]())
  })
  .build()
  }
