@@ -113,7 +113,16 @@ object QueryService {
       model: Model,
       registry: EngineRegistry,
       cache: ResultCache,
-      plugins: Seq[Plugin] = Nil
+      plugins: Seq[Plugin] = Nil,
+      // ADDITIVE in C10-PR-C2: when defined, skip `EngineFactory.create`
+      // and use this pre-built engine instead. Lets sm8-server pass
+      // the SAME engine instance to both `QueryService.definition` and
+      // `RegistryInspectorService` — closing the C10 final-gate
+      // "parallel engine" caveat (clover MEDIUM). Source-compatible
+      // default `None` preserves all existing callers (tests, in-memory
+      // harnesses). When `None`, the original `EngineFactory.create`
+      // path is preserved verbatim.
+      engine: Option[io.sm8.sdk.Engine] = None
   ): ServiceDefinition = {
     // Per review pass #2 (DE-reviewer #3): the SDK's
     // `JacksonSerdeFactory.DEFAULT` mapper doesn't reliably auto-load
@@ -145,8 +154,18 @@ object QueryService {
     // gotchas" + RFC §3. `engine.hooks` access still compiles
     // because `Engine` (the SDK trait) exposes
     // `hooks: HookManager`.
-    val engine: io.sm8.sdk.Engine = io.sm8.core.EngineFactory.create(plugins)
-    val dispatcher: HookRunnerOrchestration = HookRunnerOrchestration(EngineHookDispatcher(engine.hooks))
+    //
+    // ADDITIVE in C10-PR-C2: when the caller passes a pre-built
+    // engine (e.g. sm8-server constructs it once at boot and shares
+    // it across QueryService + RegistryInspectorService), skip the
+    // factory so the same plugin instances register on the SAME
+    // engine instance — no parallel engine, no setup-twice risk.
+    // (Local var renamed to `liveEngine` to avoid shadowing the
+    // new `engine` parameter above.)
+    val liveEngine: io.sm8.sdk.Engine = engine.getOrElse(
+      io.sm8.core.EngineFactory.create(plugins)
+    )
+    val dispatcher: HookRunnerOrchestration = HookRunnerOrchestration(EngineHookDispatcher(liveEngine.hooks))
 
     val handlerRunner: HandlerRunner[QueryRequest, QueryResult] =
       HandlerRunner.of(
