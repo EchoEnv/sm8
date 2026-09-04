@@ -575,13 +575,39 @@ object Main {
             // setup calls). Read-only diagnostic surface.
             val registryEngine: io.sm8.sdk.Engine =
               io.sm8.core.EngineFactory.create(plugins)
+            // ADDITIVE in C10-PR-C1: consult the engine's actual
+            // `registeredPlugins` (the seenPlugins set after setup)
+            // so the `registered` flag is accurate. A plugin whose
+            // setup() threw NonFatal is removed from seenPlugins by
+            // EngineImpl.use(); reporting Registered(name) for it
+            // would be a silent lie.
+            //
+            // PR-C2 (follow-up): today `registryEngine` is a parallel
+            // engine — the LIVE engine is constructed later inside
+            // `QueryService.definition` and not exposed here, so
+            // this check only validates the registry engine's own
+            // setup. PR-C2 will thread a single shared engine to
+            // both surfaces, eliminating the parallel-engine
+            // construction. Until then, this is the most accurate
+            // signal we can give.
             val registrySources: io.sm8.platform.query.RegistrySources =
               io.sm8.platform.query.RegistrySources(
                 hooksFn = () => registryEngine.hooks.listAllHooks(),
-                pluginsFn = () =>
+                pluginsFn = () => {
+                  val registered: Set[io.sm8.sdk.Plugin] =
+                    registryEngine.registeredPlugins.toSet
                   discovered.map { p =>
-                    p -> io.sm8.sdk.SetupStatus.Registered(p.name)
+                    val status: io.sm8.sdk.SetupStatus =
+                      if (registered.contains(p))
+                        io.sm8.sdk.SetupStatus.Registered(p.name)
+                      else
+                        io.sm8.sdk.SetupStatus.NotRegistered(
+                          p.getClass.getName,
+                          "setup() failed (NonFatal)"
+                        )
+                    p -> status
                   }
+                }
               )
             wire(
               model,
