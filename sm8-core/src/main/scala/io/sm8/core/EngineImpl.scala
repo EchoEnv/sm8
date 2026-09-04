@@ -76,6 +76,17 @@ final class EngineImpl extends Engine {
  override def hooks: HookManager    = _hooks
  override def transformers: TransformerRegistry = _transformers
 
+ /**
+  * ADDITIVE in C10-PR-C1: override the SDK default with the real
+  * `seenPlugins` set, sorted by class name for deterministic wire
+  * output. Consumed by `sm8-server`'s `pluginsFn` so the
+  * `registered` flag is accurate (a plugin whose setup() threw
+  * NonFatal is removed from `seenPlugins` per the `use()` path,
+  * so it correctly reports as not-registered).
+  */
+ override def registeredPlugins: Seq[io.sm8.sdk.Plugin] =
+  seenPlugins.iterator.asScala.toList.sortBy(_.getClass.getName)
+
  // ---- Portal (Step 7) ----
 
  /**

@@ -56,4 +56,16 @@ trait Engine {
  * Exactly one Transformer is active at a time (Q3 = swap).
  */
  def transformers: TransformerRegistry
+
+ /**
+ * ADDITIVE in C10-PR-C1: every Plugin currently registered on
+ * this engine (the `seenPlugins` set), sorted by class name for
+ * deterministic wire output. Surfaced for diagnostic uses that
+ * need to know the ACTUAL registration state — e.g. a deployment
+ * service handler that must not lie about plugins whose setup
+ * failed. The default impl returns `Nil` so existing
+ * `Engine`-implementing types stay source-compatible; the core
+ * `EngineImpl` overrides with the real `seenPlugins.toSeq`.
+ */
+ def registeredPlugins: Seq[Plugin] = Seq.empty
 }
