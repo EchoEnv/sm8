@@ -51,9 +51,7 @@ import dev.restate.serde.jackson.JacksonSerdeFactory
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.scala.DefaultScalaModule
 
-import io.sm8.core.engine.EngineRegistry
-import io.sm8.core.PluginDiscovery
-import io.sm8.sdk.{HookManager, Plugin, SetupStatus, HookStage}
+import io.sm8.sdk.{Plugin, SetupStatus, HookStage}
 
 /**
  * Service definition for the `listPlugins` + `listHooks` handlers.
