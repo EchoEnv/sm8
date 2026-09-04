@@ -104,7 +104,16 @@ final class HttpTransport(
     // so `listPlugins` / `listHooks` are served on the same endpoint.
     // Boot-stable state owned by the deployment, wrapped in the named
     // RegistrySources container (self-documenting call sites).
-    val registryInspectorFn: Option[RegistrySources] = None
+    val registryInspectorFn: Option[RegistrySources] = None,
+    // ADDITIVE in C10-PR-C2: when defined, pass this pre-built engine
+    // to QueryService.definition instead of letting it call
+    // EngineFactory.create. The deployment (sm8-server) builds the
+    // engine ONCE at boot and shares it between QueryService + the
+    // registry inspector — eliminates the parallel-engine construction
+    // (the C10 final-gate MEDIUM from clover). Default `None`
+    // preserves the legacy `EngineFactory.create` path for tests and
+    // existing callers.
+    val engineFn: Option[() => io.sm8.sdk.Engine] = None
 ) {
 
   // The bound Vert.x HttpServer handle. Per scala-jvm-safemindset:
@@ -131,6 +140,11 @@ final class HttpTransport(
         registry = registry,
         cache    = cache,
         plugins  = plugins,
+        // ADDITIVE in C10-PR-C2: thread the deployment's pre-built
+        // engine through to QueryService.definition when supplied.
+        // When `None`, the original EngineFactory.create path is
+        // preserved (no behavior change for existing callers).
+        engine   = engineFn.map(_())
       ))
       // Per [[ADR-012-a]] (`docs/adr/0012-a-modelservice-restate-handler.md`):
       // bind ModelService alongside QueryService. ModelService is a
@@ -230,7 +244,13 @@ object HttpTransport {
       cache:    ResultCache,
       plugins:  Seq[io.sm8.sdk.Plugin] = Nil,
       metaInspectorEngineFn: Option[() => Map[String, Any]] = None,
-      registryInspectorFn:    Option[RegistrySources] = None
+      registryInspectorFn:    Option[RegistrySources] = None,
+      // ADDITIVE in C10-PR-C2: 7-arg overload forwards the pre-built
+      // engine to the constructor. Same rationale as the registry
+      // overload — without this, callers using the companion-factory
+      // pattern would silently fall back to EngineFactory.create (the
+      // legacy path) and the engine-sharing would not happen.
+      engineFn: Option[() => io.sm8.sdk.Engine] = None
   ): HttpTransport =
-    new HttpTransport(model, registry, cache, plugins, metaInspectorEngineFn, registryInspectorFn)
+    new HttpTransport(model, registry, cache, plugins, metaInspectorEngineFn, registryInspectorFn, engineFn)
 }
