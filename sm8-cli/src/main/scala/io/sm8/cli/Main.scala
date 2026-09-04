@@ -63,6 +63,8 @@ object Main {
     case ("explain" :: rest)    => withGlobalConfig(rest) { (cfg, rem) => safeRun(cmdQuery(cfg, rem, explain = true)) }
     case ("audit-tail" :: rest) => withGlobalConfig(rest) { (cfg, rem) => safeRun(cmdAuditTail(cfg, rem)) }
     case ("inspect" :: rest)    => withGlobalConfig(rest) { (cfg, rem) => safeRun(cmdInspect(cfg, rem)) }
+    case ("plugins" :: rest)    => withGlobalConfig(rest) { (cfg, rem) => safeRun(cmdPlugins(cfg)) }
+    case ("hooks" :: rest)      => withGlobalConfig(rest) { (cfg, rem) => safeRun(cmdHooks(cfg)) }
     case other :: _ =>
       System.err.println(s"sm8: unknown command '$other'. Run 'sm8 --help'."); 2
   }
@@ -330,6 +332,52 @@ object Main {
     case _ =>
       System.err.println("sm8 inspect: too many arguments. Usage: sm8 inspect <key>"); 2
   }
+
+  // C10-PR-C: `sm8 plugins` — list discovered plugins + their
+  // registered flag. Pure HTTP read; no model required.
+  private def cmdPlugins(cfg: Config): Int = {
+    val resp = Client.postJson(cfg, "/RegistryInspectorService/listPlugins", "{}")
+    if (cfg.json) { println(resp.body); return 0 }
+    val root = resp.parseJson
+    if (root.errorPath(cfg)) return 1
+    printWarnings(root.warningsPath)
+    val plugins = root.dataPath.field("plugins").elemList
+    if (plugins.isEmpty) { println("(no plugins discovered)"); return 0 }
+    val rows = plugins.map { p =>
+      List(
+        p.field("name").text,
+        p.field("coords").text,
+        p.field("version").text,
+        if (p.field("registered").booleanValue) "yes" else "no"
+      )
+    }
+    println(Table.render(List("NAME", "COORDS", "VERSION", "REGISTERED"), rows))
+    0
+  }
+
+  // C10-PR-C: `sm8 hooks` — list every hook registered on the
+  // engine (name, stage, priority, origin, plugin). Pure HTTP read.
+  private def cmdHooks(cfg: Config): Int = {
+    val resp = Client.postJson(cfg, "/RegistryInspectorService/listHooks", "{}")
+    if (cfg.json) { println(resp.body); return 0 }
+    val root = resp.parseJson
+    if (root.errorPath(cfg)) return 1
+    printWarnings(root.warningsPath)
+    val hooks = root.dataPath.field("hooks").elemList
+    if (hooks.isEmpty) { println("(no hooks registered)"); return 0 }
+    val rows = hooks.map { h =>
+      List(
+        h.field("name").text,
+        h.field("stage").text,
+        h.field("priority").text,
+        h.field("origin").text,
+        h.field("pluginName").text
+      )
+    }
+    println(Table.render(List("NAME", "STAGE", "PRIORITY", "ORIGIN", "PLUGIN"), rows))
+    0
+  }
+
   private def printDescribe(d: JsonNode): Unit = {
     println(s"Model:        ${d.field("model").text}")
     println(s"Version:      ${d.field("version").text}")
@@ -958,6 +1006,8 @@ object Main {
         |  explain <model> [opts]          show the semantic plan (no execution)
         |  audit-tail [opts]               show recent audit events (Restate, durable)
         |  inspect <key>                   read a context.meta key (generic meta-inspector)
+        |  plugins                         list discovered plugins (registered flag per plugin)
+        |  hooks                           list registered hooks (stage, priority, origin, plugin)
         |
         |query/explain options:
         |  -d, --dim <name>                dimension (repeatable)
