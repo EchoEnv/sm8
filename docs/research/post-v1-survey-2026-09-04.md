@@ -145,6 +145,7 @@ The ADR README at `docs/adr/README.md` is **partially stale**: ADR-014 and ADR-0
 - `CachePlugin` P2.5: per `plugins/cache-plugin/src/test/scala/io/sm8/plugins/cache/CachePluginP25Spec.scala:11-19`, the spec asserts `ctx.meta.contains("sm8.cache.write.error")` after a journal-encode failure. The spec header calls it a "regression test" — **but the implementation file `plugins/cache-plugin/.../CachePlugin.scala:226-230` has not been verified by this survey to actually fold the typed `Left` into `ctx.meta`**. The spec could pass against an unimplemented implementation if the assertion was added speculatively. **Action**: read `CachePlugin.scala:226-230` and either (a) ship a one-PR fix if the fold is missing, or (b) close the workstream with "spec is the contract, implementation matches" if the fold is present.
 
 **Estimated effort.** **1-2 1-shot sessions.** No wayfinder map needed.
+   - **UPDATED 2026-09-04 (post-survey verification):** the CachePlugin P2.5 follow-up is no longer parked — it shipped at PR-205 (`877bf41`, squash `b4b025f`, "fix(sm8): CacheWritePostHook match-discard — ctx.meta fold now reaches callers"). The fold in `plugins/cache-plugin/src/main/scala/io/sm8/plugins/cache/CachePlugin.scala:293` (`context.meta + ("sm8.cache.write.error" -> err)`) now reaches callers; the comment at line 258-268 explicitly references the prior `CachePluginP25Spec` failure and its fix. **Only the StdioEndToEndSpec 5 env-failures remain.** Confirmed by `mvn -pl sm8-platform test -Dtest=StdioEndToEndSpec` on 2026-09-04: "Tests: succeeded 225, failed 5" — the 5 failures are at lines 178, 248, 268, 281, 381 (StdioEndToEndSpec itself, not its testsuite neighbours).
 
 **Skill alignment.** `karpathy-guidelines` (smallest correct change), `scala-impact-analysis` (P2.5 fold touches `ctx.meta` channel which is shared with other hooks — ADR-009-d establishes `sm8.cache.write.error` as a new key, ADR-010-a establishes the orchestration layer that surfaces it), `debug-mantra` (the spec body asserts the meta key — the falsifiable criterion is whether the implementation actually writes the key).
 
@@ -311,3 +312,37 @@ The ADR README at `docs/adr/README.md` is **partially stale**: ADR-014 and ADR-0
 
 - `git log --oneline -20` at `50a2cef` (the survey-time HEAD) — confirms C10 PR-C2 landed as the most recent merge; the MCP wave is fully shipped; v1 RFC track is closed.
 - `git log --oneline --all -- docs/release-notes` — only PR-213 has a release-notes file; no `v0.1.0` or `v1.0` release notes exist yet (consistent with the standing "dont bump version yet" directive from ADR-008-Q).
+
+---
+
+## 7. Survey caveats (added 2026-09-04 post-publication)
+
+This survey was produced by a 1-shot research worker with primary-source access to RFCs, ADRs, project status docs, and `git log`. The worker used `agentgrep` for cross-file searches and read the listed files. Three corrections were identified during the downstream audit (Option-C pivot) and Option-D hygiene pass:
+
+### 7.1 Stale claim: "semantic-graph plugin is the largest unbuilt proposal" (WRONG)
+
+The TL;DR (§1) and candidate §3.1 ranked the semantic-graph plugin as "the largest known *unbuilt proposal*." This is FALSE. The plugin is fully built, fully tested, and in production:
+
+- Module present at `plugins/semantic-graph-plugin/` with 8 source files + 4 spec files (`SemanticGraphBuilder.scala`, `JoinPathPreHook.scala`, `GraphPostResolveObserver.scala`, `GraphSnapshot.scala`, `SemanticGraphPlugin.scala`, plus 4 specs).
+- Listed in root `pom.xml` `<modules>` block.
+- 8 merged PRs shipped it: PR-149 → PR-161 → PR-163 → PR-164 → PR-152 → PR-159 → PR-231 → PR-305 (`404d98b`, 2026-08-30).
+- Per ADR-010-a retrospective §1 ("3 first-party plugins now in production: JoinPathPreHook cycle validator + GraphPostResolveObserver + AuditPostStubHook").
+- Per ADR-008-AI (RFC review + fixes ADR) — the proposal is the v1.1, not an unimplemented v1.0.
+
+The "audit" framing (Option C) was the correct response: audit the EXISTING plugin for future risks, not build it. That audit (a separate artifact at `docs/audit/semantic-graph-future-risks-2026-09-04.md`, commit `3a79b25`) found **0 CRITICAL / 0 HIGH / 1 MEDIUM / 3 LOW / 4 none** — plugin is in good operational shape.
+
+### 7.2 Stale claim: "CachePlugin P2.5 is parked" (WRONG)
+
+Candidate §3.3 named CachePlugin P2.5 as parked. This is FALSE. It shipped at PR-205 (`877bf41`, merge commit `b4b025f`, 2026-08-30). The fold-in at `plugins/cache-plugin/src/main/scala/io/sm8/plugins/cache/CachePlugin.scala:293` now reaches callers; the surrounding comment (lines 258-268) explicitly references the prior `CachePluginP25Spec` failure and its fix.
+
+**Downstream impact**: candidate §3.3 ("parked follow-ups close-out") is now scoped to the `StdioEndToEndSpec` 5 env-failures alone, not two items. Effort estimate drops to ~1 1-shot session, not 1-2.
+
+### 7.3 Survey methodology limitation: cached prior-conversation claims were not re-verified
+
+Two of the three stale claims (7.1 and 7.2 above) appear to have originated from cached prior-conversation context that the survey worker copied forward without re-verification against `git log`. The survey's stated methodology was "git log + ADR index + per-ADR headers" but the actual reads did not catch the merged-PR evidence for semantic-graph-plugin (8 PRs) or CachePlugin P2.5 (PR-205).
+
+**Lesson for future surveys**: when ranking a "largest unbuilt proposal," verify each proposed-PR sequence against `git log -- <module-path>` before publication. The semantic-graph plugin's directory existence alone (verify with `find plugins/<name> -type f`) is sufficient to falsify the "unbuilt" claim.
+
+### 7.4 Unchanged verified claims (audit confirmed)
+
+The 5 `StdioEndToEndSpec` env-failures (§3.3 partial) were re-verified on 2026-09-04 via `mvn -pl sm8-platform test -Dtest='StdioEndToEndSpec'`: 5 tests fail at lines 178, 248, 268, 281, 381. The survey's claim here stands.
