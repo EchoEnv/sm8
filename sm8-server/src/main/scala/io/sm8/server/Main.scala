@@ -597,14 +597,22 @@ object Main {
                   val registered: Set[io.sm8.sdk.Plugin] =
                     registryEngine.registeredPlugins.toSet
                   discovered.map { p =>
+                    // FIX C10-PR-C1 final-gate tulip LOW-1: a `match`
+                    // on `Option[Plugin]` gives compile-time
+                    // exhaustiveness on the registered/not branches.
+                    // If `SetupStatus` ever grows a third case,
+                    // scalac will flag every consumer via the
+                    // exhaustive match here.
                     val status: io.sm8.sdk.SetupStatus =
-                      if (registered.contains(p))
-                        io.sm8.sdk.SetupStatus.Registered(p.name)
-                      else
-                        io.sm8.sdk.SetupStatus.NotRegistered(
-                          p.getClass.getName,
-                          "setup() failed (NonFatal)"
-                        )
+                      registered.find(_ == p) match {
+                        case Some(_) =>
+                          io.sm8.sdk.SetupStatus.Registered(p.name)
+                        case None =>
+                          io.sm8.sdk.SetupStatus.NotRegistered(
+                            p.getClass.getName,
+                            "setup() failed (NonFatal)"
+                          )
+                      }
                     p -> status
                   }
                 }
