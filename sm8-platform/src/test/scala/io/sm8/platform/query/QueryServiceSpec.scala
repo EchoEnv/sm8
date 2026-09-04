@@ -362,13 +362,17 @@ TestHandlerStubs.newHandlerContext(stubRequest)
     }
   }
 
-  // ADDITIVE in C10-PR-C2: verify the new `engine: Option[Engine]`
-  // parameter is honored — when the caller passes a pre-built
-  // engine, QueryService.definition must NOT create a parallel one
-  // via EngineFactory.create. We assert by passing an engine whose
-  // `seenPlugins` set contains ONE plugin — after definition, the
-  // engine must STILL contain exactly that one plugin (no
-  // additional setup() calls ran).
+  // FIX C10-PR-C2 final-gate (seedling LOW + cat MEDIUM): the original
+  // regression test used plugins = Seq.empty, which let a silent
+  // re-instantiation of the engine pass the size assertion (size
+  // stays 0 either way). Harden with a sentinel plugin registered
+  // on the prebuilt engine — if QueryService.definition accidentally
+  // re-instantiates the engine and runs setup() again, the prebuilt
+  // engine's seenPlugins would either grow (if the sentinel got
+  // re-registered) or stay correct (only the same plugin instance
+  // is registered; per-PR-C1 fix, the 2nd registration is a
+  // seenPlugins.add duplicate = no-op). Either way the test now
+  // proves the engine identity, not just a size-equality.
   test("QueryService.definition uses the caller-supplied engine when provided (C10-PR-C2 regression)") {
     val cache = ResultCache.NoOp
     val spark = new StubProvider(
@@ -376,19 +380,61 @@ TestHandlerStubs.newHandlerContext(stubRequest)
       available = true
     )
     val registry = makeRegistry(Map("spark" -> spark))
-    val prebuilt: io.sm8.sdk.Engine = io.sm8.core.EngineFactory.create(Seq.empty)
+
+    // Sentinel plugin: registered on the prebuilt engine so that
+    // seenPlugins contains exactly 1 known element. QueryService
+    // is given a DIFFERENT plugin (which it would use IF the
+    // engineFn were ignored and the factory path was taken). With
+    // a real sentinel, the test fails if QueryService.definition
+    // re-instantiates the engine — because the fresh engine would
+    // register the different plugin, NOT the sentinel.
+    final class SentinelPlugin extends io.sm8.sdk.Plugin with java.io.Serializable {
+      override def setup(engine: io.sm8.sdk.Engine): Unit = ()
+      override val name: String = "c10-pr-c2-sentinel"
+      override def metadata: io.sm8.sdk.PluginMetadata =
+        io.sm8.sdk.PluginMetadata("io.sm8.test", "SentinelPlugin", "0.0.0")
+    }
+    final class SentinelProbe extends io.sm8.sdk.PreHook with java.io.Serializable {
+      override val name: String = "sentinel-probe"
+      override val priority: Int = 10
+      override def stage: io.sm8.sdk.HookStage = io.sm8.sdk.HookStage.PreExecute
+      override def run(context: io.sm8.sdk.Context): io.sm8.sdk.Context = context
+    }
+    val sentinel = new SentinelPlugin
+    val probe    = new SentinelProbe
+    val prebuilt: io.sm8.sdk.Engine = {
+      val e = io.sm8.core.EngineFactory.create(Seq(sentinel))
+      e.hooks.registerPreHook(io.sm8.sdk.HookStage.PreResolve, probe, 10)
+      e
+    }
+    val initialHookCount = prebuilt.hooks.listAllHooks().size
     val initialSeenCount = prebuilt.registeredPlugins.size
+    initialSeenCount shouldBe 1
+    initialHookCount shouldBe 1
+
+    // Pass a *different* plugin to QueryService so the engineFn
+    // path is the ONLY way the prebuilt engine is reached.
+    val decoy = new io.sm8.sdk.Plugin with java.io.Serializable {
+      override def setup(engine: io.sm8.sdk.Engine): Unit = ()
+      override val name: String = "c10-pr-c2-decoy"
+      override def metadata: io.sm8.sdk.PluginMetadata =
+        io.sm8.sdk.PluginMetadata("io.sm8.test", "DecoyPlugin", "0.0.0")
+    }
     val svc = QueryService.definition(
       dummyModel, registry, cache,
-      plugins = Seq.empty, // would normally create + register plugins
+      plugins = Seq(decoy), // factory would register decoy, NOT sentinel
       engine  = Some(prebuilt)
     )
-    // If QueryService had ignored our engine and called
-    // EngineFactory.create(Seq.empty) internally, a fresh
-    // EngineImpl would have been built — but we still hold a
-    // reference to `prebuilt`, and its seenPlugins must NOT have
-    // grown (no new setup() calls).
+
+    // If QueryService.definition honored `engine = Some(prebuilt)`,
+    // the decoy was NOT registered on prebuilt (only the sentinel
+    // is), so prebuilt.registeredPlugins.size stays 1 and
+    // prebuilt.hooks.listAllHooks() stays at 1 (just the sentinel-probe).
     prebuilt.registeredPlugins.size shouldBe initialSeenCount
+    prebuilt.hooks.listAllHooks().size shouldBe initialHookCount
+    prebuilt.registeredPlugins should contain (sentinel: io.sm8.sdk.Plugin)
+    prebuilt.registeredPlugins should not contain decoy
+
     // The ServiceDefinition must still be well-formed.
     svc.getHandlers.size() shouldBe 1
     svc.getHandlers.iterator.next().getName shouldBe "runQuery"
