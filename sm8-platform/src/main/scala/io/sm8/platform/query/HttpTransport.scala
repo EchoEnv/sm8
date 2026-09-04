@@ -99,7 +99,15 @@ final class HttpTransport(
     val registry: EngineRegistry,
     val cache:    ResultCache,
     val plugins:  Seq[io.sm8.sdk.Plugin] = Nil,
-    val metaInspectorEngineFn: Option[() => Map[String, Any]] = None
+    val metaInspectorEngineFn: Option[() => Map[String, Any]] = None,
+    // ADDITIVE in C10-PR-B: when defined, binds RegistryInspectorService
+    // so `listPlugins` / `listHooks` are served on the same endpoint.
+    // The first closure returns the engine's registered hooks; the
+    // second returns the discovered plugins + setup status. Both are
+    // boot-stable state owned by the deployment.
+    val registryInspectorFn: Option[
+      (() => Seq[io.sm8.sdk.RegisteredHook], () => Seq[(io.sm8.sdk.Plugin, io.sm8.sdk.SetupStatus)])
+    ] = None
 ) {
 
   // The bound Vert.x HttpServer handle. Per scala-jvm-safemindset:
@@ -145,14 +153,20 @@ final class HttpTransport(
       // state, no new wire DTOs beyond the existing `EngineRegistry` —
       // the handler is a single method call on `registry.availableProviders`.
       .bind(EngineServiceRest.definition(registry))
-    metaInspectorEngineFn match {
-      case Some(engineFn) =>
-        baseEndpoint
-          .bind(MetaInspectorService.definition(model, registry, engineFn))
-          .build()
-      case None =>
-        baseEndpoint.build()
+    // ADDITIVE in C10-PR-B: bind RegistryInspectorService when the
+    // deployment supplies the closures. Read-only diagnostic surface
+    // (SERVICE + SHARED) — same rationale as MetaInspectorService.
+    val withRegistry: Endpoint.Builder = registryInspectorFn match {
+      case Some((hooksFn, pluginsFn)) =>
+        baseEndpoint.bind(RegistryInspectorService.definition(hooksFn, pluginsFn))
+      case None => baseEndpoint
     }
+    val withMeta: Endpoint.Builder = metaInspectorEngineFn match {
+      case Some(engineFn) =>
+        withRegistry.bind(MetaInspectorService.definition(model, registry, engineFn))
+      case None => withRegistry
+    }
+    withMeta.build()
   }
 
   /**
