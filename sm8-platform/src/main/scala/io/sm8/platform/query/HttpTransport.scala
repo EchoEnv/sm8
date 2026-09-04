@@ -215,15 +215,22 @@ final class HttpTransport(
 object HttpTransport {
 
   /** Factory for the canonical wiring. The caller (deployment
-    * module) supplies the cache, plugins, and meta inspector; the
-    * new params default to the existing behaviour so existing 3-arg
-    * call sites are unchanged. */
+    * module) supplies the cache, plugins, and the optional inspector
+    * closures; the new params default to the existing behaviour so
+    * existing 3-/5-arg call sites are unchanged.
+    *
+    * ADDITIVE in C10-PR-C: the 6-arg overload forwards the
+    * `registryInspectorFn` (RegistrySources) to the constructor.
+    * Without this overload, the constructor's 6-arg signature
+    * would only be reachable via `new HttpTransport(...)` —
+    * callers expecting the companion-factory pattern would break. */
   def apply(
       model:    Model,
       registry: EngineRegistry,
       cache:    ResultCache,
       plugins:  Seq[io.sm8.sdk.Plugin] = Nil,
-      metaInspectorEngineFn: Option[() => Map[String, Any]] = None
+      metaInspectorEngineFn: Option[() => Map[String, Any]] = None,
+      registryInspectorFn:    Option[RegistrySources] = None
   ): HttpTransport =
-    new HttpTransport(model, registry, cache, plugins, metaInspectorEngineFn)
+    new HttpTransport(model, registry, cache, plugins, metaInspectorEngineFn, registryInspectorFn)
 }

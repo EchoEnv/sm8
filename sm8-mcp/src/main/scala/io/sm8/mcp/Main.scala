@@ -99,12 +99,14 @@ object Main {
       |Reads JSON-RPC on stdin, writes on stdout (stdio MCP transport).
       |Tool calls become HTTP POSTs to --ingress-url.
       |
-      |Exposed tools (per ADR-013):
+      |Exposed tools (per ADR-013 + C10-PR-C):
       |  query            -> POST /QueryService/runQuery
       |  list_models      -> POST /ModelService/listModels
       |  describe_model   -> POST /ModelService/describe
       |  list_engines     -> POST /EngineService/listEngines
-      |  get_metrics      -> POST /MetricsService/snapshot""".stripMargin
+      |  get_metrics      -> POST /MetricsService/snapshot
+      |  list_plugins     -> POST /RegistryInspectorService/listPlugins
+      |  list_hooks       -> POST /RegistryInspectorService/listHooks""".stripMargin
 
   /** Pure arg parser — fully unit-testable, no IO. */
   def parseArgs(args: List[String]): Either[CliError, CliArgs] = {
