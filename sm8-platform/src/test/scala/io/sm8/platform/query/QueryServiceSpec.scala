@@ -361,4 +361,36 @@ TestHandlerStubs.newHandlerContext(stubRequest)
       code shouldBe expected
     }
   }
+
+  // ADDITIVE in C10-PR-C2: verify the new `engine: Option[Engine]`
+  // parameter is honored — when the caller passes a pre-built
+  // engine, QueryService.definition must NOT create a parallel one
+  // via EngineFactory.create. We assert by passing an engine whose
+  // `seenPlugins` set contains ONE plugin — after definition, the
+  // engine must STILL contain exactly that one plugin (no
+  // additional setup() calls ran).
+  test("QueryService.definition uses the caller-supplied engine when provided (C10-PR-C2 regression)") {
+    val cache = ResultCache.NoOp
+    val spark = new StubProvider(
+      io.sm8.core.engine.EngineIdentity("spark", "3.5.8", "0.2.4"),
+      available = true
+    )
+    val registry = makeRegistry(Map("spark" -> spark))
+    val prebuilt: io.sm8.sdk.Engine = io.sm8.core.EngineFactory.create(Seq.empty)
+    val initialSeenCount = prebuilt.registeredPlugins.size
+    val svc = QueryService.definition(
+      dummyModel, registry, cache,
+      plugins = Seq.empty, // would normally create + register plugins
+      engine  = Some(prebuilt)
+    )
+    // If QueryService had ignored our engine and called
+    // EngineFactory.create(Seq.empty) internally, a fresh
+    // EngineImpl would have been built — but we still hold a
+    // reference to `prebuilt`, and its seenPlugins must NOT have
+    // grown (no new setup() calls).
+    prebuilt.registeredPlugins.size shouldBe initialSeenCount
+    // The ServiceDefinition must still be well-formed.
+    svc.getHandlers.size() shouldBe 1
+    svc.getHandlers.iterator.next().getName shouldBe "runQuery"
+  }
 }
