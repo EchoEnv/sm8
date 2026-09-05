@@ -1,6 +1,6 @@
 # ADR-008-Q: Post-ADR-008-P SDK Redesign (MCP prefix → Engine + phantom-typed SDK + typed URL + EngineLoader)
 
-**Status:** Proposed. **Date:** 2026-08-19. **Author:** SM8 agent (consolidated from senior reviews on 2026-08-18 + audit follow-up on 2026-08-19 + 2 fresh senior reviews on 2026-08-19).
+**Status:** Implemented — was Proposed (v1.0), promoted to Implemented on PR-105 (#105, 8b4c8ac) merge. The 3-PR atomic sequence per ADR-0008-Q §'Implementation summary' shipped: PR-14 (0115d88) rename MCPEngine* → Engine*, PR-15 (e2f4448) typed URL grammar + EngineLoader, PR-16 (8b4c8ac) phantom-typed Dimensions + Measures. Phantom-typed SDK redesign is live on main; SDK source-compatibility preserved per the ADR's §'Skill-mindset coverage' table. Local-only `.omp/WATCHDOG.yml` (gitignored) tunes the advisor roster for this project.. **Date:** 2026-08-19. **Author:** SM8 agent (consolidated from senior reviews on 2026-08-18 + audit follow-up on 2026-08-19 + 2 fresh senior reviews on 2026-08-19).
 
 > **Revision history**
 > - **v1 (2026-08-19)**: initial proposal; reviewed by 2 senior subagents (DE: approved with minor changes; Architect: needs revision).

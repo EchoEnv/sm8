@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed.
+**Implemented** — was Proposed (v1.0), promoted to Implemented on PR-315 (#315, merge commit 316b1a5; squash tip aa0c208) merge. The hook-firing-audit plugin detects the dispatch-seam silent-inertness defect class at request time per ADR-0018. Dual-review + final-gate cleared with APPROVE-WITH-FIXES from both reviewers; 3 non-blocking follow-ups documented as PR comments (suppression rule edge case, integration-spec coverage gap for 3 pre:short-circuits, §Alternatives anchored citations). Local-only `.omp/WATCHDOG.yml` (gitignored) tunes the advisor roster for this project.
 
 ## Context and Problem Statement
 

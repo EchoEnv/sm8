@@ -1,6 +1,6 @@
 # ADR-008-W: ModelValidator COUNT(*) False-Positive Fix (PR-132)
 
-**Status:** Proposed (v1.1 — post-review fixes applied). **Date:** 2026-08-20. **Author:** SM8 agent (PR-132 follow-up to PR-131, per the user's 2026-08-20 "Ship ModelValidator fix now" directive).
+**Status:** Implemented — was Proposed (v1.1 — post-review fixes applied), promoted to Implemented on PR-132 (#132, c01c64d) merge. ModelValidator COUNT(*) false-positive fixed. Local-only `.omp/WATCHDOG.yml` (gitignored) tunes the advisor roster for this project.  **Date:**
 
 > **Decision at a glance** (5-second scan)
 >
