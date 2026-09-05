@@ -47,7 +47,15 @@ final class JoinPathPreHook extends PreHook with java.io.Serializable {
    * `EngineError.UnsupportedCapability` (NOT String — per
    * `scala-error-handling-mindset`).
    */
-  val CycleErrorKey = "semanticGraphError"
+  /** Meta key written into `ctx.meta` for the typed cycle-detection
+    * `EngineError`. ADR-0020: the platform collects any `ctx.meta`
+    * entry whose key ends in `":error"` AND whose value is a typed
+    * `EngineError`, so this key satisfies the convention. The legacy
+    * `"semanticGraphError"` literal did NOT end in `":error"` and
+    * would have been silently dropped by the upgraded platform;
+    * migrating to the namespaced form is the backward-compat fix.
+    */
+  val CycleErrorKey = "io.sm8.plugins.semanticgraph:error"
 
   /**
    * Meta key for the typed dangling-right-nodes list. Value type:
