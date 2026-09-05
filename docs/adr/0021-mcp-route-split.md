@@ -2,7 +2,9 @@
 
 ## Status
 
-Proposed. **Date:** 2026-09-05. **Author:** SM8 agent (per wayfinder map Ticket #3, `docs/wayfinder/2026-09-05-control-plane-robustness.md`).
+**Implemented** — was Proposed (2026-09-05), promoted on PR-321 (#321, squash tip 26813f6) merge. Landed as three bounded PRs: PR-319 Phase 2a (ToolRegistry helper for Sm8ToolHandlers, squash tip e8c85ff), PR-320 Phase 2b (McpHttpRoute 3-way split: McpHttpServer / McpSessionRegistry / McpMessageRouter + composition root, squash tip a844e5d), PR-321 Phase 2c (McpStdioRoute split: lifecycle root + McpStdioTransport wire-level half, squash tip 26813f6). Dual review + final gate APPROVE x2 per PR.
+
+**Implementation note — the stdio mirror is 2-way, not 3-way.** This ADR's sketch below idealized stdio as having the same 3 concerns as HTTP. Implementation found otherwise: stdio has NO route-level session bookkeeping and NO JSON-RPC dispatch (the SDK's `StdioServerTransportProvider` owns both — it parses inbound frames, maintains the single session, and routes methods). What stdio uniquely owns is framing/EOF machinery (TrackingInputStream, the observing provider, the latch-on-close transport, synchronous fd-1 writes). Phase 2c therefore split McpStdioRoute into lifecycle root + McpStdioTransport.
 
 ## Context and Problem Statement
 
@@ -171,7 +173,7 @@ McpStdioRoute has the SAME 3 concerns (Vert.x-like stdio lifecycle, session stat
 - **McpStdioSessionRegistry** (or share McpSessionRegistry from above — same session-state semantics regardless of transport)
 - **McpStdioMessageRouter** (protocol handlers adapted for stdio framing — needs verification whether the JSON-RPC dispatch can be shared with McpMessageRouter or requires a parallel stdio variant)
 
-**Open question (TBD during implementation)**: can the two `MessageRouter`s share a common base class for JSON-RPC dispatch logic, with only the I/O framing differing? If yes, extract a `JsonRpcDispatcher` base + two thin I/O subclasses. If no (the framing differs too much), duplicate the router and accept the maintenance cost.
+**Resolution**: No. The two routers turned out to be non-comparable: HTTP owns real JSON-RPC dispatch at the route level, while stdio owns none (SDK-owned). The honest stdio mirror is lifecycle + transport; documented in the PR-321 commit message and the status note above.
 
 ### Layer discipline
 
@@ -187,7 +189,7 @@ McpStdioRoute has the SAME 3 concerns (Vert.x-like stdio lifecycle, session stat
 - A bug in JSON-RPC dispatch can be fixed in `McpMessageRouter` without reading lifecycle code.
 - Sm8ToolHandlers's per-tool boilerplate shrinks from ~50 LOC per tool to ~20-30 LOC. Adding tool #8 (and beyond) becomes a 1-line `ToolRegistry.register(...)` + the build-method body.
 - McpStdioRoute mirrors the split — drift between the two transports becomes structurally impossible (both use the same McpSessionRegistry + their own thin I/O).
-- Open question: can the two MessageRouters share a JsonRpcDispatcher base? If yes, extract it; if no, document the choice.
+- Open question resolved: no shared JsonRpcDispatcher — stdio does no route-level JSON-RPC dispatch (SDK-owned); session registries not shareable (HTTP map vs none). See Resolution above.
 - **The existing `McpHttpRouteSpec` and `McpStdioRouteSpec` test suites may need minor signature updates** (e.g. constructing `McpHttpRoute` directly vs. constructing `McpHttpRoute` + the 3 collaborators). The behavior under test does NOT change.
 
 ## Alternatives Considered

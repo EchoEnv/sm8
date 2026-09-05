@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed. **Date:** 2026-09-05. **Author:** SM8 agent (per wayfinder map Ticket #2, `docs/wayfinder/2026-09-05-control-plane-robustness.md`; closes the ADR-0010-a §6 deferral).
+**Implemented** — was Proposed (2026-09-05), promoted on PR-318 (#318, squash tip d93cfd4) merge; closes the ADR-0010-a §6 deferral. The `<scope>:error` meta-key convention ships with the `HookErrorChannel.surfaceTypedError` plugin-author helper per this ADR.
 
 ## Context and Problem Statement
 
