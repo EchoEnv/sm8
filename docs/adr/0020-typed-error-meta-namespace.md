@@ -85,10 +85,6 @@ The cache plugin's `sm8.cache.write.error` key needs no change (already satisfie
 - **DE F1 collision-order strictness** (deferred): if strict deterministic ordering between multiple `:error`-suffixed entries becomes a future requirement, the platform can sort the collected keys before `headOption`. Today's shape doesn't need it; documented in §Consequences for traceability.
 - **DE F2 `surfaceTypedError` helper placement** (resolved in ccce71e): the helper is shipped as `io.sm8.core.engine.EngineError.HookErrorChannel.surfaceTypedError(scope, error, ctx)` at `sm8-core/.../engine/EngineError.scala`. The companion object is a top-level object inside the engine package, NOT nested inside the `EngineError` sealed trait — this matches the existing convention (`HookErrorChannel` is a utility object, not a variant of the `EngineError` ADT). RFC §3 layer discipline preserved.
 
-
-- **DE F1 collision-order strictness** (deferred): if strict deterministic ordering between multiple `:error`-suffixed entries becomes a future requirement, the platform can sort the collected keys before `headOption`. Today's shape doesn't need it; documented in §Consequences for traceability.
-- **DE F2 `surfaceTypedError` helper placement** (resolved in ccce71e): the helper is shipped as `io.sm8.core.engine.EngineError.HookErrorChannel.surfaceTypedError(scope, error, ctx)` at `sm8-core/.../engine/EngineError.scala`. The companion object is a top-level object inside the engine package, NOT nested inside the `EngineError` sealed trait — this matches the existing convention (`HookErrorChannel` is a utility object, not a variant of the `EngineError` ADT). RFC §3 layer discipline preserved.
-
 ## References
 
 - `docs/wayfinder/2026-09-05-control-plane-robustness.md` Ticket #2 — source map
