@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!--
+    SM8 hook-firing-audit Hook Plugin.
+
+    Registers 8 probe hooks (one per pipeline stage attachment point)
+    plus a PostFormat reporter. The probes stamp their stage wireName
+    into context.meta; the reporter diffs the observed stamp set
+    against the full expected set and surfaces any missing stamp as a
+    typed EngineError.UnsupportedCapability anomaly.
+
+    A stage's probe legitimately does not fire when an earlier
+    pre-hook short-circuits the pipeline (Context.stop = true), so the
+    reporter classifies missing stamps as an anomaly only when the
+    pipeline completed without a short-circuit.
+  -->
+
+  <parent>
+    <groupId>io.sm8</groupId>
+    <artifactId>sm8-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <relativePath>../../pom.xml</relativePath>
+  </parent>
+
+  <artifactId>hook-firing-audit-plugin_2.13</artifactId>
+  <packaging>jar</packaging>
+
+  <name>SM8 hook-firing-audit Plugin</name>
+  <description>SM8 Hook Plugin: detects registered-but-never-fired hooks by probing every pipeline stage attachment point and diffing observed vs expected stamp sets at PostFormat.</description>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.sm8</groupId>
+      <artifactId>sm8-core_2.13</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.scalatest</groupId>
+      <artifactId>scalatest_${scala.binary.version}</artifactId>
+      <version>${scalatest.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <!--
+      Hook + Plugin conformance unification: extends the contract
+      bases (HookContractSpec, PluginContractSpec) shipped in
+      sm8-core's test-jar artifact (classifier=tests).
+    -->
+    <dependency>
+      <groupId>io.sm8</groupId>
+      <artifactId>sm8-core_2.13</artifactId>
+      <version>${project.version}</version>
+      <type>test-jar</type>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin><groupId>net.alchim31.maven</groupId><artifactId>scala-maven-plugin</artifactId></plugin>
+      <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-compiler-plugin</artifactId></plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-enforcer-plugin</artifactId>
+        <executions><execution><id>enforce-no-spark</id><goals><goal>enforce</goal></goals></execution></executions>
+        <configuration>
+          <rules>
+            <bannedDependencies><excludes><exclude>org.apache.spark:*</exclude></excludes></bannedDependencies>
+          </rules>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.scalatest</groupId>
+        <artifactId>scalatest-maven-plugin</artifactId>
+        <executions><execution><id>test</id><goals><goal>test</goal></goals><phase>test</phase></execution></executions>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-source-plugin</artifactId>
+        <executions><execution><id>attach-sources</id><goals><goal>jar-no-fork</goal></goals></execution></executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>
