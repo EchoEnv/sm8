@@ -233,12 +233,12 @@ class TypedErrorMetaNamespaceSpec extends AnyFunSuite with Matchers {
     )
     engine.hooks.registerPreHook(
       HookStage.PreExecute,
-      new io.sm8.core.engine.EngineError.HookErrorChannel extends PreHook with java.io.Serializable {
+      new PreHook with java.io.Serializable {
         override val name: String = "surface-error-helper-pre-hook"
         override val priority: Int = 200
         override def stage: HookStage = HookStage.PreExecute
         override def run(context: Context): Context =
-          io.sm8.core.engine.EngineError.HookErrorChannel.surfaceTypedError(
+          io.sm8.core.engine.HookErrorChannel.surfaceTypedError(
             "io.sm8.plugins.test-helper", typedErr, context
           )
       },
