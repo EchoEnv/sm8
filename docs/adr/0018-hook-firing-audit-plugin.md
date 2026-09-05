@@ -33,12 +33,26 @@ Platform changes:
    wireName into a shared accumulator on `context.meta` (key
    `io.sm8.plugins.hookfiringaudit:stamps`).
 
-2. **One reporter at PostFormat (priority 898).** A Post-hook with
-   Observer semantics (`runsOnStop = true`) stamps its own stage, then
-   diffs the accumulated stamps against all 8 expected wireNames. The
-   report (`fired` / `skipped` / `missing` / `stopped`) is written to
-   `context.meta` under `io.sm8.plugins.hookfiringaudit:report` for any
-   transport to surface via the meta-inspector.
+2. **Four reporters, one per post attachment point (priority 898),
+   with terminal-selection.** The production orchestrator
+   (`HookRunnerOrchestration`) skips dispatch entirely for stages after
+   a short-circuit, so a reporter registered only at PostFormat would
+   never fire on the halted path — precisely the cache-HIT path where a
+   dispatch-seam regression would co-occur. Instead, a reporter is
+   registered at every post point. Exactly one of them — the terminal
+   reporter — emits the per-request report: the one at the deepest post
+   point the pipeline actually reached. A reporter is terminal iff
+   `Context.stop` is true (no later stage will dispatch, so it is the
+   last hook that will ever run) or its own stage is PostFormat (the
+   pipeline completed). Non-terminal reporters pass the context through
+   after stamping. This makes the report fire exactly once per request
+   on both the completed and the halted path, with no dependency on
+   `Context.stage` (whose value diverges between the in-tree Pipeline
+   and the production orchestrator: `Pipeline.scala:158-174` preserves
+   the stopping stage while `HookRunnerOrchestration.scala:126` advances
+   past it). The report (`fired` / `skipped` / `missing` / `stopped`)
+   is written to `context.meta` under
+   `io.sm8.plugins.hookfiringaudit:report`.
 
 3. **Typed anomaly on a real gap.** A missing stamp at a stage the
    pipeline actually reached is surfaced as
@@ -47,12 +61,16 @@ Platform changes:
    fired: …")` on `context.meta` under
    `io.sm8.plugins.hookfiringaudit:anomaly`.
 
-4. **Short-circuit-aware classification.** When a pre-hook sets
-   `Context.stop = true`, the orchestrator skips subsequent stages
-   legitimately. The reporter reads `Context.stage` (the stage where the
-   halt was stamped) and classifies every expected stamp at-or-after
-   that stage as `skipped` rather than `missing`, so the short-circuit
-   path is audit-clean while the reached-but-silent path is not.
+4. **Short-circuit-aware classification without Context.stage.** When
+   a pre-hook sets `Context.stop = true`, the stopping stage's own post
+   phase still dispatches (the dispatcher runs post-hooks on the
+   within-stage stop path), and every later stage is skipped. The
+   terminal reporter derives the skip boundary from the stamp set
+   itself — the deepest fired wireName rank plus one — so stamps at or
+   after the boundary classify as `skipped` and stamps the pipeline
+   reached but never wrote classify as `missing` (the anomaly). This
+   derivation is independent of `Context.stage` and works identically
+   under the in-tree Pipeline and the production orchestrator.
 
 All per-request state lives on the `Context`; probes and reporter are
 stateless and `Serializable`. No Spark types, no captured engine state,
@@ -87,9 +105,14 @@ priority range. Depends on `sm8-core` only. Registered via
   invisible to itself. The plugin layer keeps the audit externally
   verifiable.
 - **Compile-time scalafix rule** asserting every `HookStage` value has
-  at least one production dispatch site: complementary, not a
-  substitute — it cannot catch runtime-only regressions such as a
-  stage conditionally skipped by a future orchestrator change.
+  at least one dispatch site reachable from
+  `HookRunnerOrchestration.run` (the sole production entry point,
+  `sm8-platform/src/main/scala/io/sm8/platform/query/hooks/HookRunnerOrchestration.scala:105-142`):
+  complementary, not a substitute — a static rule can verify that each
+  stage appears in the fold's stage list, but it cannot catch
+  runtime-only regressions such as a stage conditionally skipped by a
+  future orchestrator change, nor a hook whose registration succeeds
+  but whose dispatch is silently gated.
 - **Log-based detection** (warn when a stage's hook list is non-empty
   but its dispatch count is zero at shutdown): delayed, process-scoped,
   and invisible to per-request correlation.
