@@ -614,22 +614,20 @@ object EngineService {
     dispatcher
       .run(initialCtx, engineExecutor)
       .flatMap { finalCtx =>
-        // ADR-010-a v0.3 typed-error surfacing: a pre-hook that
-        // short-circuits via `Context.stop = true` may also write
-        // a typed `EngineError` to `ctx.meta` (the canonical
-        // example: `JoinPathPreHook.scala:50` sets the meta key
-        // `"semanticGraphError"` with the typed
-        // `EngineError.UnsupportedCapability("SemanticGraph.cycle", ...)`
-        // value). If such an error is present, surface it directly
-        // to the caller instead of falling through to the generic
-        // `ProviderInvocationFailed("NoResult")` path — the typed
-        // error is more informative and round-trips through the
-        // Restate terminal-error contract with its subtype preserved.
-        // Falls through to the existing `result`-match path when no
-        // typed error is in meta (no behavior change for the happy
-        // path).
-        finalCtx.meta.get("semanticGraphError") match {
-          case Some(e: EngineError) => Left(e)
+        // ADR-0020 typed-error surfacing convention: the platform
+        // collects any `ctx.meta` entry whose key ends in `":error"`
+        // AND whose value is a typed `EngineError`, returning the
+        // first match as `Left(error)` to the caller. The convention
+        // subsumes the existing `semanticGraphError` key (renamed
+        // to `io.sm8.plugins.semanticgraph:error` per ADR-0020 backward-
+        // compat) and the cache plugin's `sm8.cache.write.error` key
+        // (was silently dropped before this PR). Falls through to the
+        // existing `result`-match path when no typed error is in
+        // meta (no behavior change for the happy path).
+        finalCtx.meta.collectFirst {
+          case (k, e: EngineError) if k.endsWith(":error") => e
+        } match {
+          case Some(e) => Left(e)
           case _ =>
             finalCtx.result match {
               case Some(EngineHookResult(pqr)) =>
