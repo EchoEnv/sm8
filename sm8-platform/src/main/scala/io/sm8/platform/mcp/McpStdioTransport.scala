@@ -63,7 +63,6 @@ import io.modelcontextprotocol.spec.McpServerTransport
 import io.modelcontextprotocol.spec.McpServerTransportProvider
 
 import java.util.concurrent.CountDownLatch
-import scala.util.control.NonFatal
 
 /** Wire-level stdio transport: framing, EOF detection, synchronous
  * outbound writes. See the file header for the concern split;
