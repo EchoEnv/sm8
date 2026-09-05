@@ -188,7 +188,7 @@ McpStdioRoute has the SAME 3 concerns (Vert.x-like stdio lifecycle, session stat
 - A bug in Vert.x lifecycle can be fixed in `McpHttpServer` without reading `McpSessionRegistry` or `McpMessageRouter`.
 - A bug in JSON-RPC dispatch can be fixed in `McpMessageRouter` without reading lifecycle code.
 - Sm8ToolHandlers's per-tool boilerplate shrinks from ~50 LOC per tool to ~20-30 LOC. Adding tool #8 (and beyond) becomes a 1-line `ToolRegistry.register(...)` + the build-method body.
-- McpStdioRoute mirrors the split — drift between the two transports becomes structurally impossible (both use the same McpSessionRegistry + their own thin I/O).
+- McpStdioRoute mirrors the split as a lifecycle root + `McpStdioTransport` wire-level half (the stdio analogue of drift-prevention; see the implementation note in Status — stdio has no route-level session registry to share).
 - Open question resolved: no shared JsonRpcDispatcher — stdio does no route-level JSON-RPC dispatch (SDK-owned); session registries not shareable (HTTP map vs none). See Resolution above.
 - **The existing `McpHttpRouteSpec` and `McpStdioRouteSpec` test suites may need minor signature updates** (e.g. constructing `McpHttpRoute` directly vs. constructing `McpHttpRoute` + the 3 collaborators). The behavior under test does NOT change.
 
