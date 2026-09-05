@@ -128,6 +128,16 @@
             <version>${project.version}</version>
             <scope>test</scope>
         </dependency>
+        <!-- Hook Firing Audit Plugin (TEST scope only — the
+             HookFiringAuditOrchestrationSpec verifies the plugin's
+             probes + reporter fire through the production orchestrator
+             on both the completed and short-circuit paths). -->
+        <dependency>
+            <groupId>io.sm8</groupId>
+            <artifactId>hook-firing-audit-plugin_2.13</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
         <!-- ScalaTest for the engine-portable-path specs. JDK's built-in
              classes (java.util.Optional, java.util.List) cover the Java
              interop surface; no extra test deps needed for PR-C1. -->
