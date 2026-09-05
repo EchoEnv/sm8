@@ -29,9 +29,15 @@ Platform changes:
 
 1. **Eight probes, one per attachment point.** Each of the 8 stage
    attachment points (pre/post × parse/resolve/execute/format) gets a
-   probe hook at first-party-floor priority 100 that stamps its stage
-   wireName into a shared accumulator on `context.meta` (key
-   `io.sm8.plugins.hookfiringaudit:stamps`).
+   probe hook at core-floor priority 1 that stamps its stage wireName
+   into a shared accumulator on `context.meta` (key
+   `io.sm8.plugins.hookfiringaudit:stamps`). The priority-1 floor
+   ensures probes run before any stopper a plugin author would register
+   (typical stoppers at priority 50+); the dispatcher's `firePre`
+   short-circuits subsequent pre-hooks after the first one sets
+   `stop = true` (`sm8-platform/.../EngineHookDispatcher.scala:177`),
+   so a higher-priority probe would be silently suppressed by a
+   same-stage stopper.
 
 2. **Four reporters, one per post attachment point (priority 898),
    with terminal-selection.** The production orchestrator

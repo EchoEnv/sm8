@@ -6,7 +6,7 @@
  *
  * ==Probe priority (load-bearing)==
 
-The probes register at the core-floor priority 1, not the more typical first-party 100. The dispatcher's firePre short-circuits after the first pre-hook that sets stop=true (EngineHookDispatcher.scala:178-181), so any stopper at a higher priority would suppress the probe for its slot and produce a false-positive anomaly in the terminal reporter. Priority 1 places the probe below any stopper a plugin author would register.
+The probes register at the core-floor priority 1, not the more typical first-party 100. The dispatcher's firePre short-circuits after the first pre-hook that sets stop=true (EngineHookDispatcher.scala:175-177), so any stopper at a higher priority would suppress the probe for its slot and produce a false-positive anomaly in the terminal reporter. Priority 1 places the probe below any stopper a plugin author would register.
 
 ==Cross-stage short-circuit semantics (load-bearing contract)==
  *
@@ -98,7 +98,7 @@ abstract private[hookfiringaudit] class PreStageProbeHook(probeStage: HookStage)
     with java.io.Serializable {
 
   override val name: String = s"hook-firing-audit-probe-${HookStage.wireName(probeStage)}"
-  override val priority: Int = 100
+  override val priority: Int = 1
 
   /** The attachment point this probe stamps.
     *
@@ -127,7 +127,7 @@ abstract private[hookfiringaudit] class PostStageProbeHook(probeStage: HookStage
     with java.io.Serializable {
 
   override val name: String = s"hook-firing-audit-probe-${HookStage.wireName(probeStage)}"
-  override val priority: Int = 100
+  override val priority: Int = 1
 
   /** The attachment point this probe stamps.
     *
@@ -247,6 +247,13 @@ final private[hookfiringaudit] class StageReporter(reportStage: HookStage)
         if (!afterStamp.stop) None
         else Some(deepestFiredRank(stamps) + 1)
 
+      // Same-stage probe suppression only applies when the report is
+      // observing a stop the pipeline actually halted on (post = true).
+      // Without that conjunction, a hypothetical future dispatch bug
+      // that fired a stage's post-hooks but skipped its pre-hooks
+      // would silently mask the asymmetry as 'suppressed' instead of
+      // flagging it as the inertness anomaly this plugin exists to
+      // detect.
       val (fired, skipped, missing) = allStages.foldLeft(
         (List.empty[String], List.empty[String], List.empty[String])
       ) { case ((f, s, m), wireName) =>
@@ -254,7 +261,9 @@ final private[hookfiringaudit] class StageReporter(reportStage: HookStage)
         if (stamps.contains(wireName)) (wireName :: f, s, m)
         else {
           val suppressed =
-            rank % 2 == 0 && stamps.contains(PipelineStageRank.wireNameOfRank(rank + 1))
+            afterStamp.stop &&
+              rank % 2 == 0 &&
+              stamps.contains(PipelineStageRank.wireNameOfRank(rank + 1))
           if (suppressed || stopBound.exists(rank >= _)) (f, wireName :: s, m)
           else (f, s, wireName :: m)
         }
@@ -326,7 +335,7 @@ final class HookFiringAuditPlugin extends Plugin {
     */
   override def closedOverVars: Seq[String] = Seq.empty
 
-  /** Registers the 8 stage probes (priority 100) and the 4 stage
+  /** Registers the 8 stage probes (priority 1) and the 4 stage
     * reporters (priority 898). Idempotent-safe: every registration
     * goes into the engine's hook manager at startup.
     *
@@ -335,7 +344,7 @@ final class HookFiringAuditPlugin extends Plugin {
   override def setup(engine: Engine): Unit = {
     // Probes at the core-floor priority 1 — the dispatcher's firePre
     // short-circuits after the first pre-hook that sets stop=true
-    // (EngineHookDispatcher.scala:178-181), so any stopper at a higher
+    // (EngineHookDispatcher.scala:175-177), so any stopper at a higher
     // priority would suppress the probe for its slot. Priority 1 is
     // below any stopper a plugin author would register; the SDK's
     // require(priority >= 0) prevents priority 0 or negative.

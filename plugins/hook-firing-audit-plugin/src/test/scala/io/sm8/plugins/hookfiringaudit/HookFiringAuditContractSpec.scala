@@ -8,7 +8,6 @@
  */
 package io.sm8.plugins.hookfiringaudit
 
-import io.sm8.core.EngineImpl
 import io.sm8.sdk.contract.{HookContractSpec, PluginContractSpec, PluginContractSpecStubs}
 
 import io.sm8.sdk.{Context, Engine, HookStage, PipelineStage, Plugin, PreHook, PostHook, Request, Result}
