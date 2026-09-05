@@ -219,6 +219,42 @@ class TypedErrorMetaNamespaceSpec extends AnyFunSuite with Matchers {
     out.isRight shouldBe true
   }
 
+  test("runQueryWithHooks: surfaces via HookErrorChannel.surfaceTypedError helper (ADR-0020 plugin-author surface)") {
+    // ADR-0020 plugin-author surface: io.sm8.core.engine.EngineError.HookErrorChannel.
+    // surfaceTypedError writes the typed error under "<scope>:error". The
+    // platform's matcher picks it up via the same :error convention.
+    val engine = new io.sm8.core.EngineImpl
+    val typedErr: EngineError = EngineError.HookFailed(
+      engine   = "trivial",
+      name     = "test-hook",
+      priority = 200,
+      stage    = "PreExecute",
+      message  = "sm8: helper route"
+    )
+    engine.hooks.registerPreHook(
+      HookStage.PreExecute,
+      new io.sm8.core.engine.EngineError.HookErrorChannel extends PreHook with java.io.Serializable {
+        override val name: String = "surface-error-helper-pre-hook"
+        override val priority: Int = 200
+        override def stage: HookStage = HookStage.PreExecute
+        override def run(context: Context): Context =
+          io.sm8.core.engine.EngineError.HookErrorChannel.surfaceTypedError(
+            "io.sm8.plugins.test-helper", typedErr, context
+          )
+      },
+      200
+    )
+
+    val out = EngineService.runQueryWithHooks(
+      request    = request,
+      model      = model,
+      registry   = EngineRegistry(Map("trivial" -> new TrivialProvider), default = "trivial"),
+      cache      = ResultCache.NoOp,
+      dispatcher = orchestratorFor(engine)
+    )
+    out shouldBe Left(typedErr)
+  }
+
   test("runQueryWithHooks: ignores meta keys that do NOT end in ':error' (ADR-0020 namespace strict)") {
     // Existing meta keys like 'sm8.cache.policy' (set by the
     // EngineService initialCtx fold) MUST NOT be classified as typed
