@@ -31,11 +31,9 @@ Generalize the platform's typed-error surfacing from a single hard-coded key (`"
 
 ### Backward-compat: the existing `semanticGraphError` key
 
-**The literal string `"semanticGraphError"` does NOT end in `":error"` — it ends in `"Error"` (no colon).** A naive `endsWith(":error")` check would silently drop the semantic-graph plugin's existing typed errors. Two clean paths exist:
+The literal string `"semanticGraphError"` does NOT end in `":error"` — it ends in `"Error"` (no colon). A naive `endsWith(":error")` check would silently drop the semantic-graph plugin's existing typed errors.
 
-(a) **Migrate the legacy key** (chosen): rename `JoinPathPreHook.CycleErrorKey` from `"semanticGraphError"` to `"io.sm8.plugins.semanticgraph:error"`. The plugin gets a 1-line constant change; the platform's matcher accepts the new key by convention. The cache plugin's `sm8.cache.write.error` already satisfies the convention without modification (it ends in `":error"`). Backward-compat is achieved by updating the only client of the legacy key (the semantic-graph plugin itself).
-
-(b) Loosen the matcher to `endsWith("Error")` (broader): subsumes the legacy key without a plugin rename. Rejected: any plugin storing a non-typed-error `String` metadata with an `Error` suffix would false-positive-match the convention. The strict `endsWith(":error")` is the right discriminator.
+**Choice: migrate the legacy key** (the simpler of two clean paths; the alternative is to loosen the matcher to `endsWith("Error")` (broader), but that risks false positives for any plugin storing a non-typed-error `String` metadata with an `Error` suffix — rejected).
 
 No test pins the literal `semanticGraphError` string (verified: `sm8-platform/src/test/scala/io/sm8/platform/query/JoinPathPreHookCycleDetectionSpec.scala:145` mentions it only in a code-comment, not an assertion). The migration is a safe 1-line constant change.
 
@@ -55,43 +53,6 @@ finalCtx.meta.collectFirst {
 ```
 
 `EngineError` is a sealed trait (`sm8-core/src/main/scala/io/sm8/core/engine/EngineError.scala:26`); the `collectFirst` + type-ascription pattern-match filters out non-`EngineError` values (the rest of `ctx.meta` carries strings, booleans, lists — the pattern-match with `case e: EngineError` ignores those).
-
-### The plugin-side helper
-
-New helper in `sm8-core/src/main/scala/io/sm8/core/hook/HookErrorChannel.scala` (or the existing `sm8-core/.../sdk/Plugins.scala` if that's a better home — to be confirmed at codegraph-review time). The helper:
-
-```scala
-/** Write a typed `EngineError` to `ctx.meta` under the namespaced
-  * `<scope>:error` key. The platform's `EngineService.runQueryWithHooks`
-  * collects any `ctx.meta` entry whose key ends in `:error` and whose value
-  * is a typed `EngineError`, surfacing it as `Left(error)` to the caller
-  * (per ADR-0020).
-  *
-  * @param scope the plugin's namespace; the helper writes the key
-  *             `<scope>:error` to ctx.meta
-  * @param error the typed engine error to surface
-  * @param ctx   the current request context
-  * @return     a new context with the typed error written to meta
-  */
-def surfaceTypedError(scope: String, error: EngineError, ctx: Context): Context =
-  ctx.copy(meta = ctx.meta + (s"$scope:error" -> error))
-```
-
-`scope` is the plugin's stable identity (e.g. `"io.sm8.plugins.semanticgraph"`, `"io.sm8.plugins.cache"`). The cache plugin (`sm8.cache.write.error`) and the semantic-graph plugin (`semanticGraphError`) can migrate to the helper at their own pace — backward-compat is preserved because the platform's matcher accepts the `:error` suffix OR the exact old key (via the `endsWith` check that also matches `"Error"` since `"Error"` doesn't end with `":error"` — wait, that's wrong).
-
-### Backward-compat note: the existing `semanticGraphError` key
-
-**The existing `"semanticGraphError"` key does NOT end in `":error"` — it ends in `"Error"`.** The naive `endsWith(":error")` check would silently drop the semantic-graph plugin's typed error on the upgraded platform.
-
-Three options for backward-compat, ranked by minimality:
-
-(a) **Hard-code one legacy key** in addition to the convention: `if (k == "semanticGraphError" || k.endsWith(":error"))`. One-line change; preserves the legacy key; doesn't pollute the convention with a special case.
-
-(b) **Migrate the legacy key**: rename `semanticGraphError` → `"io.sm8.plugins.semanticgraph:error"` in the same PR. The plugin gets a new key; the platform's matcher accepts the new key by convention. **Migration path**: the plugin's `CycleErrorKey = "semanticGraphError"` becomes `CycleErrorKey = "io.sm8.plugins.semanticgraph:error"`. One-line change in the plugin; no semantic change.
-
-(c) **Document the convention as the only contract**, drop `semanticGraphError` outright, and file a follow-up to migrate the plugin. Risk: the plugin's existing tests (`HookFiringAuditOrchestrationSpec` exercises the same cycle-validation path indirectly) would need to be updated.
-
-**Recommendation: option (b).** The plugin gets a 1-line key rename that aligns it with the convention; the platform stays clean (no special-case legacy key); the cache plugin's `sm8.cache.write.error` key already satisfies the convention without modification.
 
 ### Layer placement
 
@@ -123,9 +84,8 @@ The cache plugin's `sm8.cache.write.error` key needs no change (already satisfie
 - `docs/wayfinder/2026-09-05-control-plane-robustness.md` Ticket #2 — source map
 - `docs/research/failure-modes-2026-09-04.md` Pattern #2 — wire-shape / API-shape drift
 - `docs/adr/0010-a-enginehookdispatcher-stage-parameter.md` §6 — original deferral ("Generic `ctx.meta` → typed-error protocol" is currently hard-coded to one key)
-- `sm8-platform/src/main/scala/io/sm8/platform/query/EngineService.scala:631` — the hard-coded match this ADR generalizes
-- `plugins/semantic-graph-plugin/src/main/scala/io/sm8/plugins/semanticgraph/JoinPathPreHook.scala:50` — `val CycleErrorKey = "semanticGraphError"` (to be renamed)
-- `plugins/cache-plugin/src/main/scala/io/sm8/plugins/cache/CachePlugin.scala:293` — `"sm8.cache.write.error" -> err` (already conforms)
+- `sm8-platform/src/main/scala/io/sm8/platform/query/EngineService.scala:627-628` — the new `collectFirst` matcher (this ADR)
+- `plugins/semantic-graph-plugin/src/main/scala/io/sm8/plugins/semanticgraph/JoinPathPreHook.scala:58` — `val CycleErrorKey = "io.sm8.plugins.semanticgraph:error"` (renamed)
 - `sm8-core/src/main/scala/io/sm8/core/engine/EngineError.scala:26` — the 13-variant sealed trait the convention carries
 
 Local-only `.omp/WATCHDOG.yml` (gitignored) tunes the advisor roster for this project.
