@@ -87,5 +87,6 @@ The cache plugin's `sm8.cache.write.error` key needs no change (already satisfie
 - `sm8-platform/src/main/scala/io/sm8/platform/query/EngineService.scala:627-628` — the new `collectFirst` matcher (this ADR)
 - `plugins/semantic-graph-plugin/src/main/scala/io/sm8/plugins/semanticgraph/JoinPathPreHook.scala:58` — `val CycleErrorKey = "io.sm8.plugins.semanticgraph:error"` (renamed)
 - `sm8-core/src/main/scala/io/sm8/core/engine/EngineError.scala:26` — the 13-variant sealed trait the convention carries
+- `sm8-core/src/main/scala/io/sm8/core/engine/EngineError.scala` (HookErrorChannel object) — the `surfaceTypedError(scope, error, ctx)` plugin-author helper added in this PR
 
 Local-only `.omp/WATCHDOG.yml` (gitignored) tunes the advisor roster for this project.
