@@ -197,3 +197,23 @@ object PersistPhase {
   case object Unpersist extends PersistPhase
 }
 }
+/**
+ * ADR-0020: typed-error surfacing helper for plugin authors.
+ *
+ * The platform's `EngineService.runQueryWithHooks` collects any
+ * `ctx.meta` entry whose key ends in `":error"` AND whose value is
+ * a typed `EngineError`, surfacing it as `Left(error)` to the caller.
+ * Plugin authors use this helper to write to the convention without
+ * hand-writing the namespaced key string.
+ *
+ * @param scope the plugin's stable identity (e.g.
+ *                `"io.sm8.plugins.semanticgraph"`); the helper writes
+ *                the key `"<scope>:error"` to `ctx.meta`
+ * @param error the typed engine error to surface
+ * @param ctx   the current request context
+ * @return     a new context with the typed error written to meta
+ */
+object HookErrorChannel {
+  def surfaceTypedError(scope: String, error: EngineError, ctx: io.sm8.sdk.Context): io.sm8.sdk.Context =
+    ctx.copy(meta = ctx.meta + (s"$scope:error" -> error))
+}
