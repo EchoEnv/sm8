@@ -1,6 +1,6 @@
 # ADR-008-X: Lowering-Layer Input-Required Fix — Mirroring PR-132 at the Spark `aggregateToColumn` Boundary (PR-133)
 
-**Status:** Proposed (v1.1 — post-review fixes applied). **Date:** 2026-08-20. **Author:** SM8 agent (PR-133 follow-up to PR-132, per the user's 2026-08-20 "go option2 ... ensure follow RFC docs strictly and ADR, also periodically monitor memory and disk and spark serialize issues and perf concern, follow ALL SKILL in your memory, good scaladoc based on skill" directive).
+**Status:** Implemented — was Proposed (v1.1 — post-review fixes applied), promoted to Implemented on PR-133 (#133, 153c3cb) merge. Lowering-layer input-required fix mirrored PR-132 at the Spark `aggregateToColumn` boundary as specified. Local-only `.omp/WATCHDOG.yml` (gitignored) tunes the advisor roster for this project.  **Date:**
 
 > **Decision at a glance** (5-second scan)
 >

@@ -1,6 +1,6 @@
 # ADR-008-T: MeasureSugar — Infix Ergonomics for `Measure.aggregate`, `Expr.MeasureRef`, `Expr.All`, `Expr.Cast` (PR-131)
 
-**Status:** Proposed (v1.1 — post-review fixes applied). **Date:** 2026-08-20. **Author:** SM8 agent (PR-131 follow-up to PR-35 ExprSugar, per the user's 2026-08-20 "what's next" directive).
+**Status:** Implemented — was Proposed (v1.1 — post-review fixes applied), promoted to Implemented on PR-131 (#131, 5839980) merge. 4 sugar classes + Measure.aggregate overload shipped as specified in the ADR. Local-only `.omp/WATCHDOG.yml` (gitignored) tunes the advisor roster for this project.  **Date:**
 
 > **Decision at a glance** (5-second scan)
 >

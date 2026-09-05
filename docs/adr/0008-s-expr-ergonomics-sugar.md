@@ -1,6 +1,6 @@
 # ADR-008-S: Expr Ergonomics Sugar (PR-35)
 
-**Status:** Proposed (v1.2 DRAFT). **Date:** 2026-08-20. **Author:** SM8 agent (PR-35 follow-up to PR-29 TypedPredicateFilterOps + the user's 2026-08-20 ergonomics directive).
+**Status:** Implemented — was Proposed (v1.2 DRAFT), promoted to Implemented on PR-35 (#123, 2d875e6) merge with the PR-35 scaladoc sweep follow-up at (#125, 20dd162). ExprSugar ships the sugar over the existing Expr ADT cases per the ADR's ergonomic scope. Local-only `.omp/WATCHDOG.yml` (gitignored) tunes the advisor roster for this project.  **Date:**
 
 > **Decision at a glance** (5-second scan)
 >
