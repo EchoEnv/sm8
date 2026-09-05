@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (C7 wayfinder round, ticket #283). Target: PR-274.
+**Implemented** — was Proposed (C7 wayfinder round, ticket #283), promoted in the 2026-09-06 stale-ADR batch. Target PR-274's scope shipped as `03d1a59` (#286, 2026-09-03): `ModelLoader.fromPath` removed, I/O-free core boundary restored (`fromStream` + `fromString` entry points; `scala.io.Source` gone from sm8-core).
 
 ## Context
 
