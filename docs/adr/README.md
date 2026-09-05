@@ -6,7 +6,7 @@ their context, the options considered, and the consequences of the chosen path.
 ## Conventions
 
 - File naming: `NNNN-<kebab-case-slug>.md`, monotonically increasing `NNNN`
-- Status values: `Proposed`, `Accepted`, `Superseded`, `Deprecated`
+- Status values: `Proposed`, `Accepted`, `Implemented`, `Superseded`, `Deprecated`
 - Each ADR has sections: **Context and Problem Statement**, **Decision**, **Consequences**, **Alternatives Considered**, **References**
 - ADRs are immutable once accepted; supersede via a new ADR that links back
 
