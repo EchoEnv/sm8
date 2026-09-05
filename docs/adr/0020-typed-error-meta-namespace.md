@@ -70,14 +70,26 @@ The cache plugin's `sm8.cache.write.error` key needs no change (already satisfie
 - The semantic-graph plugin gets a key rename (`semanticGraphError` → `io.sm8.plugins.semanticgraph:error`). The key is a constant in the plugin (`CycleErrorKey`); one-line change.
 - The cache plugin's `sm8.cache.write.error` key now surfaces — previously silently dropped because the platform only read the one hard-coded key.
 - The convention is enforceable by lint: a future plugin author writing `"my-plugin:warning"` instead of `":error"` is silently dropped, but a simple grep-for-`:error`-suffix in the platform's tests catches it.
+- **Iteration order** (per DE F1): when two `:error`-suffixed entries coexist in `ctx.meta`, the matcher returns the FIRST match from `Map[String, Any]` iteration. Scala 2.13's `Map` is insertion-ordered for `Map.empty`/`Map1`/`Map2`/`Map3`/`Map4` (O(1) per insert) and hash-bucketed for `HashMap` (5+ entries). The realistic case (one `:error` key per request) has no ambiguity; the theoretical collision case (two plugins writing two typed errors in the same `runQueryWithHooks`) is order-agnostic at the request-level — both errors represent the same request-level failure and first-write-wins is acceptable per RFC §13 observability. If strict deterministic ordering is required in the future, the platform can sort the collected keys before `headOption`; today's shape doesn't need it.
 - ADR-0010-a §6 deferral closed.
+- **Iteration order** (per DE F1): when two `:error`-suffixed entries coexist in `ctx.meta`, the matcher returns the FIRST match from `Map[String, Any]` iteration. Scala 2.13's `Map` is insertion-ordered for `Map.empty`/`Map1`/`Map2`/`Map3`/`Map4` (O(1) per insert) and hash-bucketed for `HashMap` (5+ entries). The realistic case (one `:error` key per request) has no ambiguity; the theoretical collision case (two plugins writing two typed errors in the same `runQueryWithHooks`) is order-agnostic at the request-level — both errors represent the same request-level failure and first-write-wins is acceptable per RFC §13 observability. If strict deterministic ordering is required in the future, the platform can sort the collected keys before `headOption`; today's shape doesn't need it.
 
 ## Alternatives Considered
 
 - **Drop the convention; require every typed error to flow through the adapter's `Either` channel directly.** Rejected: the hook short-circuit path bypasses the adapter (a hook throws BEFORE the adapter runs), so the only way to surface a hook-thrown typed error today is via `ctx.meta`. The convention is the minimal-fidelity bridge.
 - **Use a typed wrapper** (e.g. a `HookTypedError(error)` ADT) instead of bare `EngineError` in `ctx.meta`. Rejected: adds an SDK type (the frozen sm8-core), and the existing pattern (`cache.write.error = typed EngineError` per `CachePlugin.scala:293`) already uses bare `EngineError` directly.
 - **Add a new SDK method `engine.surfaceError(pluginScope, error)`.** Rejected: forces every plugin to import a new method, and the convention (`ctx.meta + (key -> value)`) is the established hook-author pattern across the codebase (cache-policy fold at `EngineService.scala:527`, broadcast/skew decision-oracle at `EngineService.scala:597-599`, GraphSnapshot.MetaKey at `GraphSnapshot.scala:113`).
-- **Hard-code a legacy-key list** (option a) instead of migrating the semantic-graph plugin's key. Rejected: the convention stays polluted with a special case. Migrating is cleaner.
+- **Hard-code a legacy-key list** instead of migrating the semantic-graph plugin's key. Rejected: the convention stays polluted with a special case. Migrating is cleaner (the §Backward-compat choice (a)).
+
+## Open questions
+
+- **DE F1 collision-order strictness** (deferred): if strict deterministic ordering between multiple `:error`-suffixed entries becomes a future requirement, the platform can sort the collected keys before `headOption`. Today's shape doesn't need it; documented in §Consequences for traceability.
+- **DE F2 `surfaceTypedError` helper placement** (resolved in ccce71e): the helper is shipped as `io.sm8.core.engine.EngineError.HookErrorChannel.surfaceTypedError(scope, error, ctx)` at `sm8-core/.../engine/EngineError.scala`. The companion object is a top-level object inside the engine package, NOT nested inside the `EngineError` sealed trait — this matches the existing convention (`HookErrorChannel` is a utility object, not a variant of the `EngineError` ADT). RFC §3 layer discipline preserved.
+
+## Open questions
+
+- **DE F1 collision-order strictness** (deferred): if strict deterministic ordering between multiple `:error`-suffixed entries becomes a future requirement, the platform can sort the collected keys before `headOption`. Today's shape doesn't need it; documented in §Consequences for traceability.
+- **DE F2 `surfaceTypedError` helper placement** (resolved in ccce71e): the helper is shipped as `io.sm8.core.engine.EngineError.HookErrorChannel.surfaceTypedError(scope, error, ctx)` at `sm8-core/.../engine/EngineError.scala`. The companion object is a top-level object inside the engine package, NOT nested inside the `EngineError` sealed trait — this matches the existing convention (`HookErrorChannel` is a utility object, not a variant of the `EngineError` ADT). RFC §3 layer discipline preserved.
 
 ## References
 
