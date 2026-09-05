@@ -45,8 +45,8 @@ class McpHttpRouteSpec extends AnyFunSuite with Matchers {
     val route = new McpHttpRoute(McpHttpRoute.Config(
       endpointPath = "/mcp", disallowDelete = false
     ))
-    route.buildServer("sm8-mcp", "0.1.0-SNAPSHOT", Seq.empty)
-    val server = route.start(port)
+    route.server.buildServer(route, "sm8-mcp", "0.1.0-SNAPSHOT", Seq.empty)
+    val server = route.server.start(port, req => route.handleRequest(req))
     (route, port)
   }
 
@@ -204,8 +204,8 @@ class McpHttpRouteSpec extends AnyFunSuite with Matchers {
     val route = new McpHttpRoute(McpHttpRoute.Config(
       endpointPath = "/mcp", disallowDelete = true
     ))
-    route.buildServer("sm8-mcp", "0.1.0-SNAPSHOT", Seq.empty)
-    route.start(port)
+    route.server.buildServer(route, "sm8-mcp", "0.1.0-SNAPSHOT", Seq.empty)
+    route.server.start(port, req => route.handleRequest(req))
     val resp = http(port, "/mcp", "", "DELETE",
       Map("Mcp-Session-Id" -> "anything"))
     resp.statusCode() shouldBe 405
