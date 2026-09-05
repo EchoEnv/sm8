@@ -353,12 +353,13 @@ class EngineServiceSpec extends AnyFunSuite with Matchers {
     out shouldBe Right(emptyPortableResult)
   }
 
-  test("executeEngine: returns Left(ProviderInvocationFailed) on NonFatal IOException (P1-S2)") {
-    // P1-S2: the catch was `case e: RuntimeException` — a provider
-    // throwing a checked `IOException` (e.g. a network/IO fault at
-    // the engine boundary) escaped as a raw throw instead of the
-    // typed `ProviderInvocationFailed`. After the NonFatal widening
-    // it is converted.
+  test("executeEngine: surfaces java.io.IOException as ConnectionFailed (ADR-0019)") {
+    // ADR-0019: the catch ladder was extended. An IOException thrown by
+    // a provider (e.g. a JDBC socket drop, a cache write to a stale
+    // file handle) now surfaces as the typed EngineError.ConnectionFailed
+    // variant instead of being collapsed to the ProviderInvocationFailed
+    // catch-all. The wire status code is the same (502) but the typed
+    // variant gives operators a programmatic discriminator.
     final class IoStubProvider extends EngineProvider with java.io.Serializable {
       override val identity: io.sm8.core.engine.EngineIdentity =
         io.sm8.core.engine.EngineIdentity("spark", "3.5.8", "0.2.4")
@@ -368,7 +369,7 @@ class EngineServiceSpec extends AnyFunSuite with Matchers {
           request: CoreQueryRequest,
           ctx: io.sm8.core.engine.EngineContext
       ): Either[EngineError, io.sm8.core.engine.PortableQueryResult] =
-        throw new java.io.IOException("x")
+        throw new java.io.IOException("socket reset")
       override def explain(
           model: Model,
           request: CoreQueryRequest,
@@ -378,10 +379,106 @@ class EngineServiceSpec extends AnyFunSuite with Matchers {
     val mcpReq = CoreQueryRequest(model = "flights")
     val out = EngineService.executeEngine(dummyModel, mcpReq, new IoStubProvider)
     out.isLeft shouldBe true
+    out.left.get shouldBe a [EngineError.ConnectionFailed]
+    val err = out.left.get.asInstanceOf[EngineError.ConnectionFailed]
+    err.engine shouldBe "spark"
+    err.reason shouldBe "IOException"
+    err.message shouldBe "socket reset"
+  }
+
+  test("executeEngine: surfaces a non-Spark NonFatal exception as ProviderInvocationFailed catch-all (ADR-0019 regression)") {
+    // ADR-0019: any exception class not classified above lands under
+    // ProviderInvocationFailed. The catch-all preserves the class simple-
+    // name as `reason` so operators still have a string to grep on.
+    final class GenericRuntimeStubProvider extends EngineProvider with java.io.Serializable {
+      override val identity: io.sm8.core.engine.EngineIdentity =
+        io.sm8.core.engine.EngineIdentity("duckdb", "1.2.0", "0.2.4")
+      override val available: Boolean = true
+      override def query(
+          model: Model,
+          request: CoreQueryRequest,
+          ctx: io.sm8.core.engine.EngineContext
+      ): Either[EngineError, io.sm8.core.engine.PortableQueryResult] =
+        throw new RuntimeException("duckdb said no")
+      override def explain(
+          model: Model,
+          request: CoreQueryRequest,
+          ctx: io.sm8.core.engine.EngineContext
+      ): Either[EngineError, String] = ???
+    }
+    val mcpReq = CoreQueryRequest(model = "flights")
+    val out = EngineService.executeEngine(dummyModel, mcpReq, new GenericRuntimeStubProvider)
+    out.isLeft shouldBe true
     out.left.get shouldBe a [EngineError.ProviderInvocationFailed]
     val err = out.left.get.asInstanceOf[EngineError.ProviderInvocationFailed]
-    err.name shouldBe "spark"
-    err.message shouldBe "x"
+    err.engine shouldBe "duckdb"
+    err.name shouldBe "duckdb"
+    err.reason shouldBe "RuntimeException"
+    err.message shouldBe "duckdb said no"
+  }
+
+  test("executeEngine: AssertionError propagates unchanged (fatal Error, ADR-0019 PR-176 discipline)") {
+    // ADR-0019 + PR-176: a fatal `Error` (AssertionError extends Error)
+    // is NOT caught by NonFatal. The catch ladder must let it propagate
+    // to the caller so the Restate retry path (or JVM shutdown) sees
+    // the underlying signal — wrapping it as ProviderInvocationFailed
+    // would mask a real JVM failure.
+    final class AssertionStubProvider extends EngineProvider with java.io.Serializable {
+      override val identity: io.sm8.core.engine.EngineIdentity =
+        io.sm8.core.engine.EngineIdentity("spark", "3.5.8", "0.2.4")
+      override val available: Boolean = true
+      override def query(
+          model: Model,
+          request: CoreQueryRequest,
+          ctx: io.sm8.core.engine.EngineContext
+      ): Either[EngineError, io.sm8.core.engine.PortableQueryResult] =
+        throw new AssertionError("invariant violated in spark adapter")
+      override def explain(
+          model: Model,
+          request: CoreQueryRequest,
+          ctx: io.sm8.core.engine.EngineContext
+      ): Either[EngineError, String] = ???
+    }
+    val mcpReq = CoreQueryRequest(model = "flights")
+    a [java.lang.AssertionError] should be thrownBy {
+      EngineService.executeEngine(dummyModel, mcpReq, new AssertionStubProvider)
+      ()
+    }
+  }
+
+  test("executeEngine: InterruptedException surfaces as CancellationFailed and re-sets thread interrupt flag (ADR-0019)") {
+    // ADR-0019: InterruptedException still maps to CancellationFailed
+    // (504), AND re-sets Thread.currentThread().interrupt() so the
+    // cancellation signal is never lost downstream. PR-176 NonFatal
+    // discipline preserved.
+    final class InterruptStubProvider extends EngineProvider with java.io.Serializable {
+      override val identity: io.sm8.core.engine.EngineIdentity =
+        io.sm8.core.engine.EngineIdentity("spark", "3.5.8", "0.2.4")
+      override val available: Boolean = true
+      override def query(
+          model: Model,
+          request: CoreQueryRequest,
+          ctx: io.sm8.core.engine.EngineContext
+      ): Either[EngineError, io.sm8.core.engine.PortableQueryResult] =
+        throw new InterruptedException("query budget exceeded")
+      override def explain(
+          model: Model,
+          request: CoreQueryRequest,
+          ctx: io.sm8.core.engine.EngineContext
+      ): Either[EngineError, String] = ???
+    }
+    val mcpReq = CoreQueryRequest(model = "flights")
+    // Pre-clear the interrupt flag so we can assert the catch ladder
+    // re-set it (otherwise the assertion below is a tautology).
+    Thread.interrupted()
+    val out = EngineService.executeEngine(dummyModel, mcpReq, new InterruptStubProvider)
+    out.isLeft shouldBe true
+    out.left.get shouldBe a [EngineError.CancellationFailed]
+    val err = out.left.get.asInstanceOf[EngineError.CancellationFailed]
+    err.engine shouldBe "spark"
+    err.reason shouldBe "interrupted"
+    err.message shouldBe "query budget exceeded"
+    Thread.interrupted() shouldBe true // flag re-set by the catch arm
   }
 
   test("executeEngine: returns Left(EngineError) on engine-typed failure") {

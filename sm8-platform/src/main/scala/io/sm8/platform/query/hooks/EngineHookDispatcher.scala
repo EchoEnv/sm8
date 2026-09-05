@@ -93,7 +93,7 @@ final class EngineHookDispatcher private (val hooks: HookManager) extends io.sm8
  * an `InterruptedException` takes the same path but re-sets the
  * thread's interrupt flag first so the cancellation is never lost.
  * A fatal `Error` (OOM, ...) is NOT caught — it propagates to
- * `EngineService.executeEngine`, which converts only `NonFatal`
+ * `EngineService.executeEngine`, which converts classified exceptions into typed `EngineError` variants per ADR-0019 (the `NonFatal` catch-all preserves the class simple-name as `reason`)
  * to `EngineError.ProviderInvocationFailed`, so a fatally-broken
  * JVM fails loud instead of being swallowed.
  */
