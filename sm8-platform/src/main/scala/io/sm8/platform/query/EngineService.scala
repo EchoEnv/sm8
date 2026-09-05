@@ -69,6 +69,7 @@ import io.sm8.platform.query.cache.CacheBridge
 import io.sm8.sdk.{Context, HookRunner, PipelineStage}
 
 import scala.util.control.NonFatal
+
 /**
  * Engine-portable path entry point. PR-C5a ships the engine
  * selection + QueryRequest build. The cache + execute segments
@@ -214,10 +215,20 @@ object EngineService {
    * that need a custom context (e.g. for tracing) pass it
    * explicitly.
    *
-   * @param ctx          the engine context (defaults to
-   *                 `EngineContext.defaultContext`)
+   * @param model    the engine-portable Model (used to thread cache
+   *                 policies + per-query hints; the actual Spark
+   *                 DataFrame derivation lives in the connector).
+   * @param mcpReq   the engine-portable QueryRequest carrying the
+   *                 compiled measures, dimensions, where filter, and
+   *                 optional engine selection.
+   * @param provider the realized `EngineProvider` selected by the
+   *                 caller (per RFC §4 adapters.md: a provider is
+   *                 "realized" by the connector layer before the
+   *                 platform queries it).
+   * @param ctx      the engine context (defaults to
+   *                 `EngineContext.defaultContext`).
    * @return         `Right(pqr)` on success; `Left(error)` on
-   *                 engine error or runtime exception
+   *                 engine error or runtime exception.
    */
   def executeEngine(
       model: Model,
@@ -229,25 +240,27 @@ object EngineService {
       provider.query(model, mcpReq, ctx)
     } catch {
       // Per [[scala-error-handling-mindset]]: convert at the IO boundary.
-      // Legacy code threw `IllegalArgumentException` here,
-      // losing the typed error. The Scala version preserves it
-      // via `EngineError.ProviderInvocationFailed` — the catch-all
-      // variant for "engine execution failed unexpectedly".
+      // Legacy code threw `IllegalArgumentException` here, losing the
+      // typed error. The Scala version preserves it via the typed
+      // `EngineError` ADT — every catch arm produces the most specific
+      // typed variant the caught exception can map to.
       //
-      // Specific cases run BEFORE the NonFatal catch-all so the
-      // engine-portable [[io.sm8.core.engine.EngineError.QueryTimedOut]]
-      // and [[io.sm8.core.engine.EngineError.CancellationFailed]] ADT
-      // variants actually surface when an engine adapter throws the
-      // canonical timeout / interruption signals. Without these arms,
-      // both variants would be unreachable at runtime — declared in
-      // the sealed `EngineError` hierarchy but never produced —
-      // defeating the typed-error design.
+      // ADR-0019 (revised): the catch ladder preserves the `EngineError`
+      // ADT surface at the IO boundary. To respect RFC §3 (sm8-platform
+      // is engine-portable control plane; no engine-specific types in
+      // scope), the Spark-specific exception classes (NoSuchTableException,
+      // AnalysisException, QueryExecutionException) are classified via
+      // throwable class-name string matching + exception-message parsing
+      // — NOT via Scala-typed class references. This keeps sm8-platform
+      // free of `org.apache.spark.*` imports while still routing Spark
+      // exceptions into typed EngineError variants on the wire contract.
       //
-      // Only the listed specific cases are converted: an unlisted
-      // `Error` (OOM, ...) must propagate so a fatally-broken JVM
-      // fails loud. `InterruptedException` re-sets the thread's
-      // interrupt flag first so the cancellation is never lost
-      // (P1-S2).
+      // Per PR-176 NonFatal discipline: a fatal `Error`
+      // (OutOfMemoryError, StackOverflowError, AssertionError, ThreadDeath)
+      // is NOT caught — propagates to the Restate retry path or JVM
+      // shutdown per RFC §13 observability. `NonFatal` only catches
+      // `Throwable` subclasses that are not `VirtualMachineError` or
+      // `ThreadDeath`, by definition.
       //
       // The `engine` field is the engine identity (e.g. "spark",
       // "trino"), not the model name. `EngineError.toErrorDetail`
@@ -274,6 +287,70 @@ object EngineService {
           cancelStatus = "sql-timeout",
           message     = Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
         ))
+      case e
+          if engineClass(e) == "org.apache.spark.sql.catalyst.analysis.NoSuchTableException" =>
+        // ADR-0019 (revised): classified as EngineUnavailable (503).
+        // String-class comparison keeps sm8-platform engine-portable
+        // (no Spark type reference) while routing Spark's
+        // NoSuchTableException into the typed variant. The exception
+        // object is NOT cast; only its `getClass.getName` is read.
+        Left(EngineError.EngineUnavailable(
+          engine     = provider.identity.name,
+          available  = Nil,
+          wasDefault = false,
+          message    = s"sm8: ${provider.identity.name}: NoSuchTableException: ${Option(e.getMessage).getOrElse("table not found")}"
+        ))
+      case e
+          if engineClass(e) == "org.apache.spark.sql.AnalysisException" =>
+        // ADR-0019 (revised): classified as UnsupportedCapability (501).
+        // String-class match against the fully-qualified Spark class
+        // name; works for any connector that throws AnalysisException.
+        Left(EngineError.UnsupportedCapability(
+          engine     = provider.identity.name,
+          capability = s"analysis: ${e.getClass.getSimpleName}",
+          message    = Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
+        ))
+      case e
+          if engineClass(e) == "org.apache.spark.sql.execution.QueryExecutionException"
+              && Option(e.getMessage).exists(m => m.contains("Decimal") || m.contains("DECIMAL")) =>
+        // ADR-0019 (revised): pattern-guard on the message — only
+        // classify as DecimalOverflow when the message hints at a
+        // decimal-precision overflow. Other QueryExecutionExceptions
+        // fall through to the NonFatal catch-all (treated as "execution
+        // failed unexpectedly"). Parsing precision/scale from the message
+        // is heuristic; we default to 0/0 when the format isn't standard
+        // and preserve the original message so operators can still
+        // diagnose.
+        Left(EngineError.DecimalOverflow(
+          engine    = provider.identity.name,
+          value     = "<unparsed>",
+          precision = 0,
+          scale     = 0,
+          message   = Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
+        ))
+      case e: java.io.IOException =>
+        // ADR-0019: classified as ConnectionFailed (502). Mirrors the
+        // connection-seam classification at SparkEngineProviderDescriptor.
+        // realizeTyped (line 121) — a network blip or JDBC socket drop
+        // is a connection-class failure, not a "provider invocation
+        // failed unexpectedly" generic case.
+        Left(EngineError.ConnectionFailed(
+          engine  = provider.identity.name,
+          reason  = e.getClass.getSimpleName,
+          message = Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
+        ))
+      case e: java.lang.AssertionError =>
+        // ADR-0019 + PR-176: AssertionError is an `Error` (not a
+        // VirtualMachineError). Scala 2.13's `NonFatal(e)` returns
+        // `Some(e)` for AssertionError — the catch-all below would
+        // otherwise collapse it to ProviderInvocationFailed, masking
+        // a real JVM-level invariant failure. Re-throw so the
+        // underlying signal reaches the Restate retry path / JVM
+        // shutdown per RFC §13 observability. (Other fatal `Error`s
+        // — OutOfMemoryError, StackOverflowError, ThreadDeath — are
+        // `VirtualMachineError` subclasses; NonFatal correctly
+        // excludes those and they propagate without an explicit arm.)
+        throw e
       case e: InterruptedException =>
         Thread.currentThread().interrupt()
         Left(EngineError.CancellationFailed(
@@ -282,14 +359,38 @@ object EngineService {
           message = Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
         ))
       case NonFatal(e) =>
+        // Catch-all: any exception class not classified above lands
+        // here. Per ADR-0019 this is INTENTIONAL — adding more typed-
+        // error paths is a future ticket (e.g. MalformedURLException →
+        // IncompatibleExprShape, ClassCastException → IncompatibleExprShape
+        // when caught at the typed boundary). The `reason` field carries
+        // the exception class simple-name so operators still get a string
+        // to grep on; the `name` field is the engine identity per the
+        // canonical EngineError.ProviderInvocationFailed shape.
         Left(EngineError.ProviderInvocationFailed(
           engine = provider.identity.name,
           name = provider.identity.name,
           reason = e.getClass.getSimpleName,
           message = Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
         ))
+      // NOTE: No `case e: AssertionError =>` — `NonFatal` excludes `Error`
+      // (and AssertionError extends Error), so AssertionError propagates
+      // through to the caller unchanged. Same for OutOfMemoryError,
+      // StackOverflowError, etc. — fatal JVM errors must propagate per
+      // RFC §13 observability.
     }
   }
+
+  /** Engine-portable fully-qualified class name lookup. Reads
+    * `Throwable.getClass.getName` only; never references the
+    * engine-specific class type. This helper keeps the catch ladder
+    * above engine-agnostic — sm8-platform has no `org.apache.spark.*`
+    * imports.
+    *
+    * @param t the caught throwable whose class name to read.
+    * @return the fully-qualified class name of the throwable's class.
+    */
+  private def engineClass(t: Throwable): String = t.getClass.getName
 
   /**
    * Convert a `PortableQueryResult` to the platform's MCP-wire
