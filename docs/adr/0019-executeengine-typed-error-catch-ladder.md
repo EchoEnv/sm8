@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed. **Date:** 2026-09-05. **Author:** SM8 agent (per wayfinder map Ticket #1, `docs/wayfinder/2026-09-05-control-plane-robustness.md`).
+**Implemented** — was Proposed (2026-09-05), promoted on PR-317 (#317, squash tip 847d263) merge. Dual review + final gate cleared; the catch-ladder preserves the `EngineError` ADT surface at the `executeEngine` IO boundary per this ADR.
 
 ## Context and Problem Statement
 
