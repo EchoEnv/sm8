@@ -17,9 +17,12 @@
  * 50 LOC of copy-paste.
  *
  * The registry is process-scoped (a Scala object with a
- * `ConcurrentHashMap` for the entries). The `Sm8ToolHandlers` object
- * calls `registerAll()` on load; `apply` (or `build`) collects
- * registered tools.
+ * `ConcurrentHashMap` for the entries). Empty at load — plugins
+ * register at setup-time (e.g. `Sm8ToolHandlers` will be migrated
+ * to register in Phase 2b of ADR-0021; the current commit ships
+ * the helper only, leaving `Sm8ToolHandlers.build(client)` unchanged).
+ * `apply` (or `entries.map(_.build(_, _))`) collects registered
+ * tools on demand.
  *
  * No SDK change — the registry composes the existing
  * `McpServerFeatures.SyncToolSpecification` builder.

@@ -134,8 +134,8 @@ object ToolRegistry {
 
 object Sm8ToolHandlers {
   private def registerAll(): Unit = {
-    ToolRegistry.register(ToolRegistry.Entry("query", Sm8ToolHandlers.buildQueryTool))
-    ToolRegistry.register(ToolRegistry.Entry("list_models", Sm8ToolHandlers.buildListModelsTool))
+    ToolRegistry.register(ToolRegistryEntry("query", Sm8ToolHandlers.buildQueryTool))
+    ToolRegistry.register(ToolRegistryEntry("list_models", Sm8ToolHandlers.buildListModelsTool))
     // ... etc for all 7 tools ...
   }
   registerAll()
