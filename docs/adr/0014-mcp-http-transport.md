@@ -1,6 +1,6 @@
 # ADR-014: MCP server — Streamable HTTP transport + in-process stdio
 
-> **Status:** Proposed. **Date:** 2026-09-01. **Author:** SM8 agent (per user directive 2026-09-01T21:51Z — "ADR-014 candidates Streamable HTTP MCP transport + in-process --mcp-transport stdio (after redirecting sm8-server stdout to stderr)"). Succeeds ADR-013 (PR-259) which shipped the stdio MCP server as a separate binary; this ADR adds the two deferred paths.
+> **Status:** **Implemented** — was Proposed (2026-09-01), promoted in the 2026-09-06 stale-ADR batch. Implementation: PR-261 (ADR + design, `3012e58`) + PR-263 (Streamable HTTP transport, `4121ec7`). **Date:** 2026-09-01. **Author:** SM8 agent (per user directive 2026-09-01T21:51Z — "ADR-014 candidates Streamable HTTP MCP transport + in-process --mcp-transport stdio (after redirecting sm8-server stdout to stderr)"). Succeeds ADR-013 (PR-259) which shipped the stdio MCP server as a separate binary; this ADR adds the two deferred paths.
 
 ## Context and Problem Statement
 

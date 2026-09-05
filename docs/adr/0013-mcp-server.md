@@ -1,6 +1,6 @@
 # ADR-013: Model Context Protocol (MCP) server
 
-> **Status:** Proposed. **Date:** 2026-09-01. **Author:** SM8 agent (per user directive 2026-09-01T19:54Z — "sm8 exposing its tools to an LLM via stdio/SSE so any agent can query, info, update via mcp instead of cli or manual").
+> **Status:** **Implemented** — was Proposed (2026-09-01), promoted in the 2026-09-06 stale-ADR batch. Implementation: PR-259 (docs commit `17e0f8a`) + PR-260 (server commit `3024dc8`, stdio transport, 5 tools, separate sm8-mcp binary). **Date:** 2026-09-01. **Author:** SM8 agent (per user directive 2026-09-01T19:54Z — "sm8 exposing its tools to an LLM via stdio/SSE so any agent can query, info, update via mcp instead of cli or manual").
 
 ## Context and Problem Statement
 

@@ -1,6 +1,6 @@
 # ADR-015: MCP server — in-process `--mcp-transport stdio`
 
-> **Status:** Proposed. **Date:** 2026-09-02. **Author:** SM8 agent (per user directive 2026-09-02T06:19Z — "PR-262 / ADR-015 in-process --mcp-transport stdio (stdout redirect refactor)"). Succeeds ADR-014 (PR-261 + PR-263) which shipped the Streamable HTTP MCP transport. This ADR closes the other path deferred from ADR-013 §11a note.
+> **Status:** **Implemented** — was Proposed (2026-09-02), promoted in the 2026-09-06 stale-ADR batch. Implementation: PR-264 (in-process stdio transport, `772b29d`; follow-ups PR-265/266). **Date:** 2026-09-02. **Author:** SM8 agent (per user directive 2026-09-02T06:19Z — "PR-262 / ADR-015 in-process --mcp-transport stdio (stdout redirect refactor)"). Succeeds ADR-014 (PR-261 + PR-263) which shipped the Streamable HTTP MCP transport. This ADR closes the other path deferred from ADR-013 §11a note.
 
 ## Context and Problem Statement
 
