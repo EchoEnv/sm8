@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (C7 wayfinder round, ticket #280). Target: PR-272.
+**Implemented** — was Proposed (C7 wayfinder round, ticket #280), promoted in the 2026-09-06 stale-ADR batch. Target PR-272 shipped as squash `1bcc395` (#285, 2026-09-03): `EngineFactory.create` is live (QueryService construction path); no `new EngineImpl` outside sm8-core.
 
 ## Context
 
