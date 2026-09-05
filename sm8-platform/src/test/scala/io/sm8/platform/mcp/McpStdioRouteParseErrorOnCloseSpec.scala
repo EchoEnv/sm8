@@ -9,9 +9,11 @@
  * `TrackingInputStream` state machine in isolation (that coverage
  * lives in TrackingInputStreamSpec).
  *
- * The regression vector this guards against: someone deletes one of
- * the two `writePartialFrameParseErrorIfPending()` call sites at
- * McpStdioRoute.scala:299/305 (or the underlying helper). The unit
+ * The regression vector this guards against: someone deletes the
+ * beforeClose() call from one of the two close paths in
+ * McpStdioTransport (closeGracefully / close — the pre-split
+ * writePartialFrameParseErrorIfPending() call sites, or the
+ * underlying helper). The unit
  * tests would still pass because they exercise `TrackingInputStream`
  * alone; the close path would silently stop emitting. This spec
  * catches that regression by feeding partial-frame bytes through
