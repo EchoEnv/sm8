@@ -35,9 +35,11 @@ Refresh cadence should match the base table's ingest cadence. Example, nightly 0
 
 Operational notes:
 - `rollup-refresh` is **idempotent**: re-running overwrites the same `<model>__<rollup>` table. A failed run leaves the previous table intact for rollups that did not start or failed before write; rollups are rebuilt independently.
+- **Do not overlap refreshes for the same model**: two concurrent `saveAsTable` overwrites on one table can race. Schedule cron so runs cannot overlap (the run duration is bounded by the base-table size).
 - Refreshes are **not transactional across rollups** — a model with several rollups can end a run half-refreshed (each table individually consistent). If cross-rollup consistency matters, refresh all rollups *before* any consumer is pointed at them, or order consumers after the cron window.
 - The write is a full re-aggregation of the base table (no incremental/watermark support in v1). For very large bases, schedule inside the warehouse's quiet window.
 - The command targets the server's configured Spark session; the CLI only needs network access to the server.
+- The CLI's HTTP timeout is 30s (client default). A refresh of a very large base can run LONGER than that server-side: the CLI will report a transport-style failure (exit 3) while the server-side job continues to completion. For large models, raise the client timeout or check the server logs for the authoritative outcome. Do not re-invoke in a tight loop — refresh is idempotent but each invocation re-runs the aggregation.
 
 ## Query-frequency observability
 
@@ -63,6 +65,7 @@ Each query's post-execute state carries the hottest-first snapshot under that ke
 - Hottest shapes at the top — check whether a declared rollup's (dims, measures) covers any hot shape's group set (`dims ⊆`) and aggregates (Additive set materializes in v1).
 - Shapes that never appear do not justify a rollup — drop or don't declare it.
 - Cardinality guard: beyond 10,000 distinct shapes, new shapes count under `__overflow__` (telemetry degrades gracefully, never leaks).
+- Shape keys use measure ALIASES: renaming an alias fragments its counts across the rename boundary. Treat alias renames as telemetry resets.
 
 ## Known limits (v1)
 
