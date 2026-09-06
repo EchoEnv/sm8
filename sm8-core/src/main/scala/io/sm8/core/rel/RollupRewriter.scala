@@ -333,6 +333,15 @@ object RollupRewriter {
     val identityOk = declared.exists(d =>
       d.fn == a.fn && d.input == a.input && !d.distinct)
     if (!identityOk) return Left(false)
+    // Additive re-basing needs a CONCRETE state column: the input
+    // must be a plain FieldRef (stateColumnsFor emits per-field
+    // columns). A composite input (Sum(Add(fare, tax))) has no
+    // state column; the former alias fallback would emit a dangling
+    // FieldRef -> broken plan instead of fail-open. Refuse.
+    a.input.foreach {
+      case Expr.FieldRef(_) => ()
+      case _ => if (a.fn != AggregateFn.Count) return Left(false)
+    }
     AggregateFn.decomposability(a.fn) match {
       case Decomposability.Additive => Right(())
       case Decomposability.Algebraic =>
@@ -344,46 +353,12 @@ object RollupRewriter {
     }
   }
 
-  private def legacyUnused(spec: RollupSpec, a: AggregateCall): Boolean =
-    AggregateFn.decomposability(a.fn) match {
-      case Decomposability.Additive =>
-        spec.measures.contains(a.alias)
-      case Decomposability.Algebraic =>
-        // v1: the materializer (Ticket 5) will store named partial
-        // states as extra columns; the SPEC must declare a measure
-        // carrying the state. Conservative v1 rule: refuse unless
-        // a dedicated state measure is declared (not yet
-        // expressible) -> refuse for now; the Ticket 5 wiring
-        // extends this arm when RollupSpec gains state columns.
-        false
-      case Decomposability.Positional => false
-      case Decomposability.Holistic   => false
-      case Decomposability.Approximable => false
-    }
 
-  /** Criterion 3: every filter references only rollup columns (the
-    * rollup's grain dims + requested-rollup measure inputs). The
-    * rollup table (Ticket 5) carries: grain dims + measure-state
-    * columns; filters over anything else are not evaluable. */
-  private def filtersEvaluable(spec: RollupSpec, c: CanonicalPlan): Boolean = {
-    // v1: only DIM filters are semantically safe. The rollup table
-    // stores per-group PARTIALS, not final values: a measure-name
-    // filter would dangle against the state-column schema, and a
-    // state-column threshold is HAVING semantics (per-group final
-    // values), not WHERE over partial rows.
-    val rollupColumns: Set[String] = spec.dimensions.toSet
-    c.filters.forall { f =>
-      val refs = io.sm8.core.expr.Calculator.fieldNamesOf(f)
-      refs.subsetOf(rollupColumns)
-    }
-  }
-
-  /** Criterion 4: grain agreement. Both absent -> agree. Either
-    * absent -> the materialized rollup covers all grains of its
-    * dims; a query without grain matches a grain-declared rollup
-    * ONLY if the rollup is the finest grain... v1 conservative
-    * rule: grains must be EQUAL after normalization (None matches
-    * None). */
+  /** Criterion 4: grain agreement. Grains must be EQUAL after
+    * normalization (None matches None only). Strict equality is
+    * the deliberate v1 default: a grain mismatch is fail-safe
+    * (base path, perf loss only); relaxing the grain-less-query
+    * case is post-v1. */
   private def grainsAgree(rollupGrain: Option[String], queryGrain: Option[String]): Boolean =
     normalizeGrain(rollupGrain) == queryGrain
 
@@ -403,9 +378,19 @@ object RollupRewriter {
         .exists(r => grainsAgree(r.timeGrain, normQueryGrain))
       if (!grainOk) RollupRewriteRefusal.GrainMismatch
       else {
-        val aggOk = model.rollups.filter(r => matchesGroupSet(r, c) && grainsAgree(r.timeGrain, normQueryGrain))
-          .exists(r => aggregatesComposable(r, c, model))
-        if (!aggOk) RollupRewriteRefusal.UnsplittableAggregate
+        val candidates = model.rollups.filter(r =>
+          matchesGroupSet(r, c) && grainsAgree(r.timeGrain, normQueryGrain))
+        val aggOk = candidates.exists(r => aggregatesComposable(r, c, model))
+        if (!aggOk) {
+          // Distinguish recoverable (Algebraic: Ticket 5 wires the
+          // partial-state columns) from permanent refusals so the
+          // Ticket 6 observer can report them separately.
+          val anyAlgebraic = candidates.exists { r =>
+            c.aggregates.exists(a => aggregateReaggregable(r, a, model) == Left(true))
+          }
+          if (anyAlgebraic) RollupRewriteRefusal.AlgebraicStateNotWired
+          else RollupRewriteRefusal.UnsplittableAggregate
+        }
         else RollupRewriteRefusal.FilterNotEvaluable
       }
     }
@@ -491,6 +476,13 @@ object RollupRewriter {
     *   - Max(x) state: col `max__<inputField>`
     */
   private[rel] def rollupSchema(spec: RollupSpec, model: Model): List[Field] = {
+    // Nullability: carry the host dimension's declared dataType
+    // where present (Varchar fallback documented for Ticket 5 to
+    // replace with base-scan lookup); nullability follows the
+    // host dimension when its expr is a plain FieldRef into a
+    // nullable base column we cannot know here, so dims stay
+    // nullable (safe direction: extra permissiveness in the
+    // declared scan schema).
     val dimFields = model.dimensions
       .filter(d => spec.dimensions.contains(d.name))
       .map(d => Field(d.name, d.dataType.getOrElse(SealedDataType.Varchar), nullable = true))

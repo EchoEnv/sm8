@@ -362,6 +362,75 @@ class RollupRewriterSpec extends AnyFunSuite with Matchers {
       RollupRewriter.RollupRewriteRefusal.FilterNotEvaluable)
   }
 
+  test("request call with same alias but different input than the declared measure refused") {
+    // Declared total_fare = Sum(fare); request says Sum(dest_region)
+    // under the same alias — identity mismatch -> permanent refusal
+    // (never re-base against a different input's state column).
+    val plan = RelOp.Aggregate(
+      input = RelOp.Scan(
+        sourceRef = SourceRef.ByName(table = "flights_raw"),
+        schema = baseSchema,
+        projection = Nil),
+      groupBy = List(Expr.FieldRef("carrier")),
+      aggregates = List(AggregateCall(fn = AggregateFn.Sum, input = Some(Expr.FieldRef("dest_region")), alias = "total_fare")))
+    val out = RollupRewriter.rewrite(plan, model(List(byCarrier)), None)
+    out shouldBe RollupRewriter.RollupRewriteResult.Unchanged(
+      RollupRewriter.RollupRewriteRefusal.UnsplittableAggregate)
+  }
+
+  test("composite-input Sum measure refused — no state column, no alias fallback") {
+    val m = Model.of(
+      name = "flights",
+      version = 1,
+      dimensions = dims,
+      measures = List(
+        Measure.aggregate("gross", AggregateFn.Sum,
+          Expr.Add(Expr.FieldRef("fare"), Expr.FieldRef("fare")))),
+      defaultPolicies = ModelPolicyDefaults(
+        materialize = MaterializePolicy.None,
+        cache = CachePolicy.NoCache,
+        audit = AuditPolicy.NoAudit),
+      source = SourceRef.ByName(table = "flights_raw"),
+      rollups = List(RollupSpec("by_carrier", List("carrier"), List("gross"), None))
+    ).right.get
+    val plan = RelOp.Aggregate(
+      input = RelOp.Scan(
+        sourceRef = SourceRef.ByName(table = "flights_raw"),
+        schema = baseSchema,
+        projection = Nil),
+      groupBy = List(Expr.FieldRef("carrier")),
+      aggregates = List(AggregateCall(fn = AggregateFn.Sum,
+        input = Some(Expr.Add(Expr.FieldRef("fare"), Expr.FieldRef("fare"))), alias = "gross")))
+    val out = RollupRewriter.rewrite(plan, m, None)
+    out shouldBe RollupRewriter.RollupRewriteResult.Unchanged(
+      RollupRewriter.RollupRewriteRefusal.UnsplittableAggregate)
+  }
+
+  test("Algebraic measure with DECLARED identity -> AlgebraicStateNotWired (recoverable, distinct from permanent)") {
+    val m = Model.of(
+      name = "flights",
+      version = 1,
+      dimensions = dims,
+      measures = meas :+ Measure.aggregate("avg_fare", AggregateFn.Avg, Expr.FieldRef("fare")),
+      defaultPolicies = ModelPolicyDefaults(
+        materialize = MaterializePolicy.None,
+        cache = CachePolicy.NoCache,
+        audit = AuditPolicy.NoAudit),
+      source = SourceRef.ByName(table = "flights_raw"),
+      rollups = List(RollupSpec("by_carrier", List("carrier"), List("rows", "total_fare", "avg_fare"), None))
+    ).right.get
+    val plan = RelOp.Aggregate(
+      input = RelOp.Scan(
+        sourceRef = SourceRef.ByName(table = "flights_raw"),
+        schema = baseSchema,
+        projection = Nil),
+      groupBy = List(Expr.FieldRef("carrier")),
+      aggregates = List(AggregateCall(fn = AggregateFn.Avg, input = Some(Expr.FieldRef("fare")), alias = "avg_fare")))
+    val out = RollupRewriter.rewrite(plan, m, None)
+    out shouldBe RollupRewriter.RollupRewriteResult.Unchanged(
+      RollupRewriter.RollupRewriteRefusal.AlgebraicStateNotWired)
+  }
+
   test("first matching rollup in declaration order wins") {
     val coarse = RollupSpec("coarse", List("carrier", "dest_region"), List("rows", "total_fare"), None)
     val fine = RollupSpec("fine", List("carrier"), List("rows", "total_fare"), None)
@@ -383,6 +452,13 @@ class RollupRewriterSpec extends AnyFunSuite with Matchers {
     schema.map(_.name) should contain("carrier")
     schema.map(_.name) should contain("count__rows")
     schema.map(_.name) should contain("sum__fare")
+    // Count state: integral + non-nullable (a NULL partial would
+    // turn the re-aggregated Sum into NULL where base yields 0).
+    val countCol = schema.find(_.name == "count__rows").get
+    countCol.dataType shouldBe SealedDataType.BigInt
+    countCol.nullable shouldBe false
+    // Duplicate state columns from shared shapes are deduped.
+    schema.map(_.name) should have size schema.map(_.name).distinct.size
   }
 
   // ===== 5. Algebraic NULL guards (humpback finding) =====
