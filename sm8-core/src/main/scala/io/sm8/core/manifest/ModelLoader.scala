@@ -403,6 +403,13 @@ object ModelLoader {
   // (author convenience); anything non-list becomes a typed error
   // (never silently coerced to Nil -- a dropped ref here would
   // degenerate the rollup and silently weaken Ticket 4 routing).
+  /** Strict ref-list parse (see the surrounding scaladoc): absent
+    * or null -> Nil; a bare string -> 1-list; anything else -> a
+    * typed failure naming the field.
+    *
+    * @param key the YAML key to read ("dimensions" / "measures")
+    * @return the parsed name list, or a typed ParseFailure
+    */
   def refList(key: String): Either[ManifestError, List[String]] =
    Option(m.get(key)) match {
    case None => Right(Nil)
