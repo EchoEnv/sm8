@@ -4,7 +4,20 @@
 
 Proposed. **Date:** 2026-09-06. **Author:** SM8 agent (per user directive 2026-09-06: "see code if we already do rollup (pre-aggregation process as cache) yet"; external proposal by a third-party assistant (ClickHouse + Apache Calcite) evaluated by dual review).
 
-**Ticket 1 landed** (typed `Decomposability` taxonomy in `sm8-core/rel/AggregateFn.scala`, dual review APPROVE-WITH-FIXES both reviewers; fixes applied). Tickets 2-6 pending, per the wayfinder map.
+**IMPLEMENTED — all six tickets landed** (dual review + final gate each):
+- Ticket 1: typed `Decomposability` taxonomy (`sm8-core/rel/AggregateFn.scala`, #327).
+- Ticket 2: query-shape instrumentation, DEBUG per-run record on logger `io.sm8.platform.query.QueryShape` (#329).
+- Ticket 3: `Model.rollups` / `RollupSpec` ADT + validation + YAML loading (#330).
+- Ticket 4: `RollupRewriter` fail-open routing (#331) — canonical-shape recognizer, sealed refusal taxonomy (incl. recoverable `AlgebraicStateNotWired`), engine-parity NULL guards pinned at the Expr level, exact identity-match gate.
+- Ticket 5: `RollupMaterializer` + `refreshModelJ` JDK seam + end-to-end parity regression (#332) — closure-safe write path (built-in Column aggregations only, no UDFs), integral-data exact parity, NULL-parity, speedup documented.
+- Ticket 6: `RollupRefresher` + `RollupRefreshService/refresh` + `sm8 rollup-refresh` CLI command + `query-frequency-observer` plugin + runbook (#333).
+
+**Known v1 limits / follow-ups (deferred by review, not regressions):**
+- Algebraic measures (Avg/Stddev/Variance) are declared and validated but refused by BOTH the materializer and the router until partial-state columns land; when wired, prefer Welford-merge columns (n, mean, M2) over raw (n, sum, sumSq) and pin stddev n<2 -> NULL parity end-to-end (the guard builders exist in `RollupRewriter`).
+- Time-grain rollups declared but not bucketed/materialized; grain-dim value-domain contract must precede it.
+- Shared parser-hardening for joins/filters/calculated_measures YAML blocks (same silent asMap/asSeq paths the rollups parser fixed).
+- Schema-TYPE reconciliation between core `rollupSchema` and written tables (name parity test-pinned in `RollupSchemaParitySpec`).
+- Trino/DuckDB materialization per the original evaluation (Spark first).
 
 ## Context and Problem Statement
 
