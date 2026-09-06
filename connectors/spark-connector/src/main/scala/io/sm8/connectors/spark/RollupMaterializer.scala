@@ -113,7 +113,7 @@ object RollupMaterializer {
       _ <- validateSpec(model, spec)
       baseDf <- readBase(spark, model)
       rollupDf <- buildRollupDf(baseDf, model, spec)
-      _ <- if (eager) persistCatalog(spark, rollupDf, tableName) else persist(spark, rollupDf, tableName)
+      _ <- if (eager) persistCatalog(spark, model, spec, rollupDf, tableName) else persist(spark, rollupDf, tableName)
     } yield tableName
   }
 
@@ -255,12 +255,19 @@ object RollupMaterializer {
     */
   private[spark] def persistCatalog(
       spark: SparkSession,
+      model: Model,
+      spec: RollupSpec,
       df: DataFrame,
       tableName: String
   ): Either[EngineError, Unit] = {
-    // Name-convention guard: `^<name>__<name>$` (exactly one __).
-    val convention = raw"^[^_][^_]*__[^_][^_]*$$".r
-    if (!convention.matches(tableName))
+    // Name-convention guard: the table name must be EXACTLY what
+    // the core rewriter will re-scan. (No regex: a regex
+    // `^[^_][^_]*__[^_][^_]*$` would false-reject legitimate
+    // underscore-containing model names, e.g. taxi_trips__daily.)
+    // The caller builds tableName via RollupRewriter.rollupTableName;
+    // this recomputes it from (model, spec) and compares.
+    val expected = RollupRewriter.rollupTableName(model, spec)
+    if (tableName != expected)
       Left(EngineError.UnsupportedCapability(
         engine = "spark-connector",
         capability = "RollupMaterializer.persistCatalog.name",

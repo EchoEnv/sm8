@@ -88,7 +88,13 @@ object QueryShapeCounters {
       * @return the canonical comma-joined member string
       */
     def canon(xs: Seq[String]): String = xs.distinct.sortBy(identity).mkString(",")
-    val meas = canon(request.aggregateMeasures.map(_.name))
+    // Measures: prefer typed aggregateMeasures (MCP/DSL paths), but
+    // the REST path (EngineService.buildMCPRequest) populates only
+    // the string `measures` field — fall back so measure sets never
+    // collapse into one key (DE review F4).
+    val meas = canon(
+      if (request.aggregateMeasures.nonEmpty) request.aggregateMeasures.map(_.name)
+      else request.measures)
     val dims = canon(request.dimensions)
     s"${model.name}|v${model.version}|m=$meas|d=$dims"
   }
