@@ -86,13 +86,34 @@ object RollupMaterializer {
       spark: SparkSession,
       model: Model,
       spec: RollupSpec
+  ): Either[EngineError, String] = materialize(spark, model, spec, eager = false)
+
+  /** Eager (catalog) variant: used by the Ticket 6 refresh trigger.
+    * Writes a REAL table via `saveAsTable` (insertInto-free
+    * overwrite of the named partition) — the job RUNS before Right.
+    * Refuses to overwrite a non-rollup table (name convention
+    * guard: only `<model>__<rollup>` names are ever written).
+    *
+    * @param eager true = saveAsTable (job runs, durable); false =
+    *              temp view (lazy, session-scoped — v1 default)
+    * @param spark the session (table IO only — never captured in
+    *              any closure shipped to executors)
+    * @param model the host model (declares dims + measures)
+    * @param spec  the rollup declaration to materialize
+    * @return the written table name, or a typed EngineError
+    */
+  def materialize(
+      spark: SparkSession,
+      model: Model,
+      spec: RollupSpec,
+      eager: Boolean
   ): Either[EngineError, String] = {
     val tableName = RollupRewriter.rollupTableName(model, spec)
     for {
       _ <- validateSpec(model, spec)
       baseDf <- readBase(spark, model)
       rollupDf <- buildRollupDf(baseDf, model, spec)
-      _ <- persist(spark, rollupDf, tableName)
+      _ <- if (eager) persistCatalog(spark, rollupDf, tableName) else persist(spark, rollupDf, tableName)
     } yield tableName
   }
 
@@ -225,6 +246,52 @@ object RollupMaterializer {
     *
     * Note: temp views are LAZY — returning Right does not imply a
     * job has run; the first query against the view triggers it. */
+  /** Eager catalog persist (Ticket 6 refresh surface): the
+    * aggregation job RUNS here (saveAsTable is eager) — `Right`
+    * means the rollup table is durable in the session catalog.
+    * Defense-in-depth: only `<model>__<rollup>` convention names
+    * are ever written (the caller passes tableName built by
+    * `RollupRewriter.rollupTableName`; this re-checks the shape).
+    */
+  private[spark] def persistCatalog(
+      spark: SparkSession,
+      df: DataFrame,
+      tableName: String
+  ): Either[EngineError, Unit] = {
+    // Name-convention guard: `^<name>__<name>$` (exactly one __).
+    val convention = raw"^[^_][^_]*__[^_][^_]*$$".r
+    if (!convention.matches(tableName))
+      Left(EngineError.UnsupportedCapability(
+        engine = "spark-connector",
+        capability = "RollupMaterializer.persistCatalog.name",
+        message = s"refusing to write '$tableName': not a <model>__<rollup> convention name"))
+    else if (spark.catalog.tableExists(tableName))
+      // Ticket 4/5 carry-item resolved: tableExists (O(1) lookup)
+      // instead of listTables().collect(); re-materializing our OWN
+      // rollup table is the refresh path — overwrite is intended.
+      try {
+        df.write.mode("overwrite").saveAsTable(tableName)
+        Right(())
+      } catch {
+        case e: org.apache.spark.sql.AnalysisException =>
+          Left(EngineError.UnsupportedCapability(
+            engine = "spark-connector",
+            capability = "RollupMaterializer.persistCatalog",
+            message = s"saveAsTable('$tableName') failed: ${e.getMessage}"))
+      }
+    else
+      try {
+        df.write.saveAsTable(tableName)
+        Right(())
+      } catch {
+        case e: org.apache.spark.sql.AnalysisException =>
+          Left(EngineError.UnsupportedCapability(
+            engine = "spark-connector",
+            capability = "RollupMaterializer.persistCatalog",
+            message = s"saveAsTable('$tableName') failed: ${e.getMessage}"))
+      }
+  }
+
   private def persist(spark: SparkSession, df: DataFrame, tableName: String): Either[EngineError, Unit] = {
     val existing = spark.catalog.listTables().collect().find(_.name == tableName)
     val shadowsRealTable = existing.exists(_.tableType != "TEMPORARY")
