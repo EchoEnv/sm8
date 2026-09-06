@@ -55,7 +55,10 @@ class RollupRewriterSpec extends AnyFunSuite with Matchers {
     Dimension.field("dest_region", "dest_region"))
 
   private val meas = List(
-    Measure.aggregate("rows", AggregateFn.Count, Expr.FieldRef("carrier")),
+    // rows = true row count: Count(*) (no input). Count(WITH input)
+    // is a non-null count and is refused by the rewriter in v1
+    // (F1: the state contract stores row counts only).
+    Measure("rows", AggregateCall(fn = AggregateFn.Count, input = None, alias = "rows")),
     Measure.aggregate("total_fare", AggregateFn.Sum, Expr.FieldRef("fare")))
 
   private def model(rollups: List[RollupSpec]): Model =
@@ -141,12 +144,10 @@ class RollupRewriterSpec extends AnyFunSuite with Matchers {
     val out = RollupRewriter.rewrite(plan, model(Nil), None)
     out shouldBe RollupRewriter.RollupRewriteResult.Unchanged(
       RollupRewriter.RollupRewriteRefusal.NoGroupSetMatch)
-    // The original plan instance is untouched.
-    out.asInstanceOf[RollupRewriter.RollupRewriteResult.Unchanged] ne null shouldBe true
-    RollupRewriter.rewrite(plan, model(Nil), None) match {
-      case RollupRewriter.RollupRewriteResult.Unchanged(_) => succeed
-      case other => fail(s"expected Unchanged, got $other")
-    }
+    // Determinism of the refusal: repeated rewrites agree.
+    RollupRewriter.rewrite(plan, model(Nil), None) shouldBe out
+    // plan reference unchanged (the rewriter never mutates input).
+    plan shouldBe canonicalPlan()
   }
 
   test("non-canonical shape (Join above Aggregate) -> Unchanged(NonCanonicalShape), same instance") {
@@ -289,6 +290,78 @@ class RollupRewriterSpec extends AnyFunSuite with Matchers {
 
   // ===== determinism =====
 
+  test("non-FieldRef group key (calculated dim) -> NoGroupSetMatch in v1") {
+    val plan = RelOp.Aggregate(
+      input = RelOp.Scan(
+        sourceRef = SourceRef.ByName(table = "flights_raw"),
+        schema = baseSchema,
+        projection = Nil),
+      groupBy = List(Expr.Add(Expr.FieldRef("carrier"), Expr.FieldRef("dest_region"))),
+      aggregates = List(AggregateCall(fn = AggregateFn.Count, input = None, alias = "rows")))
+    val out = RollupRewriter.rewrite(plan, model(List(byCarrier)), None)
+    out shouldBe RollupRewriter.RollupRewriteResult.Unchanged(
+      RollupRewriter.RollupRewriteRefusal.NoGroupSetMatch)
+  }
+
+  test("rollup without grain vs query WITH grain -> no match (conservative)") {
+    val out = RollupRewriter.rewrite(canonicalPlan(), model(List(byCarrier)), Some("day"))
+    out shouldBe RollupRewriter.RollupRewriteResult.Unchanged(
+      RollupRewriter.RollupRewriteRefusal.GrainMismatch)
+  }
+
+  test("ByPath base source -> SourceKindUnsupported (v1 re-scans named tables only)") {
+    val byPathModel = Model.of(
+      name = "flights",
+      version = 1,
+      dimensions = dims,
+      measures = meas,
+      defaultPolicies = ModelPolicyDefaults(
+        materialize = MaterializePolicy.None,
+        cache = CachePolicy.NoCache,
+        audit = AuditPolicy.NoAudit),
+      source = SourceRef.ByPath(format = "parquet", path = "/data/flights"),
+      rollups = List(byCarrier)
+    ).right.get
+    val plan = RelOp.Aggregate(
+      input = RelOp.Scan(
+        sourceRef = SourceRef.ByPath(format = "parquet", path = "/data/flights"),
+        schema = baseSchema,
+        projection = Nil),
+      groupBy = List(Expr.FieldRef("carrier")),
+      aggregates = List(AggregateCall(fn = AggregateFn.Count, input = None, alias = "rows")))
+    val out = RollupRewriter.rewrite(plan, byPathModel, None)
+    out shouldBe RollupRewriter.RollupRewriteResult.Unchanged(
+      RollupRewriter.RollupRewriteRefusal.SourceKindUnsupported)
+  }
+
+  test("COUNT(carrier) (Count WITH input) refused in v1: state stores row counts only") {
+    val plan = RelOp.Aggregate(
+      input = RelOp.Scan(
+        sourceRef = SourceRef.ByName(table = "flights_raw"),
+        schema = baseSchema,
+        projection = Nil),
+      groupBy = List(Expr.FieldRef("carrier")),
+      aggregates = List(AggregateCall(fn = AggregateFn.Count, input = Some(Expr.FieldRef("carrier")), alias = "rows")))
+    val out = RollupRewriter.rewrite(plan, model(List(byCarrier)), None)
+    out shouldBe RollupRewriter.RollupRewriteResult.Unchanged(
+      RollupRewriter.RollupRewriteRefusal.UnsplittableAggregate)
+  }
+
+  test("measure-name filter (rows > 5) is HAVING semantics -> FilterNotEvaluable in v1") {
+    val plan = RelOp.Aggregate(
+      input = RelOp.Filter(
+        input = RelOp.Scan(
+          sourceRef = SourceRef.ByName(table = "flights_raw"),
+          schema = baseSchema,
+          projection = Nil),
+        predicate = Expr.GreaterThan(Expr.FieldRef("rows"), Expr.Literal(LiteralValue.IntValue(5), SealedDataType.Int))),
+      groupBy = List(Expr.FieldRef("carrier")),
+      aggregates = List(AggregateCall(fn = AggregateFn.Count, input = None, alias = "rows")))
+    val out = RollupRewriter.rewrite(plan, model(List(byCarrier)), None)
+    out shouldBe RollupRewriter.RollupRewriteResult.Unchanged(
+      RollupRewriter.RollupRewriteRefusal.FilterNotEvaluable)
+  }
+
   test("first matching rollup in declaration order wins") {
     val coarse = RollupSpec("coarse", List("carrier", "dest_region"), List("rows", "total_fare"), None)
     val fine = RollupSpec("fine", List("carrier"), List("rows", "total_fare"), None)
@@ -319,9 +392,10 @@ class RollupRewriterSpec extends AnyFunSuite with Matchers {
     e shouldBe a[Expr.CaseWhen]
     val Expr.CaseWhen(branches, _) = e
     val (cond, res) = branches.head
-    // Condition references the re-aggregated total-n column.
-    cond.toString should include("agg__n")
-    cond shouldBe a[Expr.LessThan]
+    // Condition references the caller-named re-aggregated total-n column.
+    cond shouldBe Expr.LessThan(
+      Expr.FieldRef("n"),
+      Expr.Literal(LiteralValue.IntValue(2), SealedDataType.Int))
     // Result of the guarded branch is NULL.
     res shouldBe Expr.Literal(LiteralValue.NullValue, SealedDataType.Double)
   }
@@ -330,9 +404,18 @@ class RollupRewriterSpec extends AnyFunSuite with Matchers {
     val e = RollupRewriter.stddevPopGuardExpr("n", "s", "ss")
     e shouldBe a[Expr.CaseWhen]
     val Expr.CaseWhen(branches, _) = e
-    val (cond, _) = branches.head
-    cond.toString should include("agg__n")
-    cond shouldBe a[Expr.LessOrEqual]
+    val (cond, res) = branches.head
+    cond shouldBe Expr.LessOrEqual(
+      Expr.FieldRef("n"),
+      Expr.Literal(LiteralValue.IntValue(0), SealedDataType.Int))
+    // branches.head is the GUARDED branch (n<=0 -> NULL); assert it.
+    res shouldBe Expr.Literal(LiteralValue.NullValue, SealedDataType.Double)
+    // The non-guarded body computes the population form
+    // (sumSq - sum^2/n) / n: an n=1 group yields the defined 0.0 at
+    // eval time (x - x^2 = 0).
+    val Expr.CaseWhen(_, body) = e
+    body shouldBe a[Expr.Divide]
+    body.toString shouldBe "Divide(Subtract(FieldRef(ss),Divide(Multiply(FieldRef(s),FieldRef(s)),FieldRef(n))),FieldRef(n))"
   }
 
   // -- helpers --

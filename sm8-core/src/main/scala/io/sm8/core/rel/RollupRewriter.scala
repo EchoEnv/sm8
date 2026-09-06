@@ -29,9 +29,10 @@
  *      directly; Algebraic requires the rollup to store the named
  *      partial states (wired in Ticket 5's materializer); v1
  *      REFUSES Positional / Holistic / Approximable;
- *   3. filter-evaluability — every filter references only rollup
- *      columns (the rollup's grain dims + measure-state columns),
- *      so it can be evaluated against the rollup table;
+ *   3. filter-evaluability — every filter references only the
+ *      rollup's GRAIN DIMENSION columns (the only semantically
+ *      safe class in v1: measure-threshold filters are HAVING
+ *      semantics, not WHERE over per-group partials);
  *   4. time-grain agreement — when either the query or the rollup
  *      declares a grain, raw string equality on the normalized
  *      form decides (mismatch = no match; a vocabulary mismatch
@@ -53,9 +54,11 @@
  *     (matching the base path's undefined-sample semantics);
  *   - a group with n = 1 observation: stddev_samp is undefined ->
  *     NULL; variance_sample likewise; population forms are defined
- *     (0). These guards are part of the emitted Expr tree, so the
- *     n=1-single-observation-group edge behaves identically on
- *     rollup and base paths (regression-tested).
+ *     (0). In v1 these guard builders are pinned at the Expr level
+ *     (RollupRewriterSpec); END-TO-END rollup-path parity is the
+ *     materializer ticket's AC (Ticket 5 of
+ *     docs/wayfinder/2026-09-06-pre-aggregation.md), since v1
+ *     routing refuses Algebraic until state columns exist.
  *
  * ==Why NOT a pipeline Stage / PreExecute hook==
  *
@@ -116,6 +119,18 @@ object RollupRewriter {
     /** Query grain and rollup grain disagree (fail-safe: base
       * path). */
     case object GrainMismatch extends RollupRewriteRefusal
+
+    /** The model's source is not a ByName ref, so the rollup table
+      * cannot be addressed by the v1 naming convention
+      * (<model>__<rollup> in the same catalog/namespace). */
+    case object SourceKindUnsupported extends RollupRewriteRefusal
+
+    /** An Algebraic aggregate was requested but v1 cannot serve it:
+      * the rollup's named partial states are not yet materialized
+      * (Ticket 5). Distinct from UnsplittableAggregate (which is
+      * PERMANENT — Holistic/Positional/Approximable) so the Ticket 6
+      * observer can tell recoverable from permanent refusals. */
+    case object AlgebraicStateNotWired extends RollupRewriteRefusal
   }
 
   // -- Grain normalization: the SINGLE canonical helper (Ticket 3
@@ -159,6 +174,13 @@ object RollupRewriter {
       model: Model,
       requestGrain: Option[String]
   ): RollupRewriteResult = {
+    // v1 addresses rollup tables only beside a ByName base source
+    // (F4: swapping the Scan schema to rollup state columns under a
+    // non-ByName ref would fail the adapter's schema validation on
+    // a previously-working query — fail-closed). Checked first:
+    // it is a property of the MODEL, not the plan.
+    if (!model.source.isInstanceOf[io.sm8.core.model.SourceRef.ByName])
+      return RollupRewriteResult.Unchanged(RollupRewriteRefusal.SourceKindUnsupported)
     val canonical = decomposeCanonical(plan)
     canonical match {
       case None =>
@@ -168,7 +190,7 @@ object RollupRewriter {
         model.rollups.collectFirst {
           case spec if matchesGroupSet(spec, c) &&
             grainsAgree(spec.timeGrain, normQueryGrain) &&
-            aggregatesComposable(spec, c) &&
+            aggregatesComposable(spec, c, model) &&
             filtersEvaluable(spec, c) =>
             RollupRewriteResult.Rewritten(
               rebuildOnRollup(plan, c, spec, model),
@@ -267,15 +289,64 @@ object RollupRewriter {
     * count/sum/sumSq inputs for stddev/variance). v1 refuses
     * Positional / Holistic / Approximable outright.
     */
-  private def aggregatesComposable(spec: RollupSpec, c: CanonicalPlan): Boolean =
-    c.aggregates.forall(a => aggregateReaggregable(spec, a))
+  private def aggregatesComposable(spec: RollupSpec, c: CanonicalPlan, model: Model): Boolean =
+    aggregateRefusal(spec, c, model).isEmpty
 
-  private def aggregateReaggregable(spec: RollupSpec, a: AggregateCall): Boolean =
+  /** The FIRST aggregate-refusal reason for this (rollup, plan) pair
+    * (deterministic: request-aggregate order). None = composable. */
+  private[rel] def aggregateRefusal(
+      spec: RollupSpec,
+      c: CanonicalPlan,
+      model: Model
+  ): Option[RollupRewriteRefusal] =
+    c.aggregates.collectFirst {
+      case a if aggregateReaggregable(spec, a, model) == Left(true) =>
+        RollupRewriteRefusal.AlgebraicStateNotWired: RollupRewriteRefusal
+      case a if aggregateReaggregable(spec, a, model) == Left(false) =>
+        RollupRewriteRefusal.UnsplittableAggregate: RollupRewriteRefusal
+    }
+
+  /** Aggregate re-aggregability verdict for ONE call:
+    * `Right(())` = re-aggregable from this rollup; `Left(true)` =
+    * Algebraic (refused only because Ticket 5 has not materialized
+    * the named partial states — recoverable); `Left(false)` =
+    * permanently unsplittable or unsafe to route (Positional /
+    * Holistic / Approximable / DISTINCT / COUNT(expr) / identity
+    * mismatch). */
+  private[rel] def aggregateReaggregable(
+      spec: RollupSpec,
+      a: AggregateCall,
+      model: Model
+  ): Either[Boolean, Unit] = {
+    // DISTINCT aggregates are not additive (sum of per-group
+    // distinct sums != global distinct sum) — refuse outright.
+    if (a.distinct) return Left(false)
+    // COUNT(expr) counts non-null expr values, NOT rows: re-basing
+    // it onto the row-count state column would silently return
+    // wrong numbers when the input has NULLs. v1 routes Count only
+    // in its input-less COUNT(*) form.
+    if (a.fn == AggregateFn.Count && a.input.isDefined) return Left(false)
+    // The request call must EXACTLY match the declared host measure
+    // (same fn AND same input expression): COUNT(carrier) counts
+    // non-null carrier values while COUNT(*) counts rows.
+    val declared = model.measures.find(_.name == a.alias).map(_.expr)
+    val identityOk = declared.exists(d =>
+      d.fn == a.fn && d.input == a.input && !d.distinct)
+    if (!identityOk) return Left(false)
+    AggregateFn.decomposability(a.fn) match {
+      case Decomposability.Additive => Right(())
+      case Decomposability.Algebraic =>
+        // Recoverable refusal: Ticket 5 materializes the named
+        // partial states; the criteria then read them from
+        // RollupSpec. This arm must not outlive Ticket 5.
+        Left(true)
+      case _ => Left(false)
+    }
+  }
+
+  private def legacyUnused(spec: RollupSpec, a: AggregateCall): Boolean =
     AggregateFn.decomposability(a.fn) match {
       case Decomposability.Additive =>
-        // The rollup must pre-aggregate the same input: its
-        // measure list must contain the alias (the declared
-        // measure whose AggregateCall this is).
         spec.measures.contains(a.alias)
       case Decomposability.Algebraic =>
         // v1: the materializer (Ticket 5) will store named partial
@@ -295,8 +366,12 @@ object RollupRewriter {
     * rollup table (Ticket 5) carries: grain dims + measure-state
     * columns; filters over anything else are not evaluable. */
   private def filtersEvaluable(spec: RollupSpec, c: CanonicalPlan): Boolean = {
-    val rollupColumns: Set[String] =
-      spec.dimensions.toSet ++ spec.measures
+    // v1: only DIM filters are semantically safe. The rollup table
+    // stores per-group PARTIALS, not final values: a measure-name
+    // filter would dangle against the state-column schema, and a
+    // state-column threshold is HAVING semantics (per-group final
+    // values), not WHERE over partial rows.
+    val rollupColumns: Set[String] = spec.dimensions.toSet
     c.filters.forall { f =>
       val refs = io.sm8.core.expr.Calculator.fieldNamesOf(f)
       refs.subsetOf(rollupColumns)
@@ -329,7 +404,7 @@ object RollupRewriter {
       if (!grainOk) RollupRewriteRefusal.GrainMismatch
       else {
         val aggOk = model.rollups.filter(r => matchesGroupSet(r, c) && grainsAgree(r.timeGrain, normQueryGrain))
-          .exists(r => aggregatesComposable(r, c))
+          .exists(r => aggregatesComposable(r, c, model))
         if (!aggOk) RollupRewriteRefusal.UnsplittableAggregate
         else RollupRewriteRefusal.FilterNotEvaluable
       }
@@ -424,7 +499,9 @@ object RollupRewriter {
       .flatMap { m =>
         stateColumnsFor(m.expr)
       }
-    dimFields ++ measureFields
+    // Two declared measures can share a state column (two Counts
+    // both need count__rows) — dedupe by name.
+    dimFields ++ measureFields.distinctBy(_.name)
   }
 
   /** The state columns a rollup table carries for one declared
@@ -436,12 +513,21 @@ object RollupRewriter {
       * @return the nullable Double field
       */
     def col(name: String): Field = Field(name, SealedDataType.Double, nullable = true)
+    /** Count state column: integral, non-nullable. Double counts
+      * would drift from the base path's integral count; nullable
+      * invites a NULL partial that Sum turns into NULL where the
+      * base path yields 0.
+      *
+      * @param name the state column name
+      * @return the non-nullable Long field
+      */
+    def countCol(name: String): Field = Field(name, SealedDataType.BigInt, nullable = false)
     AggregateFn.decomposability(m.fn) match {
       case Decomposability.Additive =>
         m.fn match {
           case AggregateFn.Sum =>
             m.input.collectFirst { case Expr.FieldRef(f) => col(s"sum__$f") }.toList
-          case AggregateFn.Count => List(col("count__rows"))
+          case AggregateFn.Count => List(countCol("count__rows"))
           case AggregateFn.Min =>
             m.input.collectFirst { case Expr.FieldRef(f) => col(s"min__$f") }.toList
           case AggregateFn.Max =>
@@ -449,11 +535,16 @@ object RollupRewriter {
           case _ => Nil
         }
       case Decomposability.Algebraic =>
-        // (n, sum, sumSq) partial state per the pre-aggregation
-        // map's materializer ticket (Ticket 5 of
-        // docs/wayfinder/2026-09-06-pre-aggregation.md, Welford-merge
-        // columns); Avg needs (sum, count).
-        List(col("count__rows"), col("sum__state"), col("sumsq__state"))
+        // Per-input partial states: for input field F -> n__F,
+        // sum__F, sumsq__F (no collisions across measures over
+        // different inputs; Welford-merge-friendly). Ticket 5 of
+        // docs/wayfinder/2026-09-06-pre-aggregation.md materializes
+        // these; Avg needs (n__F, sum__F).
+        val inputName = m.input.collectFirst { case Expr.FieldRef(f) => f }.getOrElse(m.alias)
+        List(
+          countCol(s"n__$inputName"),
+          col(s"sum__$inputName"),
+          col(s"sumsq__$inputName"))
       case _ => Nil
     }
   }
@@ -506,11 +597,12 @@ object RollupRewriter {
     * EXPR-level guard contract the regression spec pins.)
     */
   private[rel] def stddevSampGuardExpr(nCol: String, sumCol: String, sumSqCol: String): Expr = {
-    // Re-aggregated total columns (the aggregate node re-sums the
-    // per-group partial states; column names per the agg__ prefix).
-    val totalN = Expr.FieldRef(s"agg__$nCol")
-    val totalSum = Expr.FieldRef(s"agg__$sumCol")
-    val totalSumSq = Expr.FieldRef(s"agg__$sumSqCol")
+    // nCol/sumCol/sumSqCol name the RE-AGGREGATED total columns the
+    // caller's rewritten Aggregate projects (Sum over the per-input
+    // partials from stateColumnsFor).
+    val totalN = Expr.FieldRef(nCol)
+    val totalSum = Expr.FieldRef(sumCol)
+    val totalSumSq = Expr.FieldRef(sumSqCol)
     val guard = Expr.LessThan(totalN, Expr.Literal(LiteralValue.IntValue(2), SealedDataType.Int))
     val numerator = Expr.Subtract(totalSumSq, Expr.Divide(Expr.Multiply(totalSum, totalSum), totalN))
     val denominator = Expr.Subtract(totalN, Expr.Literal(LiteralValue.IntValue(1), SealedDataType.Int))
@@ -523,15 +615,15 @@ object RollupRewriter {
     * the population guard for the regression spec: n = 1 with
     * population semantics -> 0.0; n = 0 -> NULL. */
   private[rel] def stddevPopGuardExpr(nCol: String, sumCol: String, sumSqCol: String): Expr = {
-    val totalN = Expr.FieldRef(s"agg__$nCol")
-    val totalSum = Expr.FieldRef(s"agg__$sumCol")
-    val totalSumSq = Expr.FieldRef(s"agg__$sumSqCol")
+    // Same contract as stddevSampGuardExpr: the args name the
+    // RE-AGGREGATED total columns.
+    val totalN = Expr.FieldRef(nCol)
+    val totalSum = Expr.FieldRef(sumCol)
+    val totalSumSq = Expr.FieldRef(sumSqCol)
     val nZero = Expr.LessOrEqual(totalN, Expr.Literal(LiteralValue.IntValue(0), SealedDataType.Int))
     val numerator = Expr.Subtract(totalSumSq, Expr.Divide(Expr.Multiply(totalSum, totalSum), totalN))
     val body = Expr.Divide(numerator, totalN)
     Expr.CaseWhen(List((nZero, Expr.Literal(LiteralValue.NullValue, SealedDataType.Double))), body)
   }
 
-  /** Unused-warning suppressor for the doc-anchored locals in the
-    * guard builders above. */
 }
