@@ -496,7 +496,10 @@ object RollupRewriter {
     *   - Min(x) state: col `min__<inputField>`
     *   - Max(x) state: col `max__<inputField>`
     */
-  private[rel] def rollupSchema(spec: RollupSpec, model: Model): List[Field] = {
+  /** Declared rollup schema (Ticket 4 contract); visible to
+    * connectors so the materializer can be pinned to it by test.
+    */
+  def rollupSchema(spec: RollupSpec, model: Model): List[Field] = {
     // Nullability: carry the host dimension's declared dataType
     // where present (Varchar fallback documented for Ticket 5 to
     // replace with base-scan lookup); nullability follows the

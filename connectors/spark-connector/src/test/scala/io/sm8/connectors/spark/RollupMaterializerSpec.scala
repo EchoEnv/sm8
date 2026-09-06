@@ -339,3 +339,46 @@ class RollupMaterializerSpec extends AnyFunSuite with Matchers {
     RollupMaterializer.materialize(spark, missing, missing.rollups.head).isLeft shouldBe true
   }
 }
+
+// ===== schema-parity pin (arch review A3): connector stateColumns vs
+// core rollupSchema must agree on names — Ticket 6's Algebraic columns
+// make drift likely; this test fails loudly if either side changes. =====
+
+class RollupSchemaParitySpec extends AnyFunSuite with Matchers {
+  import io.sm8.core.rel.RollupRewriter
+
+  private val dims = List(Dimension.field("region", "region"))
+  private val meas = List(
+    Measure("order_count", AggregateCall(fn = AggregateFn.Count, input = None, alias = "order_count")),
+    Measure.aggregate("total_amount", AggregateFn.Sum, Expr.FieldRef("amount")),
+    Measure.aggregate("min_amount", AggregateFn.Min, Expr.FieldRef("amount")),
+    Measure.aggregate("max_amount", AggregateFn.Max, Expr.FieldRef("amount")))
+
+  test("connector stateColumns names == core rollupSchema names (drift pin)") {
+    val model = Model.of(
+      name = "sales", version = 1,
+      dimensions = dims, measures = meas,
+      source = SourceRef.ByName(table = "sales_base"),
+      rollups = List(RollupSpec("by_region", List("region"),
+        List("order_count", "total_amount", "min_amount", "max_amount"), None))
+    ).right.get
+    val spec = model.rollups.head
+    val coreNames = RollupRewriter.rollupSchema(spec, model).map(_.name).sorted
+    // Connector side: materialize against an empty in-memory table —
+    // buildRollupDf's column NAMES come from stateColumns.
+    val spark = SparkSession.builder()
+      .master("local[1]").appName("RollupSchemaParitySpec")
+      .config("spark.ui.enabled", "false")
+      .config("spark.sql.shuffle.partitions", "1")
+      .config("spark.driver.host", "127.0.0.1")
+      .config("spark.driver.bindAddress", "127.0.0.1")
+      .getOrCreate()
+    import spark.implicits._
+    List(Sale("east", "i", 1L, 1)).toDF("region", "item", "amount", "units")
+      .createOrReplaceTempView("sales_base")
+    val dfE = RollupMaterializer.buildRollupDf(spark.table("sales_base"), model, spec)
+    val df = dfE.right.get
+    val connectorNames = df.columns.toList.sorted
+    coreNames shouldBe connectorNames
+  }
+}
