@@ -65,6 +65,7 @@ object Main {
     case ("inspect" :: rest)    => withGlobalConfig(rest) { (cfg, rem) => safeRun(cmdInspect(cfg, rem)) }
     case ("plugins" :: rest)    => withGlobalConfig(rest) { (cfg, rem) => safeRun(cmdPlugins(cfg)) }
     case ("hooks" :: rest)      => withGlobalConfig(rest) { (cfg, rem) => safeRun(cmdHooks(cfg)) }
+    case ("rollup-refresh" :: rest) => withGlobalConfig(rest) { (cfg, rem) => safeRun(cmdRollupRefresh(cfg, rem)) }
     case other :: _ =>
       System.err.println(s"sm8: unknown command '$other'. Run 'sm8 --help'."); 2
   }
@@ -993,6 +994,47 @@ object Main {
   // Usage
   // ---------------------------------------------------------------------------
 
+  // `sm8 rollup-refresh <model>` — the Ticket 6 trigger surface:
+  // POSTs to the server's RollupRefreshService/refresh handler,
+  // which eagerly re-materializes every rollup the model declares
+  // (saveAsTable — durable). Prints per-rollup outcomes; exit 1 if
+  // any rollup failed, 2 on usage errors, 3 on transport errors.
+  private def cmdRollupRefresh(cfg: Config, args: List[String]): Int = args match {
+    case Nil =>
+      System.err.println("sm8 rollup-refresh: missing <model>. Usage: sm8 rollup-refresh <model>"); 2
+    case model :: Nil =>
+      val body = "{\"model\":" + mapper.writeValueAsString(model) + "}"
+      val resp = Client.postJson(cfg, "/RollupRefreshService/refresh", body)
+      // Exit-code discipline (arch + DE review): cron must
+      // distinguish server-unreachable (5xx -> 3, transport) from
+      // a 200 with ok=false (partial refresh failure -> 1).
+      if (cfg.json) {
+        println(resp.body)
+        if (resp.status / 100 == 5) return 3
+        if (resp.status / 100 != 2) return 1
+        // 200: check the body's ok flag (partial failures matter).
+        val okOpt = try {
+          Some(resp.parseJson.dataPath.field("ok").text == "true")
+        } catch { case _: Exception => None }
+        return if (okOpt.contains(true)) 0 else 1
+      }
+      val root = resp.parseJson
+      if (root.errorPath(cfg)) return 1
+      val ok = root.dataPath.field("ok").text == "true"
+      println(s"rollup-refresh $model: ${if (ok) "OK" else "FAILED"}")
+      root.dataPath.field("results").elemList.foreach { r =>
+        val rollup = r.field("rollup").text
+        val table = r.field("table").text
+        val refreshed = r.field("refreshed").text == "true"
+        val err = r.field("error").text
+        if (refreshed) println(s"  ${rollup.padTo(24, ' ')} refreshed -> $table")
+        else println(s"  ${rollup.padTo(24, ' ')} FAILED: $err")
+      }
+      if (ok) 0 else 1
+    case _ =>
+      System.err.println("sm8 rollup-refresh: too many arguments. Usage: sm8 rollup-refresh <model>"); 2
+  }
+
   private def printUsage(): Unit = {
     println(
       """sm8 — a command-line client for SM8 REST + Restate APIs.
@@ -1008,6 +1050,7 @@ object Main {
         |  inspect <key>                   read a context.meta key (generic meta-inspector)
         |  plugins                         list discovered plugins (registered flag per plugin)
         |  hooks                           list registered hooks (stage, priority, origin, plugin)
+        |  rollup-refresh <model>          rebuild the model's rollup tables (Ticket 6 trigger)
         |
         |query/explain options:
         |  -d, --dim <name>                dimension (repeatable)
