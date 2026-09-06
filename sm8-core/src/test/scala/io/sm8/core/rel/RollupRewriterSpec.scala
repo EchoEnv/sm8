@@ -1,0 +1,505 @@
+/*
+ * SM8 Core — RollupRewriterSpec (Ticket 4 of
+ * docs/wayfinder/2026-09-06-pre-aggregation.md).
+ *
+ * Acceptance criteria under test:
+ * 1. match: dims ⊆ + composable aggregates + filter-evaluability
+ *    + grain agreement -> plan re-scans from the rollup table.
+ * 2. no-match: any failed criterion -> the ORIGINAL plan instance
+ *    returned byte-identical (===, fail-open).
+ * 3. partial-overlap: request group set NOT contained in the
+ *    rollup's -> Unchanged(NoGroupSetMatch).
+ * 4. unsplittable-aggregate: Positional / Holistic / Approximable
+ *    refused (Ticket 1 vocabulary); Algebraic refused in v1 until
+ *    Ticket 5 wires partial-state columns.
+ * 5. Algebraic NULL/undefined guards (humpback finding):
+ *    stddev_samp with total n < 2 -> NULL (engine parity with the
+ *    base path); the n=1-single-observation-group edge is in this
+ *    regression set (guard builders pinned at the Expr level).
+ * 6. Determinism: first matching rollup in declaration order wins.
+ */
+package io.sm8.core.rel
+
+import io.sm8.core.expr.Expr
+import io.sm8.core.expr.LiteralValue
+import io.sm8.core.model.{
+  AuditPolicy,
+  CachePolicy,
+  CalculatedMeasure,
+  Dimension,
+  MaterializePolicy,
+  Measure,
+  Model,
+  ModelPolicyDefaults,
+  RollupSpec,
+  SourceRef
+}
+import io.sm8.core.schema.{Field, SealedDataType}
+
+import org.scalatest.funsuite.AnyFunSuite
+import org.scalatest.matchers.should.Matchers
+
+class RollupRewriterSpec extends AnyFunSuite with Matchers {
+
+  // -- fixtures --
+
+  private val baseSchema: List[Field] = List(
+    Field.nonNull("carrier", SealedDataType.Varchar),
+    Field.nonNull("dest_region", SealedDataType.Varchar),
+    Field.nonNull("fare", SealedDataType.Double),
+    Field.nonNull("flight_date", SealedDataType.Date)
+  )
+
+  private val dims = List(
+    Dimension.field("carrier", "carrier"),
+    Dimension.field("dest_region", "dest_region"))
+
+  private val meas = List(
+    // rows = true row count: Count(*) (no input). Count(WITH input)
+    // is a non-null count and is refused by the rewriter in v1
+    // (F1: the state contract stores row counts only).
+    Measure("rows", AggregateCall(fn = AggregateFn.Count, input = None, alias = "rows")),
+    Measure.aggregate("total_fare", AggregateFn.Sum, Expr.FieldRef("fare")))
+
+  private def model(rollups: List[RollupSpec]): Model =
+    Model.of(
+      name = "flights",
+      version = 1,
+      dimensions = dims,
+      measures = meas,
+      defaultPolicies = ModelPolicyDefaults(
+        materialize = MaterializePolicy.None,
+        cache = CachePolicy.NoCache,
+        audit = AuditPolicy.NoAudit),
+      source = SourceRef.ByName(table = "flights_raw"),
+      rollups = rollups
+    ).right.get
+
+  /** Canonical query plan: Scan -> Aggregate(g=[carrier], a=[Count, Sum]). */
+  private def canonicalPlan(): RelOp =
+    RelOp.Aggregate(
+      input = RelOp.Scan(
+        sourceRef = SourceRef.ByName(table = "flights_raw"),
+        schema = baseSchema,
+        projection = Nil),
+      groupBy = List(Expr.FieldRef("carrier")),
+      aggregates = List(
+        AggregateCall(fn = AggregateFn.Count, input = None, alias = "rows"),
+        AggregateCall(fn = AggregateFn.Sum, input = Some(Expr.FieldRef("fare")), alias = "total_fare")))
+
+  private val byCarrier =
+    RollupSpec("by_carrier", List("carrier"), List("rows", "total_fare"), None)
+
+  // ===== 1. match =====
+
+  test("match: dims subset + Additive aggregates -> plan re-scans from the rollup table") {
+    val plan = canonicalPlan()
+    val out = RollupRewriter.rewrite(plan, model(List(byCarrier)), None)
+    out shouldBe a[RollupRewriter.RollupRewriteResult.Rewritten]
+    val r = out.asInstanceOf[RollupRewriter.RollupRewriteResult.Rewritten]
+    r.rollupName shouldBe "by_carrier"
+    // New plan re-scans <model>__<rollup>
+    r.plan.toString should include("flights__by_carrier")
+    // The rewritten Aggregate sums the rollup's count partials.
+    val RelOp.Aggregate(_, g, aggs) = findAggregate(r.plan)
+    g shouldBe List(Expr.FieldRef("carrier"))
+    aggs.map(_.fn) shouldBe List(AggregateFn.Sum, AggregateFn.Sum) // Count -> Sum(count__rows)
+    aggs.head.input shouldBe Some(Expr.FieldRef("count__rows"))
+  }
+
+  test("match preserves upper wrappers: Sort/Limit re-apply over the rollup scan") {
+    val plan = RelOp.Limit(
+      input = RelOp.Sort(input = canonicalPlan(), keys = Nil),
+      count = 10L,
+      offset = 0L)
+    val out = RollupRewriter.rewrite(plan, model(List(byCarrier)), None)
+    out shouldBe a[RollupRewriter.RollupRewriteResult.Rewritten]
+    val r = out.asInstanceOf[RollupRewriter.RollupRewriteResult.Rewritten]
+    // Wrappers rebuilt outermost-first: original Limit(Sort(Agg))
+    // stays Limit(Sort(Agg')) with the aggregate re-based.
+    val RelOp.Limit(sortInput, count, offset) = r.plan
+    count shouldBe 10L
+    offset shouldBe 0L
+    sortInput shouldBe a[RelOp.Sort]
+  }
+
+  test("match with filters: filters re-apply over the rollup scan (evaluable columns)") {
+    val plan = RelOp.Aggregate(
+      input = RelOp.Filter(
+        input = RelOp.Scan(
+          sourceRef = SourceRef.ByName(table = "flights_raw"),
+          schema = baseSchema,
+          projection = Nil),
+        predicate = Expr.Equal(Expr.FieldRef("carrier"), Expr.FieldRef("carrier"))),
+      groupBy = List(Expr.FieldRef("carrier")),
+      aggregates = List(AggregateCall(fn = AggregateFn.Count, input = None, alias = "rows")))
+    val out = RollupRewriter.rewrite(plan, model(List(byCarrier)), None)
+    out shouldBe a[RollupRewriter.RollupRewriteResult.Rewritten]
+  }
+
+  // ===== 2. no-match: fail-open byte-identical =====
+
+  test("no rollups declared -> original instance, byte-identical (===)") {
+    val plan = canonicalPlan()
+    val out = RollupRewriter.rewrite(plan, model(Nil), None)
+    out shouldBe RollupRewriter.RollupRewriteResult.Unchanged(
+      RollupRewriter.RollupRewriteRefusal.NoGroupSetMatch)
+    // Determinism of the refusal: repeated rewrites agree.
+    RollupRewriter.rewrite(plan, model(Nil), None) shouldBe out
+    // plan reference unchanged (the rewriter never mutates input).
+    plan shouldBe canonicalPlan()
+  }
+
+  test("non-canonical shape (Join above Aggregate) -> Unchanged(NonCanonicalShape), same instance") {
+    val plan = canonicalPlan()
+    val joined: RelOp = RelOp.Join(
+      left = plan,
+      right = RelOp.Scan(
+        sourceRef = SourceRef.ByName(table = "other"),
+        schema = List(Field.nonNull("x", SealedDataType.Int)),
+        projection = Nil),
+      kind = JoinKind.Inner,
+      condition = Expr.Literal(LiteralValue.BoolValue(true), SealedDataType.Boolean))
+    val out = RollupRewriter.rewrite(joined, model(List(byCarrier)), None)
+    out shouldBe RollupRewriter.RollupRewriteResult.Unchanged(
+      RollupRewriter.RollupRewriteRefusal.NonCanonicalShape)
+  }
+
+  test("Project above Aggregate (calculated dims) -> non-canonical in v1") {
+    val plan = RelOp.Project(
+      input = canonicalPlan(),
+      expressions = List((Expr.FieldRef("carrier"), "carrier")))
+    val out = RollupRewriter.rewrite(plan, model(List(byCarrier)), None)
+    out shouldBe RollupRewriter.RollupRewriteResult.Unchanged(
+      RollupRewriter.RollupRewriteRefusal.NonCanonicalShape)
+  }
+
+  // ===== 3. partial overlap =====
+
+  test("partial overlap: query groups by dim NOT in the rollup -> NoGroupSetMatch") {
+    val plan = RelOp.Aggregate(
+      input = RelOp.Scan(
+        sourceRef = SourceRef.ByName(table = "flights_raw"),
+        schema = baseSchema,
+        projection = Nil),
+      groupBy = List(Expr.FieldRef("dest_region")), // not in by_carrier
+      aggregates = List(AggregateCall(fn = AggregateFn.Count, input = None, alias = "rows")))
+    val out = RollupRewriter.rewrite(plan, model(List(byCarrier)), None)
+    out shouldBe RollupRewriter.RollupRewriteResult.Unchanged(
+      RollupRewriter.RollupRewriteRefusal.NoGroupSetMatch)
+  }
+
+  test("within-list duplicate group refs dedupe to the same subset (Ticket 3 follow-up)") {
+    val plan = RelOp.Aggregate(
+      input = RelOp.Scan(
+        sourceRef = SourceRef.ByName(table = "flights_raw"),
+        schema = baseSchema,
+        projection = Nil),
+      groupBy = List(Expr.FieldRef("carrier"), Expr.FieldRef("carrier")),
+      aggregates = List(AggregateCall(fn = AggregateFn.Count, input = None, alias = "rows")))
+    val out = RollupRewriter.rewrite(plan, model(List(byCarrier)), None)
+    out shouldBe a[RollupRewriter.RollupRewriteResult.Rewritten]
+  }
+
+  // ===== 4. unsplittable aggregates (Ticket 1 vocabulary) =====
+
+  test("Median (Holistic) -> Unchanged(UnsplittableAggregate)") {
+    val plan = RelOp.Aggregate(
+      input = RelOp.Scan(
+        sourceRef = SourceRef.ByName(table = "flights_raw"),
+        schema = baseSchema,
+        projection = Nil),
+      groupBy = List(Expr.FieldRef("carrier")),
+      aggregates = List(AggregateCall(fn = AggregateFn.Median, input = Some(Expr.FieldRef("fare")), alias = "med")))
+    val out = RollupRewriter.rewrite(plan, model(List(byCarrier)), None)
+    out shouldBe RollupRewriter.RollupRewriteResult.Unchanged(
+      RollupRewriter.RollupRewriteRefusal.UnsplittableAggregate)
+  }
+
+  test("First (Positional) and CountDistinct (Approximable) refused in v1") {
+    for (fn <- List(AggregateFn.First, AggregateFn.CountDistinct)) {
+      val plan = RelOp.Aggregate(
+        input = RelOp.Scan(
+          sourceRef = SourceRef.ByName(table = "flights_raw"),
+          schema = baseSchema,
+          projection = Nil),
+        groupBy = List(Expr.FieldRef("carrier")),
+        aggregates = List(AggregateCall(fn = fn, input = Some(Expr.FieldRef("fare")), alias = "x")))
+      val out = RollupRewriter.rewrite(plan, model(List(byCarrier)), None)
+      out shouldBe RollupRewriter.RollupRewriteResult.Unchanged(
+        RollupRewriter.RollupRewriteRefusal.UnsplittableAggregate)
+    }
+  }
+
+  test("Avg (Algebraic) refused in v1 until Ticket 5 wires partial-state columns") {
+    val plan = RelOp.Aggregate(
+      input = RelOp.Scan(
+        sourceRef = SourceRef.ByName(table = "flights_raw"),
+        schema = baseSchema,
+        projection = Nil),
+      groupBy = List(Expr.FieldRef("carrier")),
+      aggregates = List(AggregateCall(fn = AggregateFn.Avg, input = Some(Expr.FieldRef("fare")), alias = "avg_fare")))
+    val out = RollupRewriter.rewrite(plan, model(List(byCarrier)), None)
+    out shouldBe RollupRewriter.RollupRewriteResult.Unchanged(
+      RollupRewriter.RollupRewriteRefusal.UnsplittableAggregate)
+  }
+
+  // ===== filter evaluability =====
+
+  test("filter referencing a non-rollup column -> FilterNotEvaluable") {
+    val plan = RelOp.Aggregate(
+      input = RelOp.Filter(
+        input = RelOp.Scan(
+          sourceRef = SourceRef.ByName(table = "flights_raw"),
+          schema = baseSchema,
+          projection = Nil),
+        predicate = Expr.GreaterThan(Expr.FieldRef("fare"), Expr.Literal(LiteralValue.DoubleValue(100.0), SealedDataType.Double))),
+      groupBy = List(Expr.FieldRef("carrier")),
+      aggregates = List(AggregateCall(fn = AggregateFn.Count, input = None, alias = "rows")))
+    // fare is NOT a rollup column (rollup carries dims + state cols; the
+    // count rollup only pre-aggregates rows) -> filter not evaluable.
+    val out = RollupRewriter.rewrite(plan, model(List(byCarrier)), None)
+    out shouldBe RollupRewriter.RollupRewriteResult.Unchanged(
+      RollupRewriter.RollupRewriteRefusal.FilterNotEvaluable)
+  }
+
+  // ===== grain agreement =====
+
+  test("grain mismatch -> GrainMismatch; equal grains match; both None match") {
+    val dayRollup = RollupSpec("by_carrier_day", List("carrier"), List("rows", "total_fare"), Some("day"))
+    val plan = canonicalPlan()
+    // Query asks day, rollup is day -> match.
+    RollupRewriter.rewrite(plan, model(List(dayRollup)), Some("day")) shouldBe
+      a[RollupRewriter.RollupRewriteResult.Rewritten]
+    // Normalization: "DAY " matches "day".
+    RollupRewriter.rewrite(plan, model(List(dayRollup)), Some(" DAY ")) shouldBe
+      a[RollupRewriter.RollupRewriteResult.Rewritten]
+    // Query asks hour, rollup is day -> fail-safe no match.
+    RollupRewriter.rewrite(plan, model(List(dayRollup)), Some("hour")) shouldBe
+      RollupRewriter.RollupRewriteResult.Unchanged(RollupRewriter.RollupRewriteRefusal.GrainMismatch)
+    // Query no grain, rollup day -> v1 conservative: no match.
+    RollupRewriter.rewrite(plan, model(List(dayRollup)), None) shouldBe
+      RollupRewriter.RollupRewriteResult.Unchanged(RollupRewriter.RollupRewriteRefusal.GrainMismatch)
+  }
+
+  test("blank grain normalizes to None (absent)") {
+    RollupRewriter.normalizeGrain(Some("   ")) shouldBe None
+    RollupRewriter.normalizeGrain(None) shouldBe None
+    RollupRewriter.normalizeGrain(Some("Day")) shouldBe Some("day")
+  }
+
+  // ===== determinism =====
+
+  test("non-FieldRef group key (calculated dim) -> NoGroupSetMatch in v1") {
+    val plan = RelOp.Aggregate(
+      input = RelOp.Scan(
+        sourceRef = SourceRef.ByName(table = "flights_raw"),
+        schema = baseSchema,
+        projection = Nil),
+      groupBy = List(Expr.Add(Expr.FieldRef("carrier"), Expr.FieldRef("dest_region"))),
+      aggregates = List(AggregateCall(fn = AggregateFn.Count, input = None, alias = "rows")))
+    val out = RollupRewriter.rewrite(plan, model(List(byCarrier)), None)
+    out shouldBe RollupRewriter.RollupRewriteResult.Unchanged(
+      RollupRewriter.RollupRewriteRefusal.NoGroupSetMatch)
+  }
+
+  test("rollup without grain vs query WITH grain -> no match (conservative)") {
+    val out = RollupRewriter.rewrite(canonicalPlan(), model(List(byCarrier)), Some("day"))
+    out shouldBe RollupRewriter.RollupRewriteResult.Unchanged(
+      RollupRewriter.RollupRewriteRefusal.GrainMismatch)
+  }
+
+  test("ByPath base source -> SourceKindUnsupported (v1 re-scans named tables only)") {
+    val byPathModel = Model.of(
+      name = "flights",
+      version = 1,
+      dimensions = dims,
+      measures = meas,
+      defaultPolicies = ModelPolicyDefaults(
+        materialize = MaterializePolicy.None,
+        cache = CachePolicy.NoCache,
+        audit = AuditPolicy.NoAudit),
+      source = SourceRef.ByPath(format = "parquet", path = "/data/flights"),
+      rollups = List(byCarrier)
+    ).right.get
+    val plan = RelOp.Aggregate(
+      input = RelOp.Scan(
+        sourceRef = SourceRef.ByPath(format = "parquet", path = "/data/flights"),
+        schema = baseSchema,
+        projection = Nil),
+      groupBy = List(Expr.FieldRef("carrier")),
+      aggregates = List(AggregateCall(fn = AggregateFn.Count, input = None, alias = "rows")))
+    val out = RollupRewriter.rewrite(plan, byPathModel, None)
+    out shouldBe RollupRewriter.RollupRewriteResult.Unchanged(
+      RollupRewriter.RollupRewriteRefusal.SourceKindUnsupported)
+  }
+
+  test("COUNT(carrier) (Count WITH input) refused in v1: state stores row counts only") {
+    val plan = RelOp.Aggregate(
+      input = RelOp.Scan(
+        sourceRef = SourceRef.ByName(table = "flights_raw"),
+        schema = baseSchema,
+        projection = Nil),
+      groupBy = List(Expr.FieldRef("carrier")),
+      aggregates = List(AggregateCall(fn = AggregateFn.Count, input = Some(Expr.FieldRef("carrier")), alias = "rows")))
+    val out = RollupRewriter.rewrite(plan, model(List(byCarrier)), None)
+    out shouldBe RollupRewriter.RollupRewriteResult.Unchanged(
+      RollupRewriter.RollupRewriteRefusal.UnsplittableAggregate)
+  }
+
+  test("measure-name filter (rows > 5) is HAVING semantics -> FilterNotEvaluable in v1") {
+    val plan = RelOp.Aggregate(
+      input = RelOp.Filter(
+        input = RelOp.Scan(
+          sourceRef = SourceRef.ByName(table = "flights_raw"),
+          schema = baseSchema,
+          projection = Nil),
+        predicate = Expr.GreaterThan(Expr.FieldRef("rows"), Expr.Literal(LiteralValue.IntValue(5), SealedDataType.Int))),
+      groupBy = List(Expr.FieldRef("carrier")),
+      aggregates = List(AggregateCall(fn = AggregateFn.Count, input = None, alias = "rows")))
+    val out = RollupRewriter.rewrite(plan, model(List(byCarrier)), None)
+    out shouldBe RollupRewriter.RollupRewriteResult.Unchanged(
+      RollupRewriter.RollupRewriteRefusal.FilterNotEvaluable)
+  }
+
+  test("request call with same alias but different input than the declared measure refused") {
+    // Declared total_fare = Sum(fare); request says Sum(dest_region)
+    // under the same alias — identity mismatch -> permanent refusal
+    // (never re-base against a different input's state column).
+    val plan = RelOp.Aggregate(
+      input = RelOp.Scan(
+        sourceRef = SourceRef.ByName(table = "flights_raw"),
+        schema = baseSchema,
+        projection = Nil),
+      groupBy = List(Expr.FieldRef("carrier")),
+      aggregates = List(AggregateCall(fn = AggregateFn.Sum, input = Some(Expr.FieldRef("dest_region")), alias = "total_fare")))
+    val out = RollupRewriter.rewrite(plan, model(List(byCarrier)), None)
+    out shouldBe RollupRewriter.RollupRewriteResult.Unchanged(
+      RollupRewriter.RollupRewriteRefusal.UnsplittableAggregate)
+  }
+
+  test("composite-input Sum measure refused — no state column, no alias fallback") {
+    val m = Model.of(
+      name = "flights",
+      version = 1,
+      dimensions = dims,
+      measures = List(
+        Measure.aggregate("gross", AggregateFn.Sum,
+          Expr.Add(Expr.FieldRef("fare"), Expr.FieldRef("fare")))),
+      defaultPolicies = ModelPolicyDefaults(
+        materialize = MaterializePolicy.None,
+        cache = CachePolicy.NoCache,
+        audit = AuditPolicy.NoAudit),
+      source = SourceRef.ByName(table = "flights_raw"),
+      rollups = List(RollupSpec("by_carrier", List("carrier"), List("gross"), None))
+    ).right.get
+    val plan = RelOp.Aggregate(
+      input = RelOp.Scan(
+        sourceRef = SourceRef.ByName(table = "flights_raw"),
+        schema = baseSchema,
+        projection = Nil),
+      groupBy = List(Expr.FieldRef("carrier")),
+      aggregates = List(AggregateCall(fn = AggregateFn.Sum,
+        input = Some(Expr.Add(Expr.FieldRef("fare"), Expr.FieldRef("fare"))), alias = "gross")))
+    val out = RollupRewriter.rewrite(plan, m, None)
+    out shouldBe RollupRewriter.RollupRewriteResult.Unchanged(
+      RollupRewriter.RollupRewriteRefusal.UnsplittableAggregate)
+  }
+
+  test("Algebraic measure with DECLARED identity -> AlgebraicStateNotWired (recoverable, distinct from permanent)") {
+    val m = Model.of(
+      name = "flights",
+      version = 1,
+      dimensions = dims,
+      measures = meas :+ Measure.aggregate("avg_fare", AggregateFn.Avg, Expr.FieldRef("fare")),
+      defaultPolicies = ModelPolicyDefaults(
+        materialize = MaterializePolicy.None,
+        cache = CachePolicy.NoCache,
+        audit = AuditPolicy.NoAudit),
+      source = SourceRef.ByName(table = "flights_raw"),
+      rollups = List(RollupSpec("by_carrier", List("carrier"), List("rows", "total_fare", "avg_fare"), None))
+    ).right.get
+    val plan = RelOp.Aggregate(
+      input = RelOp.Scan(
+        sourceRef = SourceRef.ByName(table = "flights_raw"),
+        schema = baseSchema,
+        projection = Nil),
+      groupBy = List(Expr.FieldRef("carrier")),
+      aggregates = List(AggregateCall(fn = AggregateFn.Avg, input = Some(Expr.FieldRef("fare")), alias = "avg_fare")))
+    val out = RollupRewriter.rewrite(plan, m, None)
+    out shouldBe RollupRewriter.RollupRewriteResult.Unchanged(
+      RollupRewriter.RollupRewriteRefusal.AlgebraicStateNotWired)
+  }
+
+  test("first matching rollup in declaration order wins") {
+    val coarse = RollupSpec("coarse", List("carrier", "dest_region"), List("rows", "total_fare"), None)
+    val fine = RollupSpec("fine", List("carrier"), List("rows", "total_fare"), None)
+    val out = RollupRewriter.rewrite(canonicalPlan(), model(List(coarse, fine)), None)
+    out.asInstanceOf[RollupRewriter.RollupRewriteResult.Rewritten].rollupName shouldBe "coarse"
+    val out2 = RollupRewriter.rewrite(canonicalPlan(), model(List(fine, coarse)), None)
+    out2.asInstanceOf[RollupRewriter.RollupRewriteResult.Rewritten].rollupName shouldBe "fine"
+  }
+
+  // ===== table naming + schema contract (Ticket 5 materializer) =====
+
+  test("rollup table name convention <model>__<rollup>") {
+    RollupRewriter.rollupTableName(model(List(byCarrier)), byCarrier) shouldBe "flights__by_carrier"
+  }
+
+  test("rollup schema carries dim columns + measure state columns (Ticket 5 contract)") {
+    val m = model(List(byCarrier))
+    val schema = RollupRewriter.rollupSchema(byCarrier, m)
+    schema.map(_.name) should contain("carrier")
+    schema.map(_.name) should contain("count__rows")
+    schema.map(_.name) should contain("sum__fare")
+    // Count state: integral + non-nullable (a NULL partial would
+    // turn the re-aggregated Sum into NULL where base yields 0).
+    val countCol = schema.find(_.name == "count__rows").get
+    countCol.dataType shouldBe SealedDataType.BigInt
+    countCol.nullable shouldBe false
+    // Duplicate state columns from shared shapes are deduped.
+    schema.map(_.name) should have size schema.map(_.name).distinct.size
+  }
+
+  // ===== 5. Algebraic NULL guards (humpback finding) =====
+
+  test("stddev_samp guard: total n < 2 -> NULL (engine parity with base path)") {
+    val e = RollupRewriter.stddevSampGuardExpr("n", "s", "ss")
+    e shouldBe a[Expr.CaseWhen]
+    val Expr.CaseWhen(branches, _) = e
+    val (cond, res) = branches.head
+    // Condition references the caller-named re-aggregated total-n column.
+    cond shouldBe Expr.LessThan(
+      Expr.FieldRef("n"),
+      Expr.Literal(LiteralValue.IntValue(2), SealedDataType.Int))
+    // Result of the guarded branch is NULL.
+    res shouldBe Expr.Literal(LiteralValue.NullValue, SealedDataType.Double)
+  }
+
+  test("n=1 single-observation group edge: population stddev guard (n<=0 -> NULL, else defined)") {
+    val e = RollupRewriter.stddevPopGuardExpr("n", "s", "ss")
+    e shouldBe a[Expr.CaseWhen]
+    val Expr.CaseWhen(branches, _) = e
+    val (cond, res) = branches.head
+    cond shouldBe Expr.LessOrEqual(
+      Expr.FieldRef("n"),
+      Expr.Literal(LiteralValue.IntValue(0), SealedDataType.Int))
+    // branches.head is the GUARDED branch (n<=0 -> NULL); assert it.
+    res shouldBe Expr.Literal(LiteralValue.NullValue, SealedDataType.Double)
+    // The non-guarded body computes the population form
+    // (sumSq - sum^2/n) / n: an n=1 group yields the defined 0.0 at
+    // eval time (x - x^2 = 0).
+    val Expr.CaseWhen(_, body) = e
+    body shouldBe a[Expr.Divide]
+    body.toString shouldBe "Divide(Subtract(FieldRef(ss),Divide(Multiply(FieldRef(s),FieldRef(s)),FieldRef(n))),FieldRef(n))"
+  }
+
+  // -- helpers --
+
+  private def findAggregate(plan: RelOp): RelOp.Aggregate = plan match {
+    case a: RelOp.Aggregate => a
+    case RelOp.Sort(input, _) => findAggregate(input)
+    case RelOp.Limit(input, _, _) => findAggregate(input)
+    case other => fail(s"no Aggregate under $other")
+  }
+}
