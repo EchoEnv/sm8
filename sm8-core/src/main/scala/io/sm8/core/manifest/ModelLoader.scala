@@ -20,13 +20,15 @@
  *
  * legacy's `PortableModel` carries 8 sub-types
  * (`PortableJoin`, `PortableRollup`, `PortableCalculatedMeasure`,
- * `PortableFilter`, etc.). SM8-core's `Model` does NOT have those
- * fields (PR-M1 added joins + calculated_measures; rollups remain
- * IR — they're deferred per the plan). So we port ONLY the subset
+ * `PortableFilter`, etc.). At the time of that port, `Model` did
+ * NOT carry those fields (PR-M1 added joins + calculated_measures).
+ * Ticket 3 of docs/wayfinder/2026-09-06-pre-aggregation.md
+ * (2026-09-06) added `rollups` (parsed from the
+ * `rollups:` block above); the remaining legacy portables have no
+ * Model-field counterpart yet. So we port ONLY the subset
  * that maps to existing `Model` fields: name, version, description,
- * source, status, dimensions, measures, filters.
- *
- * When those IR fields land in future PRs, the loader extends.
+ * source, status, dimensions, measures, filters (+ joins,
+ * calculated_measures, rollups).
  *
  * ==RFC alignment==
  *
@@ -183,10 +185,18 @@ object ModelLoader {
   // expr) -- surface as typed ManifestError, never silent.
   val joinsE = parseJoins(asSeq(root.get("joins")))
   val calcsE = parseCalculatedMeasures(asSeq(root.get("calculated_measures")))
+  // Pre-aggregation rollups (Ticket 3 of
+  // docs/wayfinder/2026-09-06-pre-aggregation.md): parse the
+  // optional `rollups:` block. Each
+  // entry: { name, dimensions, measures, time_grain? }. Name-less or
+  // empty entries fail loud as typed ManifestError (never silent);
+  // ref-existence is ModelValidator's job at the Model.of boundary.
+  val rollupsE = parseRollups(asSeq(root.get("rollups")))
 
   for {
   joins <- joinsE
   calcs <- calcsE
+  rollups <- rollupsE
   // Use ModelBuilder so the validation + return-type contract
   // matches the programmatic path (PR #44). The description
   // is set only when present in the YAML (avoids the wart of
@@ -194,7 +204,7 @@ object ModelLoader {
   model <- {
    val b0 = ModelBuilder().withName(name.get).withVersion(version.get).withSource(src).withStatus(status)
    val b1 = description.fold(b0)(d => b0.withDescription(d))
-   b1.withDimensions(dims).withMeasures(meas).withFilters(filters).withJoins(joins).withCalculatedMeasures(calcs).build
+   b1.withDimensions(dims).withMeasures(meas).withFilters(filters).withJoins(joins).withCalculatedMeasures(calcs).withRollups(rollups).build
   }.left.map(err => ManifestError.InvalidYaml(err.message))
   } yield model
  }
@@ -369,6 +379,80 @@ object ModelLoader {
   }
  }.foldLeft[Either[ManifestError, List[io.sm8.core.model.CalculatedMeasure]]](Right(Nil)) { (accE, cE) =>
   for (acc <- accE; c <- cE) yield acc :+ c
+ }
+
+ /** Parse the `rollups:` block (Ticket #3 of
+ * docs/wayfinder/2026-09-06-pre-aggregation.md). Each entry:
+ * { name, dimensions: [names], measures: [names], time_grain? }.
+ * Strict by design: a non-map entry, a missing name, both refs
+ * empty, both grain spellings, or a non-list refs value all fail
+ * loud as typed ManifestError (never silent -- a silently dropped
+ * or degenerate rollup would weaken Ticket 4 routing). A single
+ * string ref is accepted as a 1-list (author convenience).
+ * Ref-existence is ModelValidator's job at the Model.of boundary.
+ */
+ private def parseRollups(
+ seq: Seq[Any]): Either[ManifestError, List[io.sm8.core.model.RollupSpec]] = {
+  /** Parse one `rollups:` entry (a single YAML map) into a typed
+    * `RollupSpec`, failing loud on: missing name, both grain
+    * spellings, non-list refs, or both refs empty.
+    *
+    * @param m the entry map
+    * @return the typed spec, or a typed `ManifestError`
+    */
+  def parseOne(m: java.util.Map[_, _]): Either[ManifestError, io.sm8.core.model.RollupSpec] = {
+   val name = stringField(m, "name")
+   val grainSpecs = List(stringField(m, "time_grain"), stringField(m, "timeGrain")).flatten
+   val grainE: Either[ManifestError, Option[String]] =
+    if (grainSpecs.length > 1)
+    Left(ManifestError.ParseFailure(
+     s"rollups[${name.getOrElse("?")}]: specify at most one of time_grain / timeGrain"))
+    else Right(grainSpecs.headOption)
+   /** Strict ref-list parse for one key. Single string -> 1-list
+     * (author convenience); non-list, non-null anything else ->
+     * typed `ParseFailure` (never silently coerced to Nil: a
+     * dropped ref would degenerate the rollup and silently weaken
+     * Ticket 4 routing).
+     *
+     * @param key the YAML key ("dimensions" or "measures")
+     * @return the parsed name list, or a typed `ManifestError`
+     */
+   def refList(key: String): Either[ManifestError, List[String]] =
+    Option(m.get(key)) match {
+    case None => Right(Nil)
+    case Some(null) => Right(Nil)
+    case Some(x: java.util.List[_]) => Right(x.asScala.toList.map(_.toString))
+    case Some(scalar: String) => Right(List(scalar))
+    case Some(other) =>
+     Left(ManifestError.ParseFailure(
+     s"rollups[${name.getOrElse("?")}].$key must be a list (got ${other.getClass.getSimpleName})"))
+    }
+   name match {
+    case None => Left(ManifestError.ParseFailure("rollups[]: missing 'name'"))
+    case Some(n) =>
+    for {
+     grain <- grainE
+     dims <- refList("dimensions")
+     meas <- refList("measures")
+     _ <- if (dims.isEmpty && meas.isEmpty)
+      Left(ManifestError.ParseFailure(
+      s"rollups[$n]: dimensions and measures must not both be empty"))
+     else Right(())
+    } yield io.sm8.core.model.RollupSpec(
+     name = n,
+     dimensions = dims,
+     measures = meas,
+     timeGrain = grain)
+   }
+  }
+  seq.toList.foldLeft[Either[ManifestError, List[io.sm8.core.model.RollupSpec]]](Right(Nil)) { (accE, entry) =>
+   for {
+    acc <- accE
+    m <- asMap(entry).toRight(ManifestError.ParseFailure(
+     s"rollups[]: each entry must be a map (got ${Option(entry).map(_.getClass.getSimpleName).getOrElse("null")})"))
+    spec <- parseOne(m)
+   } yield acc :+ spec
+  }
  }
 
  private def parseMeasures(seq: Seq[Any]): List[io.sm8.core.model.Measure] =

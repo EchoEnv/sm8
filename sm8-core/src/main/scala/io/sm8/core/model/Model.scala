@@ -38,7 +38,8 @@ final case class Model private (
     val status: ModelStatus,
     val filters: List[FilterSpec],
     val calculatedMeasures: List[CalculatedMeasure] = Nil,
-    val joins: List[JoinSpec] = Nil
+    val joins: List[JoinSpec] = Nil,
+    val rollups: List[RollupSpec] = Nil
 ) extends Product with Serializable
 
 // Per  step 2 ("shape and
@@ -232,7 +233,8 @@ object Model {
       status: ModelStatus = ModelStatus.Draft,
       filters: List[FilterSpec] = Nil,
       calculatedMeasures: List[CalculatedMeasure] = Nil,
-      joins: List[JoinSpec] = Nil
+      joins: List[JoinSpec] = Nil,
+      rollups: List[RollupSpec] = Nil
   ): Either[ModelValidationError, Model] = {
     if (name == null || name.trim.isEmpty)
       Left(ModelValidationError.InvalidName("Model name must be non-blank"))
@@ -256,7 +258,8 @@ object Model {
           status = status,
           filters = filters,
           calculatedMeasures = calculatedMeasures,
-          joins = joins)
+          joins = joins,
+          rollups = rollups)
       ).right.map(_ => new Model(
         name = name,
         version = version,
@@ -268,7 +271,8 @@ object Model {
         status = status,
         filters = filters,
         calculatedMeasures = calculatedMeasures,
-        joins = joins))
+        joins = joins,
+        rollups = rollups))
   }
 }
 
