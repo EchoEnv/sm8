@@ -275,17 +275,30 @@ class RollupSpecSpec extends AnyFunSuite with Matchers {
     msg should include("must be base measures")
   }
 
-  test("scalar dimensions value (indentation typo) fails loud instead of silently becoming Nil") {
-    val yaml = base +
+  test("string dimensions value is accepted as a 1-list; non-string scalar fails loud") {
+    // Author convenience: `dimensions: carrier` == [carrier]
+    val yaml1 = base +
+      """
+        |rollups:
+        |  - name: single
+        |    dimensions: carrier
+        |    measures: rows
+        |""".stripMargin
+    val out1 = ModelLoader.fromString(yaml1)
+    out1.isRight shouldBe true
+    out1.right.get.rollups shouldBe List(
+      RollupSpec("single", List("carrier"), List("rows"), None))
+    // A non-string, non-list scalar is a typo -> fail loud, never Nil
+    val yaml2 = base +
       """
         |rollups:
         |  - name: typo
-        |    dimensions: carrier
+        |    dimensions: 42
         |    measures: [rows]
         |""".stripMargin
-    val out = ModelLoader.fromString(yaml)
-    out.isLeft shouldBe true
-    out.left.get.toString should include("dimensions must be a list")
+    val out2 = ModelLoader.fromString(yaml2)
+    out2.isLeft shouldBe true
+    out2.left.get.toString should include("dimensions must be a list")
   }
 
   test("non-map entry in the rollups list fails loud instead of being silently dropped") {

@@ -384,70 +384,74 @@ object ModelLoader {
  /** Parse the `rollups:` block (Ticket #3 of
  * docs/wayfinder/2026-09-06-pre-aggregation.md). Each entry:
  * { name, dimensions: [names], measures: [names], time_grain? }.
- * `time_grain` (or `timeGrain`) is an opaque grain label; absent
- * -> None. A missing name fails loud as typed ManifestError
- * (never silent); ref-existence is ModelValidator's job.
+ * Strict by design: a non-map entry, a missing name, both refs
+ * empty, both grain spellings, or a non-list refs value all fail
+ * loud as typed ManifestError (never silent -- a silently dropped
+ * or degenerate rollup would weaken Ticket 4 routing). A single
+ * string ref is accepted as a 1-list (author convenience).
+ * Ref-existence is ModelValidator's job at the Model.of boundary.
  */
  private def parseRollups(
- seq: Seq[Any]): Either[ManifestError, List[io.sm8.core.model.RollupSpec]] =
- seq.toList.flatMap(asMap).foldLeft[Either[ManifestError, List[io.sm8.core.model.RollupSpec]]](Right(Nil)) { (accE, m) =>
-  val name = stringField(m, "name")
-  val grainSpecs = List(stringField(m, "time_grain"), stringField(m, "timeGrain")).flatten
-  // Both spellings present -> fail loud (never silently pick one).
-  val grainE: Either[ManifestError, Option[String]] =
-   if (grainSpecs.length > 1)
-   Left(ManifestError.ParseFailure(
-    s"rollups[${name.getOrElse("?")}]: specify at most one of time_grain / timeGrain"))
-   else Right(grainSpecs.headOption)
-  // Strict ref-list parse: a single string is accepted as a 1-list
-  // (author convenience); anything non-list becomes a typed error
-  // (never silently coerced to Nil -- a dropped ref here would
-  // degenerate the rollup and silently weaken Ticket 4 routing).
-  /** Strict ref-list parse (see the surrounding scaladoc): absent
-    * or null -> Nil; a bare string -> 1-list; anything else -> a
-    * typed failure naming the field.
+ seq: Seq[Any]): Either[ManifestError, List[io.sm8.core.model.RollupSpec]] = {
+  /** Parse one `rollups:` entry (a single YAML map) into a typed
+    * `RollupSpec`, failing loud on: missing name, both grain
+    * spellings, non-list refs, or both refs empty.
     *
-    * @param key the YAML key to read ("dimensions" / "measures")
-    * @return the parsed name list, or a typed ParseFailure
+    * @param m the entry map
+    * @return the typed spec, or a typed `ManifestError`
     */
-  def refList(key: String): Either[ManifestError, List[String]] =
-   Option(m.get(key)) match {
-   case None => Right(Nil)
-   case Some(null) => Right(Nil)
-   case Some(x: java.util.List[_]) => Right(x.asScala.toList.map(_.toString))
-   case Some(scalar: String) => Right(List(scalar))
-   case Some(other) =>
+  def parseOne(m: java.util.Map[_, _]): Either[ManifestError, io.sm8.core.model.RollupSpec] = {
+   val name = stringField(m, "name")
+   val grainSpecs = List(stringField(m, "time_grain"), stringField(m, "timeGrain")).flatten
+   val grainE: Either[ManifestError, Option[String]] =
+    if (grainSpecs.length > 1)
     Left(ManifestError.ParseFailure(
-    s"rollups[${name.getOrElse("?")}].$key must be a list (got ${other.getClass.getSimpleName})"))
+     s"rollups[${name.getOrElse("?")}]: specify at most one of time_grain / timeGrain"))
+    else Right(grainSpecs.headOption)
+   /** Strict ref-list parse for one key. Single string -> 1-list
+     * (author convenience); non-list, non-null anything else ->
+     * typed `ParseFailure` (never silently coerced to Nil: a
+     * dropped ref would degenerate the rollup and silently weaken
+     * Ticket 4 routing).
+     *
+     * @param key the YAML key ("dimensions" or "measures")
+     * @return the parsed name list, or a typed `ManifestError`
+     */
+   def refList(key: String): Either[ManifestError, List[String]] =
+    Option(m.get(key)) match {
+    case None => Right(Nil)
+    case Some(null) => Right(Nil)
+    case Some(x: java.util.List[_]) => Right(x.asScala.toList.map(_.toString))
+    case Some(scalar: String) => Right(List(scalar))
+    case Some(other) =>
+     Left(ManifestError.ParseFailure(
+     s"rollups[${name.getOrElse("?")}].$key must be a list (got ${other.getClass.getSimpleName})"))
+    }
+   name match {
+    case None => Left(ManifestError.ParseFailure("rollups[]: missing 'name'"))
+    case Some(n) =>
+    for {
+     grain <- grainE
+     dims <- refList("dimensions")
+     meas <- refList("measures")
+     _ <- if (dims.isEmpty && meas.isEmpty)
+      Left(ManifestError.ParseFailure(
+      s"rollups[$n]: dimensions and measures must not both be empty"))
+     else Right(())
+    } yield io.sm8.core.model.RollupSpec(
+     name = n,
+     dimensions = dims,
+     measures = meas,
+     timeGrain = grain)
    }
-  val dimsE = refList("dimensions")
-  val measE = refList("measures")
-  (accE, name) match {
-   case (Right(acc), Some(n)) =>
-   val combined = for {
-    grain <- grainE
-    dims <- dimsE
-    meas <- measE
-   } yield (grain, dims, meas)
-   combined.flatMap { case (grain, dims, meas) =>
-    // An empty rollup (no dims AND no measures) is degenerate: it
-    // would vacuously match any query by subsumption in Ticket 4's
-    // router. Fail loud at load time.
-    if (dims.isEmpty && meas.isEmpty)
-    Left(ManifestError.ParseFailure(
-     s"rollups[$n]: dimensions and measures must not both be empty"))
-    else Right(io.sm8.core.model.RollupSpec(
-    name = n,
-    dimensions = dims,
-    measures = meas,
-    timeGrain = grain))
-   } match {
-    case Right(spec) => Right(acc :+ spec)
-    case Left(err) => Left(err)
-   }
-   case (Right(_), None) =>
-   Left(ManifestError.ParseFailure("rollups[]: missing 'name'"))
-   case (left @ Left(_), _) => left
+  }
+  seq.toList.foldLeft[Either[ManifestError, List[io.sm8.core.model.RollupSpec]]](Right(Nil)) { (accE, entry) =>
+   for {
+    acc <- accE
+    m <- asMap(entry).toRight(ManifestError.ParseFailure(
+     s"rollups[]: each entry must be a map (got ${Option(entry).map(_.getClass.getSimpleName).getOrElse("null")})"))
+    spec <- parseOne(m)
+   } yield acc :+ spec
   }
  }
 
