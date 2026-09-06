@@ -89,8 +89,8 @@ object RollupMaterializer {
   ): Either[EngineError, String] = materialize(spark, model, spec, eager = false)
 
   /** Eager (catalog) variant: used by the Ticket 6 refresh trigger.
-    * Writes a REAL table via `saveAsTable` (insertInto-free
-    * overwrite of the named partition) — the job RUNS before Right.
+    * Writes a REAL table via `saveAsTable` (whole-table
+    * overwrite (the desired refresh semantics)) — the job RUNS before Right.
     * Refuses to overwrite a non-rollup table (name convention
     * guard: only `<model>__<rollup>` names are ever written).
     *
@@ -269,26 +269,31 @@ object RollupMaterializer {
       // Ticket 4/5 carry-item resolved: tableExists (O(1) lookup)
       // instead of listTables().collect(); re-materializing our OWN
       // rollup table is the refresh path — overwrite is intended.
+      // Whole-table overwrite (no partitionOverwriteMode configured).
+      // NonFatal catch: an aggregation-job SparkException on a big
+      // base is the LIKELY failure — it must become a typed
+      // per-rollup EngineError, not escape and abort the whole
+      // refresh (per-rollup isolation contract).
       try {
         df.write.mode("overwrite").saveAsTable(tableName)
         Right(())
       } catch {
-        case e: org.apache.spark.sql.AnalysisException =>
+        case scala.util.control.NonFatal(e) =>
           Left(EngineError.UnsupportedCapability(
             engine = "spark-connector",
             capability = "RollupMaterializer.persistCatalog",
-            message = s"saveAsTable('$tableName') failed: ${e.getMessage}"))
+            message = s"saveAsTable('$tableName') failed: ${e.getClass.getSimpleName}: ${e.getMessage}"))
       }
     else
       try {
         df.write.saveAsTable(tableName)
         Right(())
       } catch {
-        case e: org.apache.spark.sql.AnalysisException =>
+        case scala.util.control.NonFatal(e) =>
           Left(EngineError.UnsupportedCapability(
             engine = "spark-connector",
             capability = "RollupMaterializer.persistCatalog",
-            message = s"saveAsTable('$tableName') failed: ${e.getMessage}"))
+            message = s"saveAsTable('$tableName') failed: ${e.getClass.getSimpleName}: ${e.getMessage}"))
       }
   }
 

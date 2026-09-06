@@ -1005,7 +1005,17 @@ object Main {
     case model :: Nil =>
       val body = "{\"model\":" + mapper.writeValueAsString(model) + "}"
       val resp = Client.postJson(cfg, "/RollupRefreshService/refresh", body)
-      if (cfg.json) { println(resp.body); return if (resp.status == 200) 0 else 1 }
+      // Exit-code discipline (arch review): cron must distinguish
+      // server-unreachable (5xx / non-JSON -> 3, transport) from
+      // per-rollup refresh failure (200 with ok=false -> 1).
+      if (cfg.json) {
+        println(resp.body)
+        return resp.status / 100 match {
+          case 2 => 0
+          case 5 => 3
+          case _ => 1
+        }
+      }
       val root = resp.parseJson
       if (root.errorPath(cfg)) return 1
       val ok = root.dataPath.field("ok").text == "true"

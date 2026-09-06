@@ -65,6 +65,10 @@ object QueryShapeCounters {
   val MaxShapes: Int = 10000
   val OverflowKey: String = "__overflow__"
 
+  /** How many hottest shapes the context.meta publication carries
+    * (per-query allocation bound). Full snapshot stays programmatic. */
+  val TopKMeta: Int = 100
+
   private val counters = new ConcurrentHashMap[String, AtomicLong]()
 
   /** Canonical shape key (sorted, deduped, set-equal collision).
@@ -177,9 +181,14 @@ final class QueryFrequencyObserverPlugin extends Plugin {
           }
         counted match {
           case Some((key, _)) =>
-            val counts = QueryShapeCounters.snapshot()
+            // Publish only the TOP-K hottest shapes (not the full
+            // snapshot): the meta value is re-created per query, so
+            // an unbounded copy would be hot-path allocation O(shapes)
+            // per request. Full snapshot stays programmatic
+            // (QueryShapeCounters.snapshot()).
+            val topK = QueryShapeCounters.snapshot().take(TopKMeta)
             context.copy(meta = context.meta +
-              ("io.sm8.plugins.queryfreqobs:counts" -> counts))
+              ("io.sm8.plugins.queryfreqobs:counts" -> topK))
           case None => context
         }
       }

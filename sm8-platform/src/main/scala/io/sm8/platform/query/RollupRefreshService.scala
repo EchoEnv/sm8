@@ -9,7 +9,7 @@
  * function — the spark-connector `RollupRefresher.refreshModel` is
  * the wired implementation; the platform stays connector-agnostic
  * per the layer discipline in
- * docs/semantic-layer-engine-architecture.md §3).
+ * docs/rfcs/2026-08-12_v1_architecture-spec/semantic-layer-engine-architecture.md §3).
  *
  * ==Why a function parameter (not a direct connector import)==
  *

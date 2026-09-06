@@ -71,7 +71,7 @@ package io.sm8.server
 import io.sm8.core.engine.{EngineError, EngineIdentity, EngineProvider, EngineRegistry, QueryRequest, PortableQueryResult}
 import io.sm8.core.model.Model
 
-import io.sm8.platform.query.{HttpTransport, MetricsHttpRoute, PlatformModelLoader}
+import io.sm8.platform.query.{HttpTransport, MetricsHttpRoute, PlatformModelLoader, RollupRefreshService}
 
 import java.nio.file.{Path, Paths}
 import java.util.ServiceLoader
@@ -389,6 +389,87 @@ object Main {
     case Some(url)   => EngineLoader.discoverAndRealize(classLoader, engineName, Some(url))
   }
 
+  /** ADR-0022 Ticket 6: build the refresh closure handed to
+    * RollupRefreshService. Reflectively bridges to the
+    * spark-connector's `RollupRefresher.refreshModel` when the
+    * connector JAR is on the classpath; the model resolver answers
+    * from THIS deployment's boot model (single-model deployments —
+    * the current server shape). A missing connector yields a typed
+    * per-model error (never a crash).
+    *
+    * Closure safety: captures only `model` (a serializable case
+    * class); the reflective lookup happens per call, not at boot.
+    */
+  /** ADR-0022 Ticket 6: build the refresh closure handed to
+    * RollupRefreshService. PURE-REFLECTION bridge to the
+    * spark-connector's `RollupRefresher.refreshModel` (the server
+    * does NOT statically depend on the connector module — no spark
+    * types on its compile classpath). A missing connector or no
+    * active SparkSession yields a typed model-level error string
+    * (never a crash); the model resolver answers from THIS
+    * deployment's boot model (single-model deployments — the
+    * current server shape).
+    *
+    * Closure safety: captures only `model` (a serializable case
+    * class); the reflective lookups happen per call, not at boot.
+    */
+  private def rollupRefreshClosure(
+      model: Model
+  ): RollupRefreshService.RefreshFn = { modelName: String =>
+    if (modelName != model.name) {
+      Left(s"model '$modelName' not loaded in this deployment")
+    } else {
+      try {
+        // All types by name — no compile-time spark/connector deps.
+        val refresherCls = Class.forName("io.sm8.connectors.spark.RollupRefresher")
+        val sparkCls = Class.forName("org.apache.spark.sql.SparkSession")
+        val getActive = sparkCls.getMethod("getActiveSession")
+        val sparkOpt = getActive.invoke(null) // Option[SparkSession]
+        val isEmpty = sparkOpt.getClass.getMethod("isEmpty").invoke(sparkOpt).toString
+        if (isEmpty == "true") {
+          Left("no active SparkSession in this server process — " +
+            "rollup refresh requires the spark connector and a live session")
+        } else {
+          val spark = sparkOpt.getClass.getMethod("get").invoke(sparkOpt)
+          // RollupRefresher.refreshModel(spark, modelName, modelOf)
+          // where modelOf is a scala Function1[String, Option[Model]].
+          val fn = new scala.runtime.AbstractFunction1[String, Option[Model]] {
+            override def apply(name: String): Option[Model] =
+              if (name == model.name) Some(model) else None
+          }
+          val method = refresherCls.getMethod(
+            "refreshModel",
+            sparkCls,
+            classOf[String],
+            classOf[scala.Function1[String, Option[Model]]])
+          val raw = method.invoke(null, spark, modelName, fn)
+          // Either[EngineError, List[RollupRefresherResult]]
+          val isRight = raw.getClass.getMethod("isRight").invoke(raw).toString
+          if (isRight == "true") {
+            val list = raw.getClass.getMethod("right").invoke(raw)
+              .asInstanceOf[scala.collection.immutable.List[Object]]
+            Right(list.map { r =>
+              val rollup = r.getClass.getMethod("rollup").invoke(r).toString
+              val table = r.getClass.getMethod("table").invoke(r).toString
+              (rollup, table, None): (String, String, Option[String])
+            })
+          } else {
+            val errObj = raw.getClass.getMethod("left").invoke(raw)
+            val msg = errObj.getClass.getMethod("message").invoke(errObj).toString
+            Left(msg)
+          }
+        }
+      } catch {
+        case _: ClassNotFoundException =>
+          Left("spark-connector not on the classpath — rollup refresh unavailable")
+        case e: java.lang.reflect.InvocationTargetException =>
+          Left(s"refresh failed: ${String.valueOf(e.getCause)}")
+        case e: NoSuchMethodException =>
+          Left(s"connector RollupRefresher shape mismatch: ${e.getMessage}")
+      }
+    }
+  }
+
   def wire(
       model:        Model,
       providers:    List[EngineProvider],
@@ -403,6 +484,11 @@ object Main {
       // the engine once at boot and shares it across surfaces; if
       // `None`, HttpTransport falls back to the legacy factory path.
       engineFn: Option[() => io.sm8.sdk.Engine] = None,
+      // ADR-0022 Ticket 6: refresh closure for RollupRefreshService
+      // (None = the service is not bound; `sm8 rollup-refresh` 404s
+      // with a clear CLI error). The deployment wires
+      // RollupRefresher.refreshModel + its model resolver here.
+      rollupRefreshFn: Option[RollupRefreshService.RefreshFn] = None,
   ): Either[String, (EngineRegistry, HttpTransport, List[EngineProvider])] = {
     // Per the audit (2026-08-27 [C1]): use the TYPED 5-arg realize so
     // engine-realization failures surface as `EngineError.ConnectionFailed`
@@ -451,7 +537,8 @@ object Main {
             plugins,
             metaInspectorEngineFn,
             registryInspectorFn,
-            engineFn
+            engineFn,
+            rollupRefreshFn
           ), realized))
         } catch {
           case e: IllegalArgumentException => Left(e.getMessage)
@@ -638,7 +725,13 @@ object Main {
               // C10-PR-C2: thread the shared engine through to
               // QueryService.definition. This closes the parallel-
               // engine construction (the C10 final-gate MEDIUM).
-              Some(() => registryEngine)
+              Some(() => registryEngine),
+              // ADR-0022 Ticket 6: wire the rollup refresh closure
+              // (model-name -> refresh) to the model loaded at boot.
+              // This closure adapts the connector's RollupRefresher
+              // when the spark-connector JAR is on the classpath; the
+              // name->Model resolver reads THIS deployment's model.
+              rollupRefreshFn = Some(rollupRefreshClosure(model))
             ) match {
               case Left(bootErr) =>
                 System.err.println(bootErr); 3
