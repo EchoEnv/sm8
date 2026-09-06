@@ -44,7 +44,7 @@ their context, the options considered, and the consequences of the chosen path.
 | [0008-aa](0008-aa-querybuilder-detectcalccycles-iterative-dfs.md) | QueryBuilder.detectCalcCycles — Gray-node continuation bug fix + regression tests | v1.1 — review fixes applied |
 | [0008-ab](0008-ab-exprparser-tailrec-loop.md) | ExprParser parseOrExpr/parseAndExpr — `@tailrec` loop refactor | v1.3 — third-review fixes applied |
 | [0008-ac](0008-ac-stub-plugins-rename-and-noop-contract.md) | Stub plugins — rename + verify no-op contract | v1.0 — under senior dual review |
-| [0008-ad](0008-ad-parent-pom-banneddependencies-hoist.md) | Parent POM — hoist `bannedDependencies=org.apache.spark:*` (Zero-Spark invariant) | v1.2 — review fixes applied |
+| [0008-ad](0008-ad-parent-pom-banneddependencies-hoist.md) | Parent POM — hoist `bannedDependencies=org.apache.spark:*` (Zero-Spark invariant) | v1.2 — dummy-module negative test removed |
 | [0008-ae](0008-ae-hookmanager-no-eviction-invariant.md) | HookManager — document no-eviction invariant at SDK boundary | DRAFT (under senior dual review) |
 | [0008-af](0008-af-enginehookdispatcher-hookfailed-typed-error.md) | EngineHookDispatcher — typed HookFailed error when a hook throws | v1.1 — review fixes applied |
 | [0008-ag](0008-ag-scaladoc-skill-wikilink-sweep.md) | scaladoc sweep — strip skill-wikilink pattern from production source | v1.0 — mechanical sweep approved |
@@ -52,7 +52,7 @@ their context, the options considered, and the consequences of the chosen path.
 | [0008-ai](0008-ai-semantic-graph-rfc-review-and-fixes.md) | Semantic Graph RFC review + v1.1 fixes (PR-149) | v1.0 — approved |
 | [0008-aj](0008-aj-join-cardinality-estimates.md) | Join cardinality estimates — `JoinSpec.estimatedRows` → decision-only planner consumers | v1.0 — approved |
 | [0009-a](0009-a-adapter-side-spark-hints.md) | Adapter-side join strategy from `JoinSpec.estimatedRows` — seed the Spark broadcast byte-threshold | Accepted |
-| [0009-b](0009-b-adaptive-skew-wiring.md) | AQE skew wiring — deferred (operator-precedence is non-negotiable on a shared session; per-query factor not expressible until ADR-009-c) | Superseded by ADR-009-c (per 0009-b revision history) |
+| [0009-b](0009-b-adaptive-skew-wiring.md) | AQE skew wiring — deferred (operator-precedence is non-negotiable on a shared session; per-query factor not expressible until ADR-009-c) | Superseded by ADR-009-c |
 | [0009-e](0009-e-driver-materialization-bounds.md) | Driver-materialization bounds — server-side cap + typed `truncated` on the wire (Option A: no escape hatch) | Accepted |
 | [0009-c](0009-c-per-query-clone-session.md) | Per-session-deployment follow-up: per-query `newSession()` so `JoinHints.skewFactor` binds per query | Implemented (PR-171, `0466841`) |
 | [0009-d](0009-d-broadcast-skew-decision-via-context-meta.md) | Broadcast + skew decision lives in the plugin's hook; spark connector consumes via `EngineContext.decisionHints` (v0.3 rebuilt after v0.1 + v0.2 were BLOCKED by dual review; resolves swallow-vs-throw + fold-placement + adds `broadcastThresholdBytes` to `DecisionHints`) | Implemented (PR-174, `0161b7b`) |
