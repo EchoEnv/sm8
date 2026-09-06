@@ -70,8 +70,11 @@ object RollupMaterializer {
 
   /** Materialize ONE declared rollup for the model.
     *
-    * Driver-side only until `write` (all Column construction is
-    * lazy); the write triggers one Spark job.
+    * NOTE: with the v1 temp-view persistence the view creation is
+    * LAZY — `Right(tableName)` means the view is registered, not
+    * that the aggregation job has run; the job fires on first read
+    * (the caller's query, or an explicit `.collect()`/`count()`).
+    * The Ticket 6 saveAsTable path is eager.
     *
     * @param spark the session (used for table IO only — never
     *              captured in any closure shipped to executors)
