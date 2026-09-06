@@ -113,7 +113,16 @@ final class HttpTransport(
     // (the C10 final-gate MEDIUM from clover). Default `None`
     // preserves the legacy `EngineFactory.create` path for tests and
     // existing callers.
-    val engineFn: Option[() => io.sm8.sdk.Engine] = None
+    val engineFn: Option[() => io.sm8.sdk.Engine] = None,
+    // ADR-0022 Ticket 6: when defined, binds RollupRefreshService so
+    // `sm8 rollup-refresh <model>` is served. The function is the
+    // deployment's refresh closure (the spark-connector
+    // RollupRefresher.refreshModel adapted to the platform's
+    // RefreshFn shape) — the platform stays connector-agnostic.
+    // Default `None` preserves the previous endpoint for existing
+    // callers (the service is simply not bound; the CLI route 404s
+    // which the CLI reports as a failure — honest, not silent).
+    val rollupRefreshFn: Option[RollupRefreshService.RefreshFn] = None
 ) {
 
   // The bound Vert.x HttpServer handle. Per scala-jvm-safemindset:
@@ -177,7 +186,14 @@ final class HttpTransport(
         withRegistry.bind(MetaInspectorService.definition(model, registry, engineFn))
       case None => withRegistry
     }
-    withMeta.build()
+    // ADR-0022 Ticket 6: bind the rollup refresh trigger when the
+    // deployment supplies the refresh closure.
+    val withRefresh: Endpoint.Builder = rollupRefreshFn match {
+      case Some(refreshFn) =>
+        withMeta.bind(RollupRefreshService.definition(refreshFn))
+      case None => withMeta
+    }
+    withRefresh.build()
   }
 
   /**
@@ -250,7 +266,10 @@ object HttpTransport {
       // overload — without this, callers using the companion-factory
       // pattern would silently fall back to EngineFactory.create (the
       // legacy path) and the engine-sharing would not happen.
-      engineFn: Option[() => io.sm8.sdk.Engine] = None
+      engineFn: Option[() => io.sm8.sdk.Engine] = None,
+      // Ticket 6: forwards the rollup refresh closure to the
+      // constructor (same companion-overload rationale as engineFn).
+      rollupRefreshFn: Option[RollupRefreshService.RefreshFn] = None
   ): HttpTransport =
-    new HttpTransport(model, registry, cache, plugins, metaInspectorEngineFn, registryInspectorFn, engineFn)
+    new HttpTransport(model, registry, cache, plugins, metaInspectorEngineFn, registryInspectorFn, engineFn, rollupRefreshFn)
 }
