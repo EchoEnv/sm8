@@ -476,8 +476,15 @@ object RollupRewriter {
         }
     }
 
-  /** Deterministic rollup table name convention: `<model>__<rollup>`. */
-  private[rel] def rollupTableName(model: Model, spec: RollupSpec): String =
+  /** Deterministic rollup table name convention: `<model>__<rollup>`.
+    * Visible to connectors: the Ticket 5 materializer writes rollup
+    * tables under this exact name and the rewriter re-scans it.
+    *
+    * @param model the host model (supplies the name prefix)
+    * @param spec  the rollup declaration (supplies the suffix)
+    * @return the canonical rollup table name
+    */
+  def rollupTableName(model: Model, spec: RollupSpec): String =
     s"${model.name}__${spec.name}"
 
   /** The rollup table's declared schema (grain dims + measure
@@ -489,7 +496,14 @@ object RollupRewriter {
     *   - Min(x) state: col `min__<inputField>`
     *   - Max(x) state: col `max__<inputField>`
     */
-  private[rel] def rollupSchema(spec: RollupSpec, model: Model): List[Field] = {
+  /** Declared rollup schema (Ticket 4 contract); visible to
+    * connectors so the materializer can be pinned to it by test.
+    *
+    * @param spec  the rollup declaration (selects dims + measures)
+    * @param model the host model (supplies dim/measure definitions)
+    * @return the declared scan schema for the rollup table
+    */
+  def rollupSchema(spec: RollupSpec, model: Model): List[Field] = {
     // Nullability: carry the host dimension's declared dataType
     // where present (Varchar fallback documented for Ticket 5 to
     // replace with base-scan lookup); nullability follows the
