@@ -400,19 +400,7 @@ object Main {
     * Closure safety: captures only `model` (a serializable case
     * class); the reflective lookup happens per call, not at boot.
     */
-  /** ADR-0022 Ticket 6: build the refresh closure handed to
-    * RollupRefreshService. PURE-REFLECTION bridge to the
-    * spark-connector's `RollupRefresher.refreshModel` (the server
-    * does NOT statically depend on the connector module — no spark
-    * types on its compile classpath). A missing connector or no
-    * active SparkSession yields a typed model-level error string
-    * (never a crash); the model resolver answers from THIS
-    * deployment's boot model (single-model deployments — the
-    * current server shape).
-    *
-    * Closure safety: captures only `model` (a serializable case
-    * class); the reflective lookups happen per call, not at boot.
-    */
+  
   private def rollupRefreshClosure(
       model: Model
   ): RollupRefreshService.RefreshFn = { modelName: String =>
@@ -421,6 +409,9 @@ object Main {
     } else {
       try {
         // All types by name — no compile-time spark/connector deps.
+        // The connector exposes refreshModelJ (a JDK-map adapter) so
+        // the server needs NO Scala Either/List reflection (the 2.13
+        // projection APIs made that fragile — DE final-gate F-NEW-1).
         val refresherCls = Class.forName("io.sm8.connectors.spark.RollupRefresher")
         val sparkCls = Class.forName("org.apache.spark.sql.SparkSession")
         val getActive = sparkCls.getMethod("getActiveSession")
@@ -431,32 +422,33 @@ object Main {
             "rollup refresh requires the spark connector and a live session")
         } else {
           val spark = sparkOpt.getClass.getMethod("get").invoke(sparkOpt)
-          // RollupRefresher.refreshModel(spark, modelName, modelOf)
-          // where modelOf is a scala Function1[String, Option[Model]].
           val fn = new scala.runtime.AbstractFunction1[String, Option[Model]] {
             override def apply(name: String): Option[Model] =
               if (name == model.name) Some(model) else None
           }
           val method = refresherCls.getMethod(
-            "refreshModel",
+            "refreshModelJ",
             sparkCls,
             classOf[String],
             classOf[scala.Function1[String, Option[Model]]])
           val raw = method.invoke(null, spark, modelName, fn)
-          // Either[EngineError, List[RollupRefresherResult]]
-          val isRight = raw.getClass.getMethod("isRight").invoke(raw).toString
-          if (isRight == "true") {
-            val list = raw.getClass.getMethod("right").invoke(raw)
-              .asInstanceOf[scala.collection.immutable.List[Object]]
-            Right(list.map { r =>
-              val rollup = r.getClass.getMethod("rollup").invoke(r).toString
-              val table = r.getClass.getMethod("table").invoke(r).toString
-              (rollup, table, None): (String, String, Option[String])
-            })
+            .asInstanceOf[java.util.Map[String, Object]]
+          // JDK-map contract (refreshModelJ scaladoc): ok:Boolean,
+          // error:String|null (model-level), results:List[Map[rollup,
+          // table, error]] (error empty = refreshed; per-rollup
+          // isolation preserved — Failed results surface as errors).
+          val ok = raw.get("ok").toString == "true"
+          val modelErr = raw.get("error")
+          if (!ok && modelErr != null) {
+            Left(modelErr.toString)
           } else {
-            val errObj = raw.getClass.getMethod("left").invoke(raw)
-            val msg = errObj.getClass.getMethod("message").invoke(errObj).toString
-            Left(msg)
+            val results = raw.get("results")
+              .asInstanceOf[java.util.List[java.util.Map[String, String]]]
+            val outcomes = results.asScala.toList.map { m =>
+              val err = Option(m.get("error")).filter(_.nonEmpty)
+              (m.get("rollup"), m.get("table"), err): (String, String, Option[String])
+            }
+            Right(outcomes)
           }
         }
       } catch {
@@ -466,6 +458,8 @@ object Main {
           Left(s"refresh failed: ${String.valueOf(e.getCause)}")
         case e: NoSuchMethodException =>
           Left(s"connector RollupRefresher shape mismatch: ${e.getMessage}")
+        case e: ClassCastException =>
+          Left(s"connector RollupRefresher returned an unexpected shape: ${e.getMessage}")
       }
     }
   }

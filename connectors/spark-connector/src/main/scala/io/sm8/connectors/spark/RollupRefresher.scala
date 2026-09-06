@@ -72,4 +72,59 @@ object RollupRefresher {
         }
         Right(results)
     }
+
+  /** JDK-typed refresh adapter for REFLECTIVE callers (the
+    * sm8-server trigger closure has no compile dependency on this
+    * module, so it cannot unwrap Scala `Either`/`List` types —
+    * 2.13 projection APIs made that archaeology fragile). Returns
+    * a plain JDK map:
+    *
+    *   - "ok":     java.lang.Boolean (true iff every rollup refreshed)
+    *   - "error":  String or null (model-level failure, e.g. not found)
+    *   - "results": java.util.List[java.util.Map[String,String]] with
+    *     keys rollup / table / error (error empty = refreshed)
+    *
+    * Per-rollup isolation: one failure never blocks the others.
+    *
+    * @param spark   the session (table IO only)
+    * @param modelName the model name to refresh
+    * @param modelOf scala Function1 name -> Model (server supplies
+    *                its boot-model resolver)
+    * @return the JDK result map described above
+    */
+  def refreshModelJ(
+      spark: SparkSession,
+      modelName: String,
+      modelOf: scala.Function1[String, Option[Model]]
+  ): java.util.Map[String, Object] = {
+    val out = new java.util.HashMap[String, Object]()
+    refreshModel(spark, modelName, name => modelOf(name)) match {
+      case Left(e) =>
+        out.put("ok", java.lang.Boolean.FALSE)
+        out.put("error", e.message)
+      case Right(results) =>
+        val allOk = results.forall {
+          case _: RollupRefreshResult.Refreshed => true
+          case _                                => false
+        }
+        out.put("ok", java.lang.Boolean.valueOf(allOk))
+        val list = new java.util.ArrayList[java.util.Map[String, String]]()
+        results.foreach {
+          case RollupRefreshResult.Refreshed(r, t) =>
+            val m = new java.util.HashMap[String, String]()
+            m.put("rollup", r)
+            m.put("table", t)
+            m.put("error", "")
+            list.add(m)
+          case RollupRefreshResult.Failed(r, e) =>
+            val m = new java.util.HashMap[String, String]()
+            m.put("rollup", r)
+            m.put("table", "")
+            m.put("error", e.message)
+            list.add(m)
+        }
+        out.put("results", list)
+    }
+    out
+  }
 }

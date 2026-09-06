@@ -63,12 +63,15 @@ sm8 inspect io.sm8.plugins.queryfreqobs:counts
 
 Each query's post-execute state carries the hottest-first snapshot under that key; the observer also publishes it into `context.meta` for the meta-inspector transport.
 
+Note: `snapshot()` reads each counter atomically but the set of reads is not a single atomic instant — a snapshot taken mid-traffic may mix counts from slightly different moments. Acceptable for hot-shape discovery; do not use as an accounting ledger.
+
 ### Reading the counts for rollup selection
 
 - Hottest shapes at the top — check whether a declared rollup's (dims, measures) covers any hot shape's group set (`dims ⊆`) and aggregates (Additive set materializes in v1).
 - Shapes that never appear do not justify a rollup — drop or don't declare it.
 - Cardinality guard: beyond 10,000 distinct shapes, new shapes count under `__overflow__` (telemetry degrades gracefully, never leaks).
 - Shape keys use measure ALIASES: renaming an alias fragments its counts across the rename boundary. Treat alias renames as telemetry resets.
+- Shape keys are transport-dependent: REST queries key on the request's measure strings, MCP/DSL queries on the declared measure aliases. If the two transports normalize names differently, counts split across two keys for the same logical shape.
 
 ## Known limits (v1)
 
