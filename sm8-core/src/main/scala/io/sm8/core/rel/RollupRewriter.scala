@@ -498,6 +498,10 @@ object RollupRewriter {
     */
   /** Declared rollup schema (Ticket 4 contract); visible to
     * connectors so the materializer can be pinned to it by test.
+    *
+    * @param spec  the rollup declaration (selects dims + measures)
+    * @param model the host model (supplies dim/measure definitions)
+    * @return the declared scan schema for the rollup table
     */
   def rollupSchema(spec: RollupSpec, model: Model): List[Field] = {
     // Nullability: carry the host dimension's declared dataType
