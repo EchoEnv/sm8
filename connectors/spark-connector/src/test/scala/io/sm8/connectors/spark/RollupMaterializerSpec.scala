@@ -228,10 +228,14 @@ class RollupMaterializerSpec extends AnyFunSuite with Matchers {
       (r, rows.size.toLong, rows.map(_.amount).sum.toDouble): (String, Long, Double)
     }.toList.sortBy(_._1)
     roll shouldBe expected
-    // Mean re-derivation for integral data: sum/count is exact.
-    roll.foreach { case (_, cnt, sum) =>
-      (sum / cnt.toDouble) shouldBe (sum / cnt.toDouble)
+    // Mean re-derivation for integral data: the rollup state
+    // (sum__amount / count__rows) must equal the directly-computed
+    // per-region mean.
+    val meanFromState = roll.map { case (r, c, s) => r -> (s / c.toDouble) }.toMap
+    val meanDirect = sales.groupBy(_.region).map { case (r, rows) =>
+      r -> (rows.map(_.amount).sum.toDouble / rows.size)
     }
+    meanFromState shouldBe meanDirect
   }
 
   // ===== 4: speedup documented =====

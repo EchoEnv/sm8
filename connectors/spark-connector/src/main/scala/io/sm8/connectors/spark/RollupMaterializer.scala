@@ -88,7 +88,7 @@ object RollupMaterializer {
     for {
       _ <- validateSpec(model, spec)
       baseDf <- readBase(spark, model)
-      rollupDf = buildRollupDf(baseDf, model, spec)
+      rollupDf <- buildRollupDf(baseDf, model, spec)
       _ <- persist(rollupDf, tableName)
     } yield tableName
   }
@@ -108,15 +108,28 @@ object RollupMaterializer {
         val d = AggregateFn.decomposability(m.expr.fn)
         d != Decomposability.Additive ||
           m.expr.distinct ||
-          (m.expr.fn == AggregateFn.Count && m.expr.input.isDefined)
+          (m.expr.fn == AggregateFn.Count && m.expr.input.isDefined) ||
+          !m.expr.input.forall(_.isInstanceOf[io.sm8.core.expr.Expr.FieldRef])
       }
       if (unsupported.nonEmpty)
         Left(EngineError.UnsupportedCapability(
           engine = "spark-connector",
           capability = "RollupMaterializer.measureState",
           message = s"rollups[${spec.name}]: measures ${unsupported.map(_.name).mkString(", ")} need " +
-            "state this materializer does not store (Algebraic partials / DISTINCT / COUNT(expr)). " +
-            "v1 stores Additive row-count + sum/min/max states only."))
+            "state this materializer does not store (Algebraic partials / DISTINCT / COUNT(expr) / " +
+            "composite inputs). v1 stores Additive row-count + sum/min/max over a single field only."))
+      else if (declared.isEmpty && spec.measures.nonEmpty)
+        Left(EngineError.UnsupportedCapability(
+          engine = "spark-connector",
+          capability = "RollupMaterializer.unknownMeasures",
+          message = s"rollups[${spec.name}]: measures ${spec.measures.mkString(", ")} are not declared " +
+            "on the model — a rollup with no resolvable state columns cannot be materialized."))
+      else if (declared.isEmpty && spec.measures.isEmpty && spec.dimensions.isEmpty)
+        Left(EngineError.UnsupportedCapability(
+          engine = "spark-connector",
+          capability = "RollupMaterializer.emptyRollup",
+          message = s"rollups[${spec.name}]: nothing to group by and nothing to aggregate — " +
+            "degenerate rollup (matches the loader's Ticket 3 both-empty guard)."))
       else Right(())
     }
   }
@@ -149,13 +162,34 @@ object RollupMaterializer {
     * `lit`) — no user function objects are created, so the physical
     * plan ships NO Scala closure to executors.
     */
-  private[spark] def buildRollupDf(baseDf: DataFrame, model: Model, spec: RollupSpec): DataFrame = {
-    val dimCols: List[Column] = spec.dimensions.map(baseDf.col)
-    val declared = model.measures.filter(m => spec.measures.contains(m.name))
-    val stateCols: List[Column] = declared.flatMap { m =>
-      stateColumns(m.expr)
+  private[spark] def buildRollupDf(
+      baseDf: DataFrame,
+      model: Model,
+      spec: RollupSpec
+  ): Either[EngineError, DataFrame] = {
+    // Dim resolution is typed: a declared dim missing from the base
+    // table is a loud EngineError, not a raw AnalysisException.
+    val missingDims = spec.dimensions.filterNot(baseDf.columns.contains)
+    if (missingDims.nonEmpty)
+      Left(EngineError.UnsupportedCapability(
+        engine = "spark-connector",
+        capability = "RollupMaterializer.dimColumns",
+        message = s"rollups[${spec.name}]: dimension(s) ${missingDims.mkString(", ")} not present " +
+          s"in base table (columns: ${baseDf.columns.mkString(", ")})"))
+    else {
+      val dimCols: List[Column] = spec.dimensions.map(baseDf.col)
+      val declared = model.measures.filter(m => spec.measures.contains(m.name))
+      val stateCols: List[Column] = declared.flatMap { m =>
+        stateColumns(m.expr)
+      }
+      // A dims-only rollup (no measures) is legal: distinct group
+      // rows. agg() with zero columns is invalid Spark, so lower to
+      // dropDuplicates (the IR's Aggregate(Nil-aggregates) contract).
+      if (stateCols.isEmpty)
+        Right(baseDf.select(dimCols: _*).dropDuplicates(spec.dimensions))
+      else
+        Right(baseDf.groupBy(dimCols: _*).agg(stateCols.head, stateCols.tail: _*))
     }
-    baseDf.groupBy(dimCols: _*).agg(stateCols.head, stateCols.tail: _*)
   }
 
   /** The state columns for ONE declared measure (Ticket 4 contract:
