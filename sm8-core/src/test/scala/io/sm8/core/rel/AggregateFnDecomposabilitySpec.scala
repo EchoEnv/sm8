@@ -112,11 +112,29 @@ final class AggregateFnDecomposabilitySpec extends AnyFlatSpec with Matchers {
   }
 
   it should "be total over the sealed ADT: every case maps to exactly one class (16 fns, all classified)" in {
-    // Exhaustiveness is compile-checked by the match, but this test
-    // pins the COUNT: if a 17th AggregateFn lands without a
-    // decomposability arm, the compile fails; if one is REMOVED
-    // without updating this spec, the count assertion fails.
+    // Exhaustiveness is compile-WARNED by the match (non-fatal under
+    // this build), and case REMOVAL is caught by this spec failing to
+    // compile (it references each case object). What the count pins
+    // is the classification COVERAGE of this spec's table: if an
+    // aggregate is added, the compiler warning plus review force the
+    // arm + a row here.
     all.size shouldBe 16
     all.map(_._1).toSet.size shouldBe 16
+  }
+
+  it should "have a Serializable Decomposability taxonomy (closure-safety convention, cf. AggregateCallClosureSafetySpec)" in {
+    // Decomposability is 5 stateless case objects on a sealed
+    // Product with Serializable trait — serialization-safe by
+    // construction; this round-trip pins that contract so a future
+    // refactor carrying captured state fails here, not in Spark.
+    import java.io.{ByteArrayInputStream, ByteArrayOutputStream, ObjectInputStream, ObjectOutputStream}
+    val values = List(Decomposability.Additive, Decomposability.Algebraic,
+      Decomposability.Positional, Decomposability.Holistic, Decomposability.Approximable)
+    val buf = new ByteArrayOutputStream()
+    val oos = new ObjectOutputStream(buf)
+    oos.writeObject(values)
+    oos.close()
+    val ois = new ObjectInputStream(new ByteArrayInputStream(buf.toByteArray))
+    ois.readObject().asInstanceOf[List[Decomposability]] shouldBe values
   }
 }

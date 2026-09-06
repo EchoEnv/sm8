@@ -26,7 +26,9 @@
  * the vocabulary a rollup router consults before re-scanning a
  * query from a rollup table. The classification is a total,
  * compiler-exhaustive function over the sealed ADT: adding a 17th
- * aggregate without filing its decomposability is a compile error.
+ * aggregate without filing its decomposability is a non-exhaustive-
+ * match compile warning — and an APPROVE-BLOCKING review finding
+ * under this repo's checklist until the arm lands.
  * The prior prose section comments carried three errors (Min/Max
  * were labeled non-additive; First was labeled additive-for-some-
  * rollups; CountDistinct sat under the additive banner while its
@@ -67,8 +69,9 @@ sealed trait Decomposability extends Product with Serializable
 object Decomposability {
 
  /** Re-aggregable from partials by applying the same function:
- * `f(f(a,b), c) == f(a,b,c)` (associative; for Min/Max, also
- * idempotent). Sum, Count, Min, Max. */
+ * `f(f(a,b), c) == f(a,b,c)` (associative + commutative; for
+ * Min/Max, also idempotent). Sum, Count, Min, Max. Merge must
+ * skip NULL partials (the engines' own convention). */
  case object Additive extends Decomposability
 
  /** Not re-aggregable by the same function, but computable
@@ -169,7 +172,11 @@ object AggregateFn {
 
  /** Exact median (50th percentile). Maps to Spark `percentile_approx(., 0.5)`
  * or `median`, Trino `MEDIAN`, DuckDB `MEDIAN`. Distinct from
- * `ApproxPercentile` — see ADR note. */
+ * `ApproxPercentile` — see ADR note. NOTE: Spark's
+ * percentile_approx/median is itself sketch-approximate (GK);
+ * Trino/DuckDB MEDIAN are exact — so base-path Median precision
+ * is engine-dependent (flagged for the Ticket 4/5 regression
+ * story). */
  case object Median extends AggregateFn
 
  /** Continuous percentile (linear interpolation). Takes one
@@ -195,8 +202,9 @@ object AggregateFn {
  * an aggregate function (the routing vocabulary of the
  * pre-aggregation design).
  * Adding a new `AggregateFn` case without adding its arm here is
- * a compile error — the classification cannot silently drift the
- * way the previous prose comments did.
+ * flagged by the compiler as a non-exhaustive-match warning — the
+ * classification cannot silently drift the way the previous prose
+ * comments did.
  *
  * @param fn the aggregate function to classify
  * @return the [[Decomposability]] governing whether (and how) a

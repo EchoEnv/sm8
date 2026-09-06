@@ -4,14 +4,16 @@
 
 Proposed. **Date:** 2026-09-06. **Author:** SM8 agent (per user directive 2026-09-06: "see code if we already do rollup (pre-aggregation process as cache) yet"; external proposal by a third-party assistant (ClickHouse + Apache Calcite) evaluated by dual review).
 
+**Ticket 1 landed** (typed `Decomposability` taxonomy in `sm8-core/rel/AggregateFn.scala`, dual review APPROVE-WITH-FIXES both reviewers; fixes applied). Tickets 2-6 pending, per the wayfinder map.
+
 ## Context and Problem Statement
 
 sm8 has no rollup / pre-aggregation machinery. Evidence (all verified at main `889aa2b`):
 
 - `sm8-core/src/main/scala/io/sm8/core/model/Model.scala:30-42` — the Model ADT carries dimensions / measures / filters / calculatedMeasures / joins; **no rollups field**. `ModelLoader.scala:22-29`: "rollups remain IR — deferred per the plan".
 - `docs/adr/0008-o-hardening.md:96` — "Model-rollup machinery + extension / plugin-as-data (deferred to post-v1.0 per Data Engineer P2-9)".
-- `sm8-core/src/main/scala/io/sm8/core/cache/ResultCache.scala` — the only caching is an **exact-result cache**: key = (engine, model, version, measures, dimensions, where) via `CacheBridge.platformCacheKey` (sm8-platform `EngineService.scala:507-513`). A query grouped by day cannot serve a query grouped by month; there is no cross-query reuse.
-- **No scheduler/orchestration exists** anywhere in main sources (verified: zero matches for scheduler/cron/quartz).
+- `sm8-core/src/main/scala/io/sm8/core/cache/ResultCache.scala` — the only caching is an **exact-result cache**: key = (engine, model, version, measures, dimensions, where) via `CacheBridge.platformCacheKey` (sm8-platform `EngineService.scala:502-510`). A query grouped by day cannot serve a query grouped by month; there is no cross-query reuse.
+- **No job-scheduler/cron/orchestration library or subsystem exists** in main sources (the only "scheduler" text matches are Reactor-internal scheduler comments in the MCP transport — not a job orchestrator).
 
 A third-party proposal recommended: **ClickHouse** as a single physical rollup store (MergeTree family, `uniqCombined` HLL for distinct counts) + **Apache Calcite** as a SQL query-rewriting layer (`SubstitutionVisitor` matches incoming SQL against registered rollup definitions; dialect transpilation via `PostgresqlSqlDialect` / `TrinoSqlDialect`). The proposal explicitly assumed (a) an existing orchestration that decides what/when to materialize, and (b) incoming queries as raw SQL text from Postgres/Trino/Spark client ecosystems.
 
@@ -35,7 +37,7 @@ A third-party proposal recommended: **ClickHouse** as a single physical rollup s
 Build pre-aggregation **sm8-natively**, at the RelOp level, in the layers ADR-008-O reserved — and treat it as a first-class roadmap (no post-v1.0 gating), sequenced by the wayfinder map `docs/wayfinder/2026-09-06-pre-aggregation.md` (6 tickets):
 
 1. **core/model** — `Model.rollups: List[RollupSpec]` (name, dimensions, measures, timeGrain; refs validated like calculatedMeasures). Loader extends per `ModelLoader.scala:29`.
-2. **core/rel** — promote aggregate compositability from prose to a typed, exhaustive function (`Decomposability`): Additive {Sum, Count, Min, Max}, Algebraic {Avg, Stddev*, Variance*}, Positional {First, Last}, Holistic {Median, Percentile*, ApproxPercentile(sketch-state only), CountDistinct(exact)}.
+2. **core/rel** — promote aggregate compositability from prose to a typed, exhaustive function (`Decomposability`): Additive {Sum, Count, Min, Max}, Algebraic {Avg, Stddev*, Variance*}, Positional {First, Last}, Holistic {Median, Percentile*}, Approximable {CountDistinct, ApproxPercentile — re-aggregable only via explicit sketch state, and then approximate; refused in v1 routing}.
 3. **core/rel** — `RollupRewriter`: fail-open RelOp→RelOp rewrite (deterministic subsumption; no new pipeline Stage — the Stage ADT is frozen; no PreExecute hook — pre-hooks must not mutate the request).
 4. **connector (spark first)** — materialization write + rollup-table read; correctness regression suite (rollup path ≡ base path).
 5. **adapter/plugin** — refresh triggers (CLI/endpoint + external cron for v1); PostExecute query-frequency observer plugin informing what to build.
@@ -62,4 +64,4 @@ Build pre-aggregation **sm8-natively**, at the RelOp level, in the layers ADR-00
 - `sm8-core/src/main/scala/io/sm8/core/rel/AggregateFn.scala` — compositability source material (errors noted)
 - `sm8-core/src/main/scala/io/sm8/core/model/Model.scala`, `ModelLoader.scala:22-29` — rollup field reservation
 - `docs/adr/0008-o-hardening.md:96` — original deferral being superseded
-- `sm8-platform/src/main/scala/io/sm8/platform/query/QueryRequest.scala:49-55`, `EngineService.scala:507-513` — typed query surface + cache key precedent
+- `sm8-platform/src/main/scala/io/sm8/platform/query/QueryRequest.scala:49-55`, `EngineService.scala:502-510` — typed query surface + cache key precedent
