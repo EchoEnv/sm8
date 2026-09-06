@@ -76,7 +76,8 @@ final case class ModelBuilder private (
  status:   ModelStatus    = ModelStatus.Draft,
  filters:  List[FilterSpec]   = Nil,
  calculatedMeasures: List[CalculatedMeasure] = Nil,
- joins:   List[JoinSpec]   = Nil) {
+ joins:   List[JoinSpec]   = Nil,
+ rollups: List[RollupSpec] = Nil) {
 
  def withName(value: String): ModelBuilder =
  copy(name = Option(value))
@@ -126,6 +127,25 @@ final case class ModelBuilder private (
  def withJoins(values: List[JoinSpec]): ModelBuilder =
  copy(joins = values)
 
+ /** Add a declared pre-aggregation (Ticket 3 of
+ * docs/wayfinder/2026-09-06-pre-aggregation.md). Refs are
+ * validated by `Model.of` at the boundary.
+ *
+ * @param spec the rollup declaration to append
+ * @return a new builder carrying the rollup
+ */
+ def withRollup(spec: RollupSpec): ModelBuilder =
+ copy(rollups = rollups :+ spec)
+
+ /** Replace the rollup list (Ticket 3 of
+ * docs/wayfinder/2026-09-06-pre-aggregation.md).
+ *
+ * @param values the complete rollup list for the model
+ * @return a new builder carrying the rollups
+ */
+ def withRollups(values: List[RollupSpec]): ModelBuilder =
+ copy(rollups = values)
+
  def withPolicies(value: ModelPolicyDefaults): ModelBuilder =
  copy(defaultPolicies = value)
 
@@ -165,7 +185,8 @@ final case class ModelBuilder private (
   status   = status,
   filters   = filters,
   calculatedMeasures = calculatedMeasures,
-  joins   = joins)
+  joins   = joins,
+  rollups  = rollups)
  }
 }
 

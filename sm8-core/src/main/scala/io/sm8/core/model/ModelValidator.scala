@@ -52,6 +52,20 @@ object ModelValidator {
     errs ++= duplicateNames(model.calculatedMeasures.map(_.name), "calculated_measure")
     errs ++= duplicateNames(model.filters.map(_.name),     "filter")
     errs ++= duplicateNames(model.joins.map(_.name),        "join")
+    errs ++= duplicateNames(model.rollups.map(_.name),      "rollup")
+    // Rollup refs (pre-aggregation, Ticket 3 of
+    // docs/wayfinder/2026-09-06-pre-aggregation.md): rollup
+    // dimension/measure refs are names of
+    // the HOST model's own fields. Unknown refs fail loud here (the
+    // same discipline as calculatedMeasures) -- never silent.
+    val dimNames  = model.dimensions.map(_.name).toSet
+    val measNames = model.measures.map(_.name).toSet
+    model.rollups.foreach { r =>
+      r.dimensions.filterNot(dimNames.contains).foreach(d =>
+        errs += s"rollups[${r.name}] references unknown dimension '$d'")
+      r.measures.filterNot(measNames.contains).foreach(m =>
+        errs += s"rollups[${r.name}] references unknown measure '$m'")
+    }
     if (errs.isEmpty) Right(()) else Left(ModelValidationError.SchemaValidation(errs.toList))
   }
 
