@@ -104,15 +104,25 @@ object EngineService {
     * @param measures   the requested measures (already normalized by
     *                   `buildMCPRequest`)
     * @param dimensions the requested dimensions
+    * @param timeGrain  the requested time grain, if any (Ticket 3's
+    *                   `RollupSpec` carries `timeGrain`, so day-vs-
+    *                   month shapes must be distinguishable; logged
+    *                   as `-` when absent)
     */
-  private def logQueryShape(model: Model, measures: List[String], dimensions: List[String]): Unit =
+  private def logQueryShape(
+      model: Model,
+      measures: List[String],
+      dimensions: List[String],
+      timeGrain: Option[String]
+  ): Unit =
     if (ShapeLog.isDebugEnabled) {
       ShapeLog.debug(
-        "query-shape model={} version={} measures={} dimensions={}",
+        "query-shape model={} version={} measures={} dimensions={} timeGrain={}",
         model.name,
         java.lang.Integer.valueOf(model.version),
         measures.mkString("[", ",", "]"),
-        dimensions.mkString("[", ",", "]")
+        dimensions.mkString("[", ",", "]"),
+        timeGrain.getOrElse("-")
       )
     }
 
@@ -552,7 +562,7 @@ object EngineService {
     // record the query shape BEFORE the pipeline
     // runs (the shape is fully normalized once mcpReq exists; the
     // DEBUG guard makes this free at INFO-level logging).
-    logQueryShape(model, mcpReq.measures.toList, mcpReq.dimensions.toList)
+    logQueryShape(model, mcpReq.measures.toList, mcpReq.dimensions.toList, mcpReq.timeGrain)
     val hookRequest = EngineHookRequest(model, mcpReq, cacheKey)
     // ADR-009-g Fix 4: fold model.defaultPolicies.cache into
     // initialCtx.meta BEFORE dispatcher.run. EngineHookDispatcher.run
