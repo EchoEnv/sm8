@@ -354,6 +354,20 @@ object RollupRewriter {
   }
 
 
+  /** Criterion 3: every filter references only rollup columns. v1:
+    * only DIM filters are semantically safe. The rollup table
+    * stores per-group PARTIALS, not final values: a measure-name
+    * filter would dangle against the state-column schema, and a
+    * state-column threshold is HAVING semantics (per-group final
+    * values), not WHERE over partial rows. */
+  private def filtersEvaluable(spec: RollupSpec, c: CanonicalPlan): Boolean = {
+    val rollupColumns: Set[String] = spec.dimensions.toSet
+    c.filters.forall { f =>
+      val refs = io.sm8.core.expr.Calculator.fieldNamesOf(f)
+      refs.subsetOf(rollupColumns)
+    }
+  }
+
   /** Criterion 4: grain agreement. Grains must be EQUAL after
     * normalization (None matches None only). Strict equality is
     * the deliberate v1 default: a grain mismatch is fail-safe
