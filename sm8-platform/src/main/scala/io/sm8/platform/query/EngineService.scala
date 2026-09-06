@@ -68,6 +68,7 @@ import io.sm8.core.model.{FilterSpec, Model}
 import io.sm8.platform.query.cache.CacheBridge
 import io.sm8.sdk.{Context, HookRunner, PipelineStage}
 
+import org.slf4j.LoggerFactory
 import scala.util.control.NonFatal
 
 /**
@@ -77,6 +78,60 @@ import scala.util.control.NonFatal
  * from previous PRs).
  */
 object EngineService {
+
+  /** Pre-aggregation map, Ticket 2 (docs/wayfinder/2026-09-06-pre-aggregation.md):
+    * query-shape instrumentation. Logs the (model, version, measures,
+    * dimensions) tuple of every `runQueryWithHooks` invocation at DEBUG
+    * so a rollup-selection decision (Ticket 3 of
+    * docs/wayfinder/2026-09-06-pre-aggregation.md: which
+    * `Model.rollups` to declare) can be driven by measured query
+    * patterns rather than guesses. DEBUG-level: zero cost when the
+    * logger level is INFO (the slf4j guard short-circuits before the
+    * string is built); no counters are incremented (this is shape
+    * telemetry, not the MetricsService diagnostic counters).
+    *
+    * The Logger is a `private val` on the stateless object —
+    * slf4j Loggers are thread-safe, so sharing it across concurrent
+    * runs is safe.
+    */
+  private val ShapeLog = LoggerFactory.getLogger("io.sm8.platform.query.QueryShape")
+
+  /** Emit one DEBUG query-shape record. Called once per
+    * `runQueryWithHooks` invocation, after the cache key is built
+    * (so the shape is the normalized one the pipeline actually sees).
+    * Two deliberate divergences from `platformCacheKey`: the log
+    * uses the RESOLVED model (name/version) while the key uses the
+    * wire `modelName` with an "unknown" fallback — the resolved
+    * identity is the better analytics key. The `where` predicate is
+    * in the key but NOT in the log: raw filter text is unbounded
+    * cardinality, and Ticket 4's filter-evaluability check reads
+    * the request itself, not this telemetry.
+    *
+    * @param model      the model being queried (name + version only)
+    * @param measures   the requested measures (already normalized by
+    *                   `buildMCPRequest`)
+    * @param dimensions the requested dimensions
+    * @param timeGrain  the requested time grain, if any (Ticket 3's
+    *                   `RollupSpec` carries `timeGrain`, so day-vs-
+    *                   month shapes must be distinguishable; logged
+    *                   as `-` when absent)
+    */
+  private def logQueryShape(
+      model: Model,
+      measures: List[String],
+      dimensions: List[String],
+      timeGrain: Option[String]
+  ): Unit =
+    if (ShapeLog.isDebugEnabled) {
+      ShapeLog.debug(
+        "query-shape model={} version={} measures={} dimensions={} timeGrain={}",
+        model.name,
+        java.lang.Integer.valueOf(model.version),
+        measures.mkString("[", ",", "]"),
+        dimensions.mkString("[", ",", "]"),
+        timeGrain.getOrElse("-")
+      )
+    }
 
   /** ADR-009-e: server-side materialization cap (deployment policy,
    * RFC §3), in rows. The engine (connector) enforces this as the
@@ -510,6 +565,11 @@ object EngineService {
     )
     // Build the initial Context once. All subsequent state is
     // `ctx.copy(...)` — immutable, no `var`, no shared mutable state.
+    // Ticket 2 of docs/wayfinder/2026-09-06-pre-aggregation.md:
+    // record the query shape BEFORE the pipeline
+    // runs (the shape is fully normalized once mcpReq exists; the
+    // DEBUG guard makes this free at INFO-level logging).
+    logQueryShape(model, mcpReq.measures.toList, mcpReq.dimensions.toList, mcpReq.timeGrain)
     val hookRequest = EngineHookRequest(model, mcpReq, cacheKey)
     // ADR-009-g Fix 4: fold model.defaultPolicies.cache into
     // initialCtx.meta BEFORE dispatcher.run. EngineHookDispatcher.run

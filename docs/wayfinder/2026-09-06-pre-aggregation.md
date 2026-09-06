@@ -1,6 +1,6 @@
 # Wayfinder map — Pre-aggregation (rollups), sm8-native (2026-09-06)
 
-**Status:** Ticket #1 landed (see ADR-0022 status note); awaiting Ticket #2.
+**Status:** Tickets #1-2 landed (see ADR-0022 status note); awaiting Ticket #3.
 **Surveyed by:** session-level architecture investigation + dual review (architect + data-eng, both verdict ADAPT) on main `889aa2b`.
 **Driver ADR:** ADR-0022 (`docs/adr/0022-pre-aggregation-sm8-native.md`) — supersedes the post-v1.0 deferral in ADR-008-O:96.
 
@@ -88,6 +88,9 @@ Each ticket is bounded to ~1 session and produces its own ADR-0022-status-note u
 **Scope:** sm8-platform query path (observer plugin or EngineService logging), no core change.
 
 **Acceptance criteria:** shapes logged with counts; no query-path latency regression; a documented way to read the stats. Dual review + PR + STOP.
+
+
+**Landed (query-shape instrumentation):** one DEBUG record per `runQueryWithHooks` invocation on logger `io.sm8.platform.query.QueryShape` carrying (model, version, measures, dimensions, timeGrain) — zero hot-path cost at INFO, zero behavior change. **Reading the stats:** enable that logger at DEBUG and aggregate the lines, grouping on the constant format-string prefix `query-shape model=`. **Counts** (frequency per shape) are deferred to Ticket #6's PostExecute frequency observer — this ticket's records are the shape half; the observer attaches the count half.
 
 **Effort:** ~half a session.
 
