@@ -89,9 +89,8 @@ Each ticket is bounded to ~1 session and produces its own ADR-0022-status-note u
 
 **Acceptance criteria:** shapes logged with counts; no query-path latency regression; a documented way to read the stats. Dual review + PR + STOP.
 
-**Landed (PR: query-shape instrumentation):** one DEBUG record per `runQueryWithHooks` invocation on logger `io.sm8.platform.query.QueryShape` (model, version, measures, dimensions, timeGrain, filter names — no raw predicates). **Reading the stats:** enable that logger at DEBUG and pipe stdout/journal to a line-oriented aggregator (group on the constant format string `query-shape model=`). **Counts** (frequency per shape) are deferred to Ticket #6's PostExecute frequency observer — this ticket's records are the shape half; the observer attaches the count half.
-*
-* **Landed as (PR for this branch):** one DEBUG record per invocation on logger `io.sm8.platform.query.QueryShape` carrying (model, version, measures, dimensions, timeGrain) — zero hot-path cost at INFO, zero behavior change. Counts/aggregation deliberately deferred to Ticket 6's frequency observer (which consumes these records); ops note: capture that logger at DEBUG and group on the constant format string.
+
+**Landed (query-shape instrumentation):** one DEBUG record per `runQueryWithHooks` invocation on logger `io.sm8.platform.query.QueryShape` carrying (model, version, measures, dimensions, timeGrain) — zero hot-path cost at INFO, zero behavior change. **Reading the stats:** enable that logger at DEBUG and aggregate the lines, grouping on the constant format-string prefix `query-shape model=`. **Counts** (frequency per shape) are deferred to Ticket #6's PostExecute frequency observer — this ticket's records are the shape half; the observer attaches the count half.
 
 **Effort:** ~half a session.
 
