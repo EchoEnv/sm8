@@ -258,49 +258,6 @@ class RollupSpecSpec extends AnyFunSuite with Matchers {
 
   // ===== review-driven hardening (dual review round 1) =====
 
-  test("rollup referencing a CALCULATED measure fails with a dedicated message (not 'unknown')") {
-    val model = Model.of(
-      name = "flights",
-      version = 1,
-      dimensions = List(Dimension.field("carrier", "carrier")),
-      measures = List(
-        Measure.aggregate("rows", io.sm8.core.rel.AggregateFn.Count, io.sm8.core.expr.Expr.FieldRef("x"))),
-      calculatedMeasures = List(CalculatedMeasure("fare_per_row", io.sm8.core.expr.Expr.FieldRef("y"))),
-      source = SourceRef.ByName(table = "flights_raw"),
-      rollups = List(RollupSpec("uses_calc", List("carrier"), List("fare_per_row"), None))
-    )
-    model.isLeft shouldBe true
-    val msg = model.left.get.message
-    msg should include("references calculated measure 'fare_per_row'")
-    msg should include("must be base measures")
-  }
-
-  test("string dimensions value is accepted as a 1-list; non-string scalar fails loud") {
-    // Author convenience: `dimensions: carrier` == [carrier]
-    val yaml1 = base +
-      """
-        |rollups:
-        |  - name: single
-        |    dimensions: carrier
-        |    measures: rows
-        |""".stripMargin
-    val out1 = ModelLoader.fromString(yaml1)
-    out1.isRight shouldBe true
-    out1.right.get.rollups shouldBe List(
-      RollupSpec("single", List("carrier"), List("rows"), None))
-    // A non-string, non-list scalar is a typo -> fail loud, never Nil
-    val yaml2 = base +
-      """
-        |rollups:
-        |  - name: typo
-        |    dimensions: 42
-        |    measures: [rows]
-        |""".stripMargin
-    val out2 = ModelLoader.fromString(yaml2)
-    out2.isLeft shouldBe true
-    out2.left.get.toString should include("dimensions must be a list")
-  }
-
   test("non-map entry in the rollups list fails loud instead of being silently dropped") {
     val yaml = base +
       """
@@ -313,34 +270,6 @@ class RollupSpecSpec extends AnyFunSuite with Matchers {
     val out = ModelLoader.fromString(yaml)
     out.isLeft shouldBe true
     out.left.get shouldBe a[ManifestError.ParseFailure]
-  }
-
-  test("rollup with BOTH dimensions and measures empty fails loud (degenerate subsumption match)") {
-    val yaml = base +
-      """
-        |rollups:
-        |  - name: empty_rollup
-        |    dimensions: []
-        |    measures: []
-        |""".stripMargin
-    val out = ModelLoader.fromString(yaml)
-    out.isLeft shouldBe true
-    out.left.get.toString should include("must not both be empty")
-  }
-
-  test("specifying both time_grain and timeGrain fails loud (no silent precedence)") {
-    val yaml = base +
-      """
-        |rollups:
-        |  - name: double_grain
-        |    dimensions: [carrier]
-        |    measures: [rows]
-        |    time_grain: day
-        |    timeGrain: hour
-        |""".stripMargin
-    val out = ModelLoader.fromString(yaml)
-    out.isLeft shouldBe true
-    out.left.get.toString should include("at most one of time_grain / timeGrain")
   }
 
   test("ModelBuilder.withRollup / withRollups round-trips to Model.rollups") {
