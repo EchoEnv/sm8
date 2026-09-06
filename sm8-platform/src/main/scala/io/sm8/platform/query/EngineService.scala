@@ -82,15 +82,17 @@ object EngineService {
   /** Pre-aggregation map, Ticket 2 (docs/wayfinder/2026-09-06-pre-aggregation.md):
     * query-shape instrumentation. Logs the (model, version, measures,
     * dimensions) tuple of every `runQueryWithHooks` invocation at DEBUG
-    * so a rollup-selection decision (ADR-0022 Ticket 3: which
+    * so a rollup-selection decision (Ticket 3 of
+    * docs/wayfinder/2026-09-06-pre-aggregation.md: which
     * `Model.rollups` to declare) can be driven by measured query
     * patterns rather than guesses. DEBUG-level: zero cost when the
     * logger level is INFO (the slf4j guard short-circuits before the
     * string is built); no counters are incremented (this is shape
     * telemetry, not the MetricsService diagnostic counters).
     *
-    * Per [[scala-jvm-safety-mindset]]: the Logger is a `private val`
-    * on the stateless object — slf4j Loggers are thread-safe.
+    * The Logger is a `private val` on the stateless object —
+    * slf4j Loggers are thread-safe, so sharing it across concurrent
+    * runs is safe.
     */
   private val ShapeLog = LoggerFactory.getLogger("io.sm8.platform.query.QueryShape")
 
@@ -546,7 +548,8 @@ object EngineService {
     )
     // Build the initial Context once. All subsequent state is
     // `ctx.copy(...)` — immutable, no `var`, no shared mutable state.
-    // ADR-0022 Ticket 2: record the query shape BEFORE the pipeline
+    // Ticket 2 of docs/wayfinder/2026-09-06-pre-aggregation.md:
+    // record the query shape BEFORE the pipeline
     // runs (the shape is fully normalized once mcpReq exists; the
     // DEBUG guard makes this free at INFO-level logging).
     logQueryShape(model, mcpReq.measures.toList, mcpReq.dimensions.toList)

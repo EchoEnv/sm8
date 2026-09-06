@@ -1,11 +1,13 @@
 /*
- * SM8 Platform — QueryShapeLogSpec (ADR-0022 Ticket 2).
+ * SM8 Platform — QueryShapeLogSpec (query-shape instrumentation; Ticket 2 of
+ * docs/wayfinder/2026-09-06-pre-aggregation.md).
  *
  * Pre-aggregation map `docs/wayfinder/2026-09-06-pre-aggregation.md`
  * Ticket #2: query-shape instrumentation. `EngineService.logQueryShape`
  * emits one DEBUG record per `runQueryWithHooks` invocation carrying
  * the (model, version, measures, dimensions) tuple so that rollup
- * selection (ADR-0022 Ticket 3: which `Model.rollups` to declare)
+ * selection (Ticket 3 of docs/wayfinder/2026-09-06-pre-aggregation.md:
+ * which `Model.rollups` to declare)
  * is driven by measured query patterns rather than guesses.
  *
  * What these tests pin (the observable contract):
@@ -36,7 +38,8 @@
  * request fields. The DEBUG-guard + argument-array contract is
  * enforced by construction (isDebugEnabled before formatting).
  *
- * Per [[scala-jvm-safety-mindset]]: no shared mutable fixture state;
+ * The provider fixture is built fresh per test: no shared mutable
+ * fixture state, so repeated invocations cannot contaminate counts.
  * each test builds its own registry/dispatcher.
  */
 package io.sm8.platform.query
@@ -85,6 +88,14 @@ final class QueryShapeLogSpec extends AnyFunSuite with Matchers {
     // Well-formed PQR per the RestateCachedRow wire contract
     // (row.length == fieldNames.size — cf. EngineServiceRunQueryWithHooksSpec).
     private val schema = ResultSchema(List(Field.nonNull("v", SealedDataType.Int)))
+    /** Counting no-op engine: returns a fixed one-row Int result and
+      * increments `calls` so tests can assert exactly-once invocation.
+      *
+      * @param model    the model under query (ignored by the stub)
+      * @param request  the normalized request (ignored by the stub)
+      * @param ctx      the engine context (ignored by the stub)
+      * @return a fixed one-row Int result
+      */
     override def query(
         model: Model,
         request: CoreQueryRequest,
@@ -99,6 +110,13 @@ final class QueryShapeLogSpec extends AnyFunSuite with Matchers {
         ))
       ))
     }
+    /** Constant plan string; the shape assertions never inspect it.
+      *
+      * @param model    the model under query (ignored by the stub)
+      * @param request  the normalized request (ignored by the stub)
+      * @param ctx      the engine context (ignored by the stub)
+      * @return the constant plan string
+      */
     override def explain(
         model: Model,
         request: CoreQueryRequest,
