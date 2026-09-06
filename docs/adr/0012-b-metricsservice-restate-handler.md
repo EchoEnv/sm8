@@ -1,6 +1,6 @@
 # ADR-012-b: MetricsService — Restate-handler surface for invocation metrics
 
-> **Status:** Proposed. **Date:** 2026-09-01. **Author:** SM8 agent (per user directive "can we draft these as new ADR-012 series and pass to dual reviewers to approve first").
+> **Status:** **Implemented (wire surface; placeholder counters per design)** — was Proposed (2026-09-01), promoted in the 2026-09-06 drift-fix batch. Implementation: PR-254 (`d0c15ee`, MetricsService wire surface + HttpTransport binding + 9 unit tests); real counter instrumentation via PR-256 per ADR-012-b-followup. **Author:** SM8 agent (per user directive "can we draft these as new ADR-012 series and pass to dual reviewers to approve first").
 
 ## Context and Problem Statement
 

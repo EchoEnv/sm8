@@ -1,6 +1,6 @@
 # ADR-011-a: Remove the deprecated `Connector` SDK surface — production pivoted to `EngineProvider`; legacy Pipeline seam retired with it
 
-| **Status** | **Accepted (v0.2) — dual-reviewer scope validation passed (arch: APPROVE-SCOPE, data-eng: APPROVE-SCOPE); implementation pending** |
+| **Status** | **Implemented** — was Accepted (v0.2) with implementation pending; dual-reviewer scope validation passed (arch: APPROVE-SCOPE, data-eng: APPROVE-SCOPE). Implemented by PR-213 (`da00de3`, 2026-08-31): ~9 files deleted, ~15 import sites re-pointed to `io.sm8.core.engine.*` + `io.sm8.core.cache.*`; historical docs annotated with removal breadcrumbs. |
 
 ## Revision history
 
