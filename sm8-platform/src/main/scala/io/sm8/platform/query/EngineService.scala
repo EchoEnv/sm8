@@ -99,6 +99,13 @@ object EngineService {
   /** Emit one DEBUG query-shape record. Called once per
     * `runQueryWithHooks` invocation, after the cache key is built
     * (so the shape is the normalized one the pipeline actually sees).
+    * Two deliberate divergences from `platformCacheKey`: the log
+    * uses the RESOLVED model (name/version) while the key uses the
+    * wire `modelName` with an "unknown" fallback — the resolved
+    * identity is the better analytics key. The `where` predicate is
+    * in the key but NOT in the log: raw filter text is unbounded
+    * cardinality, and Ticket 4's filter-evaluability check reads
+    * the request itself, not this telemetry.
     *
     * @param model      the model being queried (name + version only)
     * @param measures   the requested measures (already normalized by

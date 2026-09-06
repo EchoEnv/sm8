@@ -11,32 +11,26 @@
  * is driven by measured query patterns rather than guesses.
  *
  * What these tests pin (the observable contract):
- * 1. A successful `runQueryWithHooks` invocation emits exactly one
- *    DEBUG event on the `io.sm8.platform.query.QueryShape` logger,
- *    with the normalized (measures, dimensions) arguments attached
- *    as slf4j arguments (NOT string-interpolated into the message —
- *    the format string stays constant, so log aggregators can group
- *    on it, and argument formatting cost is only paid when DEBUG is
- *    enabled).
- * 2. The record is emitted BEFORE the pipeline runs (ordering
- *    assertion via a hooking StubProvider counter is unnecessary —
- *    the call site sits above `hookRequest` construction — so this
- *    spec asserts presence + content, which is the part other
- *    tickets consume).
- * 3. Zero regression: an INFO-level runtime (the default; logback/
- *    slf4j-simple absent from the test classpath means DEBUG is off)
- *    still produces `Right` results — the instrumentation must never
- *    alter query outcomes.
+ * 1. A successful `runQueryWithHooks` invocation completes with the
+ *    instrumentation on the recording path and returns Right —
+ *    zero behavioral regression. Event CONTENT is deliberately not
+ *    asserted: the test classpath has no slf4j binding/appender, so
+ *    emitted events are unobservable here; the emission contract
+ *    (exactly one DEBUG event per invocation, normalized arguments
+ *    attached as slf4j args, constant format string, DEBUG-gated)
+ *    is pinned by code review + production usage, not by this spec.
+ * 2. The named DEBUG logger resolves in this runtime, and the
+ *    DEBUG-guard (isDebugEnabled before any formatting) holds by
+ *    construction: at INFO level no message is built.
+ * 3. Repeated invocations each take the recording path without
+ *    altering results or provider call counts.
  *
- * Log capture mechanics: slf4j-api 2.0.13 reaches sm8-platform
- * transitively via the MCP SDK (verified `mvn dependency:tree`);
- * the API's `Logger` interface is what `logQueryShape` binds to.
- * Rather than wiring a logback LogbackListener (no logback binding
- * exists in this build), this spec exercises the production call
- * path and asserts the side-effect-free contract: invocation
- * succeeds and the shape arguments are exactly the normalized
- * request fields. The DEBUG-guard + argument-array contract is
- * enforced by construction (isDebugEnabled before formatting).
+ * Known limitation (deliberate, not an oversight): NO test captures
+ * the emitted log event itself. There is no slf4j binding/appender
+ * on the test classpath (slf4j-api 2.0.13 reaches sm8-platform
+ * transitively via the MCP SDK; verified `mvn dependency:tree`), so
+ * an emission/content test would need a new test-scoped binding —
+ * a follow-up candidate, not a blocker.
  *
  * The provider fixture is built fresh per test: no shared mutable
  * fixture state, so repeated invocations cannot contaminate counts.
@@ -150,11 +144,9 @@ final class QueryShapeLogSpec extends AnyFunSuite with Matchers {
     val log = org.slf4j.LoggerFactory.getLogger("io.sm8.platform.query.QueryShape")
     log should not be null
     // The production helper must be DEBUG-gated: at default levels
-    // the guard short-circuits. This assertion documents the gate
-    // (and would fail if someone switched the call to log.warn).
-    org.slf4j.LoggerFactory
-      .getLogger("io.sm8.platform.query.QueryShape")
-      .isDebugEnabled // value depends on test-classpath binding; must not throw
+    // the guard short-circuits. Touching the gate documents it; the
+    // boolean itself depends on the test-classpath binding.
+    log.isDebugEnabled
     succeed
   }
 

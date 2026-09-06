@@ -1,6 +1,6 @@
 # Wayfinder map — Pre-aggregation (rollups), sm8-native (2026-09-06)
 
-**Status:** Ticket #1 landed (see ADR-0022 status note); awaiting Ticket #2.
+**Status:** Tickets #1-2 landed (see ADR-0022 status note); awaiting Ticket #3.
 **Surveyed by:** session-level architecture investigation + dual review (architect + data-eng, both verdict ADAPT) on main `889aa2b`.
 **Driver ADR:** ADR-0022 (`docs/adr/0022-pre-aggregation-sm8-native.md`) — supersedes the post-v1.0 deferral in ADR-008-O:96.
 
@@ -88,6 +88,10 @@ Each ticket is bounded to ~1 session and produces its own ADR-0022-status-note u
 **Scope:** sm8-platform query path (observer plugin or EngineService logging), no core change.
 
 **Acceptance criteria:** shapes logged with counts; no query-path latency regression; a documented way to read the stats. Dual review + PR + STOP.
+
+**Landed (PR: query-shape instrumentation):** one DEBUG record per `runQueryWithHooks` invocation on logger `io.sm8.platform.query.QueryShape` (model, version, measures, dimensions, timeGrain, filter names — no raw predicates). **Reading the stats:** enable that logger at DEBUG and pipe stdout/journal to a line-oriented aggregator (group on the constant format string `query-shape model=`). **Counts** (frequency per shape) are deferred to Ticket #6's PostExecute frequency observer — this ticket's records are the shape half; the observer attaches the count half.
+*
+* **Landed as (PR for this branch):** one DEBUG record per invocation on logger `io.sm8.platform.query.QueryShape` carrying (model, version, measures, dimensions, timeGrain) — zero hot-path cost at INFO, zero behavior change. Counts/aggregation deliberately deferred to Ticket 6's frequency observer (which consumes these records); ops note: capture that logger at DEBUG and group on the constant format string.
 
 **Effort:** ~half a session.
 
