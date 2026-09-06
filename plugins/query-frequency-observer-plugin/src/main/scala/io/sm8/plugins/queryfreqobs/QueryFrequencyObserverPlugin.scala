@@ -69,6 +69,10 @@ object QueryShapeCounters {
     * (per-query allocation bound). Full snapshot stays programmatic. */
   val TopKMeta: Int = 100
 
+  /** How many hottest shapes the context.meta publication carries
+    * (per-query allocation bound). Full snapshot stays programmatic. */
+  val TopKMeta: Int = 100
+
   private val counters = new ConcurrentHashMap[String, AtomicLong]()
 
   /** Canonical shape key (sorted, deduped, set-equal collision).
