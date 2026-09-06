@@ -1,6 +1,6 @@
 # Wayfinder map — Pre-aggregation (rollups), sm8-native (2026-09-06)
 
-**Status:** Tickets #1-2 landed (see ADR-0022 status note); awaiting Ticket #3.
+**Status:** COMPLETE — all six tickets landed (Ticket 1 in #327, Ticket 2 in #329, Ticket 3 in #330, Ticket 4 in #331, Ticket 5 in #332, Ticket 6 in #333; see ADR-0022 status note). Follow-ups live in the ADR status note and the Ticket 5/6 review carry-items.
 **Surveyed by:** session-level architecture investigation + dual review (architect + data-eng, both verdict ADAPT) on main `889aa2b`.
 **Driver ADR:** ADR-0022 (`docs/adr/0022-pre-aggregation-sm8-native.md`) — supersedes the post-v1.0 deferral in ADR-008-O:96.
 
