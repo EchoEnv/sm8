@@ -68,6 +68,7 @@ import io.sm8.core.model.{FilterSpec, Model}
 import io.sm8.platform.query.cache.CacheBridge
 import io.sm8.sdk.{Context, HookRunner, PipelineStage}
 
+import org.slf4j.LoggerFactory
 import scala.util.control.NonFatal
 
 /**
@@ -77,6 +78,41 @@ import scala.util.control.NonFatal
  * from previous PRs).
  */
 object EngineService {
+
+  /** Pre-aggregation map, Ticket 2 (docs/wayfinder/2026-09-06-pre-aggregation.md):
+    * query-shape instrumentation. Logs the (model, version, measures,
+    * dimensions) tuple of every `runQueryWithHooks` invocation at DEBUG
+    * so a rollup-selection decision (ADR-0022 Ticket 3: which
+    * `Model.rollups` to declare) can be driven by measured query
+    * patterns rather than guesses. DEBUG-level: zero cost when the
+    * logger level is INFO (the slf4j guard short-circuits before the
+    * string is built); no counters are incremented (this is shape
+    * telemetry, not the MetricsService diagnostic counters).
+    *
+    * Per [[scala-jvm-safety-mindset]]: the Logger is a `private val`
+    * on the stateless object — slf4j Loggers are thread-safe.
+    */
+  private val ShapeLog = LoggerFactory.getLogger("io.sm8.platform.query.QueryShape")
+
+  /** Emit one DEBUG query-shape record. Called once per
+    * `runQueryWithHooks` invocation, after the cache key is built
+    * (so the shape is the normalized one the pipeline actually sees).
+    *
+    * @param model      the model being queried (name + version only)
+    * @param measures   the requested measures (already normalized by
+    *                   `buildMCPRequest`)
+    * @param dimensions the requested dimensions
+    */
+  private def logQueryShape(model: Model, measures: List[String], dimensions: List[String]): Unit =
+    if (ShapeLog.isDebugEnabled) {
+      ShapeLog.debug(
+        "query-shape model={} version={} measures={} dimensions={}",
+        model.name,
+        java.lang.Integer.valueOf(model.version),
+        measures.mkString("[", ",", "]"),
+        dimensions.mkString("[", ",", "]")
+      )
+    }
 
   /** ADR-009-e: server-side materialization cap (deployment policy,
    * RFC §3), in rows. The engine (connector) enforces this as the
@@ -510,6 +546,10 @@ object EngineService {
     )
     // Build the initial Context once. All subsequent state is
     // `ctx.copy(...)` — immutable, no `var`, no shared mutable state.
+    // ADR-0022 Ticket 2: record the query shape BEFORE the pipeline
+    // runs (the shape is fully normalized once mcpReq exists; the
+    // DEBUG guard makes this free at INFO-level logging).
+    logQueryShape(model, mcpReq.measures.toList, mcpReq.dimensions.toList)
     val hookRequest = EngineHookRequest(model, mcpReq, cacheKey)
     // ADR-009-g Fix 4: fold model.defaultPolicies.cache into
     // initialCtx.meta BEFORE dispatcher.run. EngineHookDispatcher.run
