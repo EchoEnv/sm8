@@ -41,6 +41,9 @@ import org.scalatest.matchers.should.Matchers
   * use integral data. */
 final case class Sale(region: String, item: String, amount: Long, units: Int)
 
+/** File-scope NULL-semantics fixture row: boxed nullable amount. */
+final case class SealedNullRow(region: String, amount: java.lang.Long)
+
 class RollupMaterializerSpec extends AnyFunSuite with Matchers {
 
   private val identity: EngineIdentity = EngineIdentity(
@@ -236,6 +239,76 @@ class RollupMaterializerSpec extends AnyFunSuite with Matchers {
       r -> (rows.map(_.amount).sum.toDouble / rows.size)
     }
     meanFromState shouldBe meanDirect
+  }
+
+  // ===== NULL semantics (DE review F5): all-NULL group parity =====
+
+  test("NULL semantics: all-NULL group yields NULL sum on BOTH paths; count parity holds") {
+    val spark = buildSpark()
+    // Java boxed Long for a nullable column; one region all-NULL.
+    val rows: List[SealedNullRow] = List(
+      SealedNullRow("normal", 10L), SealedNullRow("normal", 20L),
+      SealedNullRow("empty", null))
+    import spark.implicits._
+    rows.toDF("region", "amount").createOrReplaceTempView("sales_base")
+    // amount is now nullable Long — rebuild the model/schema accordingly.
+    val m = Model.of(
+      name = "sales", version = 1,
+      dimensions = List(Dimension.field("region", "region")),
+      measures = List(
+        Measure("order_count", AggregateCall(fn = AggregateFn.Count, input = None, alias = "order_count")),
+        Measure.aggregate("total_amount", AggregateFn.Sum, Expr.FieldRef("amount"))),
+      source = SourceRef.ByName(table = "sales_base"),
+      rollups = List(RollupSpec("by_region", List("region"), List("order_count", "total_amount"), None))
+    ).right.get
+    RollupMaterializer.materialize(spark, m, m.rollups.head).isRight shouldBe true
+
+    val rewritten = RollupRewriter.rewrite(
+      RelOp.Aggregate(
+        input = RelOp.Scan(
+          sourceRef = SourceRef.ByName(table = "sales_base"),
+          schema = List(
+            Field.nonNull("region", SealedDataType.Varchar),
+            Field.nullable("amount", SealedDataType.BigInt)),
+          projection = Nil),
+        groupBy = List(Expr.FieldRef("region")),
+        aggregates = List(
+          AggregateCall(fn = AggregateFn.Count, input = None, alias = "order_count"),
+          AggregateCall(fn = AggregateFn.Sum, input = Some(Expr.FieldRef("amount")), alias = "total_amount"))),
+      m, None)
+    rewritten shouldBe a[RollupRewriter.RollupRewriteResult.Rewritten]
+
+    val lowerer = new MinimalRelOpLowerer(spark, new PortableQueryCompiler(spark), identity)
+    val ctx = EngineContext.defaultContext
+    val base = lowerer.lower(
+      RelOp.Aggregate(
+        input = RelOp.Scan(
+          sourceRef = SourceRef.ByName(table = "sales_base"),
+          schema = List(
+            Field.nonNull("region", SealedDataType.Varchar),
+            Field.nullable("amount", SealedDataType.BigInt)),
+          projection = Nil),
+        groupBy = List(Expr.FieldRef("region")),
+        aggregates = List(
+          AggregateCall(fn = AggregateFn.Count, input = None, alias = "order_count"),
+          AggregateCall(fn = AggregateFn.Sum, input = Some(Expr.FieldRef("amount")), alias = "total_amount"))),
+      ctx)
+    val roll = lowerer.lower(
+      rewritten.asInstanceOf[RollupRewriter.RollupRewriteResult.Rewritten].plan, ctx)
+    (base, roll) match {
+      case (Right(b), Right(r)) =>
+        val baseRows = b.collect().map(r => (r.getString(0), r.getLong(1), Option(r.get(2)))).sortBy(_._1).toList
+        val rollRows = r.collect().map(r => (r.getString(0), r.getLong(1), Option(r.get(2)))).sortBy(_._1).toList
+        // Exact parity INCLUDING the all-NULL group's NULL sum.
+        baseRows shouldBe rollRows
+        // Explicit: the all-NULL group has NULL sum on both paths,
+        // and count counts ROWS (2 vs 1), not non-null amounts.
+        baseRows.find(_._1 == "empty").map(_._3) shouldBe Some(None)
+        rollRows.find(_._1 == "empty").map(_._3) shouldBe Some(None)
+        baseRows.find(_._1 == "normal").map(_._2) shouldBe Some(2L)
+        rollRows.find(_._1 == "normal").map(_._2) shouldBe Some(2L)
+      case _ => fail("both paths must succeed")
+    }
   }
 
   // ===== 4: speedup documented =====

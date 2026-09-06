@@ -89,7 +89,7 @@ object RollupMaterializer {
       _ <- validateSpec(model, spec)
       baseDf <- readBase(spark, model)
       rollupDf <- buildRollupDf(baseDf, model, spec)
-      _ <- persist(rollupDf, tableName)
+      _ <- persist(spark, rollupDf, tableName)
     } yield tableName
   }
 
@@ -213,16 +213,34 @@ object RollupMaterializer {
   /** Persistence seam. v1 default: temp view (resolvable by
     * `spark.table`; sufficient for the regression and local runs).
     * Production wiring (Ticket 6 refresh triggers) passes a
-    * `saveAsTable` persist against the target catalog. */
-  private def persist(df: DataFrame, tableName: String): Either[EngineError, Unit] =
-    try {
-      df.createOrReplaceTempView(tableName)
-      Right(())
-    } catch {
-      case e: org.apache.spark.sql.AnalysisException =>
-        Left(EngineError.UnsupportedCapability(
-          engine = "spark-connector",
-          capability = "RollupMaterializer.persist",
-          message = s"persisting rollup view '$tableName' failed: ${e.getMessage}"))
-    }
+    * `saveAsTable` persist against the target catalog.
+    *
+    * MASKING GUARD: a temp view silently shadows a real catalog
+    * table of the same name. Re-materializing over OUR OWN temp
+    * view is allowed (idempotent refresh); shadowing a persisted
+    * TABLE/VIEW is refused typed.
+    *
+    * Note: temp views are LAZY — returning Right does not imply a
+    * job has run; the first query against the view triggers it. */
+  private def persist(spark: SparkSession, df: DataFrame, tableName: String): Either[EngineError, Unit] = {
+    val existing = spark.catalog.listTables().collect().find(_.name == tableName)
+    val shadowsRealTable = existing.exists(_.tableType != "TEMPORARY")
+    if (shadowsRealTable)
+      Left(EngineError.UnsupportedCapability(
+        engine = "spark-connector",
+        capability = "RollupMaterializer.persist.shadowing",
+        message = s"a real catalog table named '$tableName' already exists — materializing the " +
+          "rollup view would shadow it. Rename the rollup or drop the table explicitly."))
+    else
+      try {
+        df.createOrReplaceTempView(tableName)
+        Right(())
+      } catch {
+        case e: org.apache.spark.sql.AnalysisException =>
+          Left(EngineError.UnsupportedCapability(
+            engine = "spark-connector",
+            capability = "RollupMaterializer.persist",
+            message = s"persisting rollup view '$tableName' failed: ${e.getMessage}"))
+      }
+  }
 }
