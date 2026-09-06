@@ -8,7 +8,8 @@
  * re-materializes each one (via the caller-supplied refresh
  * function — the spark-connector `RollupRefresher.refreshModel` is
  * the wired implementation; the platform stays connector-agnostic
- * per RFC §3 layer discipline).
+ * per the layer discipline in
+ * docs/semantic-layer-engine-architecture.md §3).
  *
  * ==Why a function parameter (not a direct connector import)==
  *
