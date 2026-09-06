@@ -60,11 +60,16 @@ object ModelValidator {
     // same discipline as calculatedMeasures) -- never silent.
     val dimNames  = model.dimensions.map(_.name).toSet
     val measNames = model.measures.map(_.name).toSet
+    val calcNames = model.calculatedMeasures.map(_.name).toSet
     model.rollups.foreach { r =>
       r.dimensions.filterNot(dimNames.contains).foreach(d =>
         errs += s"rollups[${r.name}] references unknown dimension '$d'")
-      r.measures.filterNot(measNames.contains).foreach(m =>
-        errs += s"rollups[${r.name}] references unknown measure '$m'")
+      r.measures.filterNot(measNames.contains).foreach { m =>
+        if (calcNames.contains(m))
+          errs += s"rollups[${r.name}] references calculated measure '$m'; rollup measures must be base measures (a calculated expression cannot be re-aggregated from pre-aggregated rows)"
+        else
+          errs += s"rollups[${r.name}] references unknown measure '$m'"
+      }
     }
     if (errs.isEmpty) Right(()) else Left(ModelValidationError.SchemaValidation(errs.toList))
   }

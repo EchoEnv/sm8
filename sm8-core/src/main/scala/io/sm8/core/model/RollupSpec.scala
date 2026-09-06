@@ -23,9 +23,14 @@
  *
  * ==Why timeGrain: Option[String]==
  * Matches the existing engine-portable precedent:
- * `io.sm8.core.engine.QueryRequest.timeGrain: Option[String]`. The
- * grain vocabulary (day/hour/month, ...) is engine-facing; core
- * treats it as an opaque label in v1. No IO, no Spark types.
+ * `io.sm8.core.engine.QueryRequest.timeGrain: Option[String]`
+ * (sm8-core/EngineProvider.scala). The grain vocabulary
+ * (day/hour/month, ...) is engine-facing; core treats it as an
+ * opaque label in v1 — raw string equality is fail-safe (a
+ * vocabulary mismatch routes to the base path, a perf loss, never
+ * wrong results). Ticket 4's matcher and Ticket 5's materializer
+ * must share one normalization; pinned there. No IO, no Spark
+ * types.
  */
 package io.sm8.core.model
 
@@ -35,16 +40,26 @@ package io.sm8.core.model
   *                   (uniqueness enforced by `ModelValidator`)
   * @param dimensions names of the HOST model's dimensions this
   *                   rollup groups by (each must exist on the model;
-  *                   validated at the boundary)
+  *                   validated at the boundary). No default: the
+  *                   declaration site must state its intent — a
+  *                   ref-less rollup would be a silent no-op.
   * @param measures   names of the HOST model's measures this rollup
-  *                   pre-aggregates (each must exist on the model;
-  *                   validated at the boundary)
+  *                   pre-aggregates (BASE measures only — a
+  *                   calculated-measure ref is a distinct validation
+  *                   error; validated at the boundary). No default
+  *                   for the same reason.
   * @param timeGrain  optional opaque grain label (e.g. "day"); None
   *                   = grain-agnostic rollup
+  *
+  * @note No defaults on `dimensions`/`measures`: a ref-less rollup
+  * is a degenerate declaration (it would vacuously match by
+  * subsumption in Ticket 4's router), so the declaration site must
+  * state its intent explicitly. `timeGrain` defaults to None
+  * (grain-agnostic).
   */
 final case class RollupSpec(
     name: String,
-    dimensions: List[String] = Nil,
-    measures: List[String] = Nil,
+    dimensions: List[String],
+    measures: List[String],
     timeGrain: Option[String] = None
 ) extends Product with Serializable

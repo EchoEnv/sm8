@@ -188,6 +188,148 @@ class RollupSpecSpec extends AnyFunSuite with Matchers {
     msg should include("unknown measure 'nope-meas'")
   }
 
+  // ===== review-round guards (dual-review findings, applied) =====
+
+  test("rollup referencing a CALCULATED measure fails with the distinct base-measures message") {
+    val model = Model.of(
+      name = "flights",
+      version = 1,
+      dimensions = List(Dimension.field("carrier", "carrier")),
+      measures = List(
+        Measure.aggregate("rows", io.sm8.core.rel.AggregateFn.Count, io.sm8.core.expr.Expr.FieldRef("x"))),
+      calculatedMeasures = List(CalculatedMeasure("fare_per_row", io.sm8.core.expr.Expr.FieldRef("total_fare"))),
+      source = SourceRef.ByName(table = "flights_raw"),
+      rollups = List(RollupSpec("uses_calc", List("carrier"), List("fare_per_row"), None))
+    )
+    model.isLeft shouldBe true
+    val msg = model.left.get.message
+    msg should include ("references calculated measure 'fare_per_row'")
+    msg should include ("base measures")
+    msg should not include "unknown measure"
+  }
+
+  test("YAML scalar ref value is accepted as a 1-list (author convenience)") {
+    val yaml = base +
+      "rollups:\n" +
+      "  - name: scalar_ref\n" +
+      "    dimensions: carrier\n" +
+      "    measures: rows\n"
+    val out = ModelLoader.fromString(yaml)
+    out.isRight shouldBe true
+    out.right.get.rollups shouldBe List(
+      RollupSpec("scalar_ref", List("carrier"), List("rows"), None))
+  }
+
+  test("YAML non-list, non-string ref value fails loud (never coerced to Nil)") {
+    val yaml = base +
+      "rollups:\n" +
+      "  - name: bad_ref\n" +
+      "    dimensions: 42\n" +
+      "    measures: [rows]\n"
+    val out = ModelLoader.fromString(yaml)
+    out.isLeft shouldBe true
+    out.left.get shouldBe a[ManifestError.ParseFailure]
+    out.left.get.toString should include ("dimensions must be a list")
+  }
+
+  test("rollup with BOTH dimensions and measures empty fails loud (degenerate no-op guard)") {
+    val yaml = base +
+      "rollups:\n" +
+      "  - name: empty_rollup\n"
+    val out = ModelLoader.fromString(yaml)
+    out.isLeft shouldBe true
+    out.left.get shouldBe a[ManifestError.ParseFailure]
+    out.left.get.toString should include ("must not both be empty")
+  }
+
+  test("both time_grain and timeGrain specified fails loud (never silently pick one)") {
+    val yaml = base +
+      "rollups:\n" +
+      "  - name: double_grain\n" +
+      "    dimensions: [carrier]\n" +
+      "    measures: [rows]\n" +
+      "    time_grain: day\n" +
+      "    timeGrain: hour\n"
+    val out = ModelLoader.fromString(yaml)
+    out.isLeft shouldBe true
+    out.left.get shouldBe a[ManifestError.ParseFailure]
+    out.left.get.toString should include ("at most one of time_grain / timeGrain")
+  }
+
+  // ===== review-driven hardening (dual review round 1) =====
+
+  test("rollup referencing a CALCULATED measure fails with a dedicated message (not 'unknown')") {
+    val model = Model.of(
+      name = "flights",
+      version = 1,
+      dimensions = List(Dimension.field("carrier", "carrier")),
+      measures = List(
+        Measure.aggregate("rows", io.sm8.core.rel.AggregateFn.Count, io.sm8.core.expr.Expr.FieldRef("x"))),
+      calculatedMeasures = List(CalculatedMeasure("fare_per_row", io.sm8.core.expr.Expr.FieldRef("y"))),
+      source = SourceRef.ByName(table = "flights_raw"),
+      rollups = List(RollupSpec("uses_calc", List("carrier"), List("fare_per_row"), None))
+    )
+    model.isLeft shouldBe true
+    val msg = model.left.get.message
+    msg should include("references calculated measure 'fare_per_row'")
+    msg should include("must be base measures")
+  }
+
+  test("scalar dimensions value (indentation typo) fails loud instead of silently becoming Nil") {
+    val yaml = base +
+      """
+        |rollups:
+        |  - name: typo
+        |    dimensions: carrier
+        |    measures: [rows]
+        |""".stripMargin
+    val out = ModelLoader.fromString(yaml)
+    out.isLeft shouldBe true
+    out.left.get.toString should include("dimensions must be a list")
+  }
+
+  test("non-map entry in the rollups list fails loud instead of being silently dropped") {
+    val yaml = base +
+      """
+        |rollups:
+        |  - name: good
+        |    dimensions: [carrier]
+        |    measures: [rows]
+        |  - "oops-a-scalar"
+        |""".stripMargin
+    val out = ModelLoader.fromString(yaml)
+    out.isLeft shouldBe true
+    out.left.get shouldBe a[ManifestError.ParseFailure]
+  }
+
+  test("rollup with BOTH dimensions and measures empty fails loud (degenerate subsumption match)") {
+    val yaml = base +
+      """
+        |rollups:
+        |  - name: empty_rollup
+        |    dimensions: []
+        |    measures: []
+        |""".stripMargin
+    val out = ModelLoader.fromString(yaml)
+    out.isLeft shouldBe true
+    out.left.get.toString should include("must not both be empty")
+  }
+
+  test("specifying both time_grain and timeGrain fails loud (no silent precedence)") {
+    val yaml = base +
+      """
+        |rollups:
+        |  - name: double_grain
+        |    dimensions: [carrier]
+        |    measures: [rows]
+        |    time_grain: day
+        |    timeGrain: hour
+        |""".stripMargin
+    val out = ModelLoader.fromString(yaml)
+    out.isLeft shouldBe true
+    out.left.get.toString should include("at most one of time_grain / timeGrain")
+  }
+
   test("ModelBuilder.withRollup / withRollups round-trips to Model.rollups") {
     val built = ModelBuilder()
       .withName("flights").withVersion(1)
