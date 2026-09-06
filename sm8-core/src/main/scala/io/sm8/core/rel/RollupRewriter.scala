@@ -476,8 +476,15 @@ object RollupRewriter {
         }
     }
 
-  /** Deterministic rollup table name convention: `<model>__<rollup>`. */
-  private[rel] def rollupTableName(model: Model, spec: RollupSpec): String =
+  /** Deterministic rollup table name convention: `<model>__<rollup>`.
+    * Visible to connectors: the Ticket 5 materializer writes rollup
+    * tables under this exact name and the rewriter re-scans it.
+    *
+    * @param model the host model (supplies the name prefix)
+    * @param spec  the rollup declaration (supplies the suffix)
+    * @return the canonical rollup table name
+    */
+  def rollupTableName(model: Model, spec: RollupSpec): String =
     s"${model.name}__${spec.name}"
 
   /** The rollup table's declared schema (grain dims + measure
