@@ -69,10 +69,6 @@ object QueryShapeCounters {
     * (per-query allocation bound). Full snapshot stays programmatic. */
   val TopKMeta: Int = 100
 
-  /** How many hottest shapes the context.meta publication carries
-    * (per-query allocation bound). Full snapshot stays programmatic. */
-  val TopKMeta: Int = 100
-
   private val counters = new ConcurrentHashMap[String, AtomicLong]()
 
   /** Canonical shape key (sorted, deduped, set-equal collision).
@@ -190,7 +186,7 @@ final class QueryFrequencyObserverPlugin extends Plugin {
             // an unbounded copy would be hot-path allocation O(shapes)
             // per request. Full snapshot stays programmatic
             // (QueryShapeCounters.snapshot()).
-            val topK = QueryShapeCounters.snapshot().take(TopKMeta)
+            val topK = QueryShapeCounters.snapshot().take(QueryShapeCounters.TopKMeta)
             context.copy(meta = context.meta +
               ("io.sm8.plugins.queryfreqobs:counts" -> topK))
           case None => context
