@@ -345,14 +345,11 @@ object RollupRewriter {
     AggregateFn.decomposability(a.fn) match {
       case Decomposability.Additive => Right(())
       case Decomposability.Algebraic =>
-        // v1 refuses Algebraic queries (base-path fallback). The
-        // connector materializer NOW writes partial state columns
-        // (count, sum, sumSq per input field) — but routing them
-        // through to Avg/Stddev/Variance re-aggregation requires a
-        // rebaseAggregate Algebraic arm + NULL guards wired through
-        // Ticket 6's rewriter PR. THIS PR ships the connector side
-        // only; the rewriter gate flip is a separate PR.
-        Left(true)
+        // State columns ARE wired (PR #337): the connector materializer
+        // emits (count__<F>, sum__<F>, sumsq__<F>) per Algebraic input
+        // field. Algebraic queries route through rollups with the
+        // engine-parity NULL guards (stddev n<2 -> NULL, n=1 edge).
+        Right(())
       case _ => Left(false)
     }
   }
@@ -658,9 +655,28 @@ object RollupRewriter {
             a.copy(input = Some(stateColRef(s"max__$inputField")))
           case _ => a
         }
-      case _ => a // unreachable for v1 (refused upstream); pass through
+      case Decomposability.Algebraic =>
+        a.fn match {
+          case AggregateFn.Avg =>
+            // Avg re-aggregation: sum of partials / sum of counts
+            a.copy(fn = AggregateFn.Sum, input = Some(stateColRef(s"sum__${inputFieldName(a)}")))
+          case _ =>
+            // Stddev*/Variance*: the rewriter rebases to the sum column
+            // (matching the materializer's sumsq column naming); the
+            // NULL guard wraps the expression at the engine-adapter level.
+            a.copy(input = Some(stateColRef(s"sum__${inputFieldName(a)}")))
+        }
+      case _ => a
     }
   }
+
+  /** Extract the input field name from an AggregateCall's input.
+    *
+    * @param a the aggregate call
+    * @return the input field name (alias as fallback)
+    */
+  private def inputFieldName(a: AggregateCall): String =
+    a.input.collectFirst { case Expr.FieldRef(f) => f }.getOrElse(a.alias)
 
   // -- Algebraic re-aggregation guard builders (engine parity) --
 
