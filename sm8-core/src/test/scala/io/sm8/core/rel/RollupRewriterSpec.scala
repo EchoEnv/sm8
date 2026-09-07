@@ -406,7 +406,7 @@ class RollupRewriterSpec extends AnyFunSuite with Matchers {
       RollupRewriter.RollupRewriteRefusal.UnsplittableAggregate)
   }
 
-  test("Algebraic measure with DECLARED identity -> AlgebraicStateNotWired (recoverable, distinct from permanent)") {
+  test("Algebraic measure with DECLARED identity -> v1 still refuses (gate flip is a follow-up PR)") {
     val m = Model.of(
       name = "flights",
       version = 1,

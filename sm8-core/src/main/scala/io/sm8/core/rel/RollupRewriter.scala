@@ -345,9 +345,13 @@ object RollupRewriter {
     AggregateFn.decomposability(a.fn) match {
       case Decomposability.Additive => Right(())
       case Decomposability.Algebraic =>
-        // Recoverable refusal: Ticket 5 materializes the named
-        // partial states; the criteria then read them from
-        // RollupSpec. This arm must not outlive Ticket 5.
+        // v1 refuses Algebraic queries (base-path fallback). The
+        // connector materializer NOW writes partial state columns
+        // (count, sum, sumSq per input field) — but routing them
+        // through to Avg/Stddev/Variance re-aggregation requires a
+        // rebaseAggregate Algebraic arm + NULL guards wired through
+        // Ticket 6's rewriter PR. THIS PR ships the connector side
+        // only; the rewriter gate flip is a separate PR.
         Left(true)
       case _ => Left(false)
     }
@@ -559,6 +563,15 @@ object RollupRewriter {
               case AggregateFn.Sum => List(Field(s"sum__$inputField", resolvedType, nullable = true))
               case AggregateFn.Min => List(Field(s"min__$inputField", resolvedType, nullable = true))
               case AggregateFn.Max => List(Field(s"max__$inputField", resolvedType, nullable = true))
+              case AggregateFn.Avg | AggregateFn.StddevSample | AggregateFn.StddevPopulation |
+                   AggregateFn.VarianceSample | AggregateFn.VariancePopulation =>
+                // Algebraic: (count, sum, sumSq) partial states per the
+                // Ticket 6 contract pass. count is Long (non-null);
+                // sum/sumSq are Double for stddev/variance parity.
+                List(
+                  Field(s"count__$inputField", SealedDataType.BigInt, nullable = false),
+                  Field(s"sum__$inputField", SealedDataType.Double, nullable = true),
+                  Field(s"sumsq__$inputField", SealedDataType.Double, nullable = true))
               case _ => Nil
             }
           case _ => Nil
@@ -598,14 +611,17 @@ object RollupRewriter {
           case _ => Nil
         }
       case Decomposability.Algebraic =>
-        // Per-input partial states: for input field F -> n__F,
+        // Per-input partial states: for input field F -> count__F,
         // sum__F, sumsq__F (no collisions across measures over
-        // different inputs; Welford-merge-friendly). Ticket 5 of
+        // different inputs; Welford-merge-friendly). Ticket 6 of
         // docs/wayfinder/2026-09-06-pre-aggregation.md materializes
-        // these; Avg needs (n__F, sum__F).
+        // these; Avg needs (count__F, sum__F). Names match the
+        // connector materializer's column names exactly (the
+        // reconciledRollupSchema helper + the connector buildRollupDf
+        // both read these).
         val inputName = m.input.collectFirst { case Expr.FieldRef(f) => f }.getOrElse(m.alias)
         List(
-          countCol(s"n__$inputName"),
+          countCol(s"count__$inputName"),
           col(s"sum__$inputName"),
           col(s"sumsq__$inputName"))
       case _ => Nil

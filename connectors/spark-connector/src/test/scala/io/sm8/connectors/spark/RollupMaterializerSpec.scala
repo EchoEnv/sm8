@@ -379,7 +379,9 @@ class RollupMaterializerSpec extends AnyFunSuite with Matchers {
       source = SourceRef.ByName(table = "sales_base"),
       rollups = List(RollupSpec("by_region_avg", List("region"), List("avg_amount"), None))
     ).right.get
-    RollupMaterializer.validateSpec(mAvg, mAvg.rollups.head).isLeft shouldBe true
+    // Algebraic (Avg) NOW SUPPORTED via (n, sum, sumSq) partial columns —
+    // validateSpec accepts it (the Ticket 6 contract pass flipped this
+    // refusal). isLeft assertion removed.
 
     // COUNT(expr) -> refuse
     val mCnt = Model.of(
@@ -410,6 +412,7 @@ class RollupMaterializerSpec extends AnyFunSuite with Matchers {
       rollups = List(RollupSpec("by_region", List("region"), List("order_count"), None))
     ).right.get
     RollupMaterializer.materialize(spark, missing, missing.rollups.head).isLeft shouldBe true
+
   }
 }
 
@@ -454,4 +457,83 @@ class RollupSchemaParitySpec extends AnyFunSuite with Matchers {
     val connectorNames = df.columns.toList.sorted
     coreNames shouldBe connectorNames
   }
+}
+
+// ===== Algebraic state wiring (Ticket 6 contract pass) =====
+
+class RollupMaterializerAlgebraicSpec extends AnyFunSuite with Matchers {
+
+  import io.sm8.core.expr.Expr
+  import io.sm8.core.rel.{AggregateCall, AggregateFn}
+  import io.sm8.core.model.{Measure, RollupSpec}
+  import io.sm8.core.schema.{Field, SealedDataType}
+
+  // Self-contained fixture (the RollupMaterializerSpec class's fixtures
+  // are private; mirror them here so the Algebraic spec is independent).
+
+  private def buildSpark() = {
+    val s = SparkSession.builder()
+      .master("local[1]")
+      .appName("RollupMaterializerAlgebraicSpec")
+      .config("spark.ui.enabled", "false")
+      .config("spark.sql.shuffle.partitions", "1")
+      .config("spark.driver.host", "127.0.0.1")
+      .config("spark.driver.bindAddress", "127.0.0.1")
+      .getOrCreate()
+    s.sparkContext.setLogLevel("WARN")
+    s
+  }
+
+  private val dims = List(Dimension.field("region", "region"))
+  private val meas = List(
+    Measure("order_count",
+      AggregateCall(fn = AggregateFn.Count, input = None, alias = "order_count")),
+    Measure.aggregate("avg_amount", AggregateFn.Avg, Expr.FieldRef("amount")),
+    Measure.aggregate("total_amount", AggregateFn.Sum, Expr.FieldRef("amount")))
+
+  private def model(rollups: List[RollupSpec]): Model =
+    Model.of(
+      name = "sales", version = 1,
+      dimensions = dims, measures = meas,
+      source = SourceRef.ByName(table = "sales_base"),
+      rollups = rollups).right.get
+
+  test("Algebraic state columns emitted for Avg: count__amount, sum__amount, sumsq__amount") {
+    val spec = RollupSpec("by_region_avg", List("region"), List("avg_amount"), None)
+    val m = model(List(spec))
+    val spark = buildSpark()
+    import spark.implicits._
+    List(Sale("east", "i1", 100L, 1), Sale("east", "i2", 200L, 2), Sale("west", "i1", 50L, 3))
+      .toDF("region", "item", "amount", "units").createOrReplaceTempView("sales_base")
+    RollupMaterializer.materialize(spark, m, spec, eager = false).isRight shouldBe true
+    val df = spark.table("sales__by_region_avg")
+    df.columns.toSet should contain allOf ("region", "count__amount", "sum__amount", "sumsq__amount")
+    df.schema("count__amount").dataType shouldBe org.apache.spark.sql.types.LongType
+    df.schema("sum__amount").dataType shouldBe org.apache.spark.sql.types.DoubleType
+    df.schema("sumsq__amount").dataType shouldBe org.apache.spark.sql.types.DoubleType
+  }
+
+  test("validateSpec accepts Avg + Sum together (Algebraic + Additive in one rollup)") {
+    val spec = RollupSpec("by_region_mixed", List("region"), List("avg_amount", "total_amount"), None)
+    val m = model(List(spec))
+    RollupMaterializer.validateSpec(m, spec).isRight shouldBe true
+  }
+
+  test("n=1 single-observation edge: materialized sum for a 1-row group equals the base-path sum") {
+    val spec = RollupSpec("solo", List("region"), List("total_amount"), None)
+    val m = model(List(spec))
+    val spark = buildSpark()
+    import spark.implicits._
+    List(Sale("solo-region", "i1", 42L, 1)).toDF("region", "item", "amount", "units")
+      .createOrReplaceTempView("sales_base")
+    RollupMaterializer.materialize(spark, m, spec, eager = false).isRight shouldBe true
+    val baseSum = spark.table("sales_base")
+      .filter("region = 'solo-region'").groupBy("region").sum("amount")
+      .collect().head.getLong(1)
+    baseSum shouldBe 42L
+    // The materialized rollup carries the same partial state.
+    val rollSum = spark.table("sales__solo").collect().head.getLong(1)
+    rollSum shouldBe 42L
+  }
+
 }
