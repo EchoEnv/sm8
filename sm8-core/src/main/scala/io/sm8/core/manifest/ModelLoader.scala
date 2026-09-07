@@ -244,6 +244,11 @@ object ModelLoader {
  * null stays the canonical "no entries" form; a scalar fails loud.
  */
  private def parseDimensionsE(seq: Seq[Any]): Either[ManifestError, List[io.sm8.core.model.Dimension]] = {
+  /** Parse one dimension entry into a typed Dimension.
+   *
+   * @param m the entry map
+   * @return the typed Dimension, or a typed `ManifestError`
+   */
   def parseOne(m: java.util.Map[_, _]): Either[ManifestError, io.sm8.core.model.Dimension] = {
     val name = stringField(m, "name")
     val expr = stringField(m, "expr").orElse(name)
