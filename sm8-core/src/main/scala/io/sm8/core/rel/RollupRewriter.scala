@@ -135,13 +135,15 @@ object RollupRewriter {
     /** The rollup's physical table is missing one or more columns the
       * rewriter routed against (a pre-T8 `sumsq__F`-shaped table
       * referenced as `m2__F`, an old schema before a refactor, etc.).
-      * PERMANENT in the sense that "this exact table is unusable" —
-      * distinct from AlgebraicStateNotWired (the rollup never HAD
-      * the state) and from UnsplittableAggregate (the measure is
-      * algebraically unsplittable). Detection lives in the Spark
-      * connector's lowerScan boundary, which compares the IR scan's
-      * declared schema to the actual `df.columns`; the typed refusal
-      * never crashes with a raw AnalysisException at runtime.
+      * Pure-core detection is IMPOSSIBLE — the rewriter only sees
+      * declared schemas; the physical table lives behind the
+      * connector's IO boundary. This case is therefore intentionally
+      * never instantiated by the rewriter: the CONNECTOR detects the
+      * staleness at its lowerScan boundary and emits a typed
+      * `EngineError.UnsupportedCapability` whose capability tag is
+      * `"RollupSchemaStale"` — this case object exists in the closed
+      * ADT so the observer taxonomy is complete and the
+      * string-tag ↔ ADT correspondence stays test-checkable.
       * Recovery = recreate the rollup via `sm8 rollup refresh`
       * (re-materializes with the current schema contract). */
     case object RollupSchemaStale extends RollupRewriteRefusal
@@ -166,6 +168,21 @@ object RollupRewriter {
     */
   def normalizeGrain(g: Option[String]): Option[String] =
     g.map(_.trim.toLowerCase).filter(_.nonEmpty)
+
+  /** The state-column name prefixes the rollup schema contract uses
+    * (`count__F`, `sum__F`, `min__F`, `max__F`, `m2__F` for an input
+    * field F). Single source of truth: `stateColumnsFor` and
+    * `reconciledRollupSchema` emit names with these prefixes, and
+    * engine connectors use this predicate to recognize rollup state
+    * columns on a resolved physical table (the staleness gate).
+    *
+    * @param name a column name to test
+    * @return true when the name follows the state-column convention
+    */
+  def isStateColumnName(name: String): Boolean =
+    name.startsWith("count__") || name.startsWith("sum__") ||
+      name.startsWith("min__") || name.startsWith("max__") ||
+      name.startsWith("m2__")
 
   // -- Entry point --
 

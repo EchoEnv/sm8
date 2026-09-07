@@ -759,6 +759,10 @@ class RollupMaterializerAlgebraicSpec extends AnyFunSuite with Matchers {
     // that LACKS m2__amount (the pre-Welford shape).
     val stale = spark.table("sales__by_region_stale").drop("m2__amount")
     stale.createOrReplaceTempView("sales__by_region_stale")
+    // Precondition pin (tiger L2): confirm the drop took effect BEFORE the
+    // lowerer call so the test fails on a future Spark version that
+    // lazy-resolves the drop at view-resolution time, not silently.
+    spark.table("sales__by_region_stale").columns should not contain ("m2__amount")
     // Route: the rewriter still matches (its gate is logical), so
     // the plan lowers — and the staleness gate must fire with a
     // typed error naming the missing column.
