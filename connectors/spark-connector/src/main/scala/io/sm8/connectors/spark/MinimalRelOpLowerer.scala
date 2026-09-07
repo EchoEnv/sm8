@@ -74,7 +74,7 @@ import io.sm8.core.model.{
  CalculatedMeasure, Dimension, FilterSpec, JoinSpec, Measure, Model,
  ModelPolicyDefaults, ModelStatus, SourceRef,
 }
-import io.sm8.core.rel.{RelOp, SortDirection, NullOrdering, AggregateCall, AggregateFn}
+import io.sm8.core.rel.{RelOp, RollupRewriter, SortDirection, NullOrdering, AggregateCall, AggregateFn}
 import io.sm8.core.schema.SealedDataType
 
 import org.apache.spark.sql.{Column, DataFrame, SparkSession}
@@ -229,6 +229,33 @@ final class MinimalRelOpLowerer(
  resolved.flatMap { df =>
   if (scan.projection.isEmpty) Right(df)
   else PortableExprCompiler.colsOf(scan.projection).map(df.select(_: _*))
+ }.flatMap { df =>
+  // Rollup state-column staleness gate. A declared schema that
+  // carries rollup state columns (per the core vocabulary helper
+  // `RollupRewriter.isStateColumnName` — single source of truth,
+  // no vocabulary duplication across layers) is a REWRITER-ROUTED
+  // rollup scan: every one of those columns must exist on the
+  // physical table, or the plan would die with a raw
+  // AnalysisException at first action — the silent-failure class
+  // a typed refusal exists to prevent (e.g. a pre-Welford table
+  // still carrying sumsq__F where the plan reads m2__F after a
+  // state-contract change). Plain base-table scans (no
+  // state-column-shaped fields in the declared schema) skip this
+  // gate entirely — zero behavior change for non-rollup queries.
+  // Recovery: `sm8 rollup refresh` re-materializes the table under
+  // the current schema contract.
+  val declaredStateCols = scan.schema.map(_.name).filter(RollupRewriter.isStateColumnName)
+  val missing = declaredStateCols.filterNot(df.columns.contains)
+  if (missing.nonEmpty)
+    Left(EngineError.UnsupportedCapability(
+      engine     = identity.name,
+      capability = "RollupSchemaStale",
+      message = s"rollup scan '${scan.sourceRef}' declares state column(s) " +
+        s"${missing.mkString(", ")} that the physical table does not have " +
+        s"(has: ${df.columns.mkString(", ")}). The rollup table is stale relative to the " +
+        "current schema contract — re-materialize it via `sm8 rollup refresh` " +
+        "or drop the rollup declaration."))
+  else Right(df)
  }
  }
 
