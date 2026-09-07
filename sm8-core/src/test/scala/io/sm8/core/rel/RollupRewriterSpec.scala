@@ -560,7 +560,7 @@ class RollupRewriterSpec extends AnyFunSuite with Matchers {
       ))
   }
 
-  test("StddevSample on Avg-only rollup -> AlgebraicStateNotWired (sumsq__F missing, recoverable)") {
+  test("StddevSample(tax) on a rollup declaring Avg(tax) -> UnsplittableAggregate (identity refusal precedes decomposability)") {
     // algebraicModel's rollup carries avg_fare state columns
     // (count__fare, sum__fare, sumsq__fare — stateColumnsFor emits
     // all three for ANY algebraic measure), so build a rollup whose

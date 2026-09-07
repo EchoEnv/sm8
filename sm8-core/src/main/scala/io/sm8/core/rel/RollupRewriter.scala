@@ -475,7 +475,7 @@ object RollupRewriter {
     // dangling base-column reference like Avg(fare) over a rollup
     // scan that has no `fare` column) — they exist only as the
     // outer Project derivations.
-    val (additiveCalls, algebraicFragments) = c.aggregates.flatMap { a =>
+    val (additiveCalls, algebraicPairs) = c.aggregates.flatMap { a =>
       algebraicReaggregation(spec, a, model) match {
         case Right(frag) => Right((a, frag)) :: Nil
         case Left(_)     => Left(a) :: Nil
@@ -484,15 +484,15 @@ object RollupRewriter {
       case (lefts, rights) =>
         (lefts.collect { case Left(a) => a }, rights.collect { case Right(p) => p })
     }
-    if (algebraicFragments.isEmpty) c.above(agg)
+    if (algebraicPairs.isEmpty) c.above(agg)
     else {
       // Inner Aggregate: re-based ADDITIVE calls only, plus the
       // algebraic re-aggregate totals. Outer Project re-emits
       // additive outputs by FieldRef passthrough and algebraic ones
       // as derived Exprs. Aliases = request aliases (contract #3).
-      val extraCalls = algebraicFragments.flatMap { case (_, frag) => frag.innerCalls }
+      val extraCalls = algebraicPairs.flatMap { case (_, frag) => frag.innerCalls }
       val innerAgg = agg.copy(aggregates = additiveCalls.map(rebaseAggregate(_, spec)) ++ extraCalls)
-      val derived = algebraicFragments.map { case (a, frag) => (a.alias, frag.derivedExpr) }.toMap
+      val derived = algebraicPairs.map { case (a, frag) => (a.alias, frag.derivedExpr) }.toMap
       val projections: List[(Expr, String)] = c.aggregates.map { a =>
         derived.get(a.alias) match {
           case Some(expr: Expr) => (expr, a.alias)
@@ -561,12 +561,14 @@ object RollupRewriter {
     }
     // Exhaustive by sealed-trait construction: the early
     // decomposability gate guarantees fn is one of the five
-    // Algebraic cases here.
+    // Algebraic cases here. A defensive fall-through (e.g.
+    // Literal(NullValue, Double)) would silently route a future
+    // 6th Algebraic AggregateFn to NULL — exactly the "silent
+    // defaulting" soundness bug the closed ADT discipline
+    // prevents elsewhere (AggregateFn.decomposability's own match
+    // is exhaustive). MatchError keeps the failure mode loud.
     val guardedVariance: Expr = a.fn match {
       case AggregateFn.Avg =>
-        // sum_total / count_total (both non-null-guarded: Sum over
-        // non-nullable count partials + nullable sum partials keeps
-        // engine Sum NULL-skipping semantics identical to base path).
         Expr.Divide(
           Expr.FieldRef(totalName(sumCol)),
           Expr.FieldRef(totalName(countCol)))
@@ -580,7 +582,11 @@ object RollupRewriter {
       case AggregateFn.StddevPopulation =>
         Expr.FunctionCall("sqrt", Seq(
           stddevPopGuardExpr(totalName(countCol), totalName(sumCol), totalName(sumSqCol))))
-      case _ => Expr.Literal(LiteralValue.NullValue, SealedDataType.Double)
+      case other =>
+        throw new MatchError(
+          s"algebraicReaggregation: no derived-expression arm for AggregateFn.${other}. " +
+          s"The decomposability gate should have made this unreachable; if you added a " +
+          s"new Algebraic AggregateFn, extend this match first.")
     }
     Right(AlgebraicFragment(innerCalls, guardedVariance))
   }
