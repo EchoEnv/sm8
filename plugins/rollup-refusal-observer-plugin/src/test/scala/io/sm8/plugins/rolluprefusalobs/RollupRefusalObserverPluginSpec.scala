@@ -74,19 +74,26 @@ class RollupRefusalObserverPluginSpec extends AnyFunSuite with Matchers with Bef
     MetricsRegistry.register(new TestSink())
   }
 
-  private def emptyContext: Context = Context(
-    stage   = PipelineStage.Execute,
-    request = io.sm8.core.engine.EngineHookRequest(
-      model      = io.sm8.core.model.Model.of(
-                    name = "x", version = 1,
-                    dimensions = Nil, measures = Nil,
-                    source = io.sm8.core.model.SourceRef.ByName(table = "t")).right.get,
-      mcpRequest = io.sm8.core.engine.QueryRequest(model = "x"),
-      cacheKey   = "k"),
-    result  = None,
-    meta    = Map.empty,
-    stop    = false
-  )
+  private def emptyContext: Context = {
+    val model = io.sm8.core.model.Model.of(
+      name = "x", version = 1,
+      dimensions = Nil, measures = Nil,
+      source = io.sm8.core.model.SourceRef.ByName(table = "t")
+    ) match {
+      case Right(m) => m
+      case Left(e)  => fail(s"fixture model failed validation: $e")
+    }
+    Context(
+      stage   = PipelineStage.Execute,
+      request = io.sm8.core.engine.EngineHookRequest(
+        model      = model,
+        mcpRequest = io.sm8.core.engine.QueryRequest(model = "x"),
+        cacheKey   = "k"),
+      result  = None,
+      meta    = Map.empty,
+      stop    = false
+    )
+  }
 
   test("plugin name is stable: rollup-refusal-observer") {
     plugin.name shouldBe "rollup-refusal-observer"
