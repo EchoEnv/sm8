@@ -440,9 +440,12 @@ class RollupRewriterSpec extends AnyFunSuite with Matchers {
     // Outer shape: Project over Aggregate (ADR-0023 two-phase).
     val proj = r.plan.asInstanceOf[RelOp.Project]
     // Contract #3: outer alias equals the REQUEST measure alias.
-    proj.expressions.map(_._2) shouldBe List("avg_fare")
+    // Output-schema parity (T8 fix): group-set columns prefix the
+    // projection — [carrier] then measures.
+    proj.expressions.map(_._2) shouldBe List("carrier", "avg_fare")
+    proj.expressions.head._1 shouldBe Expr.FieldRef("carrier")
     // Derived: Divide(sum__fare_total, count__fare_total).
-    proj.expressions.head._1 shouldBe
+    proj.expressions(1)._1 shouldBe
       Expr.Divide(Expr.FieldRef("sum__fare_total"), Expr.FieldRef("count__fare_total"))
     // Inner Aggregate re-aggregates the state columns with Sum calls
     // using the <state>__<F>_total alias convention (contract #6).
@@ -486,11 +489,11 @@ class RollupRewriterSpec extends AnyFunSuite with Matchers {
     out shouldBe a[RollupRewriter.RollupRewriteResult.Rewritten]
     val proj = out.asInstanceOf[RollupRewriter.RollupRewriteResult.Rewritten]
       .plan.asInstanceOf[RelOp.Project]
-    // Outer Project: additive passthrough + algebraic derived, in
-    // REQUEST order, aliases = request aliases.
-    proj.expressions.map(_._2) shouldBe List("rows", "avg_fare")
-    proj.expressions.head._1 shouldBe Expr.FieldRef("rows")
-    proj.expressions(1)._1 shouldBe
+    // Outer Project: group cols + additive passthrough + algebraic
+    // derived, aliases = request names.
+    proj.expressions.map(_._2) shouldBe List("carrier", "rows", "avg_fare")
+    proj.expressions(1)._1 shouldBe Expr.FieldRef("rows")
+    proj.expressions(2)._1 shouldBe
       Expr.Divide(Expr.FieldRef("sum__fare_total"), Expr.FieldRef("count__fare_total"))
     // Inner Aggregate carries ALL re-aggregates: the additive Count
     // re-base (Sum(count__rows) AS rows — keeps the request alias)
@@ -594,9 +597,11 @@ class RollupRewriterSpec extends AnyFunSuite with Matchers {
     out shouldBe a[RollupRewriter.RollupRewriteResult.Rewritten]
     val proj = out.asInstanceOf[RollupRewriter.RollupRewriteResult.Rewritten]
       .plan.asInstanceOf[RelOp.Project]
-    proj.expressions.map(_._2) shouldBe List("avg_fare", "fare_stddev")
+    // Output-schema parity: group cols prefix, then measures in
+    // request order.
+    proj.expressions.map(_._2) shouldBe List("carrier", "avg_fare", "fare_stddev")
     // StddevSample derives as sqrt(guarded-variance): FunctionCall("sqrt", ...).
-    proj.expressions(1)._1 shouldBe
+    proj.expressions(2)._1 shouldBe
       Expr.FunctionCall("sqrt", Seq(
         Expr.CaseWhen(
           List((
@@ -604,9 +609,7 @@ class RollupRewriterSpec extends AnyFunSuite with Matchers {
               Expr.Literal(LiteralValue.IntValue(2), SealedDataType.Int)),
             Expr.Literal(LiteralValue.NullValue, SealedDataType.Double))),
           Expr.Divide(
-            Expr.Subtract(Expr.FieldRef("sumsq__fare_total"),
-              Expr.Divide(Expr.Multiply(Expr.FieldRef("sum__fare_total"), Expr.FieldRef("sum__fare_total")),
-                Expr.FieldRef("count__fare_total"))),
+            Expr.FieldRef("m2__fare_total"),
             Expr.Subtract(Expr.FieldRef("count__fare_total"),
               Expr.Literal(LiteralValue.IntValue(1), SealedDataType.Int))))
       ))
@@ -614,7 +617,7 @@ class RollupRewriterSpec extends AnyFunSuite with Matchers {
 
   test("StddevSample(tax) on a rollup declaring Avg(tax) -> UnsplittableAggregate (identity refusal precedes decomposability)") {
     // algebraicModel's rollup carries avg_fare state columns
-    // (count__fare, sum__fare, sumsq__fare — stateColumnsFor emits
+    // (count__fare, sum__fare, m2__fare — stateColumnsFor emits
     // all three for ANY algebraic measure), so build a rollup whose
     // declared algebraic measure has a DIFFERENT input field to
     // exercise the per-field availability check.
@@ -678,35 +681,32 @@ class RollupRewriterSpec extends AnyFunSuite with Matchers {
 
   // ===== 5. Algebraic NULL guards (humpback finding) =====
 
-  test("stddev_samp guard: total n < 2 -> NULL (engine parity with base path)") {
-    val e = RollupRewriter.stddevSampGuardExpr("n", "s", "ss")
+  test("variance_samp guard (Welford): total n < 2 -> NULL (engine parity with base path)") {
+    val e = RollupRewriter.varianceSampGuardExpr("n", "m2")
     e shouldBe a[Expr.CaseWhen]
     val Expr.CaseWhen(branches, _) = e
     val (cond, res) = branches.head
-    // Condition references the caller-named re-aggregated total-n column.
     cond shouldBe Expr.LessThan(
       Expr.FieldRef("n"),
       Expr.Literal(LiteralValue.IntValue(2), SealedDataType.Int))
-    // Result of the guarded branch is NULL.
     res shouldBe Expr.Literal(LiteralValue.NullValue, SealedDataType.Double)
+    val Expr.CaseWhen(_, body) = e
+    body shouldBe Expr.Divide(
+      Expr.FieldRef("m2"),
+      Expr.Subtract(Expr.FieldRef("n"), Expr.Literal(LiteralValue.IntValue(1), SealedDataType.Int)))
   }
 
-  test("n=1 single-observation group edge: population stddev guard (n<=0 -> NULL, else defined)") {
-    val e = RollupRewriter.stddevPopGuardExpr("n", "s", "ss")
+  test("variance_pop guard (Welford): n<=0 -> NULL, else M2/n") {
+    val e = RollupRewriter.variancePopGuardExpr("n", "m2")
     e shouldBe a[Expr.CaseWhen]
     val Expr.CaseWhen(branches, _) = e
     val (cond, res) = branches.head
     cond shouldBe Expr.LessOrEqual(
       Expr.FieldRef("n"),
       Expr.Literal(LiteralValue.IntValue(0), SealedDataType.Int))
-    // branches.head is the GUARDED branch (n<=0 -> NULL); assert it.
     res shouldBe Expr.Literal(LiteralValue.NullValue, SealedDataType.Double)
-    // The non-guarded body computes the population form
-    // (sumSq - sum^2/n) / n: an n=1 group yields the defined 0.0 at
-    // eval time (x - x^2 = 0).
     val Expr.CaseWhen(_, body) = e
-    body shouldBe a[Expr.Divide]
-    body.toString shouldBe "Divide(Subtract(FieldRef(ss),Divide(Multiply(FieldRef(s),FieldRef(s)),FieldRef(n))),FieldRef(n))"
+    body shouldBe Expr.Divide(Expr.FieldRef("m2"), Expr.FieldRef("n"))
   }
 
   // -- helpers --

@@ -469,6 +469,73 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
       val res: Either[EngineError, Column] = PortableExprCompiler.toColumn(fc)
       res shouldBe a [Left[_, _]]
       res.swap.toOption.get shouldBe a [EngineError.UnsupportedCapability]
+      // T8 (ADR-0023): the message now reflects the builtin allowlist
+      // contract (currently: sqrt). Verifying the substrings pins the
+      // contract without over-asserting exact wording.
+      val msg = res.swap.toOption.get.message
+      msg should include ("concat_ws")
+      msg should include ("allowlist")
+    } finally { spark.stop() }
+  }
+
+  // ===== ADR-0023 builtin allowlist: sqrt (T8 of the pre-aggregation map) =====
+  //
+  // ADR-0023 routing contract: the rollup rewriter emits outer-Project
+  // derivations for Stddev*/Variance* as `FunctionCall("sqrt", guardedVar)`.
+  // Without this compile arm, every routed algebraic query fails at the
+  // engine boundary — the PR-338 bug class. The arm is a hand-audited
+  // mapping to Spark's driver-side `org.apache.spark.sql.functions.sqrt`
+  // (no UDFs, no closure capture — closure-safety holds). These tests
+  // pin the contract.
+
+  test("T8: toColumn(FunctionCall('sqrt', field)) yields a Right Column (compiled, no Left)") {
+    val spark = buildFakeSpark()
+    try {
+      val fc: Expr = Expr.FunctionCall(
+        name = "sqrt",
+        args = List(Expr.FieldRef("x")))
+      val res: Either[EngineError, Column] = PortableExprCompiler.toColumn(fc)
+      res.isRight shouldBe true
+      // The compiled column must reference the underlying field name
+      // (the Expr lower layer threads the arg through; we don't pin the
+      // exact Spark Expression form, only that it survives compile and
+      // carries the column name).
+      val col: Column = res.toOption.get
+      col.toString should include ("x")
+    } finally { spark.stop() }
+  }
+
+  test("T8: toColumn(FunctionCall('SQRT', field)) is case-insensitive (name normalises lower-case)") {
+    val spark = buildFakeSpark()
+    try {
+      val fc: Expr = Expr.FunctionCall(
+        name = "SQRT",
+        args = List(Expr.Literal(LiteralValue.IntValue(4), SealedDataType.Int)))
+      val res: Either[EngineError, Column] = PortableExprCompiler.toColumn(fc)
+      res.isRight shouldBe true
+    } finally { spark.stop() }
+  }
+
+  test("T8: toColumn(FunctionCall('sqrt')) with zero args -> Left(UnsupportedCapability, sqrt-specific)") {
+    val spark = buildFakeSpark()
+    try {
+      val fc: Expr = Expr.FunctionCall(name = "sqrt", args = Nil)
+      val res: Either[EngineError, Column] = PortableExprCompiler.toColumn(fc)
+      res shouldBe a [Left[_, _]]
+      val err = res.swap.toOption.get.asInstanceOf[EngineError.UnsupportedCapability]
+      err.message should include ("takes exactly 1 argument")
+    } finally { spark.stop() }
+  }
+
+  test("T8: toColumn(FunctionCall('sqrt', x, y)) with two args -> Left(UnsupportedCapability, sqrt-specific)") {
+    val spark = buildFakeSpark()
+    try {
+      val fc: Expr = Expr.FunctionCall(
+        name = "sqrt",
+        args = List(Expr.FieldRef("x"), Expr.FieldRef("y")))
+      val res: Either[EngineError, Column] = PortableExprCompiler.toColumn(fc)
+      res shouldBe a [Left[_, _]]
+      res.swap.toOption.get.message should include ("takes exactly 1 argument")
     } finally { spark.stop() }
   }
 

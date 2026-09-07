@@ -362,7 +362,7 @@ object RollupRewriter {
         // two-phase Aggregate→Project re-aggregation with NULL
         // guards. The gate is the rollup schema itself: when the
         // spec declares this measure's partial state columns
-        // (count__F/sum__F/sumsq__F via stateColumnsFor), the
+        // (count__F/sum__F/m2__F via stateColumnsFor), the
         // algebraic fn ROUTES; when they are missing (older
         // materialized table, or the rollup doesn't carry this
         // measure), refuse as RECOVERABLE (AlgebraicStateNotWired)
@@ -506,13 +506,21 @@ object RollupRewriter {
       val extraCalls = algebraicPairs.flatMap { case (_, frag) => frag.innerCalls }
       val innerAgg = agg.copy(aggregates = additiveCalls.map(rebaseAggregate(_, spec)) ++ extraCalls)
       val derived = algebraicPairs.map { case (a, frag) => (a.alias, frag.derivedExpr) }.toMap
-      val projections: List[(Expr, String)] = c.aggregates.map { a =>
+      // Output-schema parity (contract #3): the outer Project must
+      // re-emit the GROUP-SET columns first (in request order) so the
+      // rollup path's result schema matches the base path's — an
+      // Aggregate node's output is (groupBy ++ measures); a Project
+      // that carries only measures would silently drop the dims.
+      val groupProjections: List[(Expr, String)] = c.groupSet.collect {
+        case Expr.FieldRef(name) => (Expr.FieldRef(name): Expr, name)
+      }
+      val measureProjections: List[(Expr, String)] = c.aggregates.map { a =>
         derived.get(a.alias) match {
           case Some(expr: Expr) => (expr, a.alias)
           case _                => (Expr.FieldRef(a.alias), a.alias)
         }
       }
-      c.above(RelOp.Project(innerAgg, projections))
+      c.above(RelOp.Project(innerAgg, groupProjections ++ measureProjections))
     }
   }
 
@@ -558,10 +566,21 @@ object RollupRewriter {
     *    guards wired (guard builders + sqrt).
     *
     * State-column name convention matches `stateColumnsFor` and the
-    * connector materializer: `count__F`, `sum__F`, `sumsq__F` for
+    * connector materializer: `count__F`, `sum__F`, `m2__F` for
     * input field F. Inner total aliases use the
     * `<state>__<F>_total` convention (de-conflicts same-prefix
     * columns, per ADR-0023 routing contract #6).
+    *
+    * State representation: (count__F, sum__F, m2__F).
+    *
+    * The (n, sum, m2) shape eliminates the (sumSq − sum²/n)
+    * cancellation term structurally: m2 is the sum of squared
+    * deviations from each group mean — a STATISTIC that is itself
+    * additive across disjoint groups under SUM. The IR therefore
+    * expresses dispersion as M2 / (n or n-1) only, and the dispersion
+    * expressions gain a Welford-style stability guarantee. The
+    * connector materializer computes m2 via Spark's
+    * `var_pop(f) * count(f)` (Welford-style online algorithm).
     */
   private[rel] def algebraicReaggregation(
       spec: RollupSpec,
@@ -573,18 +592,20 @@ object RollupRewriter {
       .getOrElse(a.alias) // mirrors stateColumnsFor's fallback
     val countCol = s"count__$inputField"
     val sumCol = s"sum__$inputField"
-    val sumSqCol = s"sumsq__$inputField"
+    val m2Col = s"m2__$inputField"
     val available = stateColumnNames(spec, model)
     val required = a.fn match {
       case AggregateFn.Avg                  => Set(countCol, sumCol)
-      case AggregateFn.VarianceSample       => Set(countCol, sumCol, sumSqCol)
-      case AggregateFn.VariancePopulation   => Set(countCol, sumCol, sumSqCol)
-      case AggregateFn.StddevSample         => Set(countCol, sumCol, sumSqCol)
-      case AggregateFn.StddevPopulation     => Set(countCol, sumCol, sumSqCol)
+      case AggregateFn.VarianceSample       => Set(countCol, m2Col)
+      case AggregateFn.VariancePopulation   => Set(countCol, m2Col)
+      case AggregateFn.StddevSample         => Set(countCol, m2Col)
+      case AggregateFn.StddevPopulation     => Set(countCol, m2Col)
       case _                                => Set.empty[String]
     }
     if (!required.subsetOf(available)) return Left(true)
     val totalName = (sc: String) => s"${sc}_total"
+    // toList.sorted: deterministic inner-call order (a Set has none) —
+    // plan output is compared structurally in tests.
     val innerCalls: List[AggregateCall] = required.toList.sorted.map { sc =>
       AggregateCall(
         fn = AggregateFn.Sum,
@@ -600,21 +621,25 @@ object RollupRewriter {
     // defaulting" soundness bug the closed ADT discipline
     // prevents elsewhere (AggregateFn.decomposability's own match
     // is exhaustive). MatchError keeps the failure mode loud.
+    //
+    // Welford form: M2 is ADDITIVE across groups, so the guarded
+    // expressions simplify to M2_total / (n ± const) — no (sumSq -
+    // sum²/n) cancellation term exists at all.
     val guardedVariance: Expr = a.fn match {
       case AggregateFn.Avg =>
         Expr.Divide(
           Expr.FieldRef(totalName(sumCol)),
           Expr.FieldRef(totalName(countCol)))
       case AggregateFn.VarianceSample =>
-        stddevSampGuardExpr(totalName(countCol), totalName(sumCol), totalName(sumSqCol))
+        varianceSampGuardExpr(totalName(countCol), totalName(m2Col))
       case AggregateFn.StddevSample =>
         Expr.FunctionCall("sqrt", Seq(
-          stddevSampGuardExpr(totalName(countCol), totalName(sumCol), totalName(sumSqCol))))
+          varianceSampGuardExpr(totalName(countCol), totalName(m2Col))))
       case AggregateFn.VariancePopulation =>
-        stddevPopGuardExpr(totalName(countCol), totalName(sumCol), totalName(sumSqCol))
+        variancePopGuardExpr(totalName(countCol), totalName(m2Col))
       case AggregateFn.StddevPopulation =>
         Expr.FunctionCall("sqrt", Seq(
-          stddevPopGuardExpr(totalName(countCol), totalName(sumCol), totalName(sumSqCol))))
+          variancePopGuardExpr(totalName(countCol), totalName(m2Col))))
       case other =>
         throw new MatchError(
           s"algebraicReaggregation: no derived-expression arm for AggregateFn.${other}. " +
@@ -738,13 +763,13 @@ object RollupRewriter {
               case AggregateFn.Max => List(Field(s"max__$inputField", resolvedType, nullable = true))
               case AggregateFn.Avg | AggregateFn.StddevSample | AggregateFn.StddevPopulation |
                    AggregateFn.VarianceSample | AggregateFn.VariancePopulation =>
-                // Algebraic: (count, sum, sumSq) partial states per the
-                // Ticket 6 contract pass. count is Long (non-null);
-                // sum/sumSq are Double for stddev/variance parity.
+                // Algebraic: Welford-merge (count, sum, m2) partial states.
+                // count is Long (non-null); sum/m2 are Double. M2 replaces
+                // the raw sumSq after the ADR-0023 tripwire breach.
                 List(
                   Field(s"count__$inputField", SealedDataType.BigInt, nullable = false),
                   Field(s"sum__$inputField", SealedDataType.Double, nullable = true),
-                  Field(s"sumsq__$inputField", SealedDataType.Double, nullable = true))
+                  Field(s"m2__$inputField", SealedDataType.Double, nullable = true))
               case _ => Nil
             }
           case _ => Nil
@@ -784,19 +809,19 @@ object RollupRewriter {
           case _ => Nil
         }
       case Decomposability.Algebraic =>
-        // Per-input partial states: for input field F -> count__F,
-        // sum__F, sumsq__F (no collisions across measures over
-        // different inputs; Welford-merge-friendly). Ticket 6 of
+        // Per-input Welford partial states: for input field F ->
+        // count__F, sum__F, m2__F (no collisions across measures over
+        // different inputs). Ticket 6 of
         // docs/wayfinder/2026-09-06-pre-aggregation.md materializes
-        // these; Avg needs (count__F, sum__F). Names match the
-        // connector materializer's column names exactly (the
-        // reconciledRollupSchema helper + the connector buildRollupDf
-        // both read these).
+        // these; Avg needs (count__F, sum__F); dispersion fns need
+        // (count__F, m2__F). Names match the connector materializer's
+        // column names exactly (the reconciledRollupSchema helper +
+        // the connector buildRollupDf both read these).
         val inputName = m.input.collectFirst { case Expr.FieldRef(f) => f }.getOrElse(m.alias)
         List(
           countCol(s"count__$inputName"),
           col(s"sum__$inputName"),
-          col(s"sumsq__$inputName"))
+          col(s"m2__$inputName"))
       case _ => Nil
     }
   }
@@ -848,33 +873,27 @@ object RollupRewriter {
     * preference is a Ticket 5 storage concern — this is the
     * EXPR-level guard contract the regression spec pins.)
     */
-  private[rel] def stddevSampGuardExpr(nCol: String, sumCol: String, sumSqCol: String): Expr = {
-    // nCol/sumCol/sumSqCol name the RE-AGGREGATED total columns the
-    // caller's rewritten Aggregate projects (Sum over the per-input
-    // partials from stateColumnsFor).
+  /** Variance(sample) guard expr over (count, M2) Welford state.
+    * n < 2 -> NULL (sample variance undefined for single observation).
+    * sample variance = M2 / (n - 1); M2 is additive across groups.
+    * No cancellation: the (sumSq - sum²/n) term that defined the
+    * pre-Welford form vanishes. */
+  private[rel] def varianceSampGuardExpr(nCol: String, m2Col: String): Expr = {
     val totalN = Expr.FieldRef(nCol)
-    val totalSum = Expr.FieldRef(sumCol)
-    val totalSumSq = Expr.FieldRef(sumSqCol)
+    val totalM2 = Expr.FieldRef(m2Col)
     val guard = Expr.LessThan(totalN, Expr.Literal(LiteralValue.IntValue(2), SealedDataType.Int))
-    val numerator = Expr.Subtract(totalSumSq, Expr.Divide(Expr.Multiply(totalSum, totalSum), totalN))
-    val denominator = Expr.Subtract(totalN, Expr.Literal(LiteralValue.IntValue(1), SealedDataType.Int))
-    val body = Expr.Divide(numerator, denominator)
+    val body = Expr.Divide(totalM2,
+      Expr.Subtract(totalN, Expr.Literal(LiteralValue.IntValue(1), SealedDataType.Int)))
     Expr.CaseWhen(List((guard, Expr.Literal(LiteralValue.NullValue, SealedDataType.Double))), body)
   }
 
-  /** n = 1 single-observation group: stddev_samp is undefined ->
-    * NULL (population stddev is defined = 0). This helper emits
-    * the population guard for the regression spec: n = 1 with
-    * population semantics -> 0.0; n = 0 -> NULL. */
-  private[rel] def stddevPopGuardExpr(nCol: String, sumCol: String, sumSqCol: String): Expr = {
-    // Same contract as stddevSampGuardExpr: the args name the
-    // RE-AGGREGATED total columns.
+  /** Variance(population) guard expr over (count, M2) Welford state.
+    * n ≤ 0 -> NULL; population variance = M2 / n. M2 is additive. */
+  private[rel] def variancePopGuardExpr(nCol: String, m2Col: String): Expr = {
     val totalN = Expr.FieldRef(nCol)
-    val totalSum = Expr.FieldRef(sumCol)
-    val totalSumSq = Expr.FieldRef(sumSqCol)
+    val totalM2 = Expr.FieldRef(m2Col)
     val nZero = Expr.LessOrEqual(totalN, Expr.Literal(LiteralValue.IntValue(0), SealedDataType.Int))
-    val numerator = Expr.Subtract(totalSumSq, Expr.Divide(Expr.Multiply(totalSum, totalSum), totalN))
-    val body = Expr.Divide(numerator, totalN)
+    val body = Expr.Divide(totalM2, totalN)
     Expr.CaseWhen(List((nZero, Expr.Literal(LiteralValue.NullValue, SealedDataType.Double))), body)
   }
 

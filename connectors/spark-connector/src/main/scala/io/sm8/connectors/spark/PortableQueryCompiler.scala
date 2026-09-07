@@ -76,7 +76,9 @@ import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions.{
  avg, count, countDistinct, lit,
  max => sparkMax, min => sparkMin, sum => sparkSum,
+ stddev => sparkStddevSamp, stddev_pop => sparkStddevPop,
  sumDistinct => sparkSumDistinct,
+ variance => sparkVarSamp, var_pop => sparkVarPop,
  row_number => sparkRowNumber, rank => sparkRank, dense_rank => sparkDenseRank}
 
 // Not `final`: the P2 cluster regression tests (site 4) subclass this
@@ -101,7 +103,15 @@ class PortableQueryCompiler(val spark: SparkSession)
  */
  private val SupportedAggregates: Set[AggregateFn] = Set(
  AggregateFn.Sum, AggregateFn.Count, AggregateFn.CountDistinct,
- AggregateFn.Avg, AggregateFn.Min, AggregateFn.Max)
+ AggregateFn.Avg, AggregateFn.Min, AggregateFn.Max,
+ // ADR-0023 T8 (algebraic rollup routing): the dispersion fns are
+ // native Spark built-ins — the base path must compile them so
+ // rollup-vs-base parity is even expressible. Rollup ROUTING of
+ // these fns is governed separately by RollupRewriter's
+ // state-column availability gate; this set only gates the
+ // aggregate renderer.
+ AggregateFn.StddevSample, AggregateFn.StddevPopulation,
+ AggregateFn.VarianceSample, AggregateFn.VariancePopulation)
 
  /** Compile a portable 
  *
@@ -722,6 +732,15 @@ def renderAggregate(call: AggregateCall): Either[EngineError, Column] = {
      case AggregateFn.Avg   => Right(avg(inputCol))
      case AggregateFn.Min   => Right(sparkMin(inputCol))
      case AggregateFn.Max   => Right(sparkMax(inputCol))
+     // ADR-0023 T8: dispersion fns lower to Spark's native built-ins
+     // (driver-side Column fns — closure-safety contract holds; their
+     // NULL/edge semantics ARE the engine-parity baseline the core
+     // guard builders pin against: stddev_samp NULL for n<2,
+     // stddev_pop NULL for n=0, var_* likewise).
+     case AggregateFn.StddevSample     => Right(sparkStddevSamp(inputCol))
+     case AggregateFn.StddevPopulation => Right(sparkStddevPop(inputCol))
+     case AggregateFn.VarianceSample   => Right(sparkVarSamp(inputCol))
+     case AggregateFn.VariancePopulation => Right(sparkVarPop(inputCol))
      case other =>
       // Invariant-violation guard: pre-validation in applyAggregations
       // rejects anything outside SupportedAggregates. Reaching here
