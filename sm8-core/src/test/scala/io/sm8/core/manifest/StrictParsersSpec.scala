@@ -126,6 +126,18 @@ class StrictParsersSpec extends AnyFunSuite with Matchers {
     out.toOption.get.calculatedMeasures.size shouldBe 1
   }
 
+  test("calculated_measures: missing 'name' fails loud (previously silently dropped by getOrElse(''))") {
+    val yaml = base +
+      """
+        |calculated_measures:
+        |  - expr: "a + b"
+        |""".stripMargin
+    val out = ModelLoader.fromString(yaml)
+    out.isLeft shouldBe true
+    out.left.get shouldBe a[ManifestError.ParseFailure]
+    out.left.get.toString should include("calculated_measures[]: missing 'name'")
+  }
+
   // ===== parseJoins: non-map entry now loud =====
 
   test("joins: non-map entry fails loud (previously silently dropped by flatMap(asMap))") {
@@ -141,6 +153,21 @@ class StrictParsersSpec extends AnyFunSuite with Matchers {
     val out = ModelLoader.fromString(yaml)
     out.isLeft shouldBe true
     out.left.get shouldBe a[ManifestError.ParseFailure]
+    out.left.get.toString should include("joins[]: entry must be a map")
+  }
+
+  test("joins: missing 'name' fails loud (previously silently used getOrElse(''))") {
+    val yaml = base +
+      """
+        |joins:
+        |  - rightModel: c
+        |    kind: inner
+        |    keys: [[a, b]]
+        |""".stripMargin
+    val out = ModelLoader.fromString(yaml)
+    out.isLeft shouldBe true
+    out.left.get shouldBe a[ManifestError.ParseFailure]
+    out.left.get.toString should include("joins[]: missing 'name'")
   }
 
   test("joins: valid entry still loads (no regression)") {
