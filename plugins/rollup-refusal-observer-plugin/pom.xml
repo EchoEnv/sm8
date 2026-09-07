@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             http://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+  <modelVersion>4.0.0</modelVersion>
+
+  <!--
+    SM8 rollup-refusal-observer Hook Plugin.
+
+    Publishes the per-reason rollup-rewrite refusal counts from the
+    platform's QueryMetrics singleton into `context.meta` so the
+    existing meta-inspector surface (`sm8 inspect`) reads them with
+    zero new transport surface. Mirrors the
+    query-frequency-observer-plugin's shape: a singleton counter
+    holder closed over NOTHING by the hook, a PostExecute observer
+    that fires regardless of `Context.stop` (observer semantics),
+    and `closedOverVars = Nil` for journal-safe serialization.
+  -->
+
+  <parent>
+    <groupId>io.sm8</groupId>
+    <artifactId>sm8-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <relativePath>../../pom.xml</relativePath>
+  </parent>
+
+  <artifactId>rollup-refusal-observer-plugin_2.13</artifactId>
+  <packaging>jar</packaging>
+
+  <name>SM8 rollup-refusal-observer Plugin</name>
+  <description>SM8 Hook Plugin: publishes RollupRewriter.rewrite refusal counts from QueryMetrics into context.meta at PostExecute — the observability half of ADR-0025. Companion to the routing-invocation PR (which calls QueryMetrics.recordRollupRefusal/recordRollupRewrite).</description>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.sm8</groupId>
+      <artifactId>sm8-core_2.13</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <!--
+      Hook + Plugin conformance unification: extends the contract
+      bases (HookContractSpec, PluginContractSpec) shipped in
+      sm8-core's test-jar artifact (classifier=tests).
+    -->
+    <dependency>
+      <groupId>io.sm8</groupId>
+      <artifactId>sm8-core_2.13</artifactId>
+      <version>${project.version}</version>
+      <type>test-jar</type>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.scalatest</groupId>
+      <artifactId>scalatest_${scala.binary.version}</artifactId>
+      <version>${scalatest.version}</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin><groupId>net.alchim31.maven</groupId><artifactId>scala-maven-plugin</artifactId></plugin>
+      <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-compiler-plugin</artifactId></plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-enforcer-plugin</artifactId>
+        <executions><execution><id>enforce-no-spark</id><goals><goal>enforce</goal></goals></execution></executions>
+        <configuration>
+          <rules>
+            <bannedDependencies><excludes><exclude>org.apache.spark:*</exclude></excludes></bannedDependencies>
+          </rules>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.scalatest</groupId>
+        <artifactId>scalatest-maven-plugin</artifactId>
+        <executions><execution><id>test</id><goals><goal>test</goal></goals><phase>test</phase></execution></executions>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-source-plugin</artifactId>
+        <executions><execution><id>attach-sources</id><goals><goal>jar-no-fork</goal></goals></execution></executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>

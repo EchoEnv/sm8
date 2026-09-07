@@ -52,6 +52,7 @@
     <module>plugins/semantic-graph-plugin</module>
     <module>plugins/hook-firing-audit-plugin</module>
     <module>plugins/query-frequency-observer-plugin</module>
+    <module>plugins/rollup-refusal-observer-plugin</module>
     <module>sm8-mcp</module>
     <module>plugins/example-plugin</module>
     <module>sm8-cli</module>

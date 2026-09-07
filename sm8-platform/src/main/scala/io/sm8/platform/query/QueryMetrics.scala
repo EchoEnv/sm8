@@ -24,6 +24,7 @@
 package io.sm8.platform.query
 
 import java.util.concurrent.atomic.AtomicLong
+import scala.jdk.CollectionConverters._
 
 import io.sm8.core.cache.MetricsSink
 
@@ -58,6 +59,17 @@ object QueryMetrics extends MetricsSink {
   private val cacheMisses           = new AtomicLong(0)
   private val auditSinkUnavailable  = new AtomicLong(0)
   private val timedOut              = new AtomicLong(0)
+  // Rollup-rewrite counters. The routing-invocation change (future)
+  // will call recordRollupRewrite / recordRollupRefusal from the
+  // platform fold site; today the counts stay at zero until then.
+  private val rollupRewritesTotal       = new AtomicLong(0)
+  private val rollupRefusalsTotal       = new AtomicLong(0)
+  private val rollupRefusalsPermanent   = new AtomicLong(0)
+  // Per-reason counters: one key per RollupRewriteRefusal case
+  // (keyed by RollupRewriteRefusal.reasonName). Capped via
+  // RollupRewriteRefusalReporter (currently 8 cases; the map is
+  // bounded by the sealed trait size).
+  private val rollupRefusalsByReason = new java.util.concurrent.ConcurrentHashMap[String, AtomicLong]()
 
   // -- Per-invocation record methods (called from QueryService.runQuery) --
 
@@ -80,6 +92,47 @@ object QueryMetrics extends MetricsSink {
 
   /** Called from `CachePlugin.onPreExecute` when `cache.getJournaled(key)` returns `None`. */
   override def recordCacheMiss(): Unit = cacheMisses.incrementAndGet()
+
+  // -- Rollup-rewrite record methods --
+
+  /** Increment the rewrites counter. Called from the platform
+    * routing-invocation fold when `RollupRewriter.rewrite` returns
+    * `Rewritten`. Future call site only — no production caller yet.
+    */
+  override def recordRollupRewrite(): Unit = rollupRewritesTotal.incrementAndGet()
+
+  /** Increment the per-reason refusal counters. Called from the
+    * platform routing-invocation fold when `RollupRewriter.rewrite`
+    * returns `Unchanged(reason)`.
+    *
+    * @param reason the refusal reason; labeled via
+    *               `RollupRewriteRefusal.reasonName` for the
+    *               per-reason counter key
+    */
+  override def recordRollupRefusal(reason: io.sm8.core.rel.RollupRewriter.RollupRewriteRefusal): Unit = {
+    rollupRefusalsTotal.incrementAndGet()
+    if (io.sm8.core.rel.RollupRewriter.RollupRewriteRefusal.isPermanent(reason)) {
+      rollupRefusalsPermanent.incrementAndGet()
+    }
+    val key = io.sm8.core.rel.RollupRewriter.RollupRewriteRefusal.reasonName(reason)
+    rollupRefusalsByReason
+      .computeIfAbsent(key, _ => new AtomicLong(0))
+      .incrementAndGet()
+  }
+
+  /** Read the rollup-rewrite counters as an immutable snapshot
+    * (observer-plugin read surface).
+    *
+    * @return the rollup counter snapshot
+    */
+  override def rollupSnapshot(): io.sm8.core.cache.RollupCountersSnapshot =
+    io.sm8.core.cache.RollupCountersSnapshot(
+      rewrites          = rollupRewritesTotal.get,
+      refusals          = rollupRefusalsTotal.get,
+      refusalsPermanent = rollupRefusalsPermanent.get,
+      refusalsByReason  = rollupRefusalsByReason.asScala.toList
+                            .map { case (k, v) => (k, v.get) }
+                            .sortBy { case (k, _) => k })
 
   // -- Snapshot reader (called by MetricsService.snapshotRunner) --
 
@@ -114,6 +167,13 @@ object QueryMetrics extends MetricsSink {
                       misses = cacheMisses.get),
       errors       = ErrorCounters(
                       auditSinkUnavailable = auditSinkUnavailable.get,
-                      timedOut             = timedOut.get)
+                      timedOut             = timedOut.get),
+      rollup       = RollupCounters(
+                      rewrites           = rollupRewritesTotal.get,
+                      refusals           = rollupRefusalsTotal.get,
+                      refusalsPermanent  = rollupRefusalsPermanent.get,
+                      refusalsByReason   = rollupRefusalsByReason.asScala.toList
+                                             .map { case (k, v) => (k, v.get) }
+                                             .sortBy { case (k, _) => k })
     )
 }

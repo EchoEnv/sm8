@@ -949,4 +949,30 @@ class ReconciledRollupSchemaSpec extends AnyFunSuite with Matchers {
     byName("region").dataType shouldBe io.sm8.core.schema.SealedDataType.Varchar
     byName("count__rows").dataType shouldBe io.sm8.core.schema.SealedDataType.BigInt
   }
+
+  // -- refusal label + permanence taxonomy (observer-facing surface) --
+
+  private val allRefusals: List[RollupRewriter.RollupRewriteRefusal] = List(
+    RollupRewriter.RollupRewriteRefusal.NonCanonicalShape,
+    RollupRewriter.RollupRewriteRefusal.NoGroupSetMatch,
+    RollupRewriter.RollupRewriteRefusal.UnsplittableAggregate,
+    RollupRewriter.RollupRewriteRefusal.FilterNotEvaluable,
+    RollupRewriter.RollupRewriteRefusal.GrainMismatch,
+    RollupRewriter.RollupRewriteRefusal.SourceKindUnsupported,
+    RollupRewriter.RollupRewriteRefusal.AlgebraicStateNotWired,
+    RollupRewriter.RollupRewriteRefusal.RollupSchemaStale
+  )
+
+  test("reasonName labels are unique across the whole refusal ADT") {
+    val names = allRefusals.map(RollupRewriter.RollupRewriteRefusal.reasonName)
+    names.distinct should have size allRefusals.size
+    names.foreach(_.charAt(0).isLower shouldBe true) // stable camelCase convention
+  }
+
+  test("only UnsplittableAggregate is permanent; every other refusal is recoverable") {
+    allRefusals.foreach { r =>
+      val expected = r == RollupRewriter.RollupRewriteRefusal.UnsplittableAggregate
+      RollupRewriter.RollupRewriteRefusal.isPermanent(r) shouldBe expected
+    }
+  }
 }

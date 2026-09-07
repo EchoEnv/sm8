@@ -131,6 +131,37 @@ final case class ErrorCounters(
 ) extends Product with Serializable
 
 /**
+ * Rollup-rewrite counters surfaced by the `snapshot` handler.
+ *
+ * The rewriter has zero production callers today, so
+ * every value here stays at zero until the routing-invocation PR
+ * wires the platform fold site. The counter surface and the wire
+ * shape land together so that when the routing call is added, the
+ * observability exists from the first query.
+ *
+ * `refusalsByReason` is keyed by
+ * `RollupRewriteRefusal.reasonName` (camelCase, e.g.
+ * `"noGroupSetMatch"`); the set is bounded by the sealed
+ * `RollupRewriteRefusal` trait (eight cases in v1) and
+ * sorted alphabetically for stable wire output.
+ *
+ * @param rewrites          total `Rewritten` results from
+ *                          `RollupRewriter.rewrite` since process start
+ * @param refusals          total `Unchanged(reason)` results since
+ *                          process start
+ * @param refusalsPermanent subset of `refusals` whose reason is
+ *                          permanent (only `UnsplittableAggregate`
+ *                          in v1)
+ * @param refusalsByReason  per-reason breakdown of `refusals`
+ */
+final case class RollupCounters(
+    rewrites: Long,
+    refusals: Long,
+    refusalsPermanent: Long,
+    refusalsByReason: List[(String, Long)]
+) extends Product with Serializable
+
+/**
  * Response payload for the `snapshot` handler.
  *
  * Per ADR-012-b: the wire surface is real; the counter values
@@ -146,13 +177,16 @@ final case class ErrorCounters(
  * @param invocations   the `InvocationCounters` projection
  * @param cache         the `CacheCounters` projection
  * @param errors        the `ErrorCounters` projection
+ * @param rollup        the `RollupCounters` projection (all zero
+ *                      until the routing-invocation PR lands)
  */
 final case class MetricsSnapshot(
     startedAt: String,
     uptimeSeconds: Long,
     invocations: InvocationCounters,
     cache: CacheCounters,
-    errors: ErrorCounters
+    errors: ErrorCounters,
+    rollup: RollupCounters
 ) extends Product with Serializable
 
 // ===========================================================================

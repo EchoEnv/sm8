@@ -61,7 +61,8 @@ class MetricsServiceSpec extends AnyFunSuite with Matchers {
       uptimeSeconds = 42L,
       invocations  = InvocationCounters(total = 0, succeeded = 0, failed = 0),
       cache        = CacheCounters(hits = 0, misses = 0),
-      errors       = ErrorCounters(auditSinkUnavailable = 0, timedOut = 0)
+      errors       = ErrorCounters(auditSinkUnavailable = 0, timedOut = 0),
+      rollup       = RollupCounters(rewrites = 0, refusals = 0, refusalsPermanent = 0, refusalsByReason = Nil)
     )
     s.startedAt shouldBe "2026-09-01T00:00:00Z"
     s.uptimeSeconds shouldBe 42L
@@ -78,10 +79,15 @@ class MetricsServiceSpec extends AnyFunSuite with Matchers {
       uptimeSeconds = 1000L,
       invocations  = InvocationCounters(total = 999, succeeded = 998, failed = 1),
       cache        = CacheCounters(hits = 500, misses = 500),
-      errors       = ErrorCounters(auditSinkUnavailable = 0, timedOut = 0)
+      errors       = ErrorCounters(auditSinkUnavailable = 0, timedOut = 0),
+      rollup       = RollupCounters(rewrites = 7, refusals = 3, refusalsPermanent = 1,
+                                    refusalsByReason = List("unsplittableAggregate" -> 1))
     )
     s.invocations.total shouldBe 999
     s.cache.hits shouldBe 500
+    s.rollup.rewrites shouldBe 7
+    s.rollup.refusals shouldBe 3
+    s.rollup.refusalsPermanent shouldBe 1
   }
 
   // ------------------------------------------------------------------
