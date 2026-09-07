@@ -61,12 +61,11 @@ Land the observability surface in three pieces, all layer-clean:
 ## Layer discipline (RFC §3)
 
 - core stays free of plugin or adapter references (RULE#1).
-- The adapter-side reporter does NOT import any plugin implementation class —
-  it only adds methods to the existing `QueryMetrics` (a typed counter surface
-  in sm8-platform). This preserves the discovery / construction factory seams
+- `QueryMetrics` (the platform sink) does NOT import any plugin implementation class.
+  This preserves the discovery / construction factory seams
   from PR-191: plugins call `EngineFactory.create(plugins)`; metrics are a
   platform-level concern.
-- The new observer plugin closes over the same JVM-global counters the reporter
+- The new observer plugin closes over the same JVM-global counters `QueryMetrics`
   writes to, so plugin removal does not lose counts (the singleton owns them).
 
 ## Why a separate observer plugin (not a built-in PostExecute hook)
@@ -89,7 +88,7 @@ Operators who don't want it simply don't include it in their plugin set.
   That is the routing-invocation ticket (separate ADR when designed).
 - It does NOT change the `RollupRewriteResult` / `RollupRewriteRefusal` ADT
   surface. The sealed hierarchy is exhaustive as designed.
-- It does NOT add a runtime config flag. The reporter methods are zero-cost
+- It does NOT add a runtime config flag. The `QueryMetrics` record methods are zero-cost
   when no plugin consults them; the observer plugin is opt-in by inclusion in
   the plugin set.
 
@@ -136,5 +135,5 @@ Operators who don't want it simply don't include it in their plugin set.
 - A future "measure which refusals dominate" ticket reads from
   `QueryMetrics.snapshot()` and the plugin's `context.meta` publication;
   no new transport surface.
-- The reporter is the **only** code site the future routing-invocation PR
+- `QueryMetrics` (the platform sink) is the **only** code site the future routing-invocation PR
   must touch to wire observability — that's the contract this ADR pins.
