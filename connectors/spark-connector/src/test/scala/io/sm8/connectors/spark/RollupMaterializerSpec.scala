@@ -726,4 +726,104 @@ class RollupMaterializerAlgebraicSpec extends AnyFunSuite with Matchers {
     b shouldBe (1.0170952554310989 +- 1e-9)
   }
 
+  // ===== Schema-staleness gate (duck M-1 from the #341 review) =====
+  //
+  // A physically-materialized rollup table written under an OLDER
+  // schema contract (e.g. pre-Welford sumsq__F, or any renamed state
+  // column) must fail with a TYPED error at the lowerScan boundary —
+  // never a raw AnalysisException at first action, never wrong
+  // numbers. The gate compares the IR scan's DECLARED state-column
+  // names to the physical table's actual columns.
+
+  import io.sm8.core.engine.{EngineContext, EngineError}
+  import io.sm8.core.rel.{RelOp, RollupRewriter}
+  import io.sm8.core.model.SourceRef
+
+  test("Schema-staleness gate: stale rollup table (missing m2__F) -> typed UnsupportedCapability, not AnalysisException") {
+    val spark = buildSpark()
+    import spark.implicits._
+    List(
+      Sale("east", "i1", 100L, 1), Sale("east", "i2", 200L, 2))
+      .toDF("region", "item", "amount", "units").createOrReplaceTempView("sales_base")
+    // Materialize with the CURRENT contract (writes m2__amount).
+    val stdModel = io.sm8.core.model.Model.of(
+      name = "sales", version = 1,
+      dimensions = dims,
+      measures = meas :+ Measure.aggregate("amt_std", AggregateFn.StddevSample, Expr.FieldRef("amount")),
+      source = SourceRef.ByName(table = "sales_base"),
+      rollups = List(RollupSpec("by_region_stale", List("region"), List("amt_std"), None))
+    ).right.get
+    RollupMaterializer.materialize(spark, stdModel,
+      RollupSpec("by_region_stale", List("region"), List("amt_std"), None), eager = false).isRight shouldBe true
+    // Simulate staleness: overwrite the rollup view with a table
+    // that LACKS m2__amount (the pre-Welford shape).
+    val stale = spark.table("sales__by_region_stale").drop("m2__amount")
+    stale.createOrReplaceTempView("sales__by_region_stale")
+    // Route: the rewriter still matches (its gate is logical), so
+    // the plan lowers — and the staleness gate must fire with a
+    // typed error naming the missing column.
+    val plan = RelOp.Aggregate(
+      input = RelOp.Scan(
+        sourceRef = SourceRef.ByName(table = "sales_base"),
+        schema = List(
+          io.sm8.core.schema.Field.nonNull("region", SealedDataType.Varchar),
+          io.sm8.core.schema.Field.nonNull("amount", SealedDataType.BigInt)),
+        projection = Nil),
+      groupBy = List(Expr.FieldRef("region")),
+      aggregates = List(AggregateCall(fn = AggregateFn.StddevSample,
+        input = Some(Expr.FieldRef("amount")), alias = "amt_std")))
+    val rewritten = RollupRewriter.rewrite(plan, stdModel, None)
+    rewritten shouldBe a[RollupRewriter.RollupRewriteResult.Rewritten]
+    val identity = EngineIdentity("spark-3.5", "3.5", "sm8-spark-3.5-1.0")
+    val lowerer = new io.sm8.connectors.spark.MinimalRelOpLowerer(
+      spark, new io.sm8.connectors.spark.PortableQueryCompiler(spark), identity)
+    val result = lowerer.lower(
+      rewritten.asInstanceOf[RollupRewriter.RollupRewriteResult.Rewritten].plan,
+      EngineContext.defaultContext)
+    result.isLeft shouldBe true
+    val err = result.left.toOption.get
+    err shouldBe a[EngineError.UnsupportedCapability]
+    val msg = err.message
+    msg should include ("m2__amount")
+    msg should include ("stale")
+    msg should include ("sm8 rollup refresh")
+  }
+
+  test("Schema-staleness gate: healthy rollup table passes unchanged (no false positive)") {
+    val spark = buildSpark()
+    import spark.implicits._
+    List(
+      Sale("east", "i1", 100L, 1), Sale("east", "i2", 200L, 2))
+      .toDF("region", "item", "amount", "units").createOrReplaceTempView("sales_base")
+    val stdModel = io.sm8.core.model.Model.of(
+      name = "sales", version = 1,
+      dimensions = dims,
+      measures = meas :+ Measure.aggregate("amt_std", AggregateFn.StddevSample, Expr.FieldRef("amount")),
+      source = SourceRef.ByName(table = "sales_base"),
+      rollups = List(RollupSpec("by_region_ok", List("region"), List("amt_std"), None))
+    ).right.get
+    RollupMaterializer.materialize(spark, stdModel,
+      RollupSpec("by_region_ok", List("region"), List("amt_std"), None), eager = false).isRight shouldBe true
+    val plan = RelOp.Aggregate(
+      input = RelOp.Scan(
+        sourceRef = SourceRef.ByName(table = "sales_base"),
+        schema = List(
+          io.sm8.core.schema.Field.nonNull("region", SealedDataType.Varchar),
+          io.sm8.core.schema.Field.nonNull("amount", SealedDataType.BigInt)),
+        projection = Nil),
+      groupBy = List(Expr.FieldRef("region")),
+      aggregates = List(AggregateCall(fn = AggregateFn.StddevSample,
+        input = Some(Expr.FieldRef("amount")), alias = "amt_std")))
+    val rewritten = RollupRewriter.rewrite(plan, stdModel, None)
+    rewritten shouldBe a[RollupRewriter.RollupRewriteResult.Rewritten]
+    val identity = EngineIdentity("spark-3.5", "3.5", "sm8-spark-3.5-1.0")
+    val lowerer = new io.sm8.connectors.spark.MinimalRelOpLowerer(
+      spark, new io.sm8.connectors.spark.PortableQueryCompiler(spark), identity)
+    // The healthy table has all declared state columns: the gate
+    // passes and the query compiles.
+    lowerer.lower(
+      rewritten.asInstanceOf[RollupRewriter.RollupRewriteResult.Rewritten].plan,
+      EngineContext.defaultContext).isRight shouldBe true
+  }
+
 }

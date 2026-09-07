@@ -131,6 +131,20 @@ object RollupRewriter {
       * PERMANENT — Holistic/Positional/Approximable) so the Ticket 6
       * observer can tell recoverable from permanent refusals. */
     case object AlgebraicStateNotWired extends RollupRewriteRefusal
+
+    /** The rollup's physical table is missing one or more columns the
+      * rewriter routed against (a pre-T8 `sumsq__F`-shaped table
+      * referenced as `m2__F`, an old schema before a refactor, etc.).
+      * PERMANENT in the sense that "this exact table is unusable" —
+      * distinct from AlgebraicStateNotWired (the rollup never HAD
+      * the state) and from UnsplittableAggregate (the measure is
+      * algebraically unsplittable). Detection lives in the Spark
+      * connector's lowerScan boundary, which compares the IR scan's
+      * declared schema to the actual `df.columns`; the typed refusal
+      * never crashes with a raw AnalysisException at runtime.
+      * Recovery = recreate the rollup via `sm8 rollup refresh`
+      * (re-materializes with the current schema contract). */
+    case object RollupSchemaStale extends RollupRewriteRefusal
   }
 
   // -- Grain normalization: the SINGLE canonical helper (Ticket 3
