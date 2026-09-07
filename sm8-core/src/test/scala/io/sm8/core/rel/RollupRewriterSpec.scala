@@ -266,7 +266,7 @@ class RollupRewriterSpec extends AnyFunSuite with Matchers {
   // ===== grain agreement =====
 
   test("grain mismatch -> GrainMismatch; equal grains match; both None match") {
-    val dayRollup = RollupSpec("by_carrier_day", List("carrier"), List("rows", "total_fare"), Some("day"))
+    val dayRollup = RollupSpec("by_carrier_day", List("carrier"), List("rows", "total_fare"), Some("day"), Some("carrier"))
     val plan = canonicalPlan()
     // Query asks day, rollup is day -> match.
     RollupRewriter.rewrite(plan, model(List(dayRollup)), Some("day")) shouldBe
@@ -716,6 +716,183 @@ class RollupRewriterSpec extends AnyFunSuite with Matchers {
     case RelOp.Sort(input, _) => findAggregate(input)
     case RelOp.Limit(input, _, _) => findAggregate(input)
     case other => fail(s"no Aggregate under $other")
+  }
+
+  // ===== grain agreement: the four-arm matrix =====
+
+  test("grain matrix: (None, None) matches, grained query over grain-less rollup refuses") {
+    // Preserved v1 behavior: unchanged grain-less path.
+    RollupRewriter.rewrite(canonicalPlan(), model(List(byCarrier)), None) shouldBe
+      a[RollupRewriter.RollupRewriteResult.Rewritten]
+    RollupRewriter.rewrite(canonicalPlan(), model(List(byCarrier)), Some("day")) shouldBe
+      RollupRewriter.RollupRewriteResult.Unchanged(RollupRewriter.RollupRewriteRefusal.GrainMismatch)
+  }
+
+  test("grain matrix: grained rollup vs grain-less query still refuses (full-aggregate arm)") {
+    val dayRollup = RollupSpec("by_carrier_day", List("carrier"), List("rows", "total_fare"), Some("day"), Some("carrier"))
+    RollupRewriter.rewrite(canonicalPlan(), model(List(dayRollup)), None) shouldBe
+      RollupRewriter.RollupRewriteResult.Unchanged(RollupRewriter.RollupRewriteRefusal.GrainMismatch)
+  }
+
+  test("grain matrix: coarsening (day rollup, month query) routes for Additive-only requests") {
+    val dayRollup = RollupSpec("by_carrier_day", List("carrier"), List("rows", "total_fare"), Some("day"), Some("carrier"))
+    val out = RollupRewriter.rewrite(canonicalPlan(), model(List(dayRollup)), Some("month"))
+    out shouldBe a[RollupRewriter.RollupRewriteResult.Rewritten]
+    val r = out.asInstanceOf[RollupRewriter.RollupRewriteResult.Rewritten]
+    r.rollupName shouldBe "by_carrier_day"
+  }
+
+  test("grain matrix: non-bucket-safe request never coarsens (fail-safe GrainMismatch)") {
+    // A composite-input Sum has no state column; the coarsening fn
+    // gate refuses, and the deterministic diagnosis order reports
+    // the grain gate first.
+    val dayRollup = RollupSpec("by_carrier_day", List("carrier"), List("rows", "total_fare"), Some("day"), Some("carrier"))
+    val plan = RelOp.Aggregate(
+      input = RelOp.Scan(
+        sourceRef = SourceRef.ByName(table = "flights_raw"),
+        schema = baseSchema,
+        projection = Nil),
+      groupBy = List(Expr.FieldRef("carrier")),
+      aggregates = List(
+        AggregateCall(fn = AggregateFn.Sum, input = Some(Expr.Add(Expr.FieldRef("fare"), Expr.FieldRef("fare"))), alias = "x")))
+    val out = RollupRewriter.rewrite(plan, model(List(dayRollup)), Some("month"))
+    out shouldBe RollupRewriter.RollupRewriteResult.Unchanged(
+      RollupRewriter.RollupRewriteRefusal.GrainMismatch)
+  }
+
+  test("grain matrix: dispersion measure never coarsens (Stddev + coarser query refuses)") {
+    // The coarsening fn gate excludes dispersion fns (Stddev/
+    // Variance) despite M2-additivity — v1 scope discipline. A
+    // request carrying a Stddev measure at a coarser grain than the
+    // rollup must fail safe to the base path.
+    val dayRollup = RollupSpec(
+      "by_carrier_day", List("carrier"), List("rows", "std_fare"), Some("day"), Some("carrier"))
+    val stdModel = Model.of(
+      name = "flights",
+      version = 1,
+      dimensions = dims,
+      measures = meas :+ Measure.aggregate(
+        "std_fare", AggregateFn.StddevSample, Expr.FieldRef("fare")),
+      defaultPolicies = ModelPolicyDefaults(
+        materialize = MaterializePolicy.None,
+        cache = CachePolicy.NoCache,
+        audit = AuditPolicy.NoAudit),
+      source = SourceRef.ByName(table = "flights_raw"),
+      rollups = List(dayRollup)
+    ).right.get
+    val plan = RelOp.Aggregate(
+      input = RelOp.Scan(
+        sourceRef = SourceRef.ByName(table = "flights_raw"),
+        schema = baseSchema,
+        projection = Nil),
+      groupBy = List(Expr.FieldRef("carrier")),
+      aggregates = List(
+        AggregateCall(fn = AggregateFn.StddevSample, input = Some(Expr.FieldRef("fare")), alias = "std_fare")))
+    val out = RollupRewriter.rewrite(plan, stdModel, Some("month"))
+    out shouldBe RollupRewriter.RollupRewriteResult.Unchanged(
+      RollupRewriter.RollupRewriteRefusal.GrainMismatch)
+  }
+
+  test("grain matrix: coarsening refuses to SPLIT (month rollup, day query)") {
+    val monthRollup = RollupSpec("by_carrier_month", List("carrier"), List("rows", "total_fare"), Some("month"), Some("carrier"))
+    RollupRewriter.rewrite(canonicalPlan(), model(List(monthRollup)), Some("day")) shouldBe
+      RollupRewriter.RollupRewriteResult.Unchanged(RollupRewriter.RollupRewriteRefusal.GrainMismatch)
+  }
+
+  test("grain matrix: unknown grain label is fail-safe (never coarsens)") {
+    val dayRollup = RollupSpec("by_carrier_day", List("carrier"), List("rows", "total_fare"), Some("day"), Some("carrier"))
+    RollupRewriter.rewrite(canonicalPlan(), model(List(dayRollup)), Some("fortnight")) shouldBe
+      RollupRewriter.RollupRewriteResult.Unchanged(RollupRewriter.RollupRewriteRefusal.GrainMismatch)
+  }
+
+  test("grainRank / finerThan: total order over KnownGrains, unknowns rank None") {
+    RollupRewriter.grainRank("hour") shouldBe Some(0)
+    RollupRewriter.grainRank("year") shouldBe Some(5)
+    RollupRewriter.grainRank("fortnight") shouldBe None
+    RollupRewriter.finerThan("day", "month") shouldBe true
+    RollupRewriter.finerThan("month", "day") shouldBe false
+    RollupRewriter.finerThan("day", "day") shouldBe false // equal is not finer
+    RollupRewriter.finerThan("fortnight", "month") shouldBe false
+  }
+
+  // ===== coarsening emit: date_trunc on the grain dimension =====
+
+  /** Canonical plan grouping by the grain dim (flight_date). */
+  private def datePlan(): RelOp =
+    RelOp.Aggregate(
+      input = RelOp.Scan(
+        sourceRef = SourceRef.ByName(table = "flights_raw"),
+        schema = baseSchema,
+        projection = Nil),
+      groupBy = List(Expr.FieldRef("flight_date")),
+      aggregates = List(
+        AggregateCall(fn = AggregateFn.Count, input = None, alias = "rows")))
+
+  private val dateDims = dims :+ Dimension.field("flight_date", "flight_date", SealedDataType.Date)
+
+  private def dateModel(rollups: List[RollupSpec]): Model =
+    Model.of(
+      name = "flights",
+      version = 1,
+      dimensions = dateDims,
+      measures = meas,
+      defaultPolicies = ModelPolicyDefaults(
+        materialize = MaterializePolicy.None,
+        cache = CachePolicy.NoCache,
+        audit = AuditPolicy.NoAudit),
+      source = SourceRef.ByName(table = "flights_raw"),
+      rollups = rollups
+    ).right.get
+
+  test("coarsening emit: date_trunc wraps the grain dim when re-grouping to the query grain") {
+    val dayRollup = RollupSpec(
+      "by_date_day", List("flight_date"), List("rows"), Some("day"), Some("flight_date"))
+    val out = RollupRewriter.rewrite(datePlan(), dateModel(List(dayRollup)), Some("month"))
+    out shouldBe a[RollupRewriter.RollupRewriteResult.Rewritten]
+    val RelOp.Aggregate(_, g, _) = findAggregate(out.asInstanceOf[RollupRewriter.RollupRewriteResult.Rewritten].plan)
+    // The truncation is ALIASED back to the dim name: the Aggregate
+    // output column must stay addressable as `flight_date` (Spark
+    // would otherwise auto-name it date_trunc(month, flight_date),
+    // and every downstream name-based reference would dangle).
+    g shouldBe List(Expr.Alias("flight_date", Expr.FunctionCall(
+      "date_trunc",
+      Seq(Expr.Literal(LiteralValue.StringValue("month"), SealedDataType.Varchar),
+          Expr.FieldRef("flight_date")))))
+  }
+
+  test("coarsening emit: exact-grain request keeps the raw dim column") {
+    val dayRollup = RollupSpec(
+      "by_date_day", List("flight_date"), List("rows"), Some("day"), Some("flight_date"))
+    val out = RollupRewriter.rewrite(datePlan(), dateModel(List(dayRollup)), Some("day"))
+    out shouldBe a[RollupRewriter.RollupRewriteResult.Rewritten]
+    val RelOp.Aggregate(_, g, _) = findAggregate(out.asInstanceOf[RollupRewriter.RollupRewriteResult.Rewritten].plan)
+    g shouldBe List(Expr.FieldRef("flight_date"))
+  }
+
+  // ===== grain-dim schema override (Timestamp parity seam) =====
+
+  test("rollupSchema: grain dim overrides to Timestamp regardless of declared Date") {
+    val dayRollup = RollupSpec(
+      "by_date_day", List("flight_date"), List("rows"), Some("day"), Some("flight_date"))
+    val schema = RollupRewriter.rollupSchema(dayRollup, dateModel(List(dayRollup)))
+    val byName = schema.map(f => f.name -> f).toMap
+    byName("flight_date").dataType shouldBe SealedDataType.Timestamp
+  }
+
+  test("rollupSchema: non-grained rollup keeps the declared dim type") {
+    val schema = RollupRewriter.rollupSchema(byCarrier, model(List(byCarrier)))
+    val byName = schema.map(f => f.name -> f).toMap
+    byName("carrier").dataType shouldBe SealedDataType.Varchar
+  }
+
+  test("reconciledRollupSchema: grain dim resolves to Timestamp even when the scan says Date") {
+    val dayRollup = RollupSpec(
+      "by_date_day", List("flight_date"), List("rows"), Some("day"), Some("flight_date"))
+    val scanTypes = Map("flight_date" -> SealedDataType.Date)
+    val schema = RollupRewriter.reconciledRollupSchema(dayRollup, dateModel(List(dayRollup)), scanTypes)
+    val byName = schema.map(f => f.name -> f).toMap
+    byName("flight_date").dataType shouldBe SealedDataType.Timestamp
+    byName("count__rows").dataType shouldBe SealedDataType.BigInt
   }
 }
 

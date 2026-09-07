@@ -169,6 +169,52 @@ object RollupRewriter {
   def normalizeGrain(g: Option[String]): Option[String] =
     g.map(_.trim.toLowerCase).filter(_.nonEmpty)
 
+  /** Rank of a KNOWN grain on the coarseness order
+    * `hour < day < week < month < quarter < year`. A coarser grain
+    * has a HIGHER rank: each coarser bucket is a disjoint union of
+    * finer buckets, so per-bucket additive partials re-aggregate
+    * from finer rollups to coarser queries (never the reverse).
+    * Unknown labels rank `None` — an unknown grain is fail-safe by
+    * construction (it never equals a known grain and never
+    * subsumes one).
+    *
+    * @param normalizedGrain an already-normalized grain label
+    * @return the rank, or None when the label is not in KnownGrains
+    */
+  def grainRank(normalizedGrain: String): Option[Int] =
+    Seq("hour", "day", "week", "month", "quarter", "year").indexOf(normalizedGrain) match {
+      case -1 => None
+      case i  => Some(i)
+    }
+
+  /** True when `finer` is strictly finer than `coarser` on the
+    * KnownGrains order (both must be known; equal grains are NOT
+    * finer). The v1 coarsening arm allows a query at grain Q to
+    * serve from a rollup at grain R only when R is strictly finer
+    * than Q (bucket totals re-add; a coarser bucket cannot be
+    * split).
+    *
+    * @param finer   candidate finer grain (normalized)
+    * @param coarser candidate coarser grain (normalized)
+    * @return true iff both known and `rank(finer) &lt; rank(coarser)`
+    */
+  def finerThan(finer: String, coarser: String): Boolean =
+    (grainRank(finer), grainRank(coarser)) match {
+      case (Some(f), Some(c)) => f < c
+      case _                  => false
+    }
+
+  /** Aggregate functions the COARSENING arm may serve from a finer
+    * rollup. Additive bucket totals re-add across buckets; Avg is
+    * served via the existing algebraic two-phase shape (its
+    * `sum__F`/`count__F` partials are both additive). Dispersion
+    * fns (Stddev, Variance) are excluded despite M2-additivity —
+    * v1 scope discipline: declare the coarser rollup instead.
+    */
+  private val CoarseningFns: Set[AggregateFn] = Set(
+    AggregateFn.Sum, AggregateFn.Count, AggregateFn.Min, AggregateFn.Max, AggregateFn.Avg)
+  // (em dash removed from code line — comments only)
+
   /** The state-column name prefixes the rollup schema contract uses
     * (`count__F`, `sum__F`, `min__F`, `max__F`, `m2__F` for an input
     * field F). Single source of truth: `stateColumnsFor` and
@@ -212,7 +258,7 @@ object RollupRewriter {
     // it is a property of the MODEL, not the plan.
     if (!model.source.isInstanceOf[io.sm8.core.model.SourceRef.ByName])
       return RollupRewriteResult.Unchanged(RollupRewriteRefusal.SourceKindUnsupported)
-    val canonical = decomposeCanonical(plan)
+    val canonical = decomposeCanonical(plan, normalizeGrain(requestGrain))
     canonical match {
       case None =>
         RollupRewriteResult.Unchanged(RollupRewriteRefusal.NonCanonicalShape)
@@ -220,7 +266,7 @@ object RollupRewriter {
         val normQueryGrain = normalizeGrain(requestGrain)
         model.rollups.collectFirst {
           case spec if matchesGroupSet(spec, c) &&
-            grainsAgree(spec.timeGrain, normQueryGrain) &&
+            grainsAgree(normalizeGrain(spec.timeGrain), normQueryGrain, coarsenableAcrossBuckets(c)) &&
             aggregatesComposable(spec, c, model) &&
             filtersEvaluable(spec, c) =>
             RollupRewriteResult.Rewritten(
@@ -230,6 +276,25 @@ object RollupRewriter {
     }
   }
 
+  /** True when every aggregate the request carries may re-aggregate
+    * ACROSS time buckets (the coarsening arm's fn gate). Count must
+    * be the input-less COUNT(*) form (COUNT(expr) counts non-null
+    * values and is refused everywhere else too); DISTINCT and
+    * non-FieldRef inputs disqualify the whole request — the
+    * coarsening arm has no per-call carve-outs, so one
+    * non-bucket-safe call fails the gate (fail-safe: base path).
+    *
+    * @param c the canonical plan (supplies the request's aggregates)
+    * @return true when the request is bucket-re-aggregable
+    */
+  private def coarsenableAcrossBuckets(c: CanonicalPlan): Boolean =
+    c.aggregates.forall { a =>
+      !a.distinct &&
+        CoarseningFns.contains(a.fn) &&
+        (a.fn != AggregateFn.Count || a.input.isEmpty) &&
+        a.input.forall(_.isInstanceOf[Expr.FieldRef])
+    }
+
   // -- Canonical-shape decomposition --
 
   /** The canonical sub-shape the rewriter recognizes. */
@@ -238,6 +303,7 @@ object RollupRewriter {
       filters: List[Expr],
       groupSet: List[Expr],
       aggregates: List[AggregateCall],
+      requestGrain: Option[String],
       above: RelOp => RelOp // rebuild wrapper (Sort/Limit chain)
   )
 
@@ -245,8 +311,18 @@ object RollupRewriter {
     * wrappers) if it has that shape. Sort/Limit above the
     * Aggregate are tolerated (they re-apply over the rollup scan).
     * Project/Join/extra Filters above the Aggregate -> not
-    * canonical (None). */
-  private[rel] def decomposeCanonical(plan: RelOp): Option[CanonicalPlan] = {
+    * canonical (None).
+    *
+    * @param plan the plan to decompose
+    * @param requestGrain the query's normalized grain, carried on
+    *        the canonical plan so the rebuild can emit the
+    *        coarsening truncation
+    * @return the canonical decomposition, or None
+    */
+  private[rel] def decomposeCanonical(
+      plan: RelOp,
+      requestGrain: Option[String]
+  ): Option[CanonicalPlan] = {
     // Peel upper wrappers (Sort/Limit) above the Aggregate.
     /** Peel Sort/Limit wrappers above the Aggregate, collecting
       * re-wrap functions innermost-last (prepend while peeling so
@@ -286,7 +362,7 @@ object RollupRewriter {
         // peeled = first in the list); folding left over them
         // re-wraps in the ORIGINAL outermost-first order.
         val rebuild = wrappers.foldLeft[RelOp => RelOp](identity)(_ andThen _)
-        CanonicalPlan(scan, fs, agg.groupBy, agg.aggregates, rebuild)
+        CanonicalPlan(scan, fs, agg.groupBy, agg.aggregates, requestGrain, rebuild)
       }
     }
   }
@@ -423,13 +499,50 @@ object RollupRewriter {
     }
   }
 
-  /** Criterion 4: grain agreement. Grains must be EQUAL after
-    * normalization (None matches None only). Strict equality is
-    * the deliberate v1 default: a grain mismatch is fail-safe
-    * (base path, perf loss only); relaxing the grain-less-query
-    * case is post-v1. */
-  private def grainsAgree(rollupGrain: Option[String], queryGrain: Option[String]): Boolean =
-    normalizeGrain(rollupGrain) == queryGrain
+  /** Criterion 4: grain agreement — the closed four-arm matrix.
+    *
+    *   - (None, None): match — the unchanged grain-less path.
+    *   - (Some(_), None): no match — a grain-less query over a
+    *     grained rollup would re-aggregate across ALL buckets (a
+    *     full-table aggregate; the base path already does that
+    *     with less machinery).
+    *   - (None, Some(_)): no match — a grained query over a
+    *     grain-less rollup has no time bucketing to serve from.
+    *   - (Some(r), Some(q)):
+    *     - r == q: exact match — the existing equality path.
+    *     - r finer than q: COARSENING — allowed when EVERY
+    *       requested aggregate is in `CoarseningFns` (Additive
+    *       bucket totals re-add; Avg rides the algebraic two-phase
+    *       shape whose partials are additive). Otherwise fail-safe
+    *       no match.
+    *     - r coarser than q: no match — a month bucket cannot be
+    *       split into days.
+    *
+    * Mismatch is fail-safe throughout: the base path serves the
+    * query (perf loss, never wrong numbers) via `GrainMismatch`.
+    * Unknown grain labels never match anything (rank None).
+    *
+    * @param rollupGrain  the rollup's declared grain (normalized
+    *                     by the caller)
+    * @param queryGrain   the query's requested grain (normalized)
+    * @param coarsenableFn true when EVERY aggregate the request
+    *                     carries may re-aggregate across buckets
+    * @return true when the rollup may serve the query
+    */
+  private def grainsAgree(
+      rollupGrain: Option[String],
+      queryGrain: Option[String],
+      coarsenableFn: Boolean
+  ): Boolean =
+    (rollupGrain, queryGrain) match {
+      case (None, None)          => true
+      case (Some(_), None)       => false
+      case (None, Some(_))       => false
+      case (Some(r), Some(q)) =>
+        if (r == q) true
+        else if (finerThan(r, q)) coarsenableFn
+        else false // r coarser than q, or an unknown label
+    }
 
   // -- Refusal diagnosis (first failing criterion, in a fixed
   // order for determinism) --
@@ -443,12 +556,13 @@ object RollupRewriter {
     val groupSetOk = model.rollups.exists(r => matchesGroupSet(r, c))
     if (!groupSetOk) RollupRewriteRefusal.NoGroupSetMatch
     else {
+      val coarsenable = coarsenableAcrossBuckets(c)
       val grainOk = model.rollups.filter(r => matchesGroupSet(r, c))
-        .exists(r => grainsAgree(r.timeGrain, normQueryGrain))
+        .exists(r => grainsAgree(normalizeGrain(r.timeGrain), normQueryGrain, coarsenable))
       if (!grainOk) RollupRewriteRefusal.GrainMismatch
       else {
         val candidates = model.rollups.filter(r =>
-          matchesGroupSet(r, c) && grainsAgree(r.timeGrain, normQueryGrain))
+          matchesGroupSet(r, c) && grainsAgree(normalizeGrain(r.timeGrain), normQueryGrain, coarsenable))
         val aggOk = candidates.exists(r => aggregatesComposable(r, c, model))
         if (!aggOk) {
           // Distinguish recoverable (Algebraic: Ticket 5 wires the
@@ -503,9 +617,40 @@ object RollupRewriter {
       resolution = None
     )
     val filtered = c.filters.foldLeft[RelOp](rollupScan)((acc, f) => RelOp.Filter(acc, f))
+    // Coarsening: when the query grain is COARSER than the rollup's,
+    // per-bucket rows re-group under the query's grain by wrapping
+    // the grain dimension in a calendar truncation. The truncation
+    // grain literal is the QUERY's normalized grain (the rollup's
+    // finer buckets are disjoint subsets of each coarser query
+    // bucket, so date_trunc(qGrain, dim) regroups them exactly).
+    // Exact-grain and grain-less requests keep the raw dim column.
+    val truncFor: Set[String] = (
+      for {
+        rollupGrain <- normalizeGrain(spec.timeGrain)
+        queryGrain  <- c.requestGrain
+        if finerThan(rollupGrain, queryGrain)
+        gd <- spec.grainDimension
+      } yield gd).toSet
+    val groupBy: List[Expr] = c.groupSet.map {
+      case Expr.FieldRef(name) if truncFor.contains(name) =>
+        // truncFor is non-empty only when the routing matrix said
+        // YES (rollup grain strictly finer than the query's), so
+        // c.requestGrain is a known normalized label here. The Alias
+        // is load-bearing: an unaliased FunctionCall would give the
+        // Aggregate output Spark's auto-name (date_trunc(month, day)),
+        // and downstream references to the ORIGINAL dim name — the
+        // outer Project's group re-emission, and every consumer that
+        // selects `day` — would dangle against a column that no
+        // longer exists under that name.
+        Expr.Alias(name, Expr.FunctionCall(
+          "date_trunc",
+          Seq(Expr.Literal(LiteralValue.StringValue(c.requestGrain.get), SealedDataType.Varchar),
+              Expr.FieldRef(name))))
+      case other => other
+    }
     val agg = RelOp.Aggregate(
       input = filtered,
-      groupBy = c.groupSet,
+      groupBy = groupBy,
       aggregates = c.aggregates.map(rebaseAggregate(_, spec))
     )
     // ADR-0023 two-phase shape: when the request carries ALGEBRAIC
@@ -732,18 +877,33 @@ object RollupRewriter {
   /** Declared rollup schema (Ticket 4 contract); visible to
     * connectors so the materializer can be pinned to it by test.
     *
+    * Grain-dimension type override: the grain dimension on a
+    * grained rollup table holds `date_trunc(<grain>, dim)` values,
+    * which emit as `Timestamp` (Date inputs are promoted). The
+    * override keeps the rewriter's declared scan schema in parity
+    * with the physical table the materializer writes — without it
+    * a Date-declared grain dim would declare `Date` while the
+    * table carries `Timestamp`, the schema-drift class the
+    * materializer spec's drift pin guards.
+    *
     * @param spec  the rollup declaration (selects dims + measures)
     * @param model the host model (supplies dim/measure definitions)
     * @return the declared scan schema for the rollup table
     */
   def rollupSchema(spec: RollupSpec, model: Model): List[Field] = {
     // Dims: carry the host dimension's declared dataType where
-    // present. Varchar fallback = conservative default (the caller
-    // can pass the resolved scan schema via `dimTypes` for exact
-    // types; Ticket 5's DE review carry-item).
+    // present; a grain dim is overridden to Timestamp (see the
+    // doc above). Varchar fallback = conservative default for
+    // non-grain dims without a declared type (the caller can
+    // pass resolved types via `reconciledRollupSchema`).
     val dimFields = model.dimensions
       .filter(d => spec.dimensions.contains(d.name))
-      .map(d => Field(d.name, d.dataType.getOrElse(SealedDataType.Varchar), nullable = true))
+      .map { d =>
+        val t =
+          if (spec.grainDimension.contains(d.name)) SealedDataType.Timestamp
+          else d.dataType.getOrElse(SealedDataType.Varchar)
+        Field(d.name, t, nullable = true)
+      }
     val measureFields = model.measures
       .filter(m => spec.measures.contains(m.name))
       .flatMap { m =>
@@ -776,9 +936,16 @@ object RollupRewriter {
   ): List[io.sm8.core.schema.Field] = {
     import io.sm8.core.schema.{Field, SealedDataType}
     // Dims: resolve from the scan, fall back to declared, then Varchar.
+    // Grain-dim override: the truncated column is always Timestamp
+    // regardless of the resolved/declared source type (date_trunc
+    // promotes Date inputs), so the reconciled schema matches the
+    // physical rollup table for both Date and Timestamp grain dims.
     val dimFields = spec.dimensions.map { d =>
-      val t = baseScanSchema.getOrElse(d,
-        model.dimensions.find(_.name == d).flatMap(_.dataType).getOrElse(SealedDataType.Varchar))
+      val resolvedT =
+        if (spec.grainDimension.contains(d)) Some(SealedDataType.Timestamp: SealedDataType)
+        else baseScanSchema.get(d)
+          .orElse(model.dimensions.find(_.name == d).flatMap(_.dataType))
+      val t = resolvedT.getOrElse(SealedDataType.Varchar)
       Field(d, t, nullable = true)
     }
     // State columns: derive the input field's actual type from the scan.

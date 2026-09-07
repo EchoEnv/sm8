@@ -252,8 +252,31 @@ object ModelLoader {
   def parseOne(m: java.util.Map[_, _]): Either[ManifestError, io.sm8.core.model.Dimension] = {
     val name = stringField(m, "name")
     val expr = stringField(m, "expr").orElse(name)
+    // Optional declared type: `type: date` / `type: timestamp` (and
+    // the camelCase `dataType:` alias). Unknown type labels fail
+    // loud — a typo must never silently degrade to an untyped dim
+    // (the grain-dimension contract then reads the RESOLVED source
+    // type instead, which may legitimately differ).
+    val typeE: Either[ManifestError, Option[io.sm8.core.schema.SealedDataType]] = {
+      val labels = List(stringField(m, "type"), stringField(m, "dataType")).flatten
+      if (labels.length > 1)
+        Left(ManifestError.ParseFailure(
+          s"dimensions[${name.getOrElse("?")}]: specify at most one of type / dataType"))
+      else labels.headOption match {
+        case None => Right(None)
+        case Some(raw) =>
+          raw.trim.toLowerCase match {
+            case "date"      => Right(Some(io.sm8.core.schema.SealedDataType.Date))
+            case "timestamp" => Right(Some(io.sm8.core.schema.SealedDataType.Timestamp))
+            case other       => Left(ManifestError.ParseFailure(
+              s"dimensions[${name.getOrElse("?")}]: unknown type '$other' (supported: date, timestamp)"))
+          }
+      }
+    }
     (name, expr) match {
-      case (Some(n), Some(e)) => Right(io.sm8.core.model.Dimension.field(n, e))
+      case (Some(n), Some(e)) =>
+        typeE.map(t => io.sm8.core.model.Dimension(
+          name = n, expr = io.sm8.core.expr.Expr.FieldRef(e), dataType = t))
       case (None, _) => Left(ManifestError.ParseFailure("dimensions[]: missing 'name'"))
       case (_, None) => Left(ManifestError.ParseFailure(
         s"dimensions[${name.getOrElse("")}]: missing 'expr'"))
@@ -524,6 +547,18 @@ object ModelLoader {
     Left(ManifestError.ParseFailure(
      s"rollups[${name.getOrElse("?")}]: specify at most one of time_grain / timeGrain"))
     else Right(grainSpecs.headOption)
+   // grainDimension: same dual-key convention as time_grain — accept
+   // either snake_case (grain_dimension) or camelCase (grainDimension),
+   // fail loud on both-set (never silently pick one). Co-presence
+   // with timeGrain is ModelValidator's job — a single field out of
+   // the pair passes the parser, the validator rejects the
+   // half-declared state.
+   val grainDimSpecs = List(stringField(m, "grain_dimension"), stringField(m, "grainDimension")).flatten
+   val grainDimE: Either[ManifestError, Option[String]] =
+    if (grainDimSpecs.length > 1)
+    Left(ManifestError.ParseFailure(
+     s"rollups[${name.getOrElse("?")}]: specify at most one of grain_dimension / grainDimension"))
+    else Right(grainDimSpecs.headOption)
    /** Strict ref-list parse for one key. Single string -> 1-list
      * (author convenience); non-list, non-null anything else ->
      * typed `ParseFailure` (never silently coerced to Nil: a
@@ -548,6 +583,7 @@ object ModelLoader {
     case Some(n) =>
     for {
      grain <- grainE
+     grainDim <- grainDimE
      dims <- refList("dimensions")
      meas <- refList("measures")
      _ <- if (dims.isEmpty && meas.isEmpty)
@@ -558,7 +594,8 @@ object ModelLoader {
      name = n,
      dimensions = dims,
      measures = meas,
-     timeGrain = grain)
+     timeGrain = grain,
+     grainDimension = grainDim)
    }
   }
   seq.toList.foldLeft[Either[ManifestError, List[io.sm8.core.model.RollupSpec]]](Right(Nil)) { (accE, entry) =>

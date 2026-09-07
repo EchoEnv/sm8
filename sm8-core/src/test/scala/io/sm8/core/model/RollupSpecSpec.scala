@@ -42,15 +42,40 @@ class RollupSpecSpec extends AnyFunSuite with Matchers {
       |    expr: sum(fare)
       |""".stripMargin
 
+  /** base with `carrier` declared as a Date dimension — the grain
+    * contract tests need an explicitly temporal axis. */
+  private val baseTyped =
+    """name: flights
+      |version: 1
+      |source:
+      |  byName:
+      |    table: flights_raw
+      |dimensions:
+      |  - name: carrier
+      |    expr: carrier
+      |    type: date
+      |  - name: flight_date
+      |    expr: flight_date
+      |    type: date
+      |  - name: dest_region
+      |    expr: dest_region
+      |measures:
+      |  - name: rows
+      |    expr: count(*)
+      |  - name: total_fare
+      |    expr: sum(fare)
+      |""".stripMargin
+
   // ===== round-trip: YAML -> Model.rollups =====
 
   test("YAML rollups block parses to typed RollupSpec list (round-trip)") {
-    val yaml = base +
+    val yaml = baseTyped +
       """rollups:
         |  - name: by_carrier_day
         |    dimensions: [carrier]
         |    measures: [rows, total_fare]
         |    time_grain: day
+        |    grain_dimension: carrier
         |""".stripMargin
     val out = ModelLoader.fromString(yaml)
     out.isRight shouldBe true
@@ -60,21 +85,23 @@ class RollupSpecSpec extends AnyFunSuite with Matchers {
         name = "by_carrier_day",
         dimensions = List("carrier"),
         measures = List("rows", "total_fare"),
-        timeGrain = Some("day")))
+        timeGrain = Some("day"),
+        grainDimension = Some("carrier")))
   }
 
   test("rollup without time_grain parses with timeGrain=None; camelCase alias accepted") {
-    val yaml = base +
+    val yaml = baseTyped +
       """rollups:
         |  - name: by_route
         |    dimensions: [carrier, dest_region]
         |    measures: [rows]
         |    timeGrain: hour
+        |    grainDimension: carrier
         |""".stripMargin
     val out = ModelLoader.fromString(yaml)
     out.isRight shouldBe true
     out.right.get.rollups shouldBe List(
-      RollupSpec("by_route", List("carrier", "dest_region"), List("rows"), Some("hour")))
+      RollupSpec("by_route", List("carrier", "dest_region"), List("rows"), Some("hour"), Some("carrier")))
   }
 
   test("absent rollups block -> Model.rollups == Nil (existing models unchanged)") {
@@ -115,11 +142,11 @@ class RollupSpecSpec extends AnyFunSuite with Matchers {
     val model = Model.of(
       name = "flights",
       version = 1,
-      dimensions = List(Dimension.field("carrier", "carrier")),
+      dimensions = List(Dimension.field("carrier", "carrier", io.sm8.core.schema.SealedDataType.Date)),
       measures = List(
         Measure.aggregate("rows", io.sm8.core.rel.AggregateFn.Count, io.sm8.core.expr.Expr.FieldRef("x"))),
       source = SourceRef.ByName(table = "flights_raw"),
-      rollups = List(RollupSpec("by_carrier", List("carrier"), List("rows"), Some("day")))
+      rollups = List(RollupSpec("by_carrier", List("carrier"), List("rows"), Some("day"), Some("carrier")))
     )
     model.isRight shouldBe true
     model.right.get.rollups.map(_.name) shouldBe List("by_carrier")
@@ -282,5 +309,52 @@ class RollupSpecSpec extends AnyFunSuite with Matchers {
       .build
     built.isRight shouldBe true
     built.right.get.rollups.map(_.name) shouldBe List("by_carrier")
+  }
+
+  // ===== grain dimension (time-grain bucketing contract) =====
+
+  test("grain_dimension parses alongside time_grain (snake_case)") {
+    val yaml = baseTyped +
+      """rollups:
+        |  - name: by_day
+        |    dimensions: [carrier, flight_date]
+        |    measures: [rows]
+        |    time_grain: day
+        |    grain_dimension: flight_date
+        |""".stripMargin
+    val out = ModelLoader.fromString(yaml)
+    out.isRight shouldBe true
+    out.right.get.rollups shouldBe List(
+      RollupSpec("by_day", List("carrier", "flight_date"), List("rows"),
+        Some("day"), Some("flight_date")))
+  }
+
+  test("grainDimension camelCase alias accepted") {
+    val yaml = baseTyped +
+      """rollups:
+        |  - name: by_month
+        |    dimensions: [flight_date]
+        |    measures: [rows]
+        |    timeGrain: month
+        |    grainDimension: flight_date
+        |""".stripMargin
+    val out = ModelLoader.fromString(yaml)
+    out.isRight shouldBe true
+    out.right.get.rollups.head.grainDimension shouldBe Some("flight_date")
+  }
+
+  test("both grain_dimension and grainDimension specified fails loud") {
+    val yaml = base +
+      "rollups:\n" +
+      "  - name: double_dim\n" +
+      "    dimensions: [carrier]\n" +
+      "    measures: [rows]\n" +
+      "    time_grain: day\n" +
+      "    grain_dimension: carrier\n" +
+      "    grainDimension: carrier\n"
+    val out = ModelLoader.fromString(yaml)
+    out.isLeft shouldBe true
+    out.left.get shouldBe a[ManifestError.ParseFailure]
+    out.left.get.toString should include ("at most one of grain_dimension / grainDimension")
   }
 }

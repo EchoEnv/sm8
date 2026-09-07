@@ -82,9 +82,11 @@ grainsAgree(rollupGrain, queryGrain):            // both Option[String], normali
   case (Some(r), Some(q)) if r coarser q -> NO  // cannot split a month bucket into days
 ```
 
-This REPLACES today's equality-only `grainsAgree`. Two existing behaviors are preserved exactly: `(None, None)` matches (the entire existing grain-less test surface), and grained-query-vs-day-rollup mismatch falls to `GrainMismatch` (today's fail-safe). Grain ordering (`hour < day < week < month < quarter < year`) becomes a total order on `KnownGrains`; "finer/coarser" is that order. Week is the known odd case (`date_trunc('week')` = Monday-start, ISO) — pinned by test, not by convention.
+This REPLACES today's equality-only `grainsAgree`. Two existing behaviors are preserved exactly: `(None, None)` matches (the entire existing grain-less test surface), and grained-query-vs-day-rollup mismatch falls to `GrainMismatch` (today's fail-safe). Grain ordering (`hour < day < week < month < quarter < year`) becomes a total order on `KnownGrains`; "finer/coarser" is that order. The week-bucket boundary is whatever the engine's `date_trunc('week')` emits — pinned by a regression test in `RollupMaterializerSpec` and re-verified on every engine upgrade.
 
 **Refusal taxonomy**: unchanged. A query whose grain cannot be served from an otherwise-matching rollup falls through to the base path (fail-open, perf loss — never wrong numbers) via the existing `GrainMismatch`. No new refusal ADT case.
+
+> **Week-bucket boundary**: Spark's `date_trunc('week')` emits a deterministic bucket start for any timestamp — verified empirically against catalyst source (`getNextDateForDayOfWeek(days-7, MONDAY)`). A Sunday input does NOT necessarily map to a Monday in the SAME calendar week; the pin test in `RollupMaterializerSpec` documents the exact output and must be re-verified on every Spark upgrade.
 
 ### 5. Materialization: truncate in the materializer's group-by, keyed by the declared grain
 
@@ -119,8 +121,8 @@ This REPLACES today's equality-only `grainsAgree`. Two existing behaviors are pr
 **Non-consequences:**
 - No timezone handling in v1 (`date_trunc` operates in the session zone; session-zone truncation is the pinned v1 default, documented in the runbook).
 - No fiscal calendars, no custom buckets, no string-typed grain dims.
-- Week start is pinned to ISO Monday (`date_trunc('week')`); no Sunday-start variant.
 - No sub-day grains below `hour`; no change to grain-less rollups (the entire existing test surface).
+- The week bucket boundary inherits the engine's `date_trunc('week')` semantics (Spark 3.5 = `getNextDateForDayOfWeek(days-7, MONDAY)`). No Sunday-start variant; no "ISO Monday-of-week" guarantee — the boundary is exactly what the engine returns, pinned by test.
 
 ## Alternatives Considered
 

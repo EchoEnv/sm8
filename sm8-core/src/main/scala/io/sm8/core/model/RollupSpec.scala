@@ -50,16 +50,32 @@ package io.sm8.core.model
   *                   for the same reason.
   * @param timeGrain  optional opaque grain label (e.g. "day"); None
   *                   = grain-agnostic rollup
+  * @param grainDimension when `timeGrain` is defined, the SINGLE
+  *                   dimension in `dimensions` whose values are
+  *                   bucket-truncated at `timeGrain`. Must name a
+  *                   dimension already in `dimensions` whose
+  *                   declared (or resolved) data type is `Date` or
+  *                   `Timestamp` — validated in `ModelValidator`.
+  *                   Co-presence with `timeGrain` is itself
+  *                   validated: a grain without an axis and an axis
+  *                   without a grain are each a distinct validation
+  *                   error. Inference is deliberately unsupported
+  *                   (a value-domain guess silently picks a column
+  *                   and breaks when two date dims exist — order
+  *                   date vs ship date); the axis is stated at the
+  *                   declaration site.
   *
   * @note No defaults on `dimensions`/`measures`: a ref-less rollup
   * is a degenerate declaration (it would vacuously match by
   * subsumption in Ticket 4's router), so the declaration site must
-  * state its intent explicitly. `timeGrain` defaults to None
-  * (grain-agnostic).
+  * state its intent explicitly. `timeGrain`/`grainDimension`
+  * default to None (grain-agnostic); the co-presence rule makes
+  * the mixed half-declared state unreachable.
   */
 final case class RollupSpec(
     name: String,
     dimensions: List[String],
     measures: List[String],
-    timeGrain: Option[String] = None
+    timeGrain: Option[String] = None,
+    grainDimension: Option[String] = None
 ) extends Product with Serializable

@@ -70,8 +70,109 @@ object ModelValidator {
         else
           errs += s"rollups[${r.name}] references unknown measure '$m'"
       }
+      errs ++= validateGrainDimensionDeclared(r, model)
     }
     if (errs.isEmpty) Right(()) else Left(ModelValidationError.SchemaValidation(errs.toList))
+  }
+
+  /** Grain-dimension contract checks that need only the DECLARED
+    * model data (pure, no resolved schema):
+    *   1. co-presence — `timeGrain` and `grainDimension` are both
+    *      set or both unset (a grain without an axis is
+    *      meaningless; an axis without a grain changes query
+    *      semantics without the label that governs routing);
+    *   2. ref membership — the grain dimension must name a
+    *      dimension already in the rollup's `dimensions`;
+    *   3. temporal type — when the named dimension DECLARES a
+    *      `dataType`, it must be `Date` or `Timestamp` (calendar
+    *      truncation is undefined over other domains; Varchar
+    *      ISO strings are excluded because string ordering is
+    *      lexicographic and no parsing contract exists in core).
+    * A dimension with `dataType = None` skips check 3 here; the
+    * schema-aware entry point (`validateAgainstSchema`) settles it
+    * from the RESOLVED source type.
+    *
+    * @param r     the rollup declaration under validation
+    * @param model the host model (supplies declared dimension types)
+    * @return the collected error messages (empty = valid)
+    */
+  private def validateGrainDimensionDeclared(
+      r: RollupSpec,
+      model: Model): List[String] = {
+    val out = scala.collection.mutable.ListBuffer.empty[String]
+    (r.timeGrain, r.grainDimension) match {
+      case (None, Some(gd)) =>
+        out += s"rollups[${r.name}]: grainDimension '$gd' is set but timeGrain is not — a grain axis without a grain label cannot route; declare both or neither"
+      case (Some(_), None) =>
+        out += s"rollups[${r.name}]: timeGrain is set but grainDimension is not — bucketing needs an explicit axis; declare grainDimension (a date/timestamp dimension of this rollup)"
+      case (Some(grain), Some(gd)) =>
+        // Blank grain: the loader filters these via stringField, but
+        // programmatic RollupSpec(..., Some(""), ...) bypasses the
+        // loader. A blank label normalizes to None in the rewriter,
+        // so the materializer's grainDimCol fallback would .get on
+        // a None and throw. Refuse loud here so the no-`.get` rule
+        // applies uniformly on both the loader and the programmatic
+        // paths.
+        if (grain.trim.isEmpty)
+          out += s"rollups[${r.name}]: timeGrain is set but blank — calendar truncation requires a non-empty grain label (KnownGrains vocabulary: hour/day/week/month/quarter/year)"
+        else if (!r.dimensions.contains(gd))
+          out += s"rollups[${r.name}]: grainDimension '$gd' must name one of the rollup's own dimensions (${r.dimensions.mkString(", ")})"
+        else {
+          model.dimensions.find(_.name == gd).flatMap(_.dataType).foreach { t =>
+            if (t != io.sm8.core.schema.SealedDataType.Date && t != io.sm8.core.schema.SealedDataType.Timestamp)
+              out += s"rollups[${r.name}]: grainDimension '$gd' has declared type $t — calendar truncation requires Date or Timestamp (a string source needs a calculated Date dimension)"
+          }
+        }
+      case (None, None) => ()
+    }
+    out.toList
+  }
+
+  /** Grain-dimension temporal-type check against the RESOLVED
+    * source schema: when the declared grain dimension has no
+    * explicit `dataType`, its resolved column type must still be
+    * `Date` or `Timestamp`. Complements the declared-type check in
+    * `validate` — together they make an un-typed (or mistyped)
+    * grain axis impossible to reach materialization.
+    *
+    * When the dimension DOES declare `dataType`, the declared-type
+    * check has already passed; this method then cross-checks
+    * declaration-vs-resolution consistency (a mismatch is the
+    * silent-defaulting class closed ADTs forbid, so it's a typed
+    * error too).
+    *
+    * @param r      the rollup declaration under validation
+    * @param model  the host model (for declared-type lookup)
+    * @param schema the resolved source schema (column name -> type)
+    * @return the collected error messages (empty = valid)
+    */
+  private[model] def validateGrainDimensionResolved(
+      r: RollupSpec,
+      model: Model,
+      schema: ResolvedSource.Scan): List[String] = {
+    val resolved = schema.schema.map(f => f.name -> f.dataType).toMap
+    (r.timeGrain, r.grainDimension) match {
+      case (Some(_), Some(gd)) if r.dimensions.contains(gd) =>
+        model.dimensions.find(_.name == gd).flatMap(_.dataType) match {
+          case None =>
+            // Declared type absent — the resolved source type decides.
+            resolved.get(gd) match {
+              case Some(t) if t != io.sm8.core.schema.SealedDataType.Date &&
+                               t != io.sm8.core.schema.SealedDataType.Timestamp =>
+                List(s"rollups[${r.name}]: grainDimension '$gd' resolved to type $t — calendar truncation requires Date or Timestamp")
+              case _ => Nil
+            }
+          case Some(declaredT) =>
+            // Declared type present — only complain if the resolved
+            // type disagrees with the declared one (a virtual drift
+            // pin; the declared type is the contract the materializer
+            // uses when reconciling).
+            resolved.get(gd).filterNot(_ == declaredT).map { resT =>
+              s"rollups[${r.name}]: grainDimension '$gd' declared type $declaredT disagrees with resolved type $resT — pick one or fix the source"
+            }.toList
+        }
+      case _ => Nil
+    }
   }
 
   /** Schema-level validation: every `Dimension.expr`, `Measure.expr.input`,
@@ -148,6 +249,15 @@ object ModelValidator {
         if (!available.contains(leftKey))
           missing += s"joins[${js.name}] references unknown left key '$leftKey'"
       }
+    }
+
+    // Grain dimension: resolved-source-type check (companion to
+    // the declared-type check in `validate`). When the declared
+    // type is absent, the resolved column type decides — a
+    // VARCHAR source would route to GrainMismatch at query time
+    // (silently), so we surface it here instead.
+    model.rollups.foreach { r =>
+      validateGrainDimensionResolved(r, model, schema).foreach(missing += _)
     }
 
     if (missing.isEmpty) Right(()) else Left(ModelValidationError.SchemaValidation(missing.toList))
