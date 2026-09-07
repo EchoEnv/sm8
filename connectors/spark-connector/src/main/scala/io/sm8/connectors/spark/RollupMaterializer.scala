@@ -237,15 +237,24 @@ object RollupMaterializer {
     }
     val algebraicCols = AggregateFn.decomposability(call.fn) match {
       case Decomposability.Algebraic =>
-        // Per-input (n, sum, sumSq) partial state columns.
-        // Cast sum to double for stddev/variance parity (the re-aggregation
-        // expression computes in double space; an integral sum would lose
-        // the fractional part).
+        // Welford-merge partial states (ADR-0022/0023 preferred shape;
+        // MANDATED by the ADR-0023 cancellation tripwire, which
+        // empirically BREACHED on the 1e8±1.0 fixture with the raw
+        // (n, sum, sumSq) shape — 3e17-scale sumSq has no double digits
+        // left for ±1 dispersion). (count, sum, m2) triple:
+        //   - count(col(f)): per-group n
+        //   - sum cast to double: per-group sum (fractional parity)
+        //   - m2 = var_pop(f) * count(f): the sum of squared deviations
+        //     from the group mean, computed STABLY by Spark's variance
+        //     aggregator (Welford-style online algorithm — no
+        //     catastrophic cancellation). M2 is ADDITIVE across groups,
+        //     which is the property the rewriter's guard expressions
+        //     consume (variance = M2 / n or M2 / (n-1)).
         call.input.collectFirst { case io.sm8.core.expr.Expr.FieldRef(f) => f }.toList.flatMap { f =>
           List(
             count(col(f)).as(s"count__$f"),
             sum(col(f)).cast("double").as(s"sum__$f"),
-            sum(col(f) * col(f)).cast("double").as(s"sumsq__$f"))
+            (var_pop(col(f)) * count(col(f))).as(s"m2__$f"))
         }
       case _ => Nil
     }

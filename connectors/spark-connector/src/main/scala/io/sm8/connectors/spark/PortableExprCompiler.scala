@@ -40,7 +40,7 @@ import io.sm8.core.engine.{EngineError, EngineIdentity}
 import io.sm8.core.expr.{Expr, LiteralValue}
 import io.sm8.core.predicate.{Predicate => FilterPredicate}
 import org.apache.spark.sql.Column
-import org.apache.spark.sql.functions.{col, lit, not => sparkNot, when}
+import org.apache.spark.sql.functions.{col, lit, not => sparkNot, sqrt, when}
 /**
  * Engine-specific Spark compiler for portable 
  * [[Column]]. Pure function (Expr) -> Column with no state, no
@@ -180,20 +180,40 @@ object PortableExprCompiler extends java.io.Serializable {
  case Expr.Alias(name, expr) =>
   toColumn(expr).map(_.as(name))
 
- // -- FunctionCall: UDF resolution deferred. --
- // PR-O1c (ADR-008-O, P0-2): the previous throw-bomb
- // (`throw new UnsupportedOperationException(.)`) became
- // a typed `Left(EngineError.UnsupportedCapability(.))`
- // so the error flows through the compile boundary instead
- // of crashing the driver or (worse, at scale) killing
- // executors + retrying indefinitely.
- case Expr.FunctionCall(name, _) =>
-  Left(EngineError.UnsupportedCapability(
-  engine  = "spark-3.5",
-  capability = "Expr.FunctionCall",
-  message = s"PortableExprCompiler.toColumn: Expr.FunctionCall('$name',.) is " +
-      "not supported in this Layer C follow-up (UDF resolution " +
-      "deferred to a future PR that wires the Spark UDF registry)."))
+ // -- FunctionCall: BUILTIN ALLOWLIST (UDF registry still deferred) --
+ // PR-O1c (ADR-008-O, P0-2): the original throw-bomb became a typed
+ // `Left(EngineError.UnsupportedCapability(.))` so the error flows
+ // through the compile boundary instead of crashing the driver or
+ // (worse, at scale) killing executors + retrying indefinitely.
+ //
+ // ADR-0023 (algebraic rollup routing): the rewriter's outer Project
+ // derives Stddev*/Variance* as `FunctionCall("sqrt", guardedVar)`.
+ // This allowlist exists so that plan COMPILES after routing — the
+ // failure mode it prevents is a routed plan dying at the engine
+ // boundary (the PR-338 bug class). Allowlist, not UDF registry:
+ // every name maps to a driver-side built-in
+ // `org.apache.spark.sql.functions` Column fn (no UDFs, no closure
+ // capture — the closure-safety contract holds). Unknown names keep
+ // the typed refusal. To add a name: verify the Spark built-in's
+ // NULL/edge semantics against the portable contract, add the arm,
+ // pin it in PortableExprCompilerSpec.
+ case Expr.FunctionCall(name, args) =>
+  name.toLowerCase match {
+   case "sqrt" if args.size == 1 =>
+    toColumn(args.head).map(sqrt)
+   case "sqrt" =>
+    Left(EngineError.UnsupportedCapability(
+    engine     = "spark-3.5",
+    capability = "Expr.FunctionCall(sqrt)",
+    message = s"PortableExprCompiler.toColumn: FunctionCall('sqrt') takes exactly 1 argument, got ${args.size}."))
+   case other =>
+    Left(EngineError.UnsupportedCapability(
+    engine     = "spark-3.5",
+    capability = "Expr.FunctionCall",
+    message = s"PortableExprCompiler.toColumn: Expr.FunctionCall('$other',.) is " +
+        "not in the builtin allowlist (currently: sqrt). UDF resolution " +
+        "remains deferred; see the allowlist comment above for the add-a-name contract."))
+  }
  }
 
  /**

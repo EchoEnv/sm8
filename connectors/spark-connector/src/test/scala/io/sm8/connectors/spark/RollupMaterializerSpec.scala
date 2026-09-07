@@ -498,7 +498,7 @@ class RollupMaterializerAlgebraicSpec extends AnyFunSuite with Matchers {
       source = SourceRef.ByName(table = "sales_base"),
       rollups = rollups).right.get
 
-  test("Algebraic state columns emitted for Avg: count__amount, sum__amount, sumsq__amount") {
+  test("Algebraic state columns emitted for Avg: count__amount, sum__amount, m2__amount (Welford)") {
     val spec = RollupSpec("by_region_avg", List("region"), List("avg_amount"), None)
     val m = model(List(spec))
     val spark = buildSpark()
@@ -507,10 +507,10 @@ class RollupMaterializerAlgebraicSpec extends AnyFunSuite with Matchers {
       .toDF("region", "item", "amount", "units").createOrReplaceTempView("sales_base")
     RollupMaterializer.materialize(spark, m, spec, eager = false).isRight shouldBe true
     val df = spark.table("sales__by_region_avg")
-    df.columns.toSet should contain allOf ("region", "count__amount", "sum__amount", "sumsq__amount")
+    df.columns.toSet should contain allOf ("region", "count__amount", "sum__amount", "m2__amount")
     df.schema("count__amount").dataType shouldBe org.apache.spark.sql.types.LongType
     df.schema("sum__amount").dataType shouldBe org.apache.spark.sql.types.DoubleType
-    df.schema("sumsq__amount").dataType shouldBe org.apache.spark.sql.types.DoubleType
+    df.schema("m2__amount").dataType shouldBe org.apache.spark.sql.types.DoubleType
   }
 
   test("validateSpec accepts Avg + Sum together (Algebraic + Additive in one rollup)") {
@@ -534,6 +534,179 @@ class RollupMaterializerAlgebraicSpec extends AnyFunSuite with Matchers {
     // The materialized rollup carries the same partial state.
     val rollSum = spark.table("sales__solo").collect().head.getLong(1)
     rollSum shouldBe 42L
+  }
+
+  // ===== T8 (ADR-0023 gate-flip): end-to-end ALGEBRAIC parity =====
+  //
+  // ADR-0023 routing contract: Avg/Variance/Stddev requests over a
+  // rollup whose schema carries (count__F, sum__F, m2__F) now
+  // REWRITE to Aggregate→Project and MUST compile through
+  // MinimalRelOpLowerer (T8's sqrt arm makes the Stddev derivation
+  // compilable). Parity harness follows the RollupMaterializerSpec
+  // end-to-end pattern: materialize → rewrite → lower BOTH paths →
+  // collect → compare.
+
+  import io.sm8.core.engine.{EngineContext, EngineIdentity}
+  import io.sm8.core.rel.{RelOp, RollupRewriter}
+  import io.sm8.core.model.SourceRef
+  import org.apache.spark.sql.DataFrame
+
+  private def algebraicCtx: EngineContext = EngineContext.defaultContext
+
+  /** The parity harness: materialize the spec, rewrite the request
+    * plan, lower base + rollup plans through the SAME lowerer, and
+    * hand both DataFrames to the assertion. */
+  private def parityHarness(
+      spark: org.apache.spark.sql.SparkSession,
+      m: io.sm8.core.model.Model,
+      spec: RollupSpec,
+      requestPlan: RelOp
+  ): (DataFrame, DataFrame) = {
+    import io.sm8.connectors.spark.{MinimalRelOpLowerer, PortableQueryCompiler, SparkSourceResolver}
+    RollupMaterializer.materialize(spark, m, spec, eager = false) match {
+      case Right(_) => // ok
+      case Left(e)  => fail(s"materialize failed (T8 [DBG-t8]: surface the actual refusal): $e")
+    }
+    val rewritten = RollupRewriter.rewrite(requestPlan, m, None)
+    rewritten shouldBe a[RollupRewriter.RollupRewriteResult.Rewritten]
+    val identity = EngineIdentity("spark-3.5", "3.5", "sm8-spark-3.5-1.0")
+    val lowerer = new MinimalRelOpLowerer(spark, new PortableQueryCompiler(spark), identity)
+    val baseResult = lowerer.lower(requestPlan, algebraicCtx)
+    val rollupResult = lowerer.lower(
+      rewritten.asInstanceOf[RollupRewriter.RollupRewriteResult.Rewritten].plan, algebraicCtx)
+    val baseDf = baseResult match {
+      case Right(df) => df
+      case Left(e)   => fail(s"base path failed to compile: $e")
+    }
+    val rollDf = rollupResult match {
+      case Right(df) => df
+      case Left(e)   => fail(s"rollup path failed to compile (T8 gate-flip regression?): $e")
+    }
+    (baseDf, rollDf)
+  }
+
+  private def avgPlan(measureAlias: String): RelOp = RelOp.Aggregate(
+    input = RelOp.Scan(
+      sourceRef = SourceRef.ByName(table = "sales_base"),
+      schema = List(Field.nonNull("region", SealedDataType.Varchar), Field.nonNull("amount", SealedDataType.BigInt)),
+      projection = Nil),
+    groupBy = List(Expr.FieldRef("region")),
+    aggregates = List(AggregateCall(fn = AggregateFn.Avg,
+      input = Some(Expr.FieldRef("amount")), alias = measureAlias)))
+
+  private def stddevPlan(measureAlias: String, pop: Boolean): RelOp = RelOp.Aggregate(
+    input = RelOp.Scan(
+      sourceRef = SourceRef.ByName(table = "sales_base"),
+      schema = List(Field.nonNull("region", SealedDataType.Varchar), Field.nonNull("amount", SealedDataType.BigInt)),
+      projection = Nil),
+    groupBy = List(Expr.FieldRef("region")),
+    aggregates = List(AggregateCall(
+      fn = if (pop) AggregateFn.StddevPopulation else AggregateFn.StddevSample,
+      input = Some(Expr.FieldRef("amount")), alias = measureAlias)))
+
+  test("T8 e2e parity: Avg over materialized rollup == base path (exact on integral data)") {
+    val spark = buildSpark()
+    import spark.implicits._
+    List(
+      Sale("east", "i1", 100L, 1), Sale("east", "i2", 200L, 2),
+      Sale("west", "i1", 50L, 3),  Sale("west", "i2", 150L, 4))
+      .toDF("region", "item", "amount", "units").createOrReplaceTempView("sales_base")
+    val m = model(List(RollupSpec("by_region_avg", List("region"), List("avg_amount"), None)))
+    val (baseDf, rollDf) = parityHarness(spark, m,
+      RollupSpec("by_region_avg", List("region"), List("avg_amount"), None), avgPlan("avg_amount"))
+    val base = baseDf.collect().map(r => (r.getString(0), r.getDouble(1))).sortBy(_._1).toList
+    val roll = rollDf.collect().map(r => (r.getString(0), r.getDouble(1))).sortBy(_._1).toList
+    base shouldBe roll
+    // Known values: east avg 150.0, west avg 100.0.
+    base shouldBe List(("east", 150.0), ("west", 100.0))
+  }
+
+  test("T8 e2e parity: StddevSample + StddevPopulation over rollup == base (sqrt arm compiles)") {
+    val spark = buildSpark()
+    import spark.implicits._
+    List(
+      Sale("east", "i1", 100L, 1), Sale("east", "i2", 200L, 2), Sale("east", "i3", 300L, 3),
+      Sale("west", "i1", 10L, 1))
+      .toDF("region", "item", "amount", "units").createOrReplaceTempView("sales_base")
+    // The model must declare a StddevSample measure for identity
+    // matching; build it explicitly.
+    val stdModel = io.sm8.core.model.Model.of(
+      name = "sales", version = 1,
+      dimensions = dims,
+      measures = meas :+ Measure.aggregate("fare_std", AggregateFn.StddevSample, Expr.FieldRef("amount")),
+      source = SourceRef.ByName(table = "sales_base"),
+      rollups = List(RollupSpec("by_region_std", List("region"), List("fare_std"), None))
+    ).right.get
+    val (baseDf, rollDf) = parityHarness(spark, stdModel,
+      RollupSpec("by_region_std", List("region"), List("fare_std"), None), stddevPlan("fare_std", pop = false))
+    val base = baseDf.collect().map(r => (r.getString(0), Option(r.get(1)).map(_.toString))).sortBy(_._1).toList
+    val roll = rollDf.collect().map(r => (r.getString(0), Option(r.get(1)).map(_.toString))).sortBy(_._1).toList
+    base shouldBe roll
+    // n=1 west group: stddev_samp = NULL on BOTH paths (engine parity).
+    base.find(_._1 == "west").get._2 shouldBe None
+    // n=3 east group: sample stddev of (100,200,300) = 100.0 exactly.
+    base.find(_._1 == "east").get._2 shouldBe Some("100.0")
+  }
+
+  test("T8 e2e parity: n=1 single-observation group -> NULL sample / defined population stddev") {
+    val spark = buildSpark()
+    import spark.implicits._
+    List(Sale("solo", "i1", 42L, 1))
+      .toDF("region", "item", "amount", "units").createOrReplaceTempView("sales_base")
+    val popModel = io.sm8.core.model.Model.of(
+      name = "sales", version = 1,
+      dimensions = dims,
+      measures = meas :+ Measure.aggregate("amt_stdpop", AggregateFn.StddevPopulation, Expr.FieldRef("amount")),
+      source = SourceRef.ByName(table = "sales_base"),
+      rollups = List(RollupSpec("by_region_pop", List("region"), List("amt_stdpop"), None))
+    ).right.get
+    val (baseDf, rollDf) = parityHarness(spark, popModel,
+      RollupSpec("by_region_pop", List("region"), List("amt_stdpop"), None), stddevPlan("amt_stdpop", pop = true))
+    val base = baseDf.collect().map(r => (r.getString(0), Option(r.get(1)).map(_.toString))).toList
+    val roll = rollDf.collect().map(r => (r.getString(0), Option(r.get(1)).map(_.toString))).toList
+    base shouldBe roll
+    // Single observation: population stddev = 0.0 on BOTH paths.
+    base.head._2 shouldBe Some("0.0")
+  }
+
+  test("T8 cancellation tripwire: 30 rows @ 1e8±1.0 — rollup stddev within union tolerance (ADR-0023)") {
+    val spark = buildSpark()
+    import spark.implicits._
+    // 30 rows, values 1e8 ± 1.0 alternating (mean ≈ 1e8, dispersion ≈ 1):
+    // the pathological shape for raw (n, sum, sumSq) partial states.
+    val rows = (1 to 30).map { i =>
+      Sale("big", s"i$i", 100000000L + (if (i % 2 == 0) 1L else -1L), i)
+    }
+    rows.toDF("region", "item", "amount", "units").createOrReplaceTempView("sales_base")
+    val bigModel = io.sm8.core.model.Model.of(
+      name = "sales", version = 1,
+      dimensions = dims,
+      measures = meas :+ Measure.aggregate("amt_std", AggregateFn.StddevSample, Expr.FieldRef("amount")),
+      source = SourceRef.ByName(table = "sales_base"),
+      rollups = List(RollupSpec("by_region_big", List("region"), List("amt_std"), None))
+    ).right.get
+    val (baseDf, rollDf) = parityHarness(spark, bigModel,
+      RollupSpec("by_region_big", List("region"), List("amt_std"), None), stddevPlan("amt_std", pop = false))
+    val baseRow = baseDf.collect().head
+    val rollRow = rollDf.collect().head
+    val baseVal = Option(baseRow.get(1)).map(_.toString.toDouble)
+    val rollVal = Option(rollRow.get(1)).map(_.toString.toDouble)
+    // Both paths must agree on NULL-ness (here: defined, n=30).
+    (baseVal.isDefined, rollVal.isDefined) shouldBe ((true, true))
+    val b = baseVal.get
+    val r = rollVal.get
+    // Union tolerance per ADR-0023: relative <= 1e-6 OR absolute <= 1e-9.
+    val relErr = math.abs(r - b) / math.abs(b)
+    val absErr = math.abs(r - b)
+    val pass = relErr <= 1e-6 || absErr <= 1e-9
+    if (!pass)
+      fail(s"cancellation tripwire BREACH (Welford migration becomes mandatory): " +
+        s"base=$b rollup=$r relErr=$relErr absErr=$absErr")
+    // Log measured drift either way (ADR contract: drift is recorded, not hidden).
+    println(f"[tripwire] base=$b%.12f rollup=$r%.12f relErr=$relErr%.3e absErr=$absErr%.3e PASS")
+    // Sanity: fixture's true stddev_samp = sqrt(30/29) ≈ 1.017095255431
+    // (15 values at +1, 15 at -1 around mean 1e8: SS = 30, / (n-1) = 29).
+    b shouldBe (1.0170952554310989 +- 1e-9)
   }
 
 }

@@ -249,7 +249,14 @@ class PortableQueryCompilerJoinsAggsSpec extends AnyFunSuite with Matchers {
 
   // ===== typed error boundaries (never a silent no-op) =====
 
-  test("unwired aggregate (StddevSample) surfaces typed FeatureDeferred") {
+  // T8 (ADR-0023): StddevSample is now a SUPPORTED aggregate — it
+  // lowers to Spark's native stddev_samp (see renderAggregate). The
+  // typed-error contract this test used to pin moved to the fns that
+  // REMAIN unwired (First/Last/Median/Percentile*/ApproxPercentile);
+  // the test below now pins StddevSample COMPILES with the exact
+  // engine-parity value instead.
+
+  test("T8: StddevSample compiles and matches Spark's native stddev_samp") {
     val spark = buildSpark()
     try {
       ordersFixture(spark)
@@ -258,12 +265,32 @@ class PortableQueryCompilerJoinsAggsSpec extends AnyFunSuite with Matchers {
         measures = List(agg("sd", AggregateFn.StddevSample, Expr.FieldRef("amount"))))
       val out = new PortableQueryCompiler(spark)
         .compile(m, EngineContext.defaultContext)
+      out.isRight shouldBe true
+      // Parity with Spark's own stddev over the same fixture.
+      val compiled = out.toOption.get
+      val native = spark.table("orders").groupBy("region").agg(
+        org.apache.spark.sql.functions.stddev("amount").as("sd_native"))
+      val compiledRows = compiled.collect().map(r => (r.getString(0), Option(r.get(1)).map(_.toString))).sortBy(_._1).toList
+      val nativeRows = native.collect().map(r => (r.getString(0), Option(r.get(1)).map(_.toString))).sortBy(_._1).toList
+      compiledRows shouldBe nativeRows
+    } finally { spark.stop() }
+  }
+
+  test("still-unwired aggregate (Median) surfaces typed FeatureDeferred") {
+    val spark = buildSpark()
+    try {
+      ordersFixture(spark)
+      val m = model("orders",
+        dimensions = List(Dimension.field("region", "region")),
+        measures = List(agg("med", AggregateFn.Median, Expr.FieldRef("amount"))))
+      val out = new PortableQueryCompiler(spark)
+        .compile(m, EngineContext.defaultContext)
       out.isLeft shouldBe true
       val err = out.left.toOption.get
       err shouldBe a [EngineError.FeatureDeferred]
       err match {
         case EngineError.FeatureDeferred(_, feature, _, _) =>
-          feature should include ("StddevSample")
+          feature should include ("Median")
         case other => fail(s"expected FeatureDeferred, got $other")
       }
     } finally { spark.stop() }
