@@ -504,13 +504,10 @@ object RollupRewriter {
     * @return the declared scan schema for the rollup table
     */
   def rollupSchema(spec: RollupSpec, model: Model): List[Field] = {
-    // Nullability: carry the host dimension's declared dataType
-    // where present (Varchar fallback documented for Ticket 5 to
-    // replace with base-scan lookup); nullability follows the
-    // host dimension when its expr is a plain FieldRef into a
-    // nullable base column we cannot know here, so dims stay
-    // nullable (safe direction: extra permissiveness in the
-    // declared scan schema).
+    // Dims: carry the host dimension's declared dataType where
+    // present. Varchar fallback = conservative default (the caller
+    // can pass the resolved scan schema via `dimTypes` for exact
+    // types; Ticket 5's DE review carry-item).
     val dimFields = model.dimensions
       .filter(d => spec.dimensions.contains(d.name))
       .map(d => Field(d.name, d.dataType.getOrElse(SealedDataType.Varchar), nullable = true))
@@ -522,6 +519,52 @@ object RollupRewriter {
     // Two declared measures can share a state column (two Counts
     // both need count__rows) — dedupe by name.
     dimFields ++ measureFields.distinctBy(_.name)
+  }
+
+  /** Schema-TYPE reconciliation (the Ticket 5 DE carry-item):
+    * returns the rollup table's declared `Field` list derived from
+    * the RESOLVED base-scan schema (the actual column types the
+    * materializer will aggregate), not the hardcoded fallbacks.
+    *
+    * The connector calls this at materialize time with the scan it
+    * already resolved, then casts its state columns to match — so
+    * the declaration and the physical table can never drift.
+    *
+    * @param spec         the rollup declaration
+    * @param model        the host model (for dim/measure lookup)
+    * @param baseScanSchema the resolved base table schema (column
+    *                     name -> SealedDataType)
+    * @return the reconciled schema list
+    */
+  def reconciledRollupSchema(
+      spec: RollupSpec,
+      model: Model,
+      baseScanSchema: Map[String, io.sm8.core.schema.SealedDataType]
+  ): List[io.sm8.core.schema.Field] = {
+    import io.sm8.core.schema.{Field, SealedDataType}
+    // Dims: resolve from the scan, fall back to declared, then Varchar.
+    val dimFields = spec.dimensions.map { d =>
+      val t = baseScanSchema.getOrElse(d,
+        model.dimensions.find(_.name == d).flatMap(_.dataType).getOrElse(SealedDataType.Varchar))
+      Field(d, t, nullable = true)
+    }
+    // State columns: derive the input field's actual type from the scan.
+    val stateFields = model.measures
+      .filter(m => spec.measures.contains(m.name))
+      .flatMap { m =>
+        m.expr.input.collectFirst {
+          case io.sm8.core.expr.Expr.FieldRef(inputField) if baseScanSchema.contains(inputField) =>
+            val resolvedType = baseScanSchema(inputField)
+            m.expr.fn match {
+              case AggregateFn.Sum => List(Field(s"sum__$inputField", resolvedType, nullable = true))
+              case AggregateFn.Min => List(Field(s"min__$inputField", resolvedType, nullable = true))
+              case AggregateFn.Max => List(Field(s"max__$inputField", resolvedType, nullable = true))
+              case _ => Nil
+            }
+          case _ => Nil
+        }.getOrElse(Nil)
+      } :+ Field("count__rows", SealedDataType.BigInt, nullable = false)
+    (dimFields ++ stateFields).distinctBy(_.name)
   }
 
   /** The state columns a rollup table carries for one declared
