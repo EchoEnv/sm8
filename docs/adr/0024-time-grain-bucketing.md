@@ -58,7 +58,7 @@ Rationale for truncation-only: it is the only op whose inverse relationship ("a 
 
 ### 4. Routing: exact grain + a closed coarsening matrix
 
-The tempting feature — serve a `month` query from a `day` rollup by re-aggregating across buckets — is **allowed only for Additive measures and Avg, refused for everything else**. The routing rule is a total function over `(rollupGrain, queryGrain)` after normalization — four mutually exclusive arms:
+The tempting feature — serve a `month` query from a `day` rollup by re-aggregating across buckets — is **allowed only for Additive measures and Avg, refused for everything else**. The routing rule is a total case-arm function over `(rollupGrain, queryGrain)` after normalization:
 
 ```
 grainsAgree(rollupGrain, queryGrain):            // both Option[String], normalized
@@ -114,7 +114,7 @@ This REPLACES today's equality-only `grainsAgree`. Two existing behaviors are pr
 - Parity suite extends the existing harness: grain rollups materialize → coarsening + exact-grain queries route → both paths agree (incl. NULL/empty buckets, month boundaries, week-Monday-start pin, Date-declared grain dims materializing as Timestamp).
 - File-level change list: `RollupMaterializer.scala` (refusal drop ~:122 + groupBy truncation), `PortableExprCompiler.scala` (allowlist arm), `RollupMaterializerSpec` / parity specs (new cases).
 
-**Docs:** `RollupSpec` scaladoc's "opaque label" paragraph is superseded by the contract; the rollup-refresh runbook's "declare grain-less" caveat is replaced by the migration note for the grain-less-query behavior change.
+**Docs:** `RollupSpec` scaladoc's "opaque label" paragraph is superseded by the contract; the rollup-refresh runbook's "declare grain-less" caveat is removed when this ships.
 
 **Non-consequences:**
 - No timezone handling in v1 (`date_trunc` operates in the session zone; session-zone truncation is the pinned v1 default, documented in the runbook).
