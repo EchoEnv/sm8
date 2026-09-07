@@ -184,11 +184,11 @@ object ModelLoader {
   val meas = parseMeasures(asSeq(root.get("measures")))
   // PR-M1 (ADR-008-L Appendix GAP 4): parse joins + calculated
   // measures + filters. All three can fail (unknown join kind,
-  // unparsable calc expr, bad filter predicate) — surface as typed
-  // ManifestError, never silent.
-  val joinsE = parseJoins(asSeq(root.get("joins")))
-  val filtersE = parseFilters(asSeq(root.get("filters")))
-  val calcsE = parseCalculatedMeasures(asSeq(root.get("calculated_measures")))
+  // unparsable calc expr, bad filter predicate, scalar at the
+  // per-block site) — surface as typed ManifestError, never silent.
+  val joinsE = parseJoins(seqOrFail("joins", root.get("joins")))
+  val filtersE = parseFilters(seqOrFail("filters", root.get("filters")))
+  val calcsE = parseCalculatedMeasures(seqOrFail("calculated_measures", root.get("calculated_measures")))
   // Pre-aggregation rollups (Ticket 3 of
   // docs/wayfinder/2026-09-06-pre-aggregation.md): parse the
   // optional `rollups:` block. Each
@@ -216,6 +216,19 @@ object ModelLoader {
  }
 
  // -- YAML map / list helpers --
+
+ /** Strict asSeq: a scalar or null at a per-block site fails loud
+  * as a typed ParseFailure naming the block (e.g. `filters: myfilter`
+  * indentation slip should not silently load zero filters). Absent
+  * is the canonical "no entries" form and returns Right(Nil).
+  */
+ private def seqOrFail(block: String, v: Any): Either[ManifestError, Seq[Any]] = v match {
+  case null => Right(Nil)
+  case s: java.util.List[_] => Right(s.asScala.toSeq)
+  case other =>
+   Left(ManifestError.ParseFailure(
+    s"$block: expected a list, got ${Option(other).map(_.getClass.getSimpleName).getOrElse("null")}"))
+ }
 
  private def asMap(v: Any): Option[java.util.Map[_, _]] = v match {
  case m: java.util.Map[_, _] => Some(m)
@@ -329,8 +342,13 @@ object ModelLoader {
     * @return the typed JoinSpec, or a typed `ManifestError`
     */
   def parseOne(m: java.util.Map[_, _]): Either[ManifestError, io.sm8.core.model.JoinSpec] = {
-   val name  = stringField(m, "name").getOrElse("")
-   val rightModel = stringField(m, "rightModel").orElse(stringField(m, "right_model")).getOrElse("")
+   val name = stringField(m, "name")
+   val rightModel = stringField(m, "rightModel").orElse(stringField(m, "right_model"))
+   if (name.isEmpty)
+     return Left(ManifestError.ParseFailure(
+       s"joins[]: missing 'name'"))
+   val nameV = name.get
+   val rightModelV = rightModel.getOrElse("")
    val kindStr = stringField(m, "kind").getOrElse("inner")
    val keysRaw = asSeq(m.get("keys"))
    val kind: Either[ManifestError, io.sm8.core.rel.JoinKind] = kindStr.toLowerCase match {
@@ -340,7 +358,7 @@ object ModelLoader {
      case "full" | "outer" => Right(io.sm8.core.rel.JoinKind.Full)
      case "cross" => Right(io.sm8.core.rel.JoinKind.Cross)
      case other => Left(ManifestError.ParseFailure(
-       s"joins[$name]: unknown kind '$other' (supported: inner, left, right, full, outer, cross)"))
+       s"joins[$nameV]: unknown kind '$other' (supported: inner, left, right, full, outer, cross)"))
    }
    val keys: List[(String, String)] = keysRaw.toList.flatMap {
      case pair: java.util.List[_] if pair.size == 2 =>
@@ -353,16 +371,16 @@ object ModelLoader {
          scala.util.Try(raw.toLong) match {
            case scala.util.Success(v) if v >= 0 => Right(Some(v))
            case scala.util.Success(v) => Left(ManifestError.ParseFailure(
-             s"joins[$name]: estimated_rows must be >= 0, got $v"))
+             s"joins[$nameV]: estimated_rows must be >= 0, got $v"))
            case scala.util.Failure(_) => Left(ManifestError.ParseFailure(
-             s"joins[$name]: estimated_rows '$raw' is not a non-negative integer"))
+             s"joins[$nameV]: estimated_rows '$raw' is not a non-negative integer"))
          }
        case None => Right(None)
      }
    for {
      k <- kind
      est <- estimated
-   } yield io.sm8.core.model.JoinSpec(name, rightModel, k, keys, est)
+   } yield io.sm8.core.model.JoinSpec(nameV, rightModelV, k, keys, est)
   }
   seq.toList.foldLeft[Either[ManifestError, List[io.sm8.core.model.JoinSpec]]](Right(Nil)) { (accE, entry) =>
    for {
@@ -551,7 +569,7 @@ object ModelLoader {
  */
  def parseOne(entry: Any): Either[ManifestError, FilterSpec] =
   asMap(entry).toRight(ManifestError.ParseFailure(
-   s"filters[]: entry must be a map (got ${entry.getClass.getSimpleName})"))
+   s"filters[]: entry must be a map (got ${Option(entry).map(_.getClass.getSimpleName).getOrElse("null")})"))
    .flatMap { m =>
     val name = stringField(m, "name")
     val predicateStr = stringField(m, "predicate")
