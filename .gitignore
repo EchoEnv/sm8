@@ -64,3 +64,7 @@ logs/
 .agent-probe.md       # stale turn_start hook test probe
 package-lock.json     # npm lockfile in a Scala/Maven repo is stray
 node_modules/         # npm modules — not used by this Scala project__pycache__/
+
+spark-warehouse/
+metastore_db/
+derby.log
