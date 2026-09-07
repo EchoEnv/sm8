@@ -74,6 +74,8 @@ their context, the options considered, and the consequences of the chosen path.
 | [0019](0019-executeengine-typed-error-catch-ladder.md) | typed-error catch-ladder at the `executeEngine` IO boundary — preserves the `EngineError` ADT surface (Wayfinder Ticket #1) | Implemented (PR-317, `847d263`) |
 | [0020](0020-typed-error-meta-namespace.md) | `<scope>:error` meta-key namespace for typed-error surfacing + `HookErrorChannel.surfaceTypedError` plugin-author helper (Wayfinder Ticket #2) | Implemented (PR-318, `d93cfd4`) |
 | [0021](0021-mcp-route-split.md) | McpHttpRoute / McpStdioRoute / Sm8ToolHandlers structural split — ToolRegistry helper + HTTP lifecycle/state/protocol trio + stdio 2-way mirror (Wayfinder Ticket #3) | Implemented (PR-319/320/321, `e8c85ff`/`a844e5d`/`26813f6`) |
+| [0022](0022-pre-aggregation-sm8-native.md) | Pre-aggregation (rollups) — sm8-native design; external-engine + SQL-rewrite proposal evaluated and adapted (6-ticket wayfinder map, all landed #329-#334) | Implemented (#327-#334) |
+| [0023](0023-aggregate-call-algebraic-routing.md) | Algebraic measure routing over rollups — two-phase Aggregate+Project re-aggregation (no IR extension); supersedes the reverted PR-338 gate-flip approach | Proposed |
 
 ## Tools
 
