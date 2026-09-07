@@ -503,3 +503,58 @@ class RollupRewriterSpec extends AnyFunSuite with Matchers {
     case other => fail(s"no Aggregate under $other")
   }
 }
+
+// ===== Schema-type reconciliation (Ticket 5 DE carry-item) =====
+
+class ReconciledRollupSchemaSpec extends AnyFunSuite with Matchers {
+
+  private val scanTypes = Map(
+    "region" -> io.sm8.core.schema.SealedDataType.Varchar,
+    "amount" -> io.sm8.core.schema.SealedDataType.BigInt,
+    "units" -> io.sm8.core.schema.SealedDataType.Int)
+
+  private val dims = List(
+    Dimension.field("region", "region"),
+    Dimension.field("units", "units"))
+
+  private val meas = List(
+    Measure("order_count", AggregateCall(fn = AggregateFn.Count, input = None, alias = "order_count")),
+    Measure.aggregate("total_amount", AggregateFn.Sum, Expr.FieldRef("amount")),
+    Measure.aggregate("min_units", AggregateFn.Min, Expr.FieldRef("units")))
+
+  private val spec = RollupSpec("by_region", List("region"), List("order_count", "total_amount", "min_units"), None)
+
+  private val m = Model.of(
+    name = "sales", version = 1,
+    dimensions = dims, measures = meas,
+    source = SourceRef.ByName(table = "sales_base"),
+    rollups = List(spec)
+  ).right.get
+
+  test("state column types derive from the resolved base-scan schema (not hardcoded Double)") {
+    val schema = RollupRewriter.reconciledRollupSchema(spec, m, scanTypes)
+    val byName = schema.map(f => f.name -> f).toMap
+    // count__rows is Long (integral, matches base-path count semantics)
+    byName("count__rows").dataType shouldBe io.sm8.core.schema.SealedDataType.BigInt
+    byName("count__rows").nullable shouldBe false
+    // sum__amount inherits amount's base type (BigInt), not Double
+    byName("sum__amount").dataType shouldBe io.sm8.core.schema.SealedDataType.BigInt
+    // min__units inherits units' base type (Int)
+    byName("min__units").dataType shouldBe io.sm8.core.schema.SealedDataType.Int
+    // dim types resolve from the scan
+    byName("region").dataType shouldBe io.sm8.core.schema.SealedDataType.Varchar
+  }
+
+  test("count__rows is always present for a rollup with a Count measure") {
+    val schema = RollupRewriter.reconciledRollupSchema(spec, m, scanTypes)
+    schema.exists(_.name == "count__rows") shouldBe true
+  }
+
+  test("unknown base fields fall back to the declared dim type (Varchar default)") {
+    val emptyScan = Map.empty[String, io.sm8.core.schema.SealedDataType]
+    val schema = RollupRewriter.reconciledRollupSchema(spec, m, emptyScan)
+    val byName = schema.map(f => f.name -> f).toMap
+    byName("region").dataType shouldBe io.sm8.core.schema.SealedDataType.Varchar
+    byName("count__rows").dataType shouldBe io.sm8.core.schema.SealedDataType.BigInt
+  }
+}
