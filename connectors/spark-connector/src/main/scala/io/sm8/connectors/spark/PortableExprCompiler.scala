@@ -40,7 +40,7 @@ import io.sm8.core.engine.{EngineError, EngineIdentity}
 import io.sm8.core.expr.{Expr, LiteralValue}
 import io.sm8.core.predicate.{Predicate => FilterPredicate}
 import org.apache.spark.sql.Column
-import org.apache.spark.sql.functions.{col, lit, not => sparkNot, sqrt, when}
+import org.apache.spark.sql.functions.{col, date_trunc, lit, not => sparkNot, sqrt, when}
 /**
  * Engine-specific Spark compiler for portable 
  * [[Column]]. Pure function (Expr) -> Column with no state, no
@@ -206,12 +206,45 @@ object PortableExprCompiler extends java.io.Serializable {
     engine     = "spark-3.5",
     capability = "Expr.FunctionCall(sqrt)",
     message = s"PortableExprCompiler.toColumn: FunctionCall('sqrt') takes exactly 1 argument, got ${args.size}."))
+   // Grain bucketing (time-grain rollups): the rewriter's routed
+   // plan wraps the grain dimension in `date_trunc(<grain>, dim)`
+   // when a coarser query grain re-groups a finer rollup. Arg 0 is
+   // a compile-time string literal (the normalized grain from the
+   // plan — KnownGrains vocabulary); arg 1 is the timestamp/date
+   // column. Maps to Spark's driver-side
+   // `functions.date_trunc(format, ts)` — a built-in (no UDF, no
+   // closure capture). Spark always returns Timestamp (Date
+   // inputs promoted), which is exactly the physical contract the
+   // materializer's truncated column carries. Spark's date_trunc
+   // accepts the full KnownGrains vocabulary
+   // ("hour"/"day"/"week"/"month"/"quarter"/"year"), Monday-start
+   // week included.
+   case "date_trunc" if args.size == 2 =>
+    // Spark's date_trunc takes the format as a plain String (a
+    // compile-time constant in the SQL spec), not a Column. The IR
+    // carries the grain as Expr.Literal(StringValue); a non-literal
+    // first arg is a typed refusal (a column-keyed truncation has
+    // no Spark equivalent and no sane semantics).
+    args.head match {
+     case Expr.Literal(LiteralValue.StringValue(format), _) =>
+      toColumn(args(1)).map(date_trunc(format, _))
+     case other =>
+      Left(EngineError.UnsupportedCapability(
+      engine     = "spark-3.5",
+      capability = "Expr.FunctionCall(date_trunc)",
+      message = s"PortableExprCompiler.toColumn: FunctionCall('date_trunc') arg 0 must be a string literal grain (hour/day/week/month/quarter/year), got ${other.getClass.getSimpleName}."))
+    }
+   case "date_trunc" =>
+    Left(EngineError.UnsupportedCapability(
+    engine     = "spark-3.5",
+    capability = "Expr.FunctionCall(date_trunc)",
+    message = s"PortableExprCompiler.toColumn: FunctionCall('date_trunc') takes exactly 2 arguments (grain literal, column), got ${args.size}."))
    case other =>
     Left(EngineError.UnsupportedCapability(
     engine     = "spark-3.5",
     capability = "Expr.FunctionCall",
     message = s"PortableExprCompiler.toColumn: Expr.FunctionCall('$other',.) is " +
-        "not in the builtin allowlist (currently: sqrt). UDF resolution " +
+        "not in the builtin allowlist (currently: sqrt, date_trunc). UDF resolution " +
         "remains deferred; see the allowlist comment above for the add-a-name contract."))
   }
  }

@@ -378,22 +378,27 @@ final class MinimalRelOpLowerer(
   ctx:   EngineContext,
   preFilteredDf: Option[org.apache.spark.sql.DataFrame]): Either[EngineError, DataFrame] = {
  lower(agg.input, ctx, preFilteredDf).flatMap { df =>
-  // groupBy: convert each Expr to a Spark Column.
-  val groupByCols: Array[Column] = agg.groupBy.map { e =>
-  val n = e match {
-   case Expr.FieldRef(name) => name
-   case Expr.MeasureRef(name) => name
-   case _ => null // typed-error below
+  // groupBy: convert each Expr to a Spark Column. FieldRef and
+  // MeasureRef resolve by name; FunctionCall (the grain-coarsening
+  // `date_trunc(grain, dim)` wrapper the rollup rewriter emits for
+  // a coarser query grain) compiles through the shared Expr
+  // compiler's builtin allowlist — no UDFs, closure-safety holds.
+  val groupByColsE: Either[EngineError, Array[Column]] =
+  agg.groupBy.foldLeft[Either[EngineError, Array[Column]]](Right(Array.empty[Column])) {
+   (accE, e) => for {
+   acc <- accE
+   col <- e match {
+    case Expr.FieldRef(name)   => Right(df.col(name))
+    case Expr.MeasureRef(name) => Right(df.col(name))
+    case fc: Expr.FunctionCall => PortableExprCompiler.toColumn(fc)
+    case other => Left(EngineError.UnsupportedCapability(
+     engine  = identity.name,
+     capability = "MinimalRelOpLowerer.dim",
+     message = s"only FieldRef/MeasureRef/FunctionCall groupBy keys are supported. Got: ${other.getClass.getSimpleName}"))
+   }
+   } yield acc :+ col
   }
-  if (n == null) {
-   // Signal the typed error via a sentinel: return an error now.
-   return Left(EngineError.UnsupportedCapability(
-   engine  = identity.name,
-   capability = "MinimalRelOpLowerer.dim",
-   message = s"PR-N3: only FieldRef/MeasureRef groupBy keys are supported. Got: ${e.getClass.getSimpleName}"))
-  }
-  df.col(n)
-  }.toArray
+  groupByColsE.flatMap { groupByCols =>
   val aggColsE: Either[EngineError, List[Column]] =
   agg.aggregates.foldLeft[Either[EngineError, List[Column]]](Right(Nil)) {
    (accE, call) => for {
@@ -411,6 +416,7 @@ final class MinimalRelOpLowerer(
    Right(df.dropDuplicates(groupByNames))
   } else {
    Right(df.groupBy(groupByCols: _*).agg(aggCols.head, aggCols.tail: _*))
+  }
   }
   }
  }

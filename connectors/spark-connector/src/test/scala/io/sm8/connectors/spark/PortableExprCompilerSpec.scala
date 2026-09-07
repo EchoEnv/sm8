@@ -567,4 +567,59 @@ class PortableExprCompilerSpec extends AnyFunSuite with Matchers {
     } finally { spark.stop() }
   }
 
+  // ===== builtin allowlist: date_trunc (time-grain rollup bucketing) =====
+
+  test("date_trunc: FunctionCall('date_trunc', grainLiteral, col) yields a Right Column") {
+    val spark = buildFakeSpark()
+    try {
+      val fc: Expr = Expr.FunctionCall(
+        name = "date_trunc",
+        args = List(
+          Expr.Literal(LiteralValue.StringValue("month"), SealedDataType.Varchar),
+          Expr.FieldRef("event_ts")))
+      val res: Either[EngineError, Column] = PortableExprCompiler.toColumn(fc)
+      res.isRight shouldBe true
+      val col: Column = res.toOption.get
+      // The compiled column references the truncated field and the
+      // grain literal survives into the physical expression.
+      col.toString should include ("event_ts")
+      col.toString.toLowerCase should include ("month")
+    } finally { spark.stop() }
+  }
+
+  test("date_trunc: name match is case-insensitive") {
+    val spark = buildFakeSpark()
+    try {
+      val fc: Expr = Expr.FunctionCall(
+        name = "DATE_TRUNC",
+        args = List(
+          Expr.Literal(LiteralValue.StringValue("year"), SealedDataType.Varchar),
+          Expr.FieldRef("event_ts")))
+      PortableExprCompiler.toColumn(fc).isRight shouldBe true
+    } finally { spark.stop() }
+  }
+
+  test("date_trunc: non-literal grain arg -> Left (Spark needs a String format)") {
+    val spark = buildFakeSpark()
+    try {
+      val fc: Expr = Expr.FunctionCall(
+        name = "date_trunc",
+        args = List(Expr.FieldRef("grain_col"), Expr.FieldRef("event_ts")))
+      val res = PortableExprCompiler.toColumn(fc)
+      res shouldBe a [Left[_, _]]
+      res.swap.toOption.get.message should include ("must be a string literal grain")
+    } finally { spark.stop() }
+  }
+
+  test("date_trunc: wrong arity (1 arg) -> Left with date_trunc-specific message") {
+    val spark = buildFakeSpark()
+    try {
+      val fc: Expr = Expr.FunctionCall(
+        name = "date_trunc",
+        args = List(Expr.Literal(LiteralValue.StringValue("day"), SealedDataType.Varchar)))
+      val res = PortableExprCompiler.toColumn(fc)
+      res shouldBe a [Left[_, _]]
+      res.swap.toOption.get.message should include ("takes exactly 2 arguments")
+    } finally { spark.stop() }
+  }
 }

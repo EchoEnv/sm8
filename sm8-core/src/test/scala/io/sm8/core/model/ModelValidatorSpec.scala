@@ -394,4 +394,66 @@ class ModelValidatorSpec extends AnyFunSuite with Matchers {
     ).toOption.get
     ModelValidator.validateAgainstSchema(m, peopleScan) shouldBe Right(())
   }
+
+  // ===== grain dimension contract =====
+
+  /** A valid model with a Date-typed dimension usable as a grain
+    * axis, plus a Varchar one for the negative cases. */
+  private def grainedModel(timeGrain: Option[String], grainDimension: Option[String], dimType: Option[SealedDataType]): Either[ModelValidationError, Model] =
+    Model.of(
+      name    = "grained",
+      version = 1,
+      source  = io.sm8.core.model.SourceRef.ByName(table = "people"),
+      dimensions = List(
+        io.sm8.core.model.Dimension(
+          name = "day", expr = Expr.FieldRef("id"), dataType = dimType),
+        io.sm8.core.model.Dimension.field("region", "region"),
+      ),
+      measures = List(io.sm8.core.model.Measure(
+        "total",
+        AggregateCall(AggregateFn.Sum, Some(Expr.FieldRef("amount")), "total"))),
+      rollups = List(io.sm8.core.model.RollupSpec(
+        "by_day", List("day"), List("total"), timeGrain, grainDimension)),
+    )
+
+  test("grain dimension: co-present grain + Date axis passes validation") {
+    grainedModel(Some("day"), Some("day"), Some(SealedDataType.Date)) shouldBe a[Right[_, _]]
+  }
+
+  test("grain dimension: timeGrain without grainDimension fails loud") {
+    val errs = grainedModel(Some("day"), None, Some(SealedDataType.Date)).left.toOption.get.asInstanceOf[ModelValidationError.SchemaValidation].messages
+    errs.exists(_.contains("timeGrain is set but grainDimension is not")) shouldBe true
+  }
+
+  test("grain dimension: grainDimension without timeGrain fails loud") {
+    val errs = grainedModel(None, Some("day"), Some(SealedDataType.Date)).left.toOption.get.asInstanceOf[ModelValidationError.SchemaValidation].messages
+    errs.exists(_.contains("grainDimension 'day' is set but timeGrain is not")) shouldBe true
+  }
+
+  test("grain dimension: axis naming a non-rollup dimension fails loud") {
+    val errs = grainedModel(Some("day"), Some("region"), Some(SealedDataType.Date)).left.toOption.get.asInstanceOf[ModelValidationError.SchemaValidation].messages
+    errs.exists(_.contains("must name one of the rollup's own dimensions")) shouldBe true
+  }
+
+  test("grain dimension: non-temporal declared type (Varchar) fails loud") {
+    val errs = grainedModel(Some("day"), Some("day"), Some(SealedDataType.Varchar)).left.toOption.get.asInstanceOf[ModelValidationError.SchemaValidation].messages
+    errs.exists(_.contains("calendar truncation requires Date or Timestamp")) shouldBe true
+  }
+
+  test("grain dimension: Timestamp declared type passes") {
+    grainedModel(Some("hour"), Some("day"), Some(SealedDataType.Timestamp)) shouldBe a[Right[_, _]]
+  }
+
+  test("grain dimension: unknown declared type falls to the RESOLVED type (Varchar source fails)") {
+    val m = grainedModel(Some("day"), Some("day"), None).right.get
+    val scan = peopleScan.copy(schema = peopleScan.schema :+ Field("day", SealedDataType.Varchar, nullable = false))
+    val errs = ModelValidator.validateAgainstSchema(m, scan).left.toOption.get.asInstanceOf[ModelValidationError.SchemaValidation].messages
+    errs.exists(_.contains("resolved to type Varchar")) shouldBe true
+  }
+
+  test("grain dimension: unknown declared type + Date resolved source passes") {
+    val m = grainedModel(Some("day"), Some("day"), None).right.get
+    val scan = peopleScan.copy(schema = peopleScan.schema :+ Field("day", SealedDataType.Date, nullable = false))
+    ModelValidator.validateAgainstSchema(m, scan) shouldBe Right(())
+  }
 }

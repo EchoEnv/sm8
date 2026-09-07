@@ -119,21 +119,58 @@ object RollupMaterializer {
 
   /** Typed refusals BEFORE any Spark work (driver-side, pure). */
   private[spark] def validateSpec(model: Model, spec: RollupSpec): Either[EngineError, Unit] = {
-    if (spec.timeGrain.isDefined)
-      Left(EngineError.UnsupportedCapability(
-        engine = "spark-connector",
-        capability = "RollupMaterializer.timeGrain",
-        message = s"rollups[${spec.name}]: grain bucketing is not defined in v1 (finer-than-grain " +
-          "dim value-domains must be pinned first — Ticket 4 review carry-item). " +
-          "Declare the rollup without time_grain, or extend the materializer with bucketing."))
-    else {
+    // Grain bucketing is enabled in v1 — the timeGrain blanket
+    // refusal is gone. The temporal-type contract is enforced
+    // upstream by ModelValidator (declared + resolved type checks
+    // on the grain dimension); the materializer enforces it again
+    // as a defense-in-depth against a model that bypassed validation
+    // (e.g. built directly via Model.of without going through the
+    // loader). When the declared grain dimension lacks a declared
+    // type, we ask the resolved base-scan schema — nullability
+    // distinguishes "no grain" (no check) from "type unknown" (a
+    // resolved non-temporal type fails loud).
+    val grainTypeCheck: Either[EngineError, Unit] =
+      if (spec.timeGrain.isDefined && spec.grainDimension.isDefined) {
+        val gd = spec.grainDimension.get
+        val declaredType = model.dimensions.find(_.name == gd).flatMap(_.dataType)
+        val resolvedType: Option[io.sm8.core.schema.SealedDataType] =
+          if (declaredType.isDefined) declaredType
+          else {
+            // Without a declared type we cannot resolve without
+            // the base schema here — defer to the loader-side
+            // validator; this branch is the "defensive" path for
+            // direct Model.of callers who skip validateAgainstSchema.
+            None
+          }
+        resolvedType match {
+          case Some(t) if t != io.sm8.core.schema.SealedDataType.Date &&
+                            t != io.sm8.core.schema.SealedDataType.Timestamp =>
+            Left(EngineError.UnsupportedCapability(
+              engine = "spark-connector",
+              capability = "RollupMaterializer.grainDimensionType",
+              message = s"rollups[${spec.name}]: grainDimension '$gd' has declared type $t — " +
+                "calendar truncation requires Date or Timestamp"))
+          case _ => Right(())
+        }
+      } else if (spec.timeGrain.isDefined != spec.grainDimension.isDefined) {
+        // Half-declared grain (one side set, the other not). The
+        // validator catches this on the loader path; here it is a
+        // defense-in-depth refusal for direct Model.of callers.
+        Left(EngineError.UnsupportedCapability(
+          engine = "spark-connector",
+          capability = "RollupMaterializer.grainCoPresence",
+          message = s"rollups[${spec.name}]: timeGrain and grainDimension must be both set or both unset " +
+            s"(got timeGrain=${spec.timeGrain}, grainDimension=${spec.grainDimension})"))
+      } else Right(())
+
+    grainTypeCheck.flatMap { _ =>
       val declared = model.measures.filter(m => spec.measures.contains(m.name))
       val unsupported = declared.filter { m =>
         val d = AggregateFn.decomposability(m.expr.fn)
         // Positional (First/Last), Holistic (Median/Percentile*), Approximable
         // (CountDistinct/ApproxPercentile) remain refused — no bounded-size
         // partial state suffices. DISTINCT + COUNT(expr) also refused.
-        // Algebraic (Avg/Stddev*/Variance*) NOW SUPPORTED via (n, sum, sumSq)
+        // Algebraic (Avg/Stddev*/Variance*) NOW SUPPORTED via (n, sum, m2)
         // partial-state columns (the Ticket 6 contract-pass).
         d != Decomposability.Additive && d != Decomposability.Algebraic ||
           m.expr.distinct ||
@@ -207,7 +244,22 @@ object RollupMaterializer {
         message = s"rollups[${spec.name}]: dimension(s) ${missingDims.mkString(", ")} not present " +
           s"in base table (columns: ${baseDf.columns.mkString(", ")})"))
     else {
-      val dimCols: List[Column] = spec.dimensions.map(baseDf.col)
+      // Grain bucketing: the declared grain dimension groups on
+      // date_trunc(<grain>, col) instead of the raw column, and the
+      // output column is aliased back to the dimension name so the
+      // rollup table's schema matches the rewriter's declared scan
+      // schema (the Timestamp override in rollupSchema /
+      // reconciledRollupSchema). Normalization reuses the core
+      // helper — a single canonical grain vocabulary across layers.
+      val normalizedGrain = RollupRewriter.normalizeGrain(spec.timeGrain)
+      val grainDimCol: Option[Column] = for {
+        grain <- normalizedGrain
+        gd    <- spec.grainDimension
+      } yield org.apache.spark.sql.functions
+        .date_trunc(grain, baseDf.col(gd)).as(gd)
+      val dimCols: List[Column] = spec.dimensions.map { d =>
+        if (spec.grainDimension.contains(d)) grainDimCol.get else baseDf.col(d)
+      }
       val declared = model.measures.filter(m => spec.measures.contains(m.name))
       val stateCols: List[Column] = declared.flatMap { m =>
         stateColumns(m.expr)

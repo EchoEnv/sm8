@@ -830,4 +830,158 @@ class RollupMaterializerAlgebraicSpec extends AnyFunSuite with Matchers {
       EngineContext.defaultContext).isRight shouldBe true
   }
 
+  // ===== grain bucketing (time-grain rollups) =====
+
+  /** Date-typed dim model (the base has no temporal column, so the
+    * grain fixture synthesizes `day` as a Date column via SQL on
+    * the sales view). */
+  private def grainedModel(rollups: List[RollupSpec]): Model =
+    Model.of(
+      name = "sales",
+      version = 1,
+      dimensions = List(
+        Dimension.field("region", "region"),
+        Dimension.field("day", "day", SealedDataType.Date)),
+      measures = List(
+        Measure("order_count", AggregateCall(fn = AggregateFn.Count, input = None, alias = "order_count")),
+        Measure.aggregate("total_amount", AggregateFn.Sum, Expr.FieldRef("amount"))),
+      defaultPolicies = ModelPolicyDefaults(
+        materialize = MaterializePolicy.None,
+        cache = CachePolicy.NoCache,
+        audit = AuditPolicy.NoAudit),
+      source = SourceRef.ByName(table = "sales_days_base"),
+      rollups = rollups
+    ).right.get
+
+  test("grain: co-present timeGrain + Date grainDimension passes validateSpec") {
+    val m = grainedModel(Nil)
+    val spec = RollupSpec("by_day", List("region", "day"), List("order_count"),
+      Some("day"), Some("day"))
+    RollupMaterializer.validateSpec(m, spec).isRight shouldBe true
+  }
+
+  test("grain: half-declared grain (timeGrain without axis) refuses typed") {
+    val m = grainedModel(Nil)
+    val spec = RollupSpec("half", List("region"), List("order_count"), Some("day"), None)
+    val err = RollupMaterializer.validateSpec(m, spec).left.toOption.get
+      .asInstanceOf[EngineError.UnsupportedCapability]
+    err.capability shouldBe "RollupMaterializer.grainCoPresence"
+  }
+
+  test("grain: non-temporal declared grainDimension type refuses typed") {
+    val m = Model.of(
+      name = "sales", version = 1,
+      dimensions = List(
+        Dimension.field("region", "region"),
+        Dimension.field("day", "day", SealedDataType.Varchar)),
+      measures = List(Measure("order_count",
+        AggregateCall(fn = AggregateFn.Count, input = None, alias = "order_count"))),
+      source = SourceRef.ByName(table = "sales_days_base"),
+      rollups = Nil
+    ).right.get
+    val spec = RollupSpec("bad_axis", List("region", "day"), List("order_count"),
+      Some("day"), Some("day"))
+    val err = RollupMaterializer.validateSpec(m, spec).left.toOption.get
+      .asInstanceOf[EngineError.UnsupportedCapability]
+    err.capability shouldBe "RollupMaterializer.grainDimensionType"
+  }
+
+  test("grain: materialized rollup truncates the grain dim and yields Timestamp buckets") {
+    val spark = buildSpark()
+    import spark.implicits._
+    try {
+      // Base with a real Date column: 3 days x 2 regions, month
+      // spans two buckets at 'month' grain, days collapse within.
+      spark.sql("""SELECT * FROM VALUES
+        | ('2026-01-05', 'east', 10L),
+        | ('2026-01-20', 'west', 20L),
+        | ('2026-02-11', 'east', 30L)
+        | AS t(day, region, amount)""".stripMargin)
+        .withColumn("day", $"day".cast("date"))
+        .createOrReplaceTempView("sales_days_base")
+      val m = grainedModel(Nil)
+      val spec = RollupSpec("by_region_day", List("region", "day"), List("order_count", "total_amount"),
+        Some("month"), Some("day"))
+      val out = RollupMaterializer.materialize(spark, m, spec)
+      out.isRight shouldBe true
+      // The temp view name <model>__<rollup>.
+      val df = spark.table("sales__by_region_day")
+      // Truncation: 3 raw rows yield 3 month buckets (two east in
+      // Jan collapse to one, east in Feb stays, west in Jan stays);
+      // grouped by (region, day-bucket) the count is 3.
+      val rows = df.collect()
+      rows.length shouldBe 3
+      // day column materializes as Timestamp (date_trunc promotion).
+      df.schema("day").dataType.typeName shouldBe "timestamp"
+      // Every bucket starts with month truncation: 2026-01-01 or 2026-02-01.
+      rows.map(_.getAs[Any]("day").toString).toSet shouldBe Set(
+        "2026-01-01 00:00:00.0", "2026-02-01 00:00:00.0")
+      // Each (region, month-bucket) group sums to its 1 input row.
+      rows.map(_.getAs[Long]("count__rows")).sorted.toList shouldBe List(1L, 1L, 1L)
+    } finally spark.stop()
+  }
+
+  test("grain e2e coarsening parity: day rollup serves a month query == base path") {
+    val spark = buildSpark()
+    import spark.implicits._
+    try {
+      // Month-spanning base: Jan rows and Feb rows per region.
+      spark.sql("""SELECT * FROM VALUES
+        | ('2026-01-05', 'east', 10L),
+        | ('2026-01-20', 'east', 40L),
+        | ('2026-02-11', 'east', 30L),
+        | ('2026-01-06', 'west', 7L)
+        | AS t(day, region, amount)""".stripMargin)
+        .withColumn("day", $"day".cast("date"))
+        .createOrReplaceTempView("sales_days_base")
+      val m = grainedModel(List(RollupSpec(
+        "by_region_day", List("region", "day"), List("order_count", "total_amount"),
+        Some("day"), Some("day"))))
+      val spec = m.rollups.head
+      RollupMaterializer.materialize(spark, m, spec).isRight shouldBe true
+
+      // Query: monthly totals per (region, day-bucket). The request
+      // group set {region, day} matches the rollup dims exactly; the
+      // grain gate sees rollup=day (finer) vs query=month and takes
+      // the coarsening arm, whose emitted plan re-groups the day
+      // buckets under date_trunc('month', day).
+      val monthPlan = RelOp.Aggregate(
+        input = RelOp.Scan(
+          sourceRef = SourceRef.ByName(table = "sales_days_base"),
+          schema = List(
+            Field.nonNull("region", SealedDataType.Varchar),
+            Field.nonNull("day", SealedDataType.Date),
+            Field.nonNull("amount", SealedDataType.BigInt)),
+          projection = Nil),
+        groupBy = List(Expr.FieldRef("region"), Expr.FieldRef("day")),
+        aggregates = List(
+          AggregateCall(fn = AggregateFn.Count, input = None, alias = "order_count"),
+          AggregateCall(fn = AggregateFn.Sum, input = Some(Expr.FieldRef("amount")), alias = "total_amount")))
+      val rewritten = RollupRewriter.rewrite(monthPlan, m, Some("month"))
+      rewritten shouldBe a[RollupRewriter.RollupRewriteResult.Rewritten]
+
+      val identity = EngineIdentity("spark-3.5", "3.5", "sm8-spark-3.5-1.0")
+      val lowerer = new MinimalRelOpLowerer(spark, new PortableQueryCompiler(spark), identity)
+      val rollDf = lowerer.lower(
+        rewritten.asInstanceOf[RollupRewriter.RollupRewriteResult.Rewritten].plan,
+        EngineContext.defaultContext).right.get
+      val baseDf = lowerer.lower(monthPlan, EngineContext.defaultContext).right.get
+
+      // Base path: raw per-day groups — 4 groups, one per input row
+      // (the raw day values are all distinct).
+      val base = baseDf.collect().map(r =>
+        (r.getString(0), r.getLong(2), r.getLong(3))).sortBy(_._1).toList
+      base shouldBe List(("east", 1L, 10L), ("east", 1L, 40L), ("east", 1L, 30L), ("west", 1L, 7L))
+      // Rollup path: date_trunc('month', day) collapses the two east
+      // January days into ONE monthly bucket (2 orders, 50), while
+      // the east February row stays separate.
+      val roll = rollDf.collect().map(r =>
+        (r.getString(0), r.getLong(2), r.getLong(3))).sortBy(_._1).toList
+      roll shouldBe List(("east", 2L, 50L), ("east", 1L, 30L), ("west", 1L, 7L))
+      // Sums of the per-row figures must agree (count/amount
+      // preserved under re-bucketing).
+      base.map(_._2).sum shouldBe roll.map(_._2).sum
+      base.map(_._3).sum shouldBe roll.map(_._3).sum
+    } finally spark.stop()
+  }
 }
