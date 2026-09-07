@@ -38,13 +38,16 @@ class MetricsHttpRouteSpec extends AnyFunSuite with Matchers {
     uptimeSeconds = 60L,
     invocations  = InvocationCounters(total = 10, succeeded = 8, failed = 2),
     cache        = CacheCounters(hits = 30, misses = 12),
-    errors       = ErrorCounters(auditSinkUnavailable = 1, timedOut = 1)
+    errors       = ErrorCounters(auditSinkUnavailable = 1, timedOut = 1),
+    rollup       = RollupCounters(rewrites = 5, refusals = 4, refusalsPermanent = 1,
+                                  refusalsByReason = List("grainMismatch" -> 2, "unsplittableAggregate" -> 1))
   )
 
   // ----- Test 1 -----
-  test("renderBody includes all 9 metric names with _total suffix (counters) or no suffix (gauges)") {
+  test("renderBody includes all static metric names (HELP + TYPE + value pattern)") {
     val body = MetricsHttpRoute.renderBody(fixedStart)
-    val expectedNames = Seq(
+    // Static metric names (counter / gauge, the always-present ones).
+    val expectedStaticNames = Seq(
       "sm8_invocation_total",
       "sm8_invocation_succeeded_total",
       "sm8_invocation_failed_total",
@@ -52,11 +55,14 @@ class MetricsHttpRouteSpec extends AnyFunSuite with Matchers {
       "sm8_cache_misses_total",
       "sm8_error_audit_sink_unavailable_total",
       "sm8_error_timed_out_total",
+      "sm8_rollup_rewrites_total",
+      "sm8_rollup_refusals_total",
+      "sm8_rollup_refusals_permanent_total",
       "sm8_process_uptime_seconds",
       "sm8_process_start_time_seconds"
     )
-    expectedNames.foreach { name =>
-      withClue(s"missing metric `$name` in body:\n$body\n") {
+    expectedStaticNames.foreach { name =>
+      withClue(s"missing static metric `$name` in body:\n$body\n") {
         body should include (s"# HELP $name ")
         body should include (s"# TYPE $name ")
         // Counters should NOT have an extra _total suffix (no double-suffix).
@@ -65,12 +71,38 @@ class MetricsHttpRouteSpec extends AnyFunSuite with Matchers {
     }
   }
 
+  // ----- Test 1b (per-reason counters, delta-based like Test 5) -----
+  test("renderBody surfaces per-reason refusal counters recorded via QueryMetrics") {
+    val before = QueryMetrics.snapshot(0L, "test").rollup.refusalsByReason.toMap
+    QueryMetrics.recordRollupRefusal(
+      io.sm8.core.rel.RollupRewriter.RollupRewriteRefusal.GrainMismatch)
+    QueryMetrics.recordRollupRefusal(
+      io.sm8.core.rel.RollupRewriter.RollupRewriteRefusal.GrainMismatch)
+    QueryMetrics.recordRollupRefusal(
+      io.sm8.core.rel.RollupRewriter.RollupRewriteRefusal.UnsplittableAggregate)
+    QueryMetrics.recordRollupRewrite()
+    val body = MetricsHttpRoute.renderBody(fixedStart)
+    val line = (name: String) => body.linesIterator.find(_.startsWith(name + " "))
+    withClue(s"missing sm8_rollup_refusals_grainMismatch value line:\n$body\n") {
+      line("sm8_rollup_refusals_grainMismatch") shouldBe defined
+    }
+    withClue(s"missing sm8_rollup_refusals_unsplittableAggregate value line:\n$body\n") {
+      line("sm8_rollup_refusals_unsplittableAggregate") shouldBe defined
+    }
+    line("sm8_rollup_refusals_grainMismatch").get.trim.split(" ").last.toLong shouldBe
+      before.getOrElse("grainMismatch", 0L) + 2L
+    line("sm8_rollup_refusals_unsplittableAggregate").get.trim.split(" ").last.toLong shouldBe
+      before.getOrElse("unsplittableAggregate", 0L) + 1L
+  }
+
   // ----- Test 2 -----
   test("renderBody follows Prometheus text format 0.0.4 (HELP + TYPE + value pattern for each metric)") {
     val body = MetricsHttpRoute.renderBody(fixedStart)
     // Each metric line is preceded by a "# HELP <name> <description>" line
-    // and a "# TYPE <name> <type>" line, then a value line.
-    expectedMetricsCount(body) shouldBe 9
+    // and a "# TYPE <name> <type>" line, then a value line. Static count
+    // is 12; the per-reason counters add one HELP block per distinct
+    // reason observed so far (>= 0), asserted separately in Test 1b.
+    expectedMetricsCount(body) should be >= 12
   }
 
   // ----- Test 3 -----

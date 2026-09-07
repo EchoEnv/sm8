@@ -155,6 +155,20 @@ object MetricsHttpRoute {
        |# HELP sm8_error_timed_out_total Total EngineError.QueryTimedOut raised
        |# TYPE sm8_error_timed_out_total counter
        |sm8_error_timed_out_total ${snap.errors.timedOut}
+       |# HELP sm8_rollup_rewrites_total Total RollupRewriter.rewrite calls that returned Rewritten
+       |# TYPE sm8_rollup_rewrites_total counter
+       |sm8_rollup_rewrites_total ${snap.rollup.rewrites}
+       |# HELP sm8_rollup_refusals_total Total RollupRewriter.rewrite calls that returned Unchanged(reason)
+       |# TYPE sm8_rollup_refusals_total counter
+       |sm8_rollup_refusals_total ${snap.rollup.refusals}
+       |# HELP sm8_rollup_refusals_permanent_total Subset of refusals that can never be served from a rollup
+       |# TYPE sm8_rollup_refusals_permanent_total counter
+       |sm8_rollup_refusals_permanent_total ${snap.rollup.refusalsPermanent}
+       |${snap.rollup.refusalsByReason.map { case (reason, n) =>
+         s"""|# HELP sm8_rollup_refusals_$reason Total refusals with reason $reason
+             |# TYPE sm8_rollup_refusals_$reason counter
+             |sm8_rollup_refusals_$reason $n""".stripMargin
+       }.mkString("\n")}
        |# HELP sm8_process_uptime_seconds Seconds since sm8 process start
        |# TYPE sm8_process_uptime_seconds gauge
        |sm8_process_uptime_seconds ${snap.uptimeSeconds}

@@ -147,6 +147,42 @@ object RollupRewriter {
       * Recovery = recreate the rollup via `sm8 rollup refresh`
       * (re-materializes with the current schema contract). */
     case object RollupSchemaStale extends RollupRewriteRefusal
+
+    /** Stable machine-readable label for a refusal, one per case.
+      * Observers and metrics surfaces key counters on this string
+      * instead of pattern-matching the sealed trait inline, so the
+      * label vocabulary has a single source of truth and stays
+      * test-checkable against the ADT.
+      *
+      * @param r the refusal to label
+      * @return the stable label (camelCase, e.g. "noGroupSetMatch")
+      */
+    def reasonName(r: RollupRewriteRefusal): String = r match {
+      case NonCanonicalShape      => "nonCanonicalShape"
+      case NoGroupSetMatch        => "noGroupSetMatch"
+      case UnsplittableAggregate  => "unsplittableAggregate"
+      case FilterNotEvaluable     => "filterNotEvaluable"
+      case GrainMismatch          => "grainMismatch"
+      case SourceKindUnsupported  => "sourceKindUnsupported"
+      case AlgebraicStateNotWired => "algebraicStateNotWired"
+      case RollupSchemaStale      => "rollupSchemaStale"
+    }
+
+    /** Whether a refusal is permanent (the same query can never be
+      * served from a rollup) as opposed to recoverable (a refresh /
+      * schema change / wiring step could make it routable). Only
+      * `UnsplittableAggregate` is permanent in v1: Positional,
+      * Holistic, and Approximable aggregates have no re-aggregation
+      * algebra. Telemetry surfaces use this to split "fix the data"
+      * alerts from "fix the wiring" alerts.
+      *
+      * @param r the refusal to classify
+      * @return true when the refusal is permanent
+      */
+    def isPermanent(r: RollupRewriteRefusal): Boolean = r match {
+      case UnsplittableAggregate => true
+      case _                     => false
+    }
   }
 
   // -- Grain normalization: the SINGLE canonical helper (Ticket 3

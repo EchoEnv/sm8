@@ -42,6 +42,70 @@ trait MetricsSink extends Serializable {
 
   /** Called when a query attempt completes successfully. Default: no-op. */
   def recordSuccess(): Unit = ()
+
+  /** Called when `RollupRewriter.rewrite` returns `Rewritten(plan,
+    * name)` — the query was routed to a rollup. Default: no-op.
+    */
+  def recordRollupRewrite(): Unit = ()
+
+  /** Called when `RollupRewriter.rewrite` returns `Unchanged(reason)`
+    * — the query could not be routed to a rollup. The default
+    * implementation is a no-op; the sm8-platform `QueryMetrics`
+    * implementation increments the per-reason counter keyed by
+    * `RollupRewriteRefusal.reasonName(reason)`.
+    *
+    * @param reason the typed refusal reason from `RollupRewriter`
+    */
+  def recordRollupRefusal(reason: io.sm8.core.rel.RollupRewriter.RollupRewriteRefusal): Unit = ()
+
+  /** Read the current rollup-rewrite counters as an immutable
+    * snapshot. The default returns a zero snapshot (the no-op
+    * sink never observed a refusal). The sm8-platform `QueryMetrics`
+    * implementation returns `(rewrites, refusals, refusalsPermanent,
+    * refusalsByReason)` so observer plugins can publish the
+    * breakdown into `context.meta`.
+    *
+    * @return the rollup counter snapshot
+    */
+  def rollupSnapshot(): RollupCountersSnapshot =
+    RollupCountersSnapshot.empty
+}
+
+/** Immutable snapshot of the rollup-rewrite counters at one
+  * instant. `rewrites` is the total `Rewritten` count,
+  * `refusals` the total `Unchanged(reason)` count,
+  * `refusalsPermanent` the subset whose reason is permanent
+  * (only `UnsplittableAggregate` in v1), and `refusalsByReason`
+  * the per-reason breakdown keyed by
+  * `RollupRewriteRefusal.reasonName`.
+  *
+  * Lives in `io.sm8.core.cache` (next to `MetricsSink`) so observer
+  * plugins can read a stable, plugin-only-friendly surface without
+  * importing `sm8-platform`. The sm8-platform `QueryMetrics`
+  * implementation is the one that actually populates non-empty
+  * values; the no-op default always returns `empty`.
+  *
+  * @param rewrites          total `Rewritten` results
+  * @param refusals          total `Unchanged(reason)` results
+  * @param refusalsPermanent permanent-refusal subset
+  * @param refusalsByReason  per-reason breakdown
+  */
+final case class RollupCountersSnapshot(
+    rewrites: Long,
+    refusals: Long,
+    refusalsPermanent: Long,
+    refusalsByReason: List[(String, Long)]
+) extends Product with Serializable
+
+object RollupCountersSnapshot {
+
+  /** Zero-valued snapshot for the no-op sink.
+    *
+    * @return the empty snapshot
+    */
+  def empty: RollupCountersSnapshot =
+    RollupCountersSnapshot(rewrites = 0L, refusals = 0L,
+                           refusalsPermanent = 0L, refusalsByReason = Nil)
 }
 
 object MetricsSink {

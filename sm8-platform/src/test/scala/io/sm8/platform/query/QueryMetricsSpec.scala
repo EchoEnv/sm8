@@ -89,4 +89,73 @@ class QueryMetricsSpec extends AnyFunSuite with Matchers {
     QueryMetrics.snapshot(0L, "test").errors.timedOut shouldBe
       (baselineTimeout + 3)
   }
+
+  // -- Rollup-rewrite counters (direct read-surface assertions) --
+
+  test("recordRollupRewrite increments rewrites in both snapshot and rollupSnapshot") {
+    val beforeWire = QueryMetrics.snapshot(0L, "test").rollup.rewrites
+    val beforeSnap = QueryMetrics.rollupSnapshot().rewrites
+    QueryMetrics.recordRollupRewrite()
+    QueryMetrics.snapshot(0L, "test").rollup.rewrites shouldBe (beforeWire + 1)
+    QueryMetrics.rollupSnapshot().rewrites shouldBe (beforeSnap + 1)
+  }
+
+  test("recordRollupRefusal increments totals and the per-reason map keyed by reasonName") {
+    /** Current per-reason count (0 when the key is absent yet).
+      *
+      * @param snap the snapshot to read
+      * @param key  the reasonName key
+      * @return the recorded count for the key
+      */
+    def countOf(snap: io.sm8.core.cache.RollupCountersSnapshot, key: String): Long =
+      snap.refusalsByReason.find(_._1 == key).map(_._2).getOrElse(0L)
+    val before      = QueryMetrics.rollupSnapshot()
+    val beforeWire  = QueryMetrics.snapshot(0L, "test").rollup
+    QueryMetrics.recordRollupRefusal(
+      io.sm8.core.rel.RollupRewriter.RollupRewriteRefusal.GrainMismatch)
+    val after     = QueryMetrics.rollupSnapshot()
+    val afterWire = QueryMetrics.snapshot(0L, "test").rollup
+    after.refusals shouldBe (before.refusals + 1)
+    after.refusalsPermanent shouldBe before.refusalsPermanent // GrainMismatch is recoverable
+    countOf(after, "grainMismatch") shouldBe (countOf(before, "grainMismatch") + 1)
+    afterWire.refusals shouldBe (beforeWire.refusals + 1)
+  }
+
+  test("recordRollupRefusal with UnsplittableAggregate counts toward refusalsPermanent") {
+    /** Current per-reason count (0 when the key is absent yet).
+      *
+      * @param snap the snapshot to read
+      * @param key  the reasonName key
+      * @return the recorded count for the key
+      */
+    def countOf(snap: io.sm8.core.cache.RollupCountersSnapshot, key: String): Long =
+      snap.refusalsByReason.find(_._1 == key).map(_._2).getOrElse(0L)
+    val before = QueryMetrics.rollupSnapshot()
+    QueryMetrics.recordRollupRefusal(
+      io.sm8.core.rel.RollupRewriter.RollupRewriteRefusal.UnsplittableAggregate)
+    val after = QueryMetrics.rollupSnapshot()
+    after.refusalsPermanent shouldBe (before.refusalsPermanent + 1)
+    countOf(after, "unsplittableAggregate") shouldBe
+      (countOf(before, "unsplittableAggregate") + 1)
+  }
+
+  test("rollupSnapshot per-reason list is sorted by key for stable output") {
+    val reasons = QueryMetrics.rollupSnapshot().refusalsByReason.map(_._1)
+    reasons shouldBe reasons.sorted
+  }
+
+  test("QueryMetrics works as the registered MetricsSink (wiring parity)") {
+    // Pins the sm8-server boot invariant: the JVM-global sink is
+    // QueryMetrics, so the plugin read surface (rollupSnapshot) and
+    // the wire surface (snapshot().rollup) report the same counters.
+    io.sm8.core.cache.MetricsRegistry.register(QueryMetrics)
+    val beforeWire = QueryMetrics.snapshot(0L, "test").rollup
+    val beforeSnap = io.sm8.core.cache.MetricsRegistry.sink().rollupSnapshot()
+    QueryMetrics.recordRollupRewrite()
+    val afterWire = QueryMetrics.snapshot(0L, "test").rollup
+    val afterSnap = io.sm8.core.cache.MetricsRegistry.sink().rollupSnapshot()
+    afterSnap.rewrites shouldBe (beforeSnap.rewrites + 1)
+    afterSnap.rewrites shouldBe afterWire.rewrites
+    afterWire.rewrites shouldBe (beforeWire.rewrites + 1)
+  }
 }
