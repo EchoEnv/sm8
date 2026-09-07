@@ -406,7 +406,7 @@ class RollupRewriterSpec extends AnyFunSuite with Matchers {
       RollupRewriter.RollupRewriteRefusal.UnsplittableAggregate)
   }
 
-  test("Algebraic measure with DECLARED identity -> AlgebraicStateNotWired (recoverable, distinct from permanent)") {
+  test("Algebraic measure with DECLARED identity -> routes through rollup (state wiring enabled)") {
     val m = Model.of(
       name = "flights",
       version = 1,
@@ -427,8 +427,9 @@ class RollupRewriterSpec extends AnyFunSuite with Matchers {
       groupBy = List(Expr.FieldRef("carrier")),
       aggregates = List(AggregateCall(fn = AggregateFn.Avg, input = Some(Expr.FieldRef("fare")), alias = "avg_fare")))
     val out = RollupRewriter.rewrite(plan, m, None)
-    out shouldBe RollupRewriter.RollupRewriteResult.Unchanged(
-      RollupRewriter.RollupRewriteRefusal.AlgebraicStateNotWired)
+    out shouldBe a[RollupRewriter.RollupRewriteResult.Rewritten]
+    val rewritten = out.asInstanceOf[RollupRewriter.RollupRewriteResult.Rewritten]
+    rewritten.rollupName shouldBe "by_carrier"
   }
 
   test("first matching rollup in declaration order wins") {

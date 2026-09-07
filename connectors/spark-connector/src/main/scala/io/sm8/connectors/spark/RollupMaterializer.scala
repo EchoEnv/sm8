@@ -249,7 +249,11 @@ object RollupMaterializer {
         }
       case _ => Nil
     }
-    val allCols = additiveCols ++ algebraicCols
+    val allCols = (additiveCols ++ algebraicCols)
+      // A rollup can declare Sum(F) and Avg(F) together — both would
+      // produce a sum__F column. Spark's groupBy.agg() throws on
+      // ambiguous references. Keep only the first occurrence by name.
+      .groupBy(_.toString).map(_._2.head).toList
     allCols match {
       case Nil if call.fn == AggregateFn.Count && call.input.isEmpty =>
         List(count(lit(1)).as("count__rows"))
