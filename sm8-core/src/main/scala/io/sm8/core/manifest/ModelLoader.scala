@@ -182,11 +182,10 @@ object ModelLoader {
  source.flatMap { src =>
   val dims = parseDimensions(asSeq(root.get("dimensions")))
   val meas = parseMeasures(asSeq(root.get("measures")))
-  val filters = parseFilters(asSeq(root.get("filters")))
-
   // PR-M1 (ADR-008-L Appendix GAP 4): parse joins + calculated
-  // measures. Both can fail (unknown join kind, unparsable calc
-  // expr) -- surface as typed ManifestError, never silent.
+  // measures + filters. All three can fail (unknown join kind,
+  // unparsable calc expr, bad filter predicate) — surface as typed
+  // ManifestError, never silent.
   val joinsE = parseJoins(asSeq(root.get("joins")))
   val filtersE = parseFilters(asSeq(root.get("filters")))
   val calcsE = parseCalculatedMeasures(asSeq(root.get("calculated_measures")))
