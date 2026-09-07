@@ -98,6 +98,55 @@ class StrictParsersSpec extends AnyFunSuite with Matchers {
     out.toOption.get.filters.size shouldBe 1
   }
 
+  // ===== parseDimensions / parseMeasures: per-block scalar now loud (D-F2) =====
+
+  test("dimensions: scalar at the per-block site fails loud (previously silently coerced to Nil via asSeq)") {
+    val yaml = base +
+      """
+        |dimensions: carrier
+        |""".stripMargin
+    val out = ModelLoader.fromString(yaml)
+    out.isLeft shouldBe true
+    out.left.get shouldBe a[ManifestError.ParseFailure]
+    out.left.get.toString should include("dimensions: expected a list")
+  }
+
+  test("measures: scalar at the per-block site fails loud") {
+    val yaml = base +
+      """
+        |measures: count_rows
+        |""".stripMargin
+    val out = ModelLoader.fromString(yaml)
+    out.isLeft shouldBe true
+    out.left.get shouldBe a[ManifestError.ParseFailure]
+    out.left.get.toString should include("measures: expected a list")
+  }
+
+  test("dimensions: non-map entry fails loud") {
+    val yaml = base +
+      """
+        |dimensions:
+        |  - carrier
+        |""".stripMargin
+    val out = ModelLoader.fromString(yaml)
+    out.isLeft shouldBe true
+    out.left.get shouldBe a[ManifestError.ParseFailure]
+    out.left.get.toString should include("dimensions[]: entry must be a map")
+  }
+
+  test("measures: unknown aggregate fn fails loud (previously silently dropped via None)") {
+    val yaml = base +
+      """
+        |measures:
+        |  - name: weird
+        |    expr: "wibble(x)"
+        |""".stripMargin
+    val out = ModelLoader.fromString(yaml)
+    out.isLeft shouldBe true
+    out.left.get shouldBe a[ManifestError.ParseFailure]
+    out.left.get.toString should include("unknown aggregate function")
+  }
+
   // ===== parseCalculatedMeasures: non-map entry now loud =====
 
   test("calculated_measures: non-map entry fails loud (previously silently dropped by flatMap(asMap))") {

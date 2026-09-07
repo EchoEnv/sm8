@@ -180,15 +180,15 @@ object ModelLoader {
   parseSource(asMap(root.get("source")).getOrElse(return Left(ManifestError.MissingField("source", "root"))))
 
  source.flatMap { src =>
-  val dims = parseDimensions(asSeq(root.get("dimensions")))
-  val meas = parseMeasures(asSeq(root.get("measures")))
+  val dimsE = parseDimensionsE(seqOrFail("dimensions", root.get("dimensions")))
+  val measE = parseMeasuresE(seqOrFail("measures", root.get("measures")))
   // PR-M1 (ADR-008-L Appendix GAP 4): parse joins + calculated
   // measures + filters. All three can fail (unknown join kind,
   // unparsable calc expr, bad filter predicate, scalar at the
   // per-block site) — surface as typed ManifestError, never silent.
-  val joinsE = parseJoins(seqOrFail("joins", root.get("joins")))
-  val filtersE = parseFilters(seqOrFail("filters", root.get("filters")))
-  val calcsE = parseCalculatedMeasures(seqOrFail("calculated_measures", root.get("calculated_measures")))
+  val joinsE = seqOrFail("joins", root.get("joins")).flatMap(seq => parseJoins(seq))
+  val filtersE = seqOrFail("filters", root.get("filters")).flatMap(seq => parseFilters(seq))
+  val calcsE = seqOrFail("calculated_measures", root.get("calculated_measures")).flatMap(seq => parseCalculatedMeasures(seq))
   // Pre-aggregation rollups (Ticket 3 of
   // docs/wayfinder/2026-09-06-pre-aggregation.md): parse the
   // optional `rollups:` block. Each
@@ -198,9 +198,11 @@ object ModelLoader {
   val rollupsE = parseRollups(asSeq(root.get("rollups")))
 
   for {
-  joins <- joinsE
+  dims    <- dimsE
+  meas    <- measE
+  joins   <- joinsE
   filters <- filtersE
-  calcs <- calcsE
+  calcs   <- calcsE
   rollups <- rollupsE
   // Use ModelBuilder so the validation + return-type contract
   // matches the programmatic path (PR #44). The description
@@ -235,6 +237,17 @@ object ModelLoader {
  case null     => None
  case _      => None
  }
+
+ /** Strict wrappers for parseDimensions / parseMeasures: apply
+ * seqOrFail at the per-block site, then delegate to the existing
+ * lenient parsers (which already type-check every entry). Absent or
+ * null stays the canonical "no entries" form; a scalar fails loud.
+ */
+ private def parseDimensionsE(v: Any): Either[ManifestError, List[io.sm8.core.model.Dimension]] =
+  seqOrFail("dimensions", v).map(parseDimensions)
+
+ private def parseMeasuresE(v: Any): Either[ManifestError, List[io.sm8.core.model.Measure]] =
+  seqOrFail("measures", v).map(parseMeasures)
 
  private def asSeq(v: Any): Seq[Any] = v match {
  case s: java.util.List[_] => s.asScala.toSeq
@@ -300,6 +313,35 @@ object ModelLoader {
  }
 
  // -- Dimension / measure / filter parsing --
+
+  /** Strict per-block: a non-map entry fails loud; a missing name OR
+    * missing expr fails loud; the legacy "name defaults to expr" rule
+    * is kept (matches Ticket 3's parseRollups's convenience for
+    * `name = column_name`). */
+  private def parseDimensionsE(
+ seq: Seq[Any]): Either[ManifestError, List[io.sm8.core.model.Dimension]] = {
+  def parseOne(m: java.util.Map[_, _]): Either[ManifestError, io.sm8.core.model.Dimension] = {
+   val name = stringField(m, "name")
+   val expr = stringField(m, "expr").orElse(name)
+   (name, expr) match {
+    case (Some(n), Some(e)) =>
+     Right(io.sm8.core.model.Dimension.field(n, e))
+    case (None, _) =>
+     Left(ManifestError.ParseFailure("dimensions[]: missing 'name'"))
+    case (_, None) =>
+     Left(ManifestError.ParseFailure(
+      s"dimensions[${name.getOrElse("")}]: missing 'expr'"))
+   }
+  }
+  seq.toList.foldLeft[Either[ManifestError, List[io.sm8.core.model.Dimension]]](Right(Nil)) { (accE, entry) =>
+   for {
+    acc <- accE
+    m   <- asMap(entry).toRight(ManifestError.ParseFailure(
+            s"dimensions[]: entry must be a map (got ${Option(entry).map(_.getClass.getSimpleName).getOrElse("null")})"))
+    d   <- parseOne(m)
+   } yield acc :+ d
+  }
+ }
 
  private def parseDimensions(seq: Seq[Any]): List[io.sm8.core.model.Dimension] =
  seq.toList.flatMap {
@@ -499,6 +541,44 @@ object ModelLoader {
      s"rollups[]: each entry must be a map (got ${Option(entry).map(_.getClass.getSimpleName).getOrElse("null")})"))
     spec <- parseOne(m)
    } yield acc :+ spec
+  }
+ }
+
+  /** Strict per-block: a non-map entry fails loud; a missing name OR
+    * missing expr fails loud; unknown aggregate fn name -> loud
+    * ParseFailure (the legacy None-skip per parseAggregateCall is
+    * NOT preserved here — the rollup path needs everything strict).
+    * The caller wraps this in ModelValidator's cross-ref checks. */
+  private def parseMeasuresE(
+ seq: Seq[Any]): Either[ManifestError, List[io.sm8.core.model.Measure]] = {
+  def parseOne(m: java.util.Map[_, _]): Either[ManifestError, io.sm8.core.model.Measure] = {
+   val name = stringField(m, "name")
+   val expr = stringField(m, "expr").orElse(name)
+   (name, expr) match {
+    case (Some(n), Some(e)) =>
+     parseAggregateCall(n, e) match {
+      case Some(measure) => Right(measure)
+      case None =>
+       // Unknown fn name: fail loud rather than silently skip
+       // (per the never-silent discipline; matches Ticket 3's
+       // parseRollups behaviour).
+       Left(ManifestError.ParseFailure(
+        s"measures[$n]: unknown aggregate function in expr '$e'"))
+     }
+    case (None, _) =>
+     Left(ManifestError.ParseFailure("measures[]: missing 'name'"))
+    case (_, None) =>
+     Left(ManifestError.ParseFailure(
+      s"measures[${name.getOrElse("")}]: missing 'expr'"))
+   }
+  }
+  seq.toList.foldLeft[Either[ManifestError, List[io.sm8.core.model.Measure]]](Right(Nil)) { (accE, entry) =>
+   for {
+    acc <- accE
+    m   <- asMap(entry).toRight(ManifestError.ParseFailure(
+            s"measures[]: entry must be a map (got ${Option(entry).map(_.getClass.getSimpleName).getOrElse("null")})"))
+    x   <- parseOne(m)
+   } yield acc :+ x
   }
  }
 
