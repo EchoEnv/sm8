@@ -345,15 +345,22 @@ object RollupRewriter {
     AggregateFn.decomposability(a.fn) match {
       case Decomposability.Additive => Right(())
       case Decomposability.Algebraic =>
-        // v1 refuses Algebraic queries (base-path fallback). The
-        // connector materializer NOW writes partial state columns
-        // (count, sum, sumSq per input field) — but routing them
-        // through to Avg/Stddev/Variance re-aggregation requires a
-        // rebaseAggregate Algebraic arm + NULL guards wired through
-        // Ticket 6's rewriter PR. THIS PR ships the connector side
-        // only; the rewriter gate flip is a separate PR.
-        Left(true)
-      case _ => Left(false)
+        // ADR-0023 (PR-339) wiring: the rewriter now emits the
+        // two-phase Aggregate→Project re-aggregation with NULL
+        // guards. The gate is the rollup schema itself: when the
+        // spec declares this measure's partial state columns
+        // (count__F/sum__F/sumsq__F via stateColumnsFor), the
+        // algebraic fn ROUTES; when they are missing (older
+        // materialized table, or the rollup doesn't carry this
+        // measure), refuse as RECOVERABLE (AlgebraicStateNotWired)
+        // so the Ticket 6 observer keeps the recoverable/permanent
+        // distinction. algebraicReaggregation performs the exact
+        // same availability check before emitting the fragment.
+        algebraicReaggregation(spec, a, model).left.toOption match {
+          case Some(true) => Left(true)  // state columns missing on this rollup
+          case Some(false) => Left(false) // not algebraic (defensive; unreachable here)
+          case None => Right(())          // wired: fragment available, route it
+        }
     }
   }
 
@@ -457,8 +464,135 @@ object RollupRewriter {
       groupBy = c.groupSet,
       aggregates = c.aggregates.map(rebaseAggregate(_, spec))
     )
-    c.above(agg)
+    // ADR-0023 two-phase shape: when the request carries ALGEBRAIC
+    // measures, the inner Aggregate re-aggregates their partial
+    // state columns (Additive Sum calls) and an outer Project
+    // derives the final measure values (Avg = sum/count;
+    // Stddev/Variance = sqrt of the guard builders' output).
+    // Pure-Additive requests keep the single-Aggregate shape.
+    // The algebraic request calls are NOT re-based into the inner
+    // Aggregate (rebaseAggregate's fall-through would leave a
+    // dangling base-column reference like Avg(fare) over a rollup
+    // scan that has no `fare` column) — they exist only as the
+    // outer Project derivations.
+    val (additiveCalls, algebraicFragments) = c.aggregates.flatMap { a =>
+      algebraicReaggregation(spec, a, model) match {
+        case Right(frag) => Right((a, frag)) :: Nil
+        case Left(_)     => Left(a) :: Nil
+      }
+    }.partition(_.isLeft) match {
+      case (lefts, rights) =>
+        (lefts.collect { case Left(a) => a }, rights.collect { case Right(p) => p })
+    }
+    if (algebraicFragments.isEmpty) c.above(agg)
+    else {
+      // Inner Aggregate: re-based ADDITIVE calls only, plus the
+      // algebraic re-aggregate totals. Outer Project re-emits
+      // additive outputs by FieldRef passthrough and algebraic ones
+      // as derived Exprs. Aliases = request aliases (contract #3).
+      val extraCalls = algebraicFragments.flatMap { case (_, frag) => frag.innerCalls }
+      val innerAgg = agg.copy(aggregates = additiveCalls.map(rebaseAggregate(_, spec)) ++ extraCalls)
+      val derived = algebraicFragments.map { case (a, frag) => (a.alias, frag.derivedExpr) }.toMap
+      val projections: List[(Expr, String)] = c.aggregates.map { a =>
+        derived.get(a.alias) match {
+          case Some(expr: Expr) => (expr, a.alias)
+          case _                => (Expr.FieldRef(a.alias), a.alias)
+        }
+      }
+      c.above(RelOp.Project(innerAgg, projections))
+    }
   }
+
+  /** The rollup scan's state-column NAMES for this spec (from the
+    * same `rollupSchema` the Scan itself declares). Used to decide
+    * whether an Algebraic measure's partial states are materialized
+    * (wired) or missing (recoverable refusal — ADR-0023 routing
+    * contract #1). */
+  private def stateColumnNames(spec: RollupSpec, model: Model): Set[String] =
+    rollupSchema(spec, model).map(_.name).toSet
+
+  /** ADR-0023 algebraic re-aggregation for ONE request call.
+    *
+    * Returns:
+    *  - `Left(true)`  — Algebraic fn whose state columns are NOT
+    *    declared on this rollup's schema: recoverable, refuses with
+    *    `AlgebraicStateNotWired` (base path).
+    *  - `Left(false)` — not an algebraic fn (callers must check
+    *    `aggregateReaggregable` first; this is a defensive guard).
+    *  - `Right(fragment)` — the two-phase plan fragment: inner
+    *    re-aggregate `AggregateCall`s (Sum over the per-group
+    *    partials) + the outer derived `Expr` with engine-parity NULL
+    *    guards wired (guard builders + sqrt).
+    *
+    * State-column name convention matches `stateColumnsFor` and the
+    * connector materializer: `count__F`, `sum__F`, `sumsq__F` for
+    * input field F. Inner total aliases use the
+    * `<state>__<F>_total` convention (de-conflicts same-prefix
+    * columns, per ADR-0023 routing contract #6).
+    */
+  private[rel] def algebraicReaggregation(
+      spec: RollupSpec,
+      a: AggregateCall,
+      model: Model
+  ): Either[Boolean, AlgebraicFragment] = {
+    if (AggregateFn.decomposability(a.fn) != Decomposability.Algebraic) return Left(false)
+    val inputField = a.input.collectFirst { case Expr.FieldRef(f) => f }
+      .getOrElse(a.alias) // mirrors stateColumnsFor's fallback
+    val countCol = s"count__$inputField"
+    val sumCol = s"sum__$inputField"
+    val sumSqCol = s"sumsq__$inputField"
+    val available = stateColumnNames(spec, model)
+    val required = a.fn match {
+      case AggregateFn.Avg                  => Set(countCol, sumCol)
+      case AggregateFn.VarianceSample       => Set(countCol, sumCol, sumSqCol)
+      case AggregateFn.VariancePopulation   => Set(countCol, sumCol, sumSqCol)
+      case AggregateFn.StddevSample         => Set(countCol, sumCol, sumSqCol)
+      case AggregateFn.StddevPopulation     => Set(countCol, sumCol, sumSqCol)
+      case _                                => Set.empty[String]
+    }
+    if (!required.subsetOf(available)) return Left(true)
+    val totalName = (sc: String) => s"${sc}_total"
+    val innerCalls: List[AggregateCall] = required.toList.sorted.map { sc =>
+      AggregateCall(
+        fn = AggregateFn.Sum,
+        input = Some(Expr.FieldRef(sc)),
+        alias = totalName(sc)
+      )
+    }
+    // Exhaustive by sealed-trait construction: the early
+    // decomposability gate guarantees fn is one of the five
+    // Algebraic cases here.
+    val guardedVariance: Expr = a.fn match {
+      case AggregateFn.Avg =>
+        // sum_total / count_total (both non-null-guarded: Sum over
+        // non-nullable count partials + nullable sum partials keeps
+        // engine Sum NULL-skipping semantics identical to base path).
+        Expr.Divide(
+          Expr.FieldRef(totalName(sumCol)),
+          Expr.FieldRef(totalName(countCol)))
+      case AggregateFn.VarianceSample =>
+        stddevSampGuardExpr(totalName(countCol), totalName(sumCol), totalName(sumSqCol))
+      case AggregateFn.StddevSample =>
+        Expr.FunctionCall("sqrt", Seq(
+          stddevSampGuardExpr(totalName(countCol), totalName(sumCol), totalName(sumSqCol))))
+      case AggregateFn.VariancePopulation =>
+        stddevPopGuardExpr(totalName(countCol), totalName(sumCol), totalName(sumSqCol))
+      case AggregateFn.StddevPopulation =>
+        Expr.FunctionCall("sqrt", Seq(
+          stddevPopGuardExpr(totalName(countCol), totalName(sumCol), totalName(sumSqCol))))
+      case _ => Expr.Literal(LiteralValue.NullValue, SealedDataType.Double)
+    }
+    Right(AlgebraicFragment(innerCalls, guardedVariance))
+  }
+
+  /** The two-phase plan fragment for one algebraic measure
+    * (ADR-0023): `innerCalls` join the inner Aggregate's call list;
+    * `derivedExpr` is the outer Project expression for the measure's
+    * request alias. */
+  private[rel] final case class AlgebraicFragment(
+      innerCalls: List[AggregateCall],
+      derivedExpr: Expr
+  ) extends Product with Serializable
 
   /** The rollup table's SourceRef: ByName in the model's source
     * catalog/namespace with table name "<model>__<rollup>" (the

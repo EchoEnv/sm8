@@ -406,8 +406,59 @@ class RollupRewriterSpec extends AnyFunSuite with Matchers {
       RollupRewriter.RollupRewriteRefusal.UnsplittableAggregate)
   }
 
-  test("Algebraic measure with DECLARED identity -> v1 still refuses (gate flip is a follow-up PR)") {
-    val m = Model.of(
+  // ===== ADR-0023 algebraic routing (Ticket 7) =====
+
+  private val algebraicModel = Model.of(
+    name = "flights",
+    version = 1,
+    dimensions = dims,
+    measures = meas :+ Measure.aggregate("avg_fare", AggregateFn.Avg, Expr.FieldRef("fare")),
+    defaultPolicies = ModelPolicyDefaults(
+      materialize = MaterializePolicy.None,
+      cache = CachePolicy.NoCache,
+      audit = AuditPolicy.NoAudit),
+    source = SourceRef.ByName(table = "flights_raw"),
+    rollups = List(RollupSpec("by_carrier", List("carrier"), List("rows", "total_fare", "avg_fare"), None))
+  ).right.get
+
+  private def algebraicPlan(aggs: AggregateCall*): RelOp =
+    RelOp.Aggregate(
+      input = RelOp.Scan(
+        sourceRef = SourceRef.ByName(table = "flights_raw"),
+        schema = baseSchema,
+        projection = Nil),
+      groupBy = List(Expr.FieldRef("carrier")),
+      aggregates = aggs.toList)
+
+  test("Algebraic measure with DECLARED identity + state columns -> ROUTES as two-phase Aggregate->Project") {
+    val out = RollupRewriter.rewrite(
+      algebraicPlan(AggregateCall(fn = AggregateFn.Avg, input = Some(Expr.FieldRef("fare")), alias = "avg_fare")),
+      algebraicModel, None)
+    out shouldBe a[RollupRewriter.RollupRewriteResult.Rewritten]
+    val r = out.asInstanceOf[RollupRewriter.RollupRewriteResult.Rewritten]
+    r.rollupName shouldBe "by_carrier"
+    // Outer shape: Project over Aggregate (ADR-0023 two-phase).
+    val proj = r.plan.asInstanceOf[RelOp.Project]
+    // Contract #3: outer alias equals the REQUEST measure alias.
+    proj.expressions.map(_._2) shouldBe List("avg_fare")
+    // Derived: Divide(sum__fare_total, count__fare_total).
+    proj.expressions.head._1 shouldBe
+      Expr.Divide(Expr.FieldRef("sum__fare_total"), Expr.FieldRef("count__fare_total"))
+    // Inner Aggregate re-aggregates the state columns with Sum calls
+    // using the <state>__<F>_total alias convention (contract #6).
+    val agg = proj.input.asInstanceOf[RelOp.Aggregate]
+    val innerAliases = agg.aggregates.map(_.alias)
+    innerAliases should contain allOf ("sum__fare_total", "count__fare_total")
+    innerAliases.foreach { a =>
+      val call = agg.aggregates.find(_.alias == a).get
+      call.fn shouldBe AggregateFn.Sum
+    }
+  }
+
+  test("Algebraic measure on a rollup WITHOUT state columns -> AlgebraicStateNotWired (recoverable, contract #1)") {
+    // Rollup declares only Additive measures -> no algebraic state
+    // columns on the rollup schema -> recoverable refusal, base path.
+    val additiveOnly = Model.of(
       name = "flights",
       version = 1,
       dimensions = dims,
@@ -417,18 +468,130 @@ class RollupRewriterSpec extends AnyFunSuite with Matchers {
         cache = CachePolicy.NoCache,
         audit = AuditPolicy.NoAudit),
       source = SourceRef.ByName(table = "flights_raw"),
-      rollups = List(RollupSpec("by_carrier", List("carrier"), List("rows", "total_fare", "avg_fare"), None))
+      rollups = List(RollupSpec("by_carrier", List("carrier"), List("rows", "total_fare"), None))
     ).right.get
-    val plan = RelOp.Aggregate(
-      input = RelOp.Scan(
-        sourceRef = SourceRef.ByName(table = "flights_raw"),
-        schema = baseSchema,
-        projection = Nil),
-      groupBy = List(Expr.FieldRef("carrier")),
-      aggregates = List(AggregateCall(fn = AggregateFn.Avg, input = Some(Expr.FieldRef("fare")), alias = "avg_fare")))
-    val out = RollupRewriter.rewrite(plan, m, None)
+    val out = RollupRewriter.rewrite(
+      algebraicPlan(AggregateCall(fn = AggregateFn.Avg, input = Some(Expr.FieldRef("fare")), alias = "avg_fare")),
+      additiveOnly, None)
     out shouldBe RollupRewriter.RollupRewriteResult.Unchanged(
       RollupRewriter.RollupRewriteRefusal.AlgebraicStateNotWired)
+  }
+
+  test("Mixed Additive+Algebraic request composes both arms in one plan (contract #6)") {
+    val out = RollupRewriter.rewrite(
+      algebraicPlan(
+        AggregateCall(fn = AggregateFn.Count, input = None, alias = "rows"),
+        AggregateCall(fn = AggregateFn.Avg, input = Some(Expr.FieldRef("fare")), alias = "avg_fare")),
+      algebraicModel, None)
+    out shouldBe a[RollupRewriter.RollupRewriteResult.Rewritten]
+    val proj = out.asInstanceOf[RollupRewriter.RollupRewriteResult.Rewritten]
+      .plan.asInstanceOf[RelOp.Project]
+    // Outer Project: additive passthrough + algebraic derived, in
+    // REQUEST order, aliases = request aliases.
+    proj.expressions.map(_._2) shouldBe List("rows", "avg_fare")
+    proj.expressions.head._1 shouldBe Expr.FieldRef("rows")
+    proj.expressions(1)._1 shouldBe
+      Expr.Divide(Expr.FieldRef("sum__fare_total"), Expr.FieldRef("count__fare_total"))
+    // Inner Aggregate carries ALL re-aggregates: the additive Count
+    // re-base (Sum(count__rows) AS rows — keeps the request alias)
+    // PLUS the algebraic totals.
+    val agg = proj.input.asInstanceOf[RelOp.Aggregate]
+    val innerAliases = agg.aggregates.map(_.alias).toSet
+    innerAliases should contain allOf ("rows", "count__fare_total", "sum__fare_total")
+    val countCall = agg.aggregates.find(_.alias == "rows").get
+    countCall.fn shouldBe AggregateFn.Sum
+    countCall.input shouldBe Some(Expr.FieldRef("count__rows"))
+  }
+
+  test("Avg(DISTINCT x) / StddevSample(DISTINCT x) -> UnsplittableAggregate (permanent, contract #4)") {
+    val out1 = RollupRewriter.rewrite(
+      algebraicPlan(AggregateCall(fn = AggregateFn.Avg,
+        input = Some(Expr.FieldRef("fare")), alias = "avg_fare", distinct = true)),
+      algebraicModel, None)
+    out1 shouldBe RollupRewriter.RollupRewriteResult.Unchanged(
+      RollupRewriter.RollupRewriteRefusal.UnsplittableAggregate)
+    val out2 = RollupRewriter.rewrite(
+      algebraicPlan(AggregateCall(fn = AggregateFn.StddevSample,
+        input = Some(Expr.FieldRef("fare")), alias = "avg_fare", distinct = true)),
+      algebraicModel, None)
+    out2 shouldBe RollupRewriter.RollupRewriteResult.Unchanged(
+      RollupRewriter.RollupRewriteRefusal.UnsplittableAggregate)
+  }
+
+  test("Multi-algebraic alias parity: outer aliases equal request aliases in request order") {
+    val stddevModel = Model.of(
+      name = "flights",
+      version = 1,
+      dimensions = dims,
+      measures = meas :+
+        Measure.aggregate("avg_fare", AggregateFn.Avg, Expr.FieldRef("fare")) :+
+        Measure.aggregate("fare_stddev", AggregateFn.StddevSample, Expr.FieldRef("fare")),
+      defaultPolicies = ModelPolicyDefaults(
+        materialize = MaterializePolicy.None,
+        cache = CachePolicy.NoCache,
+        audit = AuditPolicy.NoAudit),
+      source = SourceRef.ByName(table = "flights_raw"),
+      rollups = List(RollupSpec("by_carrier", List("carrier"),
+        List("rows", "total_fare", "avg_fare", "fare_stddev"), None))
+    ).right.get
+    val out = RollupRewriter.rewrite(
+      algebraicPlan(
+        AggregateCall(fn = AggregateFn.Avg, input = Some(Expr.FieldRef("fare")), alias = "avg_fare"),
+        AggregateCall(fn = AggregateFn.StddevSample, input = Some(Expr.FieldRef("fare")), alias = "fare_stddev")),
+      stddevModel, None)
+    out shouldBe a[RollupRewriter.RollupRewriteResult.Rewritten]
+    val proj = out.asInstanceOf[RollupRewriter.RollupRewriteResult.Rewritten]
+      .plan.asInstanceOf[RelOp.Project]
+    proj.expressions.map(_._2) shouldBe List("avg_fare", "fare_stddev")
+    // StddevSample derives as sqrt(guarded-variance): FunctionCall("sqrt", ...).
+    proj.expressions(1)._1 shouldBe
+      Expr.FunctionCall("sqrt", Seq(
+        Expr.CaseWhen(
+          List((
+            Expr.LessThan(Expr.FieldRef("count__fare_total"),
+              Expr.Literal(LiteralValue.IntValue(2), SealedDataType.Int)),
+            Expr.Literal(LiteralValue.NullValue, SealedDataType.Double))),
+          Expr.Divide(
+            Expr.Subtract(Expr.FieldRef("sumsq__fare_total"),
+              Expr.Divide(Expr.Multiply(Expr.FieldRef("sum__fare_total"), Expr.FieldRef("sum__fare_total")),
+                Expr.FieldRef("count__fare_total"))),
+            Expr.Subtract(Expr.FieldRef("count__fare_total"),
+              Expr.Literal(LiteralValue.IntValue(1), SealedDataType.Int))))
+      ))
+  }
+
+  test("StddevSample on Avg-only rollup -> AlgebraicStateNotWired (sumsq__F missing, recoverable)") {
+    // algebraicModel's rollup carries avg_fare state columns
+    // (count__fare, sum__fare, sumsq__fare — stateColumnsFor emits
+    // all three for ANY algebraic measure), so build a rollup whose
+    // declared algebraic measure has a DIFFERENT input field to
+    // exercise the per-field availability check.
+    val otherFieldModel = Model.of(
+      name = "flights",
+      version = 1,
+      dimensions = dims,
+      measures = meas :+ Measure.aggregate("avg_tax", AggregateFn.Avg, Expr.FieldRef("tax")),
+      defaultPolicies = ModelPolicyDefaults(
+        materialize = MaterializePolicy.None,
+        cache = CachePolicy.NoCache,
+        audit = AuditPolicy.NoAudit),
+      source = SourceRef.ByName(table = "flights_raw"),
+      rollups = List(RollupSpec("by_carrier", List("carrier"), List("rows", "total_fare", "avg_tax"), None))
+    ).right.get
+    // Request Avg(tax) AS alias matching DECLARED avg_tax measure:
+    // the rollup DOES carry count__tax/sum__tax -> routes.
+    val out1 = RollupRewriter.rewrite(
+      algebraicPlan(AggregateCall(fn = AggregateFn.Avg, input = Some(Expr.FieldRef("tax")), alias = "avg_tax")),
+      otherFieldModel, None)
+    out1 shouldBe a[RollupRewriter.RollupRewriteResult.Rewritten]
+    // Request Stddev(tax): identity check fails (declared measure is
+    // Avg, not Stddev) -> permanent UnsplittableAggregate, NOT the
+    // recoverable gate (identity is checked before decomposability).
+    val out2 = RollupRewriter.rewrite(
+      algebraicPlan(AggregateCall(fn = AggregateFn.StddevSample, input = Some(Expr.FieldRef("tax")), alias = "avg_tax")),
+      otherFieldModel, None)
+    out2 shouldBe RollupRewriter.RollupRewriteResult.Unchanged(
+      RollupRewriter.RollupRewriteRefusal.UnsplittableAggregate)
   }
 
   test("first matching rollup in declaration order wins") {
