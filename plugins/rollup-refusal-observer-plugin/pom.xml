@@ -56,6 +56,19 @@
       <version>${scalatest.version}</version>
       <scope>test</scope>
     </dependency>
+    <!--
+      TEST SCOPE ONLY: the wiring-parity spec registers the real
+      sm8-platform QueryMetrics (the sink sm8-server wires at boot)
+      to pin that the plugin's published snapshot matches the wire
+      projection. The MAIN scope stays sm8-core-only — the plugin
+      reads counters exclusively through MetricsRegistry.
+    -->
+    <dependency>
+      <groupId>io.sm8</groupId>
+      <artifactId>sm8-platform_2.13</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>

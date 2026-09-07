@@ -65,10 +65,14 @@ object QueryMetrics extends MetricsSink {
   private val rollupRewritesTotal       = new AtomicLong(0)
   private val rollupRefusalsTotal       = new AtomicLong(0)
   private val rollupRefusalsPermanent   = new AtomicLong(0)
-  // Per-reason counters: one key per RollupRewriteRefusal case
-  // (keyed by RollupRewriteRefusal.reasonName). Capped via
-  // RollupRewriteRefusalReporter (currently 8 cases; the map is
-  // bounded by the sealed trait size).
+  // Per-reason counters: one key per RollupRewriteRefusal case,
+  // keyed by RollupRewriteRefusal.reasonName. The map is bounded by
+  // the sealed trait (8 cases in v1).
+  // NOTE for the future routing-invocation change: RollupCounters
+  // (the wire projection in MetricsService) and RollupCountersSnapshot
+  // (the plugin read surface in core's MetricsSink) are two shapes
+  // carrying the same four fields by convention — add any new field
+  // to BOTH, or collapse them behind one type.
   private val rollupRefusalsByReason = new java.util.concurrent.ConcurrentHashMap[String, AtomicLong]()
 
   // -- Per-invocation record methods (called from QueryService.runQuery) --

@@ -9,7 +9,7 @@
 `RollupRewriter.rewrite()` (sm8-core/src/main/scala/io/sm8/core/rel/RollupRewriter.scala:253)
 returns a typed `RollupRewriteResult` ADT: `Rewritten(plan, name)` on success,
 `Unchanged(reason: RollupRewriteRefusal)` on refusal. The refusal ADT is a sealed
-hierarchy of seven machine-readable reasons (`NonCanonicalShape`, `NoGroupSetMatch`,
+hierarchy of eight machine-readable reasons (`NonCanonicalShape`, `NoGroupSetMatch`,
 `UnsplittableAggregate`, `FilterNotEvaluable`, `GrainMismatch`,
 `SourceKindUnsupported`, `AlgebraicStateNotWired`) plus the connector-emitted
 `SchemaStale` — and the ADT distinguishes recoverable from permanent refusals
@@ -32,26 +32,29 @@ to the base table, with no signal anywhere in the system.
 
 Land the observability surface in three pieces, all layer-clean:
 
-1. **core** (sm8-core): no change. The `RollupRewriteRefusal` ADT already exists
-   and is exhaustive. Add one helper, `RollupRewriteRefusal.reasonName: String`,
-   so observers and metrics need not pattern-match the sealed trait inline
-   (one source of truth for human-readable labels).
+1. **core** (sm8-core): the `RollupRewriteRefusal` ADT itself is unchanged.
+   Additions: a `reasonName(r)` helper on the companion (stable
+   machine-readable label per case, one source of truth for counter keys),
+   an `isPermanent(r)` classifier (recoverable vs permanent split), and on
+   `MetricsSink` three default (no-op) methods — `recordRollupRewrite()`,
+   `recordRollupRefusal(reason)`, `rollupSnapshot()` — plus the
+   `RollupCountersSnapshot` ADT, so plugins read counters through the
+   core-only `MetricsRegistry` seam without importing the platform.
 
-2. **adapter** (sm8-platform): a new object `RollupRewriteRefusalReporter`
-   (sm8-platform/src/main/scala/io/sm8/platform/query/RollupRewriteRefusalReporter.scala)
-   that owns three counters on `QueryMetrics`:
-   `rollupRewriteRefusalsTotal`, `rollupRewriteRewritesTotal`, and
-   `rollupRewriteRefusalPermanentTotal` — the third is the subset whose reason
-   is `UnsplittableAggregate` (the only permanent refusal; everything else is
-   recoverable). Also a `recordRefusal(reason)` and `recordRewrite()` method
-   pair. The reporter is invoked by the future routing-invocation PR at the
-   platform fold site (the natural place: alongside the existing
-   `cachePolicy`/`decisionHints` fold in
-   `EngineService.runQueryWithHooks`).
+2. **adapter** (sm8-platform): the record methods live directly on the existing
+   `QueryMetrics` object (sm8-platform/src/main/scala/io/sm8/platform/query/QueryMetrics.scala),
+   which already implements `MetricsSink`: `recordRollupRewrite()`,
+   `recordRollupRefusal(reason)`, and the `rollupSnapshot()` read surface.
+   Implementation note: an earlier draft of this ADR described a separate thin
+   `RollupRewriteRefusalReporter` object; it was elided because `QueryMetrics`
+   already is the platform's sink implementation and an indirection would only
+   forward the calls. The routing-invocation change calls the `QueryMetrics`
+   methods (or equivalently `MetricsRegistry.sink()`, the registered
+   implementation of which is `QueryMetrics` in sm8-server's boot wiring):
 
 3. **plugin** (plugins/rollup-refusal-observer/): a new observer plugin that
    follows the proven `QueryFrequencyObserverPlugin` template. It registers a
-   PostExecute hook that publishes the seven refusal counts into
+   PostExecute hook that publishes the eight refusal counts into
    `context.meta` under a stable key, so the existing meta-inspector surface
    reads them with zero new transport code.
 
@@ -107,8 +110,9 @@ Operators who don't want it simply don't include it in their plugin set.
   `reasonName` helper on `RollupRewriteRefusal` (~6 LOC).
 - sm8-platform/src/main/scala/io/sm8/platform/query/QueryMetrics.scala —
   add three counter fields and two methods (~12 LOC).
-- sm8-platform/src/main/scala/io/sm8/platform/query/RollupRewriteRefusalReporter.scala —
-  new file, ~50 LOC. Thin layer that the future routing-invocation PR calls.
+- sm8-platform/src/main/scala/io/sm8/platform/query/QueryMetrics.scala —
+  three counter fields, the per-reason bounded map, and two record methods
+  plus the `rollupSnapshot()` read surface (~40 LOC).
 - plugins/rollup-refusal-observer/ — new module (template: query-frequency-observer-plugin).
   POM + plugin class + spec. ~150 LOC total.
 - Docs: this ADR.
@@ -116,9 +120,10 @@ Operators who don't want it simply don't include it in their plugin set.
 ## Tests
 
 - core: extend `RollupRewriterSpec` with a `reasonName` exhaustiveness pin.
-- sm8-platform: extend `QueryMetricsSpec` (if present) or add a new spec for
-  `RollupRewriteRefusalReporter` — call each method, assert the counter
-  surfaces in `snapshot()`.
+- sm8-platform: extend `QueryMetricsSpec` with direct assertions for
+  `recordRollupRewrite` / `recordRollupRefusal` / `rollupSnapshot` — call each
+  method, assert the counter surfaces in `snapshot()` and in
+  `rollupSnapshot()`.
 - plugins/rollup-refusal-observer: a Spec mirroring
   `QueryFrequencyObserverPluginSpec`'s shape — register the plugin, fire a
   synthetic PostExecute context, assert `context.meta` carries the published

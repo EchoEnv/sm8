@@ -158,4 +158,31 @@ class RollupRefusalObserverPluginSpec extends AnyFunSuite with Matchers with Bef
                                .asInstanceOf[RollupCountersSnapshot]
     snap shouldBe RollupCountersSnapshot.empty
   }
+
+  test("wiring parity: with the PRODUCTION sink, published meta matches the wire projection") {
+    // Registers the real sm8-platform QueryMetrics (the sink
+    // sm8-server's boot wiring registers in production) and pins the
+    // invariant that the plugin's published snapshot and the
+    // MetricsSnapshot wire projection carry the same values — the
+    // duplication between RollupCountersSnapshot (core read surface)
+    // and RollupCounters (wire projection) must not drift.
+    MetricsRegistry.register(io.sm8.platform.query.QueryMetrics)
+    val before = io.sm8.platform.query.QueryMetrics.rollupSnapshot()
+    val sink   = MetricsRegistry.sink()
+    sink.recordRollupRewrite()
+    sink.recordRollupRefusal(
+      RollupRewriter.RollupRewriteRefusal.GrainMismatch)
+    sink.recordRollupRefusal(
+      RollupRewriter.RollupRewriteRefusal.RollupSchemaStale)
+    val published = plugin.hook.run(emptyContext)
+      .meta("io.sm8.plugins.rolluprefusalobs:counters")
+      .asInstanceOf[RollupCountersSnapshot]
+    val wire = io.sm8.platform.query.QueryMetrics.snapshot(0L, "test").rollup
+    published.rewrites          shouldBe (before.rewrites + 1L)
+    published.refusals          shouldBe (before.refusals + 2L)
+    published.refusalsPermanent shouldBe before.refusalsPermanent // both recoverable
+    published.refusalsByReason.map(_._1).toSet shouldBe
+      wire.refusalsByReason.map(_._1).toSet
+    published.refusalsByReason.toMap shouldBe wire.refusalsByReason.toMap
+  }
 }
