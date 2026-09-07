@@ -121,7 +121,11 @@ object ModelLoader {
  private val mapper: ObjectMapper =
  new ObjectMapper(new YAMLFactory())
 
- /** Load from a `String` (for tests + in-memory manifests). */
+ /** Load from a `String` (for tests + in-memory manifests).
+    *
+    * @param yaml the manifest YAML as a string
+    * @return the typed `Model` or a typed `ManifestError`
+    */
  def fromString(yaml: String): Either[ManifestError, Model] =
  fromStream(
  new ByteArrayInputStream(yaml.getBytes(StandardCharsets.UTF_8)),
@@ -176,15 +180,15 @@ object ModelLoader {
   parseSource(asMap(root.get("source")).getOrElse(return Left(ManifestError.MissingField("source", "root"))))
 
  source.flatMap { src =>
-  val dims = parseDimensions(asSeq(root.get("dimensions")))
-  val meas = parseMeasures(asSeq(root.get("measures")))
-  val filters = parseFilters(asSeq(root.get("filters")))
-
+  val dimsE = seqOrFail("dimensions", root.get("dimensions")).flatMap(parseDimensionsE)
+  val measE = seqOrFail("measures", root.get("measures")).flatMap(parseMeasuresE)
   // PR-M1 (ADR-008-L Appendix GAP 4): parse joins + calculated
-  // measures. Both can fail (unknown join kind, unparsable calc
-  // expr) -- surface as typed ManifestError, never silent.
-  val joinsE = parseJoins(asSeq(root.get("joins")))
-  val calcsE = parseCalculatedMeasures(asSeq(root.get("calculated_measures")))
+  // measures + filters. All three can fail (unknown join kind,
+  // unparsable calc expr, bad filter predicate, scalar at the
+  // per-block site) — surface as typed ManifestError, never silent.
+  val joinsE = seqOrFail("joins", root.get("joins")).flatMap(seq => parseJoins(seq))
+  val filtersE = seqOrFail("filters", root.get("filters")).flatMap(seq => parseFilters(seq))
+  val calcsE = seqOrFail("calculated_measures", root.get("calculated_measures")).flatMap(seq => parseCalculatedMeasures(seq))
   // Pre-aggregation rollups (Ticket 3 of
   // docs/wayfinder/2026-09-06-pre-aggregation.md): parse the
   // optional `rollups:` block. Each
@@ -194,8 +198,11 @@ object ModelLoader {
   val rollupsE = parseRollups(asSeq(root.get("rollups")))
 
   for {
-  joins <- joinsE
-  calcs <- calcsE
+  dims    <- dimsE
+  meas    <- measE
+  joins   <- joinsE
+  filters <- filtersE
+  calcs   <- calcsE
   rollups <- rollupsE
   // Use ModelBuilder so the validation + return-type contract
   // matches the programmatic path (PR #44). The description
@@ -212,11 +219,85 @@ object ModelLoader {
 
  // -- YAML map / list helpers --
 
+ /** Strict asSeq: a scalar or null at a per-block site fails loud
+  * as a typed ParseFailure naming the block (e.g. `filters: myfilter`
+  * indentation slip should not silently load zero filters). Absent
+  * is the canonical "no entries" form and returns Right(Nil).
+  */
+ private def seqOrFail(block: String, v: Any): Either[ManifestError, Seq[Any]] = v match {
+  case null => Right(Nil)
+  case s: java.util.List[_] => Right(s.asScala.toSeq)
+  case other =>
+   Left(ManifestError.ParseFailure(
+    s"$block: expected a list, got ${Option(other).map(_.getClass.getSimpleName).getOrElse("null")}"))
+ }
+
  private def asMap(v: Any): Option[java.util.Map[_, _]] = v match {
  case m: java.util.Map[_, _] => Some(m)
  case null     => None
  case _      => None
  }
+
+ /** Strict wrappers for parseDimensions / parseMeasures: apply
+ * seqOrFail at the per-block site, then delegate to the existing
+ * lenient parsers (which already type-check every entry). Absent or
+ * null stays the canonical "no entries" form; a scalar fails loud.
+ */
+ private def parseDimensionsE(seq: Seq[Any]): Either[ManifestError, List[io.sm8.core.model.Dimension]] = {
+  /** Parse one dimension entry into a typed Dimension.
+   *
+   * @param m the entry map
+   * @return the typed Dimension, or a typed `ManifestError`
+   */
+  def parseOne(m: java.util.Map[_, _]): Either[ManifestError, io.sm8.core.model.Dimension] = {
+    val name = stringField(m, "name")
+    val expr = stringField(m, "expr").orElse(name)
+    (name, expr) match {
+      case (Some(n), Some(e)) => Right(io.sm8.core.model.Dimension.field(n, e))
+      case (None, _) => Left(ManifestError.ParseFailure("dimensions[]: missing 'name'"))
+      case (_, None) => Left(ManifestError.ParseFailure(
+        s"dimensions[${name.getOrElse("")}]: missing 'expr'"))
+    }
+  }
+  seq.toList.foldLeft[Either[ManifestError, List[io.sm8.core.model.Dimension]]](Right(Nil)) { (accE, entry) =>
+    for {
+      acc <- accE
+      m   <- asMap(entry).toRight(ManifestError.ParseFailure(
+             s"dimensions[]: entry must be a map (got ${Option(entry).map(_.getClass.getSimpleName).getOrElse("null")})"))
+      d   <- parseOne(m)
+    } yield acc :+ d
+  }
+}
+
+ private def parseMeasuresE(seq: Seq[Any]): Either[ManifestError, List[io.sm8.core.model.Measure]] = {
+  /** Parse one measure entry into a typed Measure.
+   *
+   * @param m the entry map
+   * @return the typed Measure, or a typed `ManifestError`
+   */
+  def parseOne(m: java.util.Map[_, _]): Either[ManifestError, io.sm8.core.model.Measure] = {
+    val name = stringField(m, "name")
+    val expr = stringField(m, "expr").orElse(name)
+    (name, expr) match {
+      case (Some(n), Some(e)) => parseAggregateCall(n, e) match {
+        case Some(measure) => Right(measure)
+        case None => Left(ManifestError.ParseFailure(
+          s"measures[$n]: unknown aggregate function in expr '$e'"))
+      }
+      case (None, _) => Left(ManifestError.ParseFailure("measures[]: missing 'name'"))
+      case (_, None) => Left(ManifestError.ParseFailure(
+        s"measures[${name.getOrElse("")}]: missing 'expr'"))
+    }
+  }
+  seq.toList.foldLeft[Either[ManifestError, List[io.sm8.core.model.Measure]]](Right(Nil)) { (accE, entry) =>
+    for {
+      acc <- accE
+      m   <- asMap(entry).toRight(ManifestError.ParseFailure(
+             s"measures[]: entry must be a map (got ${Option(entry).map(_.getClass.getSimpleName).getOrElse("null")})"))
+      x   <- parseOne(m)
+    } yield acc :+ x
+  }
+}
 
  private def asSeq(v: Any): Seq[Any] = v match {
  case s: java.util.List[_] => s.asScala.toSeq
@@ -283,6 +364,7 @@ object ModelLoader {
 
  // -- Dimension / measure / filter parsing --
 
+
  private def parseDimensions(seq: Seq[Any]): List[io.sm8.core.model.Dimension] =
  seq.toList.flatMap {
   case m: java.util.Map[_, _] =>
@@ -317,70 +399,104 @@ object ModelLoader {
  *  keys: [[region, region]] # list of [leftKey, rightKey] pairs
  * Unknown kind -> typed ManifestError.ParseFailure (never silent).
  */
- private def parseJoins(seq: Seq[Any]): Either[ManifestError, List[io.sm8.core.model.JoinSpec]] =
- seq.toList.flatMap(asMap).map { m =>
-  val name  = stringField(m, "name").getOrElse("")
-  val rightModel = stringField(m, "rightModel").orElse(stringField(m, "right_model")).getOrElse("")
-  val kindStr = stringField(m, "kind").getOrElse("inner")
-  val keysRaw = asSeq(m.get("keys"))
-  val kind: Either[ManifestError, io.sm8.core.rel.JoinKind] = kindStr.toLowerCase match {
-    case "inner" => Right(io.sm8.core.rel.JoinKind.Inner)
-    case "left"  => Right(io.sm8.core.rel.JoinKind.Left)
-    case "right" => Right(io.sm8.core.rel.JoinKind.Right)
-    case "full" | "outer" => Right(io.sm8.core.rel.JoinKind.Full)
-    case "cross" => Right(io.sm8.core.rel.JoinKind.Cross)
-    case other => Left(ManifestError.ParseFailure(
-      s"joins[$name]: unknown kind '$other' (supported: inner, left, right, full, outer, cross)"))
+  private def parseJoins(seq: Seq[Any]): Either[ManifestError, List[io.sm8.core.model.JoinSpec]] = {
+  /** Parse one join entry (a single map) into a typed JoinSpec.
+    *
+    * @param m the entry map
+    * @return the typed JoinSpec, or a typed `ManifestError`
+    */
+  def parseOne(m: java.util.Map[_, _]): Either[ManifestError, io.sm8.core.model.JoinSpec] = {
+   val name = stringField(m, "name")
+   val rightModel = stringField(m, "rightModel").orElse(stringField(m, "right_model"))
+   if (name.isEmpty)
+     return Left(ManifestError.ParseFailure(
+       s"joins[]: missing 'name'"))
+   val nameV = name.get
+   val rightModelV = rightModel.getOrElse("")
+   val kindStr = stringField(m, "kind").getOrElse("inner")
+   val keysRaw = asSeq(m.get("keys"))
+   val kind: Either[ManifestError, io.sm8.core.rel.JoinKind] = kindStr.toLowerCase match {
+     case "inner" => Right(io.sm8.core.rel.JoinKind.Inner)
+     case "left"  => Right(io.sm8.core.rel.JoinKind.Left)
+     case "right" => Right(io.sm8.core.rel.JoinKind.Right)
+     case "full" | "outer" => Right(io.sm8.core.rel.JoinKind.Full)
+     case "cross" => Right(io.sm8.core.rel.JoinKind.Cross)
+     case other => Left(ManifestError.ParseFailure(
+       s"joins[$nameV]: unknown kind '$other' (supported: inner, left, right, full, outer, cross)"))
+   }
+   val keys: List[(String, String)] = keysRaw.toList.flatMap {
+     case pair: java.util.List[_] if pair.size == 2 =>
+       List((pair.get(0).toString, pair.get(1).toString))
+     case _ => Nil // malformed pairs skipped; ModelValidator cross-refs catch them
+   }
+   val estimated: Either[ManifestError, Option[Long]] =
+     stringField(m, "estimated_rows").orElse(stringField(m, "estimatedRows")) match {
+       case Some(raw) =>
+         scala.util.Try(raw.toLong) match {
+           case scala.util.Success(v) if v >= 0 => Right(Some(v))
+           case scala.util.Success(v) => Left(ManifestError.ParseFailure(
+             s"joins[$nameV]: estimated_rows must be >= 0, got $v"))
+           case scala.util.Failure(_) => Left(ManifestError.ParseFailure(
+             s"joins[$nameV]: estimated_rows '$raw' is not a non-negative integer"))
+         }
+       case None => Right(None)
+     }
+   for {
+     k <- kind
+     est <- estimated
+   } yield io.sm8.core.model.JoinSpec(nameV, rightModelV, k, keys, est)
   }
-  val keys: List[(String, String)] = keysRaw.toList.flatMap {
-    case pair: java.util.List[_] if pair.size == 2 =>
-      List((pair.get(0).toString, pair.get(1).toString))
-    case _ => Nil // malformed pairs skipped; ModelValidator cross-refs catch them
+  seq.toList.foldLeft[Either[ManifestError, List[io.sm8.core.model.JoinSpec]]](Right(Nil)) { (accE, entry) =>
+   for {
+     acc  <- accE
+     m    <- asMap(entry).toRight(ManifestError.ParseFailure(
+             s"joins[]: entry must be a map (got ${Option(entry).map(_.getClass.getSimpleName).getOrElse("null")})"))
+     join <- parseOne(m)
+   } yield acc :+ join
   }
-  // Optional `estimated_rows` / `estimatedRows`. Absent -> None.
-  // Present-but-non-numeric or negative -> typed error (never
-  // silent). Non-integral decimal string ("1.5") rejected.
-  val estimated: Either[ManifestError, Option[Long]] =
-    stringField(m, "estimated_rows").orElse(stringField(m, "estimatedRows")) match {
-      case Some(raw) =>
-        scala.util.Try(raw.toLong) match {
-          case scala.util.Success(v) if v >= 0 => Right(Some(v))
-          case scala.util.Success(v) => Left(ManifestError.ParseFailure(
-            s"joins[$name]: estimated_rows must be >= 0, got $v"))
-          case scala.util.Failure(_) => Left(ManifestError.ParseFailure(
-            s"joins[$name]: estimated_rows '$raw' is not a non-negative integer"))
-        }
-      case None => Right(None)
-    }
-  for {
-    k <- kind
-    est <- estimated
-  } yield io.sm8.core.model.JoinSpec(name, rightModel, k, keys, est)
- }.foldLeft[Either[ManifestError, List[io.sm8.core.model.JoinSpec]]](Right(Nil)) { (accE, jE) =>
-  for (acc <- accE; j <- jE) yield acc :+ j
  }
-
  /** PR-M1 (ADR-008-L Appendix GAP 4): parse the
  * `calculated_measures:` block. Each entry: { name, expr }. The
  * expr string goes through ExprParser (now CASE WHEN / AS alias /
  * all() / measure() aware per GAP 1). Parse failure -> typed
  * ManifestError.ParseFailure (never silent). */
- private def parseCalculatedMeasures(
-  seq: Seq[Any]): Either[ManifestError, List[io.sm8.core.model.CalculatedMeasure]] =
- seq.toList.flatMap(asMap).map { m =>
-  val name = stringField(m, "name").getOrElse("")
-  stringField(m, "expr") match {
-  case None =>
-   Left(ManifestError.ParseFailure(s"calculated_measures[$name]: missing 'expr'"))
-  case Some(exprStr) =>
-   io.sm8.core.expr.ExprParser.parseExpr(exprStr).left.map { pe =>
-   ManifestError.ParseFailure(s"calculated_measures[$name]: ${pe.toString}")
-   }.map(e => io.sm8.core.model.CalculatedMeasure(name, e))
+  private def parseCalculatedMeasures(
+ seq: Seq[Any]): Either[ManifestError, List[io.sm8.core.model.CalculatedMeasure]] = {
+  /** Parse one calculated-measure entry into a typed CalculatedMeasure.
+    *
+    * @param m the entry map
+    * @return the typed CalculatedMeasure, or a typed `ManifestError`
+    */
+  /** Parse one calculated-measure entry into a typed CalculatedMeasure.
+    *
+    * @param m the entry map
+    * @return the typed CalculatedMeasure, or a typed `ManifestError`
+    */
+  def parseOne(m: java.util.Map[_, _]): Either[ManifestError, io.sm8.core.model.CalculatedMeasure] = {
+   val name = stringField(m, "name")
+   name match {
+    case None =>
+     Left(ManifestError.ParseFailure("calculated_measures[]: missing 'name'"))
+    case Some(n) =>
+     stringField(m, "expr") match {
+      case None =>
+       Left(ManifestError.ParseFailure(s"calculated_measures[$n]: missing 'expr'"))
+      case Some(exprStr) =>
+       io.sm8.core.expr.ExprParser.parseExpr(exprStr).left.map { pe =>
+        ManifestError.ParseFailure(s"calculated_measures[$n]: ${pe.toString}")
+       }.map(e => io.sm8.core.model.CalculatedMeasure(n, e))
+     }
+   }
   }
- }.foldLeft[Either[ManifestError, List[io.sm8.core.model.CalculatedMeasure]]](Right(Nil)) { (accE, cE) =>
-  for (acc <- accE; c <- cE) yield acc :+ c
+  seq.toList.foldLeft[Either[ManifestError, List[io.sm8.core.model.CalculatedMeasure]]](Right(Nil)) { (accE, entry) =>
+   for {
+     acc  <- accE
+     m    <- asMap(entry).toRight(ManifestError.ParseFailure(
+             s"calculated_measures[]: entry must be a map (got ${Option(entry).map(_.getClass.getSimpleName).getOrElse("null")})"))
+     cm   <- parseOne(m)
+   } yield acc :+ cm
+  }
  }
-
  /** Parse the `rollups:` block (Ticket #3 of
  * docs/wayfinder/2026-09-06-pre-aggregation.md). Each entry:
  * { name, dimensions: [names], measures: [names], time_grain? }.
@@ -455,6 +571,7 @@ object ModelLoader {
   }
  }
 
+
  private def parseMeasures(seq: Seq[Any]): List[io.sm8.core.model.Measure] =
  seq.toList.flatMap {
   case m: java.util.Map[_, _] =>
@@ -504,32 +621,47 @@ object ModelLoader {
  }
  }
 
- /** Parses filters. The `predicate:` field is a raw SQL-like
- * expression. Delegates to `ExprParser.parseExpr` (added in
- * the typed-expr-filter PR) for the typed `Expr` AST.
+ /** Parse the `filters:` block. Each entry: { name, predicate }.
+ * `predicate` is a raw SQL-like expression (delegated to
+ * ExprParser.parseExpr per ADR-008-P filter-language contract).
+ * Strict by design (Ticket 3 follow-up: same discipline as
+ * parseRollups): a non-map entry, missing name, missing
+ * predicate, or unparsable expr fails loud as typed
+ * ManifestError.ParseFailure -- never silent (silent drops let a
+ * broken filter load and silently mis-filter query results).
+ */
+ private def parseFilters(
+ seq: Seq[Any]): Either[ManifestError, List[FilterSpec]] = {
+ /** Parse one filter entry into a typed FilterSpec.
  *
- * is `Left(ExprParseError)`; we surface as `Left(ManifestError)`. */
- /** Parses the legacy-style `predicate: "<raw SQL>"` form. The
- * typed `FilterSpec.predicate: Expr` AST is produced via the
- * `ExprParser` (typed-expr-filter PR); for unparseable
- * predicates we return None (the filter is skipped — the
- * caller will see a partial filter list with a manifest-level
- * error only if it's the only filter source). */
- private def parseFilters(seq: Seq[Any]): List[FilterSpec] =
- seq.toList.flatMap {
-  case m: java.util.Map[_, _] =>
-  val name  = stringField(m, "name")
-  val predicate = stringField(m, "predicate")
-  (name, predicate) match {
-   case (Some(n), Some(p)) =>
-   io.sm8.core.expr.ExprParser.parseExpr(p).toOption.map { parsed =>
-    FilterSpec(
-    name  = n,
-    predicate = parsed)
+ * @param entry the entry (list item, may be any type)
+ * @return the typed FilterSpec, or a typed `ManifestError`
+ */
+ def parseOne(entry: Any): Either[ManifestError, FilterSpec] =
+  asMap(entry).toRight(ManifestError.ParseFailure(
+   s"filters[]: entry must be a map (got ${Option(entry).map(_.getClass.getSimpleName).getOrElse("null")})"))
+   .flatMap { m =>
+    val name = stringField(m, "name")
+    val predicateStr = stringField(m, "predicate")
+    (name, predicateStr) match {
+     case (Some(n), Some(p)) =>
+      io.sm8.core.expr.ExprParser.parseExpr(p).left.map { pe =>
+       ManifestError.ParseFailure(s"filters[$n]: ${pe.toString}")
+      }.map { parsed =>
+       FilterSpec(name = n, predicate = parsed)
+      }
+     case (None, _) =>
+      Left(ManifestError.ParseFailure("filters[]: missing 'name'"))
+     case (_, None) =>
+      Left(ManifestError.ParseFailure(
+       s"filters[${name.getOrElse("")}]: missing 'predicate'"))
+    }
    }
-   case _ => None
-  }
-  case _ => None
- }
+ seq.toList.foldLeft[Either[ManifestError, List[FilterSpec]]](Right(Nil)) { (accE, entryE) =>
+  for {
+   acc <- accE
+   f   <- parseOne(entryE)
+  } yield acc :+ f
 }
-
+}
+}
