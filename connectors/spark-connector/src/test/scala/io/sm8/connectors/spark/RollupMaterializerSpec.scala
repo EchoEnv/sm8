@@ -412,6 +412,33 @@ class RollupMaterializerSpec extends AnyFunSuite with Matchers {
       rollups = List(RollupSpec("by_region", List("region"), List("order_count"), None))
     ).right.get
     RollupMaterializer.materialize(spark, missing, missing.rollups.head).isLeft shouldBe true
+
+  // ===== DE finding #6: end-to-end Avg re-derivation parity =====
+  // Validates that after the rewriter gate flip (commit b074f6c), an
+  // Avg query over a rollup re-derives the base-path mean exactly
+  // (the rollup rebaseAggregate emits Sum(sum__F)/Sum(count__F)).
+  test("Avg: rollup-path re-derivation == base-path AVG on integral data") {
+    val spec = RollupSpec("by_region_avg_e2e", List("region"), List("avg_amount"), None)
+    val m = model(List(spec))
+    val spark = buildSpark()
+    import spark.implicits._
+    List(Sale("east", "i1", 100L, 1), Sale("east", "i2", 200L, 2), Sale("east", "i3", 300L, 3),
+         Sale("west", "i1", 50L, 3)).toDF("region", "item", "amount", "units")
+      .createOrReplaceTempView("sales_base")
+    RollupMaterializer.materialize(spark, m, spec, eager = false).isRight shouldBe true
+    // Base-path AVG
+    val baseAvg = spark.table("sales_base")
+      .groupBy("region").avg("amount")
+      .collect().map(r => (r.getString(0), r.getDouble(1))).sortBy(_._1).toList
+    // Rollup-path AVG via the rewriter (re-derived from state cols)
+    val rewriterOut = RollupRewriter.rewrite(queryPlan("region"), m, None)
+    rewriterOut shouldBe a[RollupRewriter.RollupRewriteResult.Rewritten]
+    val rollAvg = lowerer.lower(rewriterOut.plan, ctx) match {
+      case Right(df) => df.collect().map(r => (r.getString(0), r.getDouble(1))).sortBy(_._1).toList
+      case _ => fail("rollup path must succeed")
+    }
+    baseAvg shouldBe rollAvg
+  }
   }
 }
 
