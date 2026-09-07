@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed. **Date:** 2026-09-07. **Author:** SM8 agent. Follow-up to ADR-0022 (pre-aggregation) Ticket 4 follow-up lane.
+Proposed. **Date:** 2026-09-07. **Author:** SM8 agent. Follow-up to ADR-0022 (pre-aggregation) Ticket 4 follow-up lane. Dual review round 1 (architect + data-engineer, `mux/reasoning`): both APPROVE conditional on the amendments already folded into this revision — status flips to Accepted at merge (user is the sole merger).
 
 **Supersedes the approach reverted in PR-338** (commit `cff414c`, revert `7ba90ed`): that PR flipped the `AlgebraicStateNotWired` gate while `rebaseAggregate` still emitted single-input `AggregateCall`s — Avg rebased to `Sum(sum__F)` (numerator only, silently wrong) and Stddev/Variance rebased to `Sum(sumsq__F)` (not a dispersion, no NULL guard). Both round-2 reviewers independently recommended revert; PR-338 was closed, not merged. This ADR is the design the flip was missing.
 
@@ -49,25 +49,31 @@ Stddev/Variance additionally carry `Sum(sumsq__x) AS sumsq__x_total` in the inne
 
 1. `AlgebraicStateNotWired` narrows: it fires **only** when a matched rollup lacks the state columns an algebraic measure needs (`count__F`/`sum__F` missing → recoverable refusal, base path). Wired-and-matched plans now route.
 2. `UnsplittableAggregate` stays the permanent refusal for Positional/Holistic/Approximable — unchanged.
-3. Output schema parity is a hard contract: the outer Project's final alias for each measure equals the original request's measure alias, and the result type is Double for all five algebraic fns (matches base-path semantics; the guard builders already pin `SealedDataType.Double`).
+3. Output schema parity is a hard contract: the outer Project's final alias for each measure equals the original request's measure alias, and the result type is Double for all five algebraic fns. **The Double contract is enforced at materialization time, not implicitly**: the connector already casts `sum__F` and `sumsq__F` to double on write (`RollupMaterializer.scala:248-249`, PR-337), so the re-aggregation computes in double space on every engine; `count__F` stays integral and the outer `Divide` widens per engine semantics — the parity suite pins the widened result is Double.
 4. Distinct flag: `Avg(DISTINCT x)` / `Stddev(DISTINCT x)` **cannot** be served from (sum, count) partials — the partials collapse distinctness. The matcher must refuse these with `UnsplittableAggregate` (permanent), mirroring the Approximable discipline: serving them would silently change semantics.
 5. The gate flip happens **only after** the parity suite (below) is green — the exact sequencing mistake PR-338 made in reverse.
+6. **Mixed Additive+Algebraic requests compose, never pick one arm**: a single `Aggregate` asking `[Count(*) AS rows, Avg(x) AS a]` must produce an inner Aggregate carrying ALL needed re-aggregates (`Sum(count__rows) AS count__rows_total`, `Sum(sum__x) AS sum__x_total`, `Sum(count__x) AS count__x_total` — distinct aliases via the `<state>__<F>_total` convention, which de-conflicts same-prefix columns like `count__rows` vs `count__x`) and an outer Project passing additive results through while deriving algebraic ones. PR-338's bug was rooted exactly in an arm dropping the other's inputs; a plan-shape test pins this composition.
 
 ### State representation: raw (n, sum, sumSq) now, Welford as a measured follow-up
 
-ADR-0022 recorded a preference for Welford-merge columns (n, mean, M2) over raw (n, sum, sumSq). PR-337 shipped raw. This ADR routes on **raw columns as-is** (zero connector/materializer change) with a pinned **catastrophic-cancellation tripwire**: the parity suite includes a large-mean/small-variance fixture (e.g. values `1e8 + ε`) where raw sumSq loses precision; the test asserts parity within a documented tolerance and logs measured drift. The Welford merge algebra is fully expressible in `Expr` (mean′ = (n₁m₁+n₂m₂)/(n₁+n₂); M2′ = M2₁+M2₂+n₁n₂(m₁−m₂)²/(n₁+n₂)), so migrating state columns to (n, mean, M2) later is a connector+materializer change plus a rewriter-local change — no plan-shape change. If the tripwire drift exceeds tolerance, that migration becomes mandatory before the gate flip ships.
+ADR-0022 recorded a preference for Welford-merge columns (n, mean, M2) over raw (n, sum, sumSq). PR-337 shipped raw. This ADR routes on **raw columns as-is** (zero connector/materializer change) with a **pinned catastrophic-cancellation tripwire**, not a vibes-based one: the parity fixture is 30 rows with values `1e8 ± 1.0` (mean ≈ 1e8, unit-level dispersion); the assertion is rollup-path stddev within **relative ≤ 1e-6 OR absolute ≤ 1e-9 of the base path (whichever is tighter is NOT used — the pass criterion is the looser of the two, the log records measured drift either way)**; on failure the Welford migration below becomes mandatory before the gate flip ships. The Welford merge algebra is fully expressible in `Expr` (mean′ = (n₁m₁+n₂m₂)/(n₁+n₂); M2′ = M2₁+M2₂+n₁n₂(m₁−m₂)²/(n₁+n₂)), so migrating state columns to (n, mean, M2) later is a connector+materializer change plus a rewriter-local change — no plan-shape change.
 
 ## Consequences
 
 **Core (sm8-core, IO-free — no new dependencies):**
-- `RollupRewriter` gains `algebraicReaggregation`: builds the inner re-aggregate `AggregateCall`s (Sum over state columns — all Additive, so they reuse the existing rebase path) and the outer derived `Expr` per algebraic fn, wiring the guard builders + sqrt. Private until routing lands; tested at the plan level (`RollupRewriterSpec`: emitted plan structure, alias parity, refusal taxonomy).
+- `RollupRewriter` gains `algebraicReaggregation`: builds the inner re-aggregate `AggregateCall`s (Sum over state columns — all Additive, so they reuse the existing rebase path) and the outer derived `Expr` per algebraic fn, wiring the guard builders + sqrt. Private until routing lands; tested at the plan level (`RollupRewriterSpec`): emitted plan structure, alias parity, refusal taxonomy, **plus these round-1-review-pinned cases**:
+  - mixed `Count(*) + Avg(x)` composition (routing contract #6) — inner carries all three re-aggregates, outer composes both arms;
+  - `Avg(DISTINCT x)` / `StddevSample(DISTINCT x)` → `UnsplittableAggregate` (taxonomy binding for routing contract #4 — prevents a future PR from "fixing" the distinct check);
+  - multi-algebraic alias parity: `[Avg(fare) AS a, StddevSample(fare) AS s]` → outer Project aliases exactly `a`, `s` in request order;
+  - `RelOpPlanPrinter` renders the algebraic plan (substring pins for `Project(`, the re-aggregate aliases, and the guard `CASE WHEN … THEN NULL`), so explain output cannot silently lose a clause.
 - `matchesGroupSet`/grain gates unchanged — algebraic routing only changes Criterion 2's per-fn handling.
 
 **Connector (spark-connector):**
-- Verify `MinimalRelOpLowerer` compiles `Expr.FunctionCall("sqrt", …)` (parser + printer support it; lowerer coverage to be confirmed and test-pinned — if missing, it is a small additive case in the Expr compiler).
-- Parity regression suite extends the PR-332 harness with Algebraic cases: integral + nullable data, single-observation groups (`n=1` → NULL sample / `0` population), `n=0` groups, and the cancellation tripwire fixture. Rollup path ≡ base path, or the gate does not flip.
+- **`Expr.FunctionCall("sqrt", …)` is NOT compilable today**: `PortableExprCompiler.scala:190` returns typed `Left(EngineError.UnsupportedCapability)` for every `FunctionCall` (UDF resolution deferred). This is a **gate-flip-PR-owned fix**, not a follow-up: without it, the first algebraic query fails at the engine boundary after the gate opens — the same flip-without-capability class as PR-338. The flip PR must add a narrow builtin arm (or allowlist: `sqrt`, then `abs`/`coalesce` as needed) with a `PortableExprCompilerSpec` pin asserting `FunctionCall("sqrt", …) toColumn` yields a real sqrt `Column`, not `Left`.
+- Parity regression suite extends the PR-332 harness with Algebraic cases: integral + nullable data, single-observation groups (`n=1` → NULL sample / `0` population), `n=0` groups, and the pinned cancellation tripwire fixture (above). Rollup path ≡ base path, or the gate does not flip.
+- Connectors with their own Expr compilers inherit algebraic routing only after mirroring the same builtin arm — the flip PR notes the parallel-arm checklist even if Spark is the only engine exercised end-to-end.
 
-**Explainer/observability:** `RelOpPlanPrinter` already renders Aggregate+Project — rewritten plans explain for free. The Ticket 6 observer's recoverable/permanent refusal distinction survives unchanged.
+**Explainer/observability:** `RelOpPlanPrinter` already renders Aggregate+Project — rewritten plans explain for free (test-pinned per the Core list above). The Ticket 6 observer's recoverable/permanent refusal *taxonomy* survives unchanged; note the platform-side observer that consumes `RollupRewriteRefusal` is still a Ticket-6-epic follow-up, not wired behavior today.
 
 **Non-consequences (what this ADR does NOT do):**
 - No change to `AggregateCall`/`AggregateFn`/`RelOp` ADTs — closed-ADT discipline preserved.
