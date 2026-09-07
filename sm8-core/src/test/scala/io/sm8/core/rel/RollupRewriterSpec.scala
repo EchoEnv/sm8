@@ -503,6 +503,51 @@ class RollupRewriterSpec extends AnyFunSuite with Matchers {
     countCall.input shouldBe Some(Expr.FieldRef("count__rows"))
   }
 
+  test("Count over a rollup that does NOT declare Count -> UnsplittableAggregate (permanent, state column missing)") {
+    // Architect round-1 HIGH (same bug class as PR-338): identity
+    // matched against the MODEL measure, but the rollup excludes the
+    // measure so its state column is absent from the rollup schema.
+    // rebaseAggregate would emit a dangling Sum(count__rows).
+    val probe = Model.of(
+      name = "flights",
+      version = 1,
+      dimensions = dims,
+      measures = meas :+ Measure.aggregate("avg_fare", AggregateFn.Avg, Expr.FieldRef("fare")),
+      defaultPolicies = ModelPolicyDefaults(
+        materialize = MaterializePolicy.None,
+        cache = CachePolicy.NoCache,
+        audit = AuditPolicy.NoAudit),
+      source = SourceRef.ByName(table = "flights_raw"),
+      rollups = List(RollupSpec("by_carrier", List("carrier"), List("avg_fare"), None))
+    ).right.get
+    val out = RollupRewriter.rewrite(
+      algebraicPlan(AggregateCall(fn = AggregateFn.Count, input = None, alias = "rows")),
+      probe, None)
+    out shouldBe RollupRewriter.RollupRewriteResult.Unchanged(
+      RollupRewriter.RollupRewriteRefusal.UnsplittableAggregate)
+  }
+
+  test("Sum over a rollup that does NOT declare the Sum measure -> UnsplittableAggregate (same Additive gate)") {
+    val probe = Model.of(
+      name = "flights",
+      version = 1,
+      dimensions = dims,
+      measures = meas,
+      defaultPolicies = ModelPolicyDefaults(
+        materialize = MaterializePolicy.None,
+        cache = CachePolicy.NoCache,
+        audit = AuditPolicy.NoAudit),
+      source = SourceRef.ByName(table = "flights_raw"),
+      rollups = List(RollupSpec("by_carrier", List("carrier"), List("rows"), None))
+    ).right.get
+    val out = RollupRewriter.rewrite(
+      algebraicPlan(AggregateCall(fn = AggregateFn.Sum,
+        input = Some(Expr.FieldRef("fare")), alias = "total_fare")),
+      probe, None)
+    out shouldBe RollupRewriter.RollupRewriteResult.Unchanged(
+      RollupRewriter.RollupRewriteRefusal.UnsplittableAggregate)
+  }
+
   test("Avg(DISTINCT x) / StddevSample(DISTINCT x) -> UnsplittableAggregate (permanent, contract #4)") {
     val out1 = RollupRewriter.rewrite(
       algebraicPlan(AggregateCall(fn = AggregateFn.Avg,
@@ -515,6 +560,13 @@ class RollupRewriterSpec extends AnyFunSuite with Matchers {
         input = Some(Expr.FieldRef("fare")), alias = "avg_fare", distinct = true)),
       algebraicModel, None)
     out2 shouldBe RollupRewriter.RollupRewriteResult.Unchanged(
+      RollupRewriter.RollupRewriteRefusal.UnsplittableAggregate)
+    // VarianceSample(DISTINCT) — same permanent class (architect L4).
+    val out3 = RollupRewriter.rewrite(
+      algebraicPlan(AggregateCall(fn = AggregateFn.VarianceSample,
+        input = Some(Expr.FieldRef("fare")), alias = "avg_fare", distinct = true)),
+      algebraicModel, None)
+    out3 shouldBe RollupRewriter.RollupRewriteResult.Unchanged(
       RollupRewriter.RollupRewriteRefusal.UnsplittableAggregate)
   }
 

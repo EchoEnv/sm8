@@ -343,7 +343,20 @@ object RollupRewriter {
       case _ => if (a.fn != AggregateFn.Count) return Left(false)
     }
     AggregateFn.decomposability(a.fn) match {
-      case Decomposability.Additive => Right(())
+      case Decomposability.Additive =>
+        // Same state-column availability gate as the Algebraic arm
+        // (architect round-1 HIGH, same bug class as PR-338): the
+        // identity check above proves the request matches a MODEL
+        // measure, but if the ROLLUP does not declare that measure,
+        // stateColumnsFor never emitted its state column and
+        // rebaseAggregate would emit a dangling FieldRef. Permanent
+        // refusal: this rollup will never carry the column (the
+        // recoverable AlgebraicStateNotWired slot is reserved for
+        // states a future materialization CAN add).
+        additiveStateColumn(spec, a, model) match {
+          case Some(col) if !stateColumnNames(spec, model).contains(col) => Left(false)
+          case _ => Right(())
+        }
       case Decomposability.Algebraic =>
         // ADR-0023 (PR-339) wiring: the rewriter now emits the
         // two-phase Aggregate→Project re-aggregation with NULL
@@ -510,6 +523,26 @@ object RollupRewriter {
     * contract #1). */
   private def stateColumnNames(spec: RollupSpec, model: Model): Set[String] =
     rollupSchema(spec, model).map(_.name).toSet
+
+  /** The state column the Additive re-base of `a` reads, if the
+    * request shape determines one. Mirrors rebaseAggregate's
+    * emission: Sum(x)->sum__x, Count(*)->count__rows, Min(x)->min__x,
+    * Max(x)->max__x. None for shapes that never reach the rebase
+    * (defensive). */
+  private[rel] def additiveStateColumn(
+      spec: RollupSpec,
+      a: AggregateCall,
+      model: Model
+  ): Option[String] = a.fn match {
+    case AggregateFn.Sum =>
+      a.input.collectFirst { case Expr.FieldRef(f) => s"sum__$f" }
+    case AggregateFn.Count => Some("count__rows")
+    case AggregateFn.Min =>
+      a.input.collectFirst { case Expr.FieldRef(f) => s"min__$f" }
+    case AggregateFn.Max =>
+      a.input.collectFirst { case Expr.FieldRef(f) => s"max__$f" }
+    case _ => None
+  }
 
   /** ADR-0023 algebraic re-aggregation for ONE request call.
     *
