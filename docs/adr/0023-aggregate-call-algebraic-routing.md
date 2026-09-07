@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed. **Date:** 2026-09-07. **Author:** SM8 agent. Follow-up to ADR-0022 (pre-aggregation) Ticket 4 follow-up lane. Dual review round 1 (architect + data-engineer, `mux/reasoning`): both APPROVE conditional on the amendments already folded into this revision — status flips to Accepted at merge (user is the sole merger).
+Accepted. **Date:** 2026-09-07. **Author:** SM8 agent. Follow-up to ADR-0022 (pre-aggregation) Ticket 4 follow-up lane. **Implements:** #340 (T7: two-phase Aggregate→Project rewriter + gate flip) + #341 (T8: sqrt builtin arm + Welford state migration + algebraic parity suite + dispersion aggregates on the base path). Dual review (architect + DE) on both PRs: APPROVE.
 
 **Supersedes the approach reverted in PR-338** (commit `cff414c`, revert `7ba90ed`): that PR flipped the `AlgebraicStateNotWired` gate while `rebaseAggregate` still emitted single-input `AggregateCall`s — Avg rebased to `Sum(sum__F)` (numerator only, silently wrong) and Stddev/Variance rebased to `Sum(sumsq__F)` (not a dispersion, no NULL guard). Both round-2 reviewers (architect + data-engineer swarm roles) independently recommended revert; PR-338 was closed, not merged. This ADR is the design the flip was missing.
 
