@@ -345,12 +345,14 @@ object RollupRewriter {
     AggregateFn.decomposability(a.fn) match {
       case Decomposability.Additive => Right(())
       case Decomposability.Algebraic =>
-        // State columns ARE wired (Ticket 6 of the pre-aggregation
-        // map): the materializer emits (count__<F>, sum__<F>, sumsq__<F>)
-        // per Algebraic input field. This arm now recognizes and
-        // routes Algebraic queries through rollups with the
-        // engine-parity NULL guards (stddev n<2 -> NULL, n=1 edge).
-        Right(())
+        // v1 refuses Algebraic queries (base-path fallback). The
+        // connector materializer NOW writes partial state columns
+        // (count, sum, sumSq per input field) — but routing them
+        // through to Avg/Stddev/Variance re-aggregation requires a
+        // rebaseAggregate Algebraic arm + NULL guards wired through
+        // Ticket 6's rewriter PR. THIS PR ships the connector side
+        // only; the rewriter gate flip is a separate PR.
+        Left(true)
       case _ => Left(false)
     }
   }
