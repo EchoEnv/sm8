@@ -130,7 +130,12 @@ object RollupMaterializer {
       val declared = model.measures.filter(m => spec.measures.contains(m.name))
       val unsupported = declared.filter { m =>
         val d = AggregateFn.decomposability(m.expr.fn)
-        d != Decomposability.Additive ||
+        // Positional (First/Last), Holistic (Median/Percentile*), Approximable
+        // (CountDistinct/ApproxPercentile) remain refused — no bounded-size
+        // partial state suffices. DISTINCT + COUNT(expr) also refused.
+        // Algebraic (Avg/Stddev*/Variance*) NOW SUPPORTED via (n, sum, sumSq)
+        // partial-state columns (the Ticket 6 contract-pass).
+        d != Decomposability.Additive && d != Decomposability.Algebraic ||
           m.expr.distinct ||
           (m.expr.fn == AggregateFn.Count && m.expr.input.isDefined) ||
           !m.expr.input.forall(_.isInstanceOf[io.sm8.core.expr.Expr.FieldRef])
@@ -140,8 +145,9 @@ object RollupMaterializer {
           engine = "spark-connector",
           capability = "RollupMaterializer.measureState",
           message = s"rollups[${spec.name}]: measures ${unsupported.map(_.name).mkString(", ")} need " +
-            "state this materializer does not store (Algebraic partials / DISTINCT / COUNT(expr) / " +
-            "composite inputs). v1 stores Additive row-count + sum/min/max over a single field only."))
+            "state this materializer does not store (Positional / Holistic / Approximable / " +
+            "DISTINCT / COUNT(expr) / composite inputs). Supported: Additive (Sum/Count/Min/Max) " +
+            "and Algebraic (Avg/Stddev/Variance) over a single field."))
       else if (declared.isEmpty && spec.measures.nonEmpty)
         Left(EngineError.UnsupportedCapability(
           engine = "spark-connector",
@@ -220,19 +226,40 @@ object RollupMaterializer {
     * `count__rows` / `sum__<f>` / `min__<f>` / `max__<f>`).
     * Built-in functions only — see the closure-audit note in the
     * file header. */
-  private[spark] def stateColumns(call: AggregateCall): List[Column] =
-    call.input.collectFirst { case io.sm8.core.expr.Expr.FieldRef(f) => f }.toList.flatMap { f =>
+  private[spark] def stateColumns(call: AggregateCall): List[Column] = {
+    val additiveCols = call.input.collectFirst { case io.sm8.core.expr.Expr.FieldRef(f) => f }.toList.flatMap { f =>
       call.fn match {
         case AggregateFn.Sum => List(sum(col(f)).as(s"sum__$f"))
         case AggregateFn.Min => List(min(col(f)).as(s"min__$f"))
         case AggregateFn.Max => List(max(col(f)).as(s"max__$f"))
         case _               => Nil
       }
-    } match {
+    }
+    val algebraicCols = AggregateFn.decomposability(call.fn) match {
+      case Decomposability.Algebraic =>
+        // Per-input (n, sum, sumSq) partial state columns.
+        // Cast sum to double for stddev/variance parity (the re-aggregation
+        // expression computes in double space; an integral sum would lose
+        // the fractional part).
+        call.input.collectFirst { case io.sm8.core.expr.Expr.FieldRef(f) => f }.toList.flatMap { f =>
+          List(
+            count(col(f)).as(s"count__$f"),
+            sum(col(f)).cast("double").as(s"sum__$f"),
+            sum(col(f) * col(f)).cast("double").as(s"sumsq__$f"))
+        }
+      case _ => Nil
+    }
+    val allCols = (additiveCols ++ algebraicCols)
+      // A rollup can declare Sum(F) and Avg(F) together — both would
+      // produce a sum__F column. Spark's groupBy.agg() throws on
+      // ambiguous references. Keep only the first occurrence by name.
+      .groupBy(_.toString).map(_._2.head).toList
+    allCols match {
       case Nil if call.fn == AggregateFn.Count && call.input.isEmpty =>
         List(count(lit(1)).as("count__rows"))
       case other => other
     }
+  }
 
   /** Persistence seam. v1 default: temp view (resolvable by
     * `spark.table`; sufficient for the regression and local runs).
