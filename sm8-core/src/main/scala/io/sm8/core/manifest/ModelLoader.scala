@@ -405,11 +405,6 @@ object ModelLoader {
     * @param m the entry map
     * @return the typed JoinSpec, or a typed `ManifestError`
     */
-  /** Parse one join entry into a typed JoinSpec.
-    *
-    * @param m the entry map
-    * @return the typed JoinSpec, or a typed `ManifestError`
-    */
   def parseOne(m: java.util.Map[_, _]): Either[ManifestError, io.sm8.core.model.JoinSpec] = {
    val name = stringField(m, "name")
    val rightModel = stringField(m, "rightModel").orElse(stringField(m, "right_model"))
