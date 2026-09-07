@@ -76,6 +76,7 @@ their context, the options considered, and the consequences of the chosen path.
 | [0021](0021-mcp-route-split.md) | McpHttpRoute / McpStdioRoute / Sm8ToolHandlers structural split — ToolRegistry helper + HTTP lifecycle/state/protocol trio + stdio 2-way mirror (Wayfinder Ticket #3) | Implemented (PR-319/320/321, `e8c85ff`/`a844e5d`/`26813f6`) |
 | [0022](0022-pre-aggregation-sm8-native.md) | Pre-aggregation (rollups) — sm8-native design; external-engine + SQL-rewrite proposal evaluated and adapted (6-ticket wayfinder map, all landed #329-#334) | Implemented (#327-#334) |
 | [0023](0023-aggregate-call-algebraic-routing.md) | Algebraic measure routing over rollups — two-phase Aggregate+Project re-aggregation (no IR extension); Welford-merge state (n, sum, m2); supersedes the reverted PR-338 gate-flip approach | Implemented (#340 + #341) |
+| [0024](0024-time-grain-bucketing.md) | Time-grain rollup bucketing — declared grain dimension + temporal-type value-domain contract + date_trunc materialization + grain-subsumption routing (coarsen Additive/Avg only) | Proposed |
 
 ## Tools
 
