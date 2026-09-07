@@ -413,32 +413,6 @@ class RollupMaterializerSpec extends AnyFunSuite with Matchers {
     ).right.get
     RollupMaterializer.materialize(spark, missing, missing.rollups.head).isLeft shouldBe true
 
-  // ===== DE finding #6: end-to-end Avg re-derivation parity =====
-  // Validates that after the rewriter gate flip (commit b074f6c), an
-  // Avg query over a rollup re-derives the base-path mean exactly
-  // (the rollup rebaseAggregate emits Sum(sum__F)/Sum(count__F)).
-  test("Avg: rollup-path re-derivation == base-path AVG on integral data") {
-    val spec = RollupSpec("by_region_avg_e2e", List("region"), List("avg_amount"), None)
-    val m = model(List(spec))
-    val spark = buildSpark()
-    import spark.implicits._
-    List(Sale("east", "i1", 100L, 1), Sale("east", "i2", 200L, 2), Sale("east", "i3", 300L, 3),
-         Sale("west", "i1", 50L, 3)).toDF("region", "item", "amount", "units")
-      .createOrReplaceTempView("sales_base")
-    RollupMaterializer.materialize(spark, m, spec, eager = false).isRight shouldBe true
-    // Base-path AVG
-    val baseAvg = spark.table("sales_base")
-      .groupBy("region").avg("amount")
-      .collect().map(r => (r.getString(0), r.getDouble(1))).sortBy(_._1).toList
-    // Rollup-path AVG via the rewriter (re-derived from state cols)
-    val rewriterOut = RollupRewriter.rewrite(queryPlan("region"), m, None)
-    rewriterOut shouldBe a[RollupRewriter.RollupRewriteResult.Rewritten]
-    val rollAvg = lowerer.lower(rewriterOut.plan, ctx) match {
-      case Right(df) => df.collect().map(r => (r.getString(0), r.getDouble(1))).sortBy(_._1).toList
-      case _ => fail("rollup path must succeed")
-    }
-    baseAvg shouldBe rollAvg
-  }
   }
 }
 
@@ -560,5 +534,50 @@ class RollupMaterializerAlgebraicSpec extends AnyFunSuite with Matchers {
     // The materialized rollup carries the same partial state.
     val rollSum = spark.table("sales__solo").collect().head.getLong(1)
     rollSum shouldBe 42L
+  }
+
+  // ===== DE finding #6: end-to-end Avg re-derivation parity =====
+  test("Avg e2e parity: rollup-path re-derivation == base-path AVG on integral data") {
+    val spark = SparkSession.builder().master("local[1]").appName("RollupMaterializerAlgebraicSpec-e2e")
+      .config("spark.ui.enabled", "false").config("spark.sql.shuffle.partitions", "1")
+      .config("spark.driver.host", "127.0.0.1").config("spark.driver.bindAddress", "127.0.0.1")
+      .getOrCreate()
+    import spark.implicits._
+    List(Sale("east", "i1", 100L, 1), Sale("east", "i2", 200L, 2), Sale("east", "i3", 300L, 3),
+         Sale("west", "i1", 50L, 3)).toDF("region", "item", "amount", "units")
+      .createOrReplaceTempView("sales_base")
+    val m = model(List(RollupSpec("by_region_avg", List("region"), List("avg_amount"), None)))
+    RollupMaterializer.materialize(spark, m, m.rollups.head, eager = false).isRight shouldBe true
+    val baseAvg = spark.table("sales_base").groupBy("region").avg("amount")
+      .collect().map(r => (r.getString(0), r.getDouble(1))).sortBy(_._1).toList
+    val plan = io.sm8.core.rel.RelOp.Aggregate(
+      input = io.sm8.core.rel.RelOp.Scan(
+        sourceRef = io.sm8.core.model.SourceRef.ByName(table = "sales_base"),
+        schema = List(
+          io.sm8.core.schema.Field.nonNull("region", io.sm8.core.schema.SealedDataType.Varchar),
+          io.sm8.core.schema.Field.nonNull("item", io.sm8.core.schema.SealedDataType.Varchar),
+          io.sm8.core.schema.Field.nonNull("amount", io.sm8.core.schema.SealedDataType.BigInt),
+          io.sm8.core.schema.Field.nonNull("units", io.sm8.core.schema.SealedDataType.Int)),
+        projection = Nil),
+      groupBy = List(io.sm8.core.expr.Expr.FieldRef("region")),
+      aggregates = List(io.sm8.core.rel.AggregateCall(
+        fn = io.sm8.core.rel.AggregateFn.Avg,
+        input = Some(io.sm8.core.expr.Expr.FieldRef("amount")),
+        alias = "avg_amount")))
+    val ctx = io.sm8.core.engine.EngineContext.defaultContext
+    val lowerer = new io.sm8.connectors.spark.MinimalRelOpLowerer(
+      spark, new io.sm8.connectors.spark.PortableQueryCompiler(spark), io.sm8.core.engine.EngineIdentity(
+        name = "AlgebraicE2ESpec", nativeVersion = "3.5", engineAdapterVersion = "0.1.0"))
+    val out = io.sm8.core.rel.RollupRewriter.rewrite(plan, m, None)
+    out shouldBe a[io.sm8.core.rel.RollupRewriter.RollupRewriteResult.Rewritten]
+    val rewritten = out.asInstanceOf[io.sm8.core.rel.RollupRewriter.RollupRewriteResult.Rewritten]
+    val (base, roll) = (lowerer.lower(plan, ctx), lowerer.lower(rewritten.plan, ctx))
+    (base, roll) match {
+      case (Right(b), Right(r)) =>
+        val bRows = b.collect().map(x => (x.getString(0), x.getDouble(1))).sortBy(_._1).toList
+        val rRows = r.collect().map(x => (x.getString(0), x.getDouble(1))).sortBy(_._1).toList
+        bRows shouldBe rRows
+      case _ => fail("both paths must succeed")
+    }
   }
 }

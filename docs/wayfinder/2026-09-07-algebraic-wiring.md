@@ -1,6 +1,6 @@
 # Wayfinder map — Algebraic state wiring (2026-09-07)
 
-**Status:** In progress — one PR (Tickets 1-3 land together).
+**Status:** Ticket 1 (materializer state columns) LANDED in PR pending; Tickets 2-3 (rewriter gate flip + rebaseAggregate Algebraic arm + e2e parity) are follow-up work. The current scope honestly narrows to the connector-side state columns only — the rewriter's AlgebraicStateNotWired gate stays v1-refused until the routing is wired.
 **Driver:** ADR-0022 map carry-item — "Algebraic partial-state wiring (Welford-merge columns per the AC) + stddev/variance n<2 NULL-parity end-to-end + Median posture". Ticket 4 shipped the `AlgebraicStateNotWired` refusal; this unblocks it.
 
 ---
