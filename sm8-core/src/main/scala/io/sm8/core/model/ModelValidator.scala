@@ -105,8 +105,17 @@ object ModelValidator {
         out += s"rollups[${r.name}]: grainDimension '$gd' is set but timeGrain is not — a grain axis without a grain label cannot route; declare both or neither"
       case (Some(_), None) =>
         out += s"rollups[${r.name}]: timeGrain is set but grainDimension is not — bucketing needs an explicit axis; declare grainDimension (a date/timestamp dimension of this rollup)"
-      case (Some(_), Some(gd)) =>
-        if (!r.dimensions.contains(gd))
+      case (Some(grain), Some(gd)) =>
+        // Blank grain: the loader filters these via stringField, but
+        // programmatic RollupSpec(..., Some(""), ...) bypasses the
+        // loader. A blank label normalizes to None in the rewriter,
+        // so the materializer's grainDimCol fallback would .get on
+        // a None and throw. Refuse loud here so the no-`.get` rule
+        // applies uniformly on both the loader and the programmatic
+        // paths.
+        if (grain.trim.isEmpty)
+          out += s"rollups[${r.name}]: timeGrain is set but blank — calendar truncation requires a non-empty grain label (KnownGrains vocabulary: hour/day/week/month/quarter/year)"
+        else if (!r.dimensions.contains(gd))
           out += s"rollups[${r.name}]: grainDimension '$gd' must name one of the rollup's own dimensions (${r.dimensions.mkString(", ")})"
         else {
           model.dimensions.find(_.name == gd).flatMap(_.dataType).foreach { t =>

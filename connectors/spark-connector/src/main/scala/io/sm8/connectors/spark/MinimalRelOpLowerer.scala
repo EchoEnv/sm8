@@ -390,11 +390,16 @@ final class MinimalRelOpLowerer(
    col <- e match {
     case Expr.FieldRef(name)   => Right(df.col(name))
     case Expr.MeasureRef(name) => Right(df.col(name))
+    // The grain-coarsening rewriter emits the truncated key wrapped
+    // in Alias(dimName, date_trunc(...)) so the Aggregate output
+    // keeps the original dim name — compile to col.as(name).
+    case Expr.Alias(name, inner) =>
+      PortableExprCompiler.toColumn(inner).map(_.as(name))
     case fc: Expr.FunctionCall => PortableExprCompiler.toColumn(fc)
     case other => Left(EngineError.UnsupportedCapability(
      engine  = identity.name,
      capability = "MinimalRelOpLowerer.dim",
-     message = s"only FieldRef/MeasureRef/FunctionCall groupBy keys are supported. Got: ${other.getClass.getSimpleName}"))
+     message = s"only FieldRef/MeasureRef/Alias/FunctionCall groupBy keys are supported. Got: ${other.getClass.getSimpleName}"))
    }
    } yield acc :+ col
   }

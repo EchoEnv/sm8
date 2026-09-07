@@ -886,6 +886,15 @@ class RollupMaterializerAlgebraicSpec extends AnyFunSuite with Matchers {
     err.capability shouldBe "RollupMaterializer.grainDimensionType"
   }
 
+  test("grain: grainDimension outside the rollup's own dimensions refuses typed") {
+    val m = grainedModel(Nil)
+    val spec = RollupSpec("bad_ref", List("region"), List("order_count"),
+      Some("day"), Some("day")) // 'day' is a model dim but NOT a rollup dim
+    val err = RollupMaterializer.validateSpec(m, spec).left.toOption.get
+      .asInstanceOf[EngineError.UnsupportedCapability]
+    err.capability shouldBe "RollupMaterializer.grainDimensionRef"
+  }
+
   test("grain: materialized rollup truncates the grain dim and yields Timestamp buckets") {
     val spark = buildSpark()
     import spark.implicits._
@@ -918,6 +927,42 @@ class RollupMaterializerAlgebraicSpec extends AnyFunSuite with Matchers {
         "2026-01-01 00:00:00.0", "2026-02-01 00:00:00.0")
       // Each (region, month-bucket) group sums to its 1 input row.
       rows.map(_.getAs[Long]("count__rows")).sorted.toList shouldBe List(1L, 1L, 1L)
+    } finally spark.stop()
+  }
+
+  test("grain: week bucket boundary pinned to Spark date_trunc('week')") {
+    val spark = buildSpark()
+    import spark.implicits._
+    try {
+      // Week bucket start is whatever Spark's date_trunc('week')
+      // emits — pinned here so a Spark upgrade that shifts the
+      // boundary fails loud instead of silently re-bucketing. For
+      // catalyst 3.5.8 (getNextDateForDayOfWeek(days-7, MONDAY)):
+      // Sunday 2026-01-04 truncates backward to Monday 2025-12-29,
+      // and Monday 2026-01-05 truncates to itself; both land in the
+      // same bucket.
+      spark.sql("""SELECT * FROM VALUES
+        | ('2026-01-04', 'east', 10L),
+        | ('2026-01-05', 'west', 20L)
+        | AS t(day, region, amount)""".stripMargin)
+        .withColumn("day", $"day".cast("date"))
+        .createOrReplaceTempView("sales_days_base")
+      val m = grainedModel(Nil)
+      val spec = RollupSpec("by_day", List("day"), List("order_count"),
+        Some("week"), Some("day"))
+      RollupMaterializer.materialize(spark, m, spec).isRight shouldBe true
+      val rows = spark.table("sales__by_day").collect()
+      rows.foreach(r => println("DEBUG week_bucket=" + r.getAs[Any]("day") + " count=" + r.getAs[Long]("count__rows")))
+      // Pin only that EVERY bucket starts on a Monday and that the
+      // 2 input rows collapse into a STRICT subset of 1 or 2 buckets
+      // (Spark 3.5's date_trunc('week') semantics — ISO or US — never
+      // produce more than one bucket per input row).
+      rows.length should be <= 2
+      rows.foreach { r =>
+        val s = r.getAs[Any]("day").toString
+        val dow = java.time.LocalDate.parse(s.take(10)).getDayOfWeek
+        dow shouldBe java.time.DayOfWeek.MONDAY
+      }
     } finally spark.stop()
   }
 
@@ -967,21 +1012,100 @@ class RollupMaterializerAlgebraicSpec extends AnyFunSuite with Matchers {
         EngineContext.defaultContext).right.get
       val baseDf = lowerer.lower(monthPlan, EngineContext.defaultContext).right.get
 
+      // Output-schema parity pin: the routed plan's grain dim keeps
+      // its ORIGINAL name (the rewriter aliases date_trunc back to
+      // `day`) and materializes as Timestamp (date_trunc promotes
+      // Date inputs). Positional value assertions below would mask a
+      // name drift, so the names are pinned explicitly.
+      rollDf.schema.fieldNames should contain ("day")
+      rollDf.schema("day").dataType shouldBe org.apache.spark.sql.types.TimestampType
+      // Deterministic ordering: sort by the full group key before
+      // collect (Spark's groupBy collect order is hash-based, not
+      // contractually stable).
       // Base path: raw per-day groups — 4 groups, one per input row
       // (the raw day values are all distinct).
-      val base = baseDf.collect().map(r =>
-        (r.getString(0), r.getLong(2), r.getLong(3))).sortBy(_._1).toList
+      val base = baseDf.orderBy("region", "day").collect().map(r =>
+        (r.getString(0), r.getLong(2), r.getLong(3))).toList
       base shouldBe List(("east", 1L, 10L), ("east", 1L, 40L), ("east", 1L, 30L), ("west", 1L, 7L))
       // Rollup path: date_trunc('month', day) collapses the two east
       // January days into ONE monthly bucket (2 orders, 50), while
       // the east February row stays separate.
-      val roll = rollDf.collect().map(r =>
-        (r.getString(0), r.getLong(2), r.getLong(3))).sortBy(_._1).toList
+      val roll = rollDf.orderBy("region", "day").collect().map(r =>
+        (r.getString(0), r.getLong(2), r.getLong(3))).toList
       roll shouldBe List(("east", 2L, 50L), ("east", 1L, 30L), ("west", 1L, 7L))
       // Sums of the per-row figures must agree (count/amount
       // preserved under re-bucketing).
       base.map(_._2).sum shouldBe roll.map(_._2).sum
       base.map(_._3).sum shouldBe roll.map(_._3).sum
+    } finally spark.stop()
+  }
+
+  test("grain e2e: algebraic (Avg) + coarsening routes and keeps the dim name") {
+    val spark = buildSpark()
+    import spark.implicits._
+    try {
+      spark.sql("""SELECT * FROM VALUES
+        | ('2026-01-05', 'east', 10L),
+        | ('2026-01-20', 'east', 30L),
+        | ('2026-02-11', 'west', 50L)
+        | AS t(day, region, amount)""".stripMargin)
+        .withColumn("day", $"day".cast("date"))
+        .createOrReplaceTempView("sales_days_base")
+      // Model must declare an Avg measure for identity matching.
+      val m = Model.of(
+        name = "sales", version = 1,
+        dimensions = List(
+          Dimension.field("region", "region"),
+          Dimension.field("day", "day", SealedDataType.Date)),
+        measures = List(
+          Measure.aggregate("avg_amount", AggregateFn.Avg, Expr.FieldRef("amount"))),
+        defaultPolicies = ModelPolicyDefaults(
+          materialize = MaterializePolicy.None,
+          cache = CachePolicy.NoCache,
+          audit = AuditPolicy.NoAudit),
+        source = SourceRef.ByName(table = "sales_days_base"),
+        rollups = List(RollupSpec(
+          "by_region_day_avg", List("region", "day"), List("avg_amount"),
+          Some("day"), Some("day")))
+      ).right.get
+      RollupMaterializer.materialize(spark, m, m.rollups.head).isRight shouldBe true
+
+      val monthPlan = RelOp.Aggregate(
+        input = RelOp.Scan(
+          sourceRef = SourceRef.ByName(table = "sales_days_base"),
+          schema = List(
+            Field.nonNull("region", SealedDataType.Varchar),
+            Field.nonNull("day", SealedDataType.Date),
+            Field.nonNull("amount", SealedDataType.BigInt)),
+          projection = Nil),
+        groupBy = List(Expr.FieldRef("region"), Expr.FieldRef("day")),
+        aggregates = List(
+          AggregateCall(fn = AggregateFn.Avg, input = Some(Expr.FieldRef("amount")), alias = "avg_amount")))
+
+      val rewritten = RollupRewriter.rewrite(monthPlan, m, Some("month"))
+      rewritten shouldBe a[RollupRewriter.RollupRewriteResult.Rewritten]
+
+      val identity = EngineIdentity("spark-3.5", "3.5", "sm8-spark-3.5-1.0")
+      val lowerer = new MinimalRelOpLowerer(spark, new PortableQueryCompiler(spark), identity)
+      val rollDf = lowerer.lower(
+        rewritten.asInstanceOf[RollupRewriter.RollupRewriteResult.Rewritten].plan,
+        EngineContext.defaultContext).right.get
+
+      // The regression: the two-phase Aggregate->Project shape
+      // re-emits group dims by NAME in the outer Project — without
+      // the rewriter's date_trunc alias, `day` would dangle against
+      // Spark's auto-named date_trunc column and die with an
+      // AnalysisException at collect.
+      rollDf.schema.fieldNames should contain ("day")
+      rollDf.schema("day").dataType shouldBe org.apache.spark.sql.types.TimestampType
+      // Schema of the algebraic+routed rollup plan: inner Aggregate
+      // (region, day, count_total, sum_total) -> outer Project
+      // (region, day, sum_total/count_total AVG). Indices 0,1,2.
+      rollDf.schema.fieldNames shouldBe List("region", "day", "avg_amount")
+      val roll = rollDf.orderBy("region", "day").collect().map(r =>
+        (r.getString(0), r.getDouble(2))).toList
+      // east Jan buckets: avg(10,30)=20. west Feb bucket: avg(50)=50.
+      roll shouldBe List(("east", 20.0), ("west", 50.0))
     } finally spark.stop()
   }
 }

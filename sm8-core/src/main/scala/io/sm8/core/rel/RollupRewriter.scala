@@ -635,12 +635,17 @@ object RollupRewriter {
       case Expr.FieldRef(name) if truncFor.contains(name) =>
         // truncFor is non-empty only when the routing matrix said
         // YES (rollup grain strictly finer than the query's), so
-        // c.requestGrain is a known normalized label here.
-        val queryGrain = c.requestGrain.get
-        Expr.FunctionCall(
+        // c.requestGrain is a known normalized label here. The Alias
+        // is load-bearing: an unaliased FunctionCall would give the
+        // Aggregate output Spark's auto-name (date_trunc(month, day)),
+        // and downstream references to the ORIGINAL dim name — the
+        // outer Project's group re-emission, and every consumer that
+        // selects `day` — would dangle against a column that no
+        // longer exists under that name.
+        Expr.Alias(name, Expr.FunctionCall(
           "date_trunc",
-          Seq(Expr.Literal(LiteralValue.StringValue(queryGrain), SealedDataType.Varchar),
-              Expr.FieldRef(name)))
+          Seq(Expr.Literal(LiteralValue.StringValue(c.requestGrain.get), SealedDataType.Varchar),
+              Expr.FieldRef(name))))
       case other => other
     }
     val agg = RelOp.Aggregate(

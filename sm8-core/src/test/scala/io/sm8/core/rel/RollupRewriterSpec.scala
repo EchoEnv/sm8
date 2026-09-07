@@ -760,6 +760,39 @@ class RollupRewriterSpec extends AnyFunSuite with Matchers {
       RollupRewriter.RollupRewriteRefusal.GrainMismatch)
   }
 
+  test("grain matrix: dispersion measure never coarsens (Stddev + coarser query refuses)") {
+    // The coarsening fn gate excludes dispersion fns (Stddev/
+    // Variance) despite M2-additivity — v1 scope discipline. A
+    // request carrying a Stddev measure at a coarser grain than the
+    // rollup must fail safe to the base path.
+    val dayRollup = RollupSpec(
+      "by_carrier_day", List("carrier"), List("rows", "std_fare"), Some("day"), Some("carrier"))
+    val stdModel = Model.of(
+      name = "flights",
+      version = 1,
+      dimensions = dims,
+      measures = meas :+ Measure.aggregate(
+        "std_fare", AggregateFn.StddevSample, Expr.FieldRef("fare")),
+      defaultPolicies = ModelPolicyDefaults(
+        materialize = MaterializePolicy.None,
+        cache = CachePolicy.NoCache,
+        audit = AuditPolicy.NoAudit),
+      source = SourceRef.ByName(table = "flights_raw"),
+      rollups = List(dayRollup)
+    ).right.get
+    val plan = RelOp.Aggregate(
+      input = RelOp.Scan(
+        sourceRef = SourceRef.ByName(table = "flights_raw"),
+        schema = baseSchema,
+        projection = Nil),
+      groupBy = List(Expr.FieldRef("carrier")),
+      aggregates = List(
+        AggregateCall(fn = AggregateFn.StddevSample, input = Some(Expr.FieldRef("fare")), alias = "std_fare")))
+    val out = RollupRewriter.rewrite(plan, stdModel, Some("month"))
+    out shouldBe RollupRewriter.RollupRewriteResult.Unchanged(
+      RollupRewriter.RollupRewriteRefusal.GrainMismatch)
+  }
+
   test("grain matrix: coarsening refuses to SPLIT (month rollup, day query)") {
     val monthRollup = RollupSpec("by_carrier_month", List("carrier"), List("rows", "total_fare"), Some("month"), Some("carrier"))
     RollupRewriter.rewrite(canonicalPlan(), model(List(monthRollup)), Some("day")) shouldBe
@@ -817,10 +850,14 @@ class RollupRewriterSpec extends AnyFunSuite with Matchers {
     val out = RollupRewriter.rewrite(datePlan(), dateModel(List(dayRollup)), Some("month"))
     out shouldBe a[RollupRewriter.RollupRewriteResult.Rewritten]
     val RelOp.Aggregate(_, g, _) = findAggregate(out.asInstanceOf[RollupRewriter.RollupRewriteResult.Rewritten].plan)
-    g shouldBe List(Expr.FunctionCall(
+    // The truncation is ALIASED back to the dim name: the Aggregate
+    // output column must stay addressable as `flight_date` (Spark
+    // would otherwise auto-name it date_trunc(month, flight_date),
+    // and every downstream name-based reference would dangle).
+    g shouldBe List(Expr.Alias("flight_date", Expr.FunctionCall(
       "date_trunc",
       Seq(Expr.Literal(LiteralValue.StringValue("month"), SealedDataType.Varchar),
-          Expr.FieldRef("flight_date"))))
+          Expr.FieldRef("flight_date")))))
   }
 
   test("coarsening emit: exact-grain request keeps the raw dim column") {

@@ -132,25 +132,37 @@ object RollupMaterializer {
     val grainTypeCheck: Either[EngineError, Unit] =
       if (spec.timeGrain.isDefined && spec.grainDimension.isDefined) {
         val gd = spec.grainDimension.get
-        val declaredType = model.dimensions.find(_.name == gd).flatMap(_.dataType)
-        val resolvedType: Option[io.sm8.core.schema.SealedDataType] =
-          if (declaredType.isDefined) declaredType
-          else {
-            // Without a declared type we cannot resolve without
-            // the base schema here — defer to the loader-side
-            // validator; this branch is the "defensive" path for
-            // direct Model.of callers who skip validateAgainstSchema.
-            None
+        // Defense-in-depth: the validator already enforces ref
+        // membership on the loader path; this guards direct Model.of
+        // callers who skip ModelValidator and would otherwise pass a
+        // grain dim name through to date_trunc with no model-side
+        // anchor.
+        if (!spec.dimensions.contains(gd))
+          Left(EngineError.UnsupportedCapability(
+            engine = "spark-connector",
+            capability = "RollupMaterializer.grainDimensionRef",
+            message = s"rollups[${spec.name}]: grainDimension '$gd' must name one of the rollup's own dimensions (${spec.dimensions.mkString(", ")})"))
+        else {
+          val declaredType = model.dimensions.find(_.name == gd).flatMap(_.dataType)
+          val resolvedType: Option[io.sm8.core.schema.SealedDataType] =
+            if (declaredType.isDefined) declaredType
+            else {
+              // Without a declared type we cannot resolve without
+              // the base schema here — defer to the loader-side
+              // validator; this branch is the "defensive" path for
+              // direct Model.of callers who skip validateAgainstSchema.
+              None
+            }
+          resolvedType match {
+            case Some(t) if t != io.sm8.core.schema.SealedDataType.Date &&
+                              t != io.sm8.core.schema.SealedDataType.Timestamp =>
+              Left(EngineError.UnsupportedCapability(
+                engine = "spark-connector",
+                capability = "RollupMaterializer.grainDimensionType",
+                message = s"rollups[${spec.name}]: grainDimension '$gd' has declared type $t — " +
+                  "calendar truncation requires Date or Timestamp"))
+            case _ => Right(())
           }
-        resolvedType match {
-          case Some(t) if t != io.sm8.core.schema.SealedDataType.Date &&
-                            t != io.sm8.core.schema.SealedDataType.Timestamp =>
-            Left(EngineError.UnsupportedCapability(
-              engine = "spark-connector",
-              capability = "RollupMaterializer.grainDimensionType",
-              message = s"rollups[${spec.name}]: grainDimension '$gd' has declared type $t — " +
-                "calendar truncation requires Date or Timestamp"))
-          case _ => Right(())
         }
       } else if (spec.timeGrain.isDefined != spec.grainDimension.isDefined) {
         // Half-declared grain (one side set, the other not). The
@@ -161,6 +173,29 @@ object RollupMaterializer {
           capability = "RollupMaterializer.grainCoPresence",
           message = s"rollups[${spec.name}]: timeGrain and grainDimension must be both set or both unset " +
             s"(got timeGrain=${spec.timeGrain}, grainDimension=${spec.grainDimension})"))
+      } else if (spec.timeGrain.exists(_.trim.isEmpty)) {
+        // Empty/blank timeGrain (the loader filters these via
+        // stringField; direct Model.of callers can set Some("")).
+        // normalizeGrain returns None for a blank label, so the
+        // materializer's grainDimCol fallback to .get would throw
+        // NoSuchElementException — surface it as a typed refusal
+        // instead.
+        Left(EngineError.UnsupportedCapability(
+          engine = "spark-connector",
+          capability = "RollupMaterializer.emptyTimeGrain",
+          message = s"rollups[${spec.name}]: timeGrain is set but blank; calendar truncation requires a non-empty grain label (KnownGrains vocabulary: hour/day/week/month/quarter/year)"))
+      } else if (spec.grainDimension.exists(gd => !spec.dimensions.contains(gd))) {
+        // Ref-membership defense: a grainDimension pointing outside
+        // the rollup's own dimensions would silently vanish from the
+        // materialized table (buildRollupDf iterates spec.dimensions
+        // only) — the table would then mismatch the rewriter's
+        // declared scan schema. The loader-side validator catches
+        // this on the normal path; this guard covers direct
+        // Model.of callers.
+        Left(EngineError.UnsupportedCapability(
+          engine = "spark-connector",
+          capability = "RollupMaterializer.grainDimensionRef",
+          message = s"rollups[${spec.name}]: grainDimension '${spec.grainDimension.get}' must name one of the rollup's own dimensions (${spec.dimensions.mkString(", ")})"))
       } else Right(())
 
     grainTypeCheck.flatMap { _ =>

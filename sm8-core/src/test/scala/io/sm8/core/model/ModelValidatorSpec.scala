@@ -440,6 +440,13 @@ class ModelValidatorSpec extends AnyFunSuite with Matchers {
     errs.exists(_.contains("calendar truncation requires Date or Timestamp")) shouldBe true
   }
 
+  test("grain dimension: blank timeGrain label fails loud (programmatic Model.of path)") {
+    val errs = grainedModel(Some(""), Some("day"), Some(SealedDataType.Date))
+      .left.toOption.get
+      .asInstanceOf[ModelValidationError.SchemaValidation].messages
+    errs.exists(_.contains("timeGrain is set but blank")) shouldBe true
+  }
+
   test("grain dimension: Timestamp declared type passes") {
     grainedModel(Some("hour"), Some("day"), Some(SealedDataType.Timestamp)) shouldBe a[Right[_, _]]
   }
