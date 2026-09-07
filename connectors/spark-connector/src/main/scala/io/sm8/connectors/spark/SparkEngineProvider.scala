@@ -374,18 +374,44 @@ private def readResolve(): Object =
         capability = "SourceResolver.resolveWithPushdown",
         message = s"non-Scan resolution for source $model.source: ${resolved.getClass.getSimpleName}"))
      }
-  relOp <- QueryBuilder.build(model, resolver, identity)
+  relOp0 <- QueryBuilder.build(model, resolver, identity)
+  // Rollup routing invocation (design: docs/adr/0026): the canonical plan may be
+  // re-pointed at a declared rollup table before lowering.
+  // Fail-open: any refusal yields the ORIGINAL plan instance and
+  // the query proceeds exactly as the pre-routing path did. The
+  // outcome lands in the metrics sink (core-only seam) so operators
+  // can see which shapes hit the rollup and which keep refusing.
+  //
+  // CLOSURE-SAFETY / EXECUTION-BOUNDARY note (spark-batch-bugs #1):
+  // the fold is pure driver-side plan surgery — no DataFrame, no
+  // SparkSession, no executor state crosses it. The routing outcome
+  // DOES change which physical table the plan scans, so the
+  // pre-filtered BASE-table DataFrame from resolveWithPushdown must
+  // NOT follow a rewritten plan down into lowerScan (lowerScan
+  // trusts preFilteredDf over the plan's own sourceRef — using the
+  // base DF under a rewritten plan would silently serve base-table
+  // numbers). `routedPreFilteredDf` therefore carries the base DF
+  // only when the plan was NOT rewritten; when it WAS, the plan
+  // re-reads its declared rollup table via the normal lowerScan
+  // path, where the RollupSchemaStale gate applies.
+  routing = routeThroughRollup(relOp0, model, request)
+  relOp = routing.plan
+  // The canonical filters the rewriter folded into the rewritten
+  // plan (the model's Filter chain) are part of the plan itself;
+  // the base-table pushdown filter belongs to the base DF and is
+  // dropped WITH the base DF on the rewritten path.
+  routedPreFilteredDf = if (routing.rewritten) None else Some(preFilteredDf)
   // PR-32: canonical `compileRelOp(model, relOp, ctx, scan, preFilteredDf)`
   // overload validates the model against the resolved source's
   // schema BEFORE lowering.
  df0  <- new PortableQueryCompiler(querySession).compileRelOp(
-      model, relOp, skewCtx, scan, Some(preFilteredDf))
+      model, relOp, skewCtx, scan, routedPreFilteredDf)
   // PR-33: the new `TypedQueryCompiler.apply(df, request, ctx,
   // preFilteredDf)` overload SUPPRESSES the in-memory
   // `whereFiltersOp` when the pre-filtered DF is supplied
   // (the filter was already pushed at the source).
  df  <- TypedQueryCompiler(querySession).apply(
-      df0, request, skewCtx, Some(preFilteredDf))
+      df0, request, skewCtx, routedPreFilteredDf)
   } yield df
  }
  // PR-3b (ADR-008-P §C1): wrap the compileSteps thunk in the optional
@@ -822,6 +848,50 @@ private[spark] def applyPostCompilePipeline(
  }
  }
 
+ /** Rollup-routing fold outcome (design: docs/adr/0026).
+   *
+   * @param plan      the (possibly rewritten) plan to compile
+   * @param rewritten true when the plan now scans a rollup table —
+   *                  the caller must NOT pair it with the base
+   *                  table's pre-filtered DataFrame
+   */
+ final case class RoutingOutcome(plan: io.sm8.core.rel.RelOp, rewritten: Boolean)
+
+ /** The rollup-routing fold (design: docs/adr/0026).
+   *
+   * Invokes `RollupRewriter.rewrite` once on the canonical plan,
+   * then records the outcome via the core `MetricsRegistry` seam
+   * (no Spark, no platform import -- the sink is the same JVM-global
+   * the cache plugin writes to, so refusal telemetry flows to the
+   * `rollup-refusal-observer` plugin unchanged). Fail-open: every
+   * refusal returns the ORIGINAL plan instance, so callers see
+   * byte-identical behavior to the pre-routing path.
+   *
+   * Driver-side only: pure plan surgery, no DataFrame construction,
+   * no executor state. Serializable-safe by construction (the fold
+   * runs before any closure that ships to executors is formed).
+   *
+   * @param relOp    the canonical plan from `QueryBuilder.build`
+   * @param model    the queried model (carries declared rollups)
+   * @param request  the request (carries `timeGrain`)
+   * @return the outcome: plan + whether it was rewritten
+   */
+ private[spark] def routeThroughRollup(
+  relOp: io.sm8.core.rel.RelOp,
+  model: io.sm8.core.model.Model,
+  request: io.sm8.core.engine.QueryRequest): RoutingOutcome = {
+  val result = io.sm8.core.rel.RollupRewriter.rewrite(relOp, model, request.timeGrain)
+  val sink = io.sm8.core.cache.MetricsRegistry.sink()
+  result match {
+   case rewritten: io.sm8.core.rel.RollupRewriter.RollupRewriteResult.Rewritten =>
+    sink.recordRollupRewrite()
+    RoutingOutcome(rewritten.plan, rewritten = true)
+   case io.sm8.core.rel.RollupRewriter.RollupRewriteResult.Unchanged(reason) =>
+    sink.recordRollupRefusal(reason)
+    RoutingOutcome(relOp, rewritten = false)
+  }
+ }
+
  /** PR-27 (ADR-008-R SSexplain): the shared compile-pipeline helper
  * used by BOTH `query()` (existing) and `explain()` (PR-27).
  *
@@ -892,7 +962,15 @@ private[spark] def compileModelToDataFrame(
      // surfaces as a typed `UnsupportedCapability`.
      message = s"non-Scan resolution for source $model.source: ${resolved.getClass.getSimpleName}"))
   }
-  relOp <- QueryBuilder.build(model, resolver, identity)
+  relOp0 <- QueryBuilder.build(model, resolver, identity)
+  // Same routing fold as `query()` (design: docs/adr/0026) -- explain's
+  // smoke-compile path shares the helper to keep refuse/replay
+  // telemetry consistent. Same base-DF rule: a REWRITTEN plan must
+  // not ride the base table's pre-filtered DataFrame (lowerScan
+  // would otherwise read the base table under a rollup sourceRef).
+  routing = routeThroughRollup(relOp0, model, request)
+  relOp = routing.plan
+  routedPreFilteredDf = if (routing.rewritten) None else Some(preFilteredDf)
   // The canonical `compileRelOp(model, relOp, ctx, scan, preFilteredDf)`
   // overload validates the model against the resolved source's
   // schema BEFORE lowering (the validator is baked into the
@@ -909,7 +987,7 @@ private[spark] def compileModelToDataFrame(
   // uses its own null-safe per-call resolver, so it does not
   // call this path with a null session).
   df0 <-
-   if (querySession != null) new PortableQueryCompiler(querySession).compileRelOp(model, relOp, skewCtx, scan, Some(preFilteredDf))
+   if (querySession != null) new PortableQueryCompiler(querySession).compileRelOp(model, relOp, skewCtx, scan, routedPreFilteredDf)
    else {
      // Per PR-32 contract: a null-session smoke returns a typed
      // UnsupportedCapability rather than throwing.
