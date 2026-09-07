@@ -406,7 +406,7 @@ class RollupRewriterSpec extends AnyFunSuite with Matchers {
       RollupRewriter.RollupRewriteRefusal.UnsplittableAggregate)
   }
 
-  test("Algebraic (Avg) routes through rollup; rewritten Aggregate re-based to sum__<F>") {
+  test("Algebraic measure with DECLARED identity -> v1 still refuses (gate flip is a follow-up PR)") {
     val m = Model.of(
       name = "flights",
       version = 1,
@@ -427,48 +427,8 @@ class RollupRewriterSpec extends AnyFunSuite with Matchers {
       groupBy = List(Expr.FieldRef("carrier")),
       aggregates = List(AggregateCall(fn = AggregateFn.Avg, input = Some(Expr.FieldRef("fare")), alias = "avg_fare")))
     val out = RollupRewriter.rewrite(plan, m, None)
-    out shouldBe a[RollupRewriter.RollupRewriteResult.Rewritten]
-    val rewritten = out.asInstanceOf[RollupRewriter.RollupRewriteResult.Rewritten]
-    rewritten.rollupName shouldBe "by_carrier"
-    // The rewritten Avg's input references sum__fare (the rolled-up
-    // partial-sum state column), not fare (the base column).
-    // The rewritten Avg's input references sum__fare (the rolled-up
-    // partial-sum state column), not fare (the base column).
-    rewritten.plan match {
-      case RelOp.Aggregate(_, _, aggs) =>
-        aggs.headOption match {
-          case Some(a) =>
-            a.fn shouldBe AggregateFn.Sum
-            a.input shouldBe Some(Expr.FieldRef("sum__fare"))
-          case None => fail("no aggregates in rewritten plan")
-        }
-      case other => fail(s"expected Aggregate, got $other")
-    }
-  }
-
-  test("Algebraic (StddevSample) routes through rollup; rewritten Aggregate re-based to sum__<F>") {
-    val m = Model.of(
-      name = "flights",
-      version = 1,
-      dimensions = dims,
-      measures = meas :+ Measure.aggregate("std_fare", AggregateFn.StddevSample, Expr.FieldRef("fare")),
-      defaultPolicies = ModelPolicyDefaults(
-        materialize = MaterializePolicy.None,
-        cache = CachePolicy.NoCache,
-        audit = AuditPolicy.NoAudit),
-      source = SourceRef.ByName(table = "flights_raw"),
-      rollups = List(RollupSpec("by_carrier", List("carrier"), List("rows", "total_fare", "std_fare"), None))
-    ).right.get
-    val plan = RelOp.Aggregate(
-      input = RelOp.Scan(
-        sourceRef = SourceRef.ByName(table = "flights_raw"),
-        schema = baseSchema,
-        projection = Nil),
-      groupBy = List(Expr.FieldRef("carrier")),
-      aggregates = List(AggregateCall(fn = AggregateFn.StddevSample, input = Some(Expr.FieldRef("fare")), alias = "std_fare"))
-    )
-    val out = RollupRewriter.rewrite(plan, m, None)
-    out shouldBe a[RollupRewriter.RollupRewriteResult.Rewritten]
+    out shouldBe RollupRewriter.RollupRewriteResult.Unchanged(
+      RollupRewriter.RollupRewriteRefusal.AlgebraicStateNotWired)
   }
 
   test("first matching rollup in declaration order wins") {
