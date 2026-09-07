@@ -571,14 +571,16 @@ object RollupRewriter {
     * `<state>__<F>_total` convention (de-conflicts same-prefix
     * columns, per ADR-0023 routing contract #6).
     *
-    * State representation: (count__F, sum__F, m2__F) — the
-    * Welford-merge triple ADR-0022/0023 prefer. M2 (the sum of
-    * squared deviations from the mean, additive across groups) is
-    * computed STABLY by the connector materializer via Spark's
-    * var_pop aggregator; the raw (n, sum, sumSq) shape was replaced
-    * after the ADR-0023 cancellation tripwire empirically BREACHED
-    * on the pinned 1e8±1.0 fixture (3e17-scale sumSq has no double
-    * digits left for ±1 dispersion: numerator cancelled to 0.0).
+    * State representation: (count__F, sum__F, m2__F).
+    *
+    * The (n, sum, m2) shape eliminates the (sumSq − sum²/n)
+    * cancellation term structurally: m2 is the sum of squared
+    * deviations from each group mean — a STATISTIC that is itself
+    * additive across disjoint groups under SUM. The IR therefore
+    * expresses dispersion as M2 / (n or n-1) only, and the dispersion
+    * expressions gain a Welford-style stability guarantee. The
+    * connector materializer computes m2 via Spark's
+    * `var_pop(f) * count(f)` (Welford-style online algorithm).
     */
   private[rel] def algebraicReaggregation(
       spec: RollupSpec,
@@ -602,6 +604,8 @@ object RollupRewriter {
     }
     if (!required.subsetOf(available)) return Left(true)
     val totalName = (sc: String) => s"${sc}_total"
+    // toList.sorted: deterministic inner-call order (a Set has none) —
+    // plan output is compared structurally in tests.
     val innerCalls: List[AggregateCall] = required.toList.sorted.map { sc =>
       AggregateCall(
         fn = AggregateFn.Sum,

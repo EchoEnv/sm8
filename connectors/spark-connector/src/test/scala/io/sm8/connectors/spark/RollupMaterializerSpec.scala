@@ -456,6 +456,23 @@ class RollupSchemaParitySpec extends AnyFunSuite with Matchers {
     val df = dfE.right.get
     val connectorNames = df.columns.toList.sorted
     coreNames shouldBe connectorNames
+
+    // T8 (deer round-1 M-1/L-2): same drift pin for the WELFORD state
+    // names — a rollup declaring an Algebraic measure must produce
+    // identical (count__F, sum__F, m2__F) names on BOTH sides.
+    val avgMeasure = Measure.aggregate("avg_amount", AggregateFn.Avg, Expr.FieldRef("amount"))
+    val avgModel = Model.of(
+      name = "sales", version = 1,
+      dimensions = dims,
+      measures = meas :+ avgMeasure,
+      source = SourceRef.ByName(table = "sales_base"),
+      rollups = List(RollupSpec("by_region_avg", List("region"), List("avg_amount"), None))
+    ).right.get
+    val avgSpec = avgModel.rollups.head
+    val avgCoreNames = RollupRewriter.rollupSchema(avgSpec, avgModel).map(_.name).sorted
+    val avgDf = RollupMaterializer.buildRollupDf(spark.table("sales_base"), avgModel, avgSpec).right.get
+    avgCoreNames shouldBe avgDf.columns.toList.sorted
+    avgCoreNames should contain allOf ("count__amount", "sum__amount", "m2__amount")
   }
 }
 
