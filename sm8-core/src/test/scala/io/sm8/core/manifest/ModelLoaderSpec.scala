@@ -444,6 +444,38 @@ class ModelLoaderSpec extends AnyFunSuite with Matchers {
     }
   }
 
+  test("hardening: kind-aware carve-out — `kind: cross` + `keys: []` is legal (the Cartesian-product declared form)") {
+    // the parser-hardening R2 DE follow-up: the empty-keys guard was kind-blind.
+    // Cross joins are an unconditional Cartesian product -- empty
+    // keys is their DECLARED form, not an authoring slip. Every
+    // other kind still requires >= 1 pair (the test above this one
+    // pins the fail-loud path for inner/left/right/full).
+    val yaml =
+      """
+        |name: m
+        |version: 1
+        |source:
+        |  byName:
+        |    table: t
+        |dimensions:
+        |  - name: region
+        |    expr: region
+        |measures:
+        |  - name: cnt
+        |    expr: count(*)
+        |joins:
+        |  - name: cross1
+        |    rightModel: products
+        |    kind: cross
+        |    keys: []
+        |""".stripMargin
+    val out = ModelLoader.fromString(yaml)
+    out.isRight shouldBe true
+    out.right.get.joins.size shouldBe 1
+    out.right.get.joins.head.kind shouldBe io.sm8.core.rel.JoinKind.Cross
+    out.right.get.joins.head.keys shouldBe empty
+  }
+
   test("hardening: a malformed keys pair (size != 2) fails loud instead of being silently dropped") {
     val yaml =
       """

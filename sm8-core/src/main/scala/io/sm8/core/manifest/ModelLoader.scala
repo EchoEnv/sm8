@@ -428,6 +428,10 @@ object ModelLoader {
      case other => Left(ManifestError.ParseFailure(
        s"joins[$nameV]: unknown kind '$other' (supported: inner, left, right, full, outer, cross)"))
    }
+   // Kind-aware empty-keys guard: a Cross join is an unconditional
+   // Cartesian product — empty keys is its DECLARED form, not an
+   // authoring slip. Every other kind needs at least one pair to be
+   // a join at all (empty keys would silently match every row).
    val keys: Either[ManifestError, List[(String, String)]] =
     keysRaw.toList.foldLeft[Either[ManifestError, List[(String, String)]]](Right(Nil)) {
      (accE, raw) => for {
@@ -442,10 +446,16 @@ object ModelLoader {
       }
      } yield acc :+ pair
     }.flatMap { pairs =>
-     if (pairs.isEmpty)
-      Left(ManifestError.ParseFailure(
-        s"joins[$nameV]: keys must contain at least one [leftKey, rightKey] pair"))
-     else Right(pairs)
+     kind match {
+      case Right(io.sm8.core.rel.JoinKind.Cross) =>
+       // Cross: empty keys is the declared form — keep as-is.
+       Right(pairs)
+      case _ =>
+       if (pairs.isEmpty)
+        Left(ManifestError.ParseFailure(
+          s"joins[$nameV]: keys must contain at least one [leftKey, rightKey] pair"))
+       else Right(pairs)
+     }
     }
    val estimated: Either[ManifestError, Option[Long]] =
      stringField(m, "estimated_rows").orElse(stringField(m, "estimatedRows")) match {
