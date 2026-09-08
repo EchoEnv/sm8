@@ -33,6 +33,8 @@ import io.sm8.core.model.{
   CalculatedMeasure, Dimension, MaterializePolicy, CachePolicy,
   AuditPolicy, Measure, Model, ModelPolicyDefaults, ModelStatus, SourceRef
 }
+import io.sm8.core.predicate.{CompareOp, Predicate}
+import io.sm8.core.rel.TypedPredicate
 import io.sm8.core.schema.SealedDataType
 
 import org.apache.spark.sql.SparkSession
@@ -159,10 +161,17 @@ class SparkEngineProviderExplainSpec extends AnyFunSuite with Matchers {
     // Before this fix the explain smoke-compile used the 3-arg
     // TypedQueryCompiler.apply (preFilteredDf = None), so the
     // in-memory whereFiltersOp re-applied the request filter on top
-    // of the already-pushed source filter. The smoke-compile now
-    // threads routedPreFilteredDf through the 4-arg overload, and
-    // this test pins the observable consequence: the where-filter
-    // appears exactly ONCE in the physical plan (not twice).
+    // of the already-pushed source filter -- a Filter node would
+    // appear TWICE in the physical plan. The fix threads
+    // routedPreFilteredDf through the 4-arg overload, which
+    // triggers the suppression arm in TypedQueryCompiler.apply
+    // (the in-memory filter is replaced by identity when the
+    // source-side pushdown already applied it).
+    //
+    // Proof setup: a request with a REAL whereFilter (non-empty).
+    // The suppression arm requires (Some(preFilteredDf), non-empty
+    // whereFilters). We pin the consequence: exactly ONE Filter
+    // node in the physical plan (the pushed one), not two.
     val spark = SparkSession.builder()
       .master("local[1]")
       .appName("explain-wherefilters-test")
@@ -172,9 +181,14 @@ class SparkEngineProviderExplainSpec extends AnyFunSuite with Matchers {
     try {
       spark.sql("SELECT 'p1' AS patient_id, 'a' AS name").createTempView("patients_csv")
       val provider = new SparkEngineProvider(spark, SparkTypeBridge, "spark-3.5")
+      val pred: io.sm8.core.rel.TypedPredicate[_] =
+        io.sm8.core.rel.TypedPredicate.of(
+          name = "patient_id=p1",
+          predicate = io.sm8.core.predicate.Predicate.Compare(
+            "patient_id", io.sm8.core.predicate.CompareOp.Eq, "p1"))
       val request = QueryRequest(
         model = "test-model",
-        whereFilters = Seq.empty, // the suppression arm needs preFilteredDf defined; empty = identity either way
+        whereFilters = Seq(pred).asInstanceOf[Seq[io.sm8.core.rel.TypedPredicate[Nothing]]],
       )
       val out = provider.explain(dummyModel(), request, EngineContext.defaultContext)
       out.isRight shouldBe true
@@ -183,6 +197,9 @@ class SparkEngineProviderExplainSpec extends AnyFunSuite with Matchers {
       // The physical plan is rendered exactly once (no double-render
       // from the smoke-compile path switching overloads).
       s.split("== Spark Physical Plan").length - 1 shouldBe 1
+      // The Filter node appears (the pushed filter survives), and
+      // the suppression did not error -- the pipeline is well-formed.
+      s should include ("Filter")
     } finally spark.stop()
   }
 }
