@@ -375,6 +375,22 @@ object RollupRewriter {
           peelUpper(input, (child => RelOp.Sort(child, keys)) :: acc)
         case RelOp.Limit(input, count, offset) =>
           peelUpper(input, (child => RelOp.Limit(child, count, offset)) :: acc)
+        // Project above the Aggregate: QueryBuilder.build emits this
+        // for every measure-bearing model. The projection is peelable
+        // ONLY when every entry is a pass-through of a column the
+        // Aggregate produces (FieldRef of a group key or measure
+        // alias) — the pass-through re-emits the same names the
+        // rewritten plan produces, so it is semantically a no-op and
+        // rebuildOnRollup re-emits it verbatim. A Project carrying
+        // CALCULATED expressions (non-FieldRef, e.g. computed dims or
+        // derived measures) changes semantics — v1 refuses those as
+        // nonCanonicalShape (the original contract, preserved).
+        // Without the pass-through arm EVERY production query refuses
+        // as nonCanonicalShape (caught by the observation harness
+        // scripts/rollup-observe.sh on its first run; bug #354).
+        case RelOp.Project(under, expressions)
+            if expressions.forall(_._1.isInstanceOf[Expr.FieldRef]) =>
+          peelUpper(under, (child => RelOp.Project(child, expressions)) :: acc)
         case _ => None
       }
 

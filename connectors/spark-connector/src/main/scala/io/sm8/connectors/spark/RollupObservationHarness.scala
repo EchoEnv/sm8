@@ -91,26 +91,42 @@ object RollupObservationHarness {
     }
   }
 
-  /** The query mix: each entry is (label, will-route). The `willRoute`
-    * flag documents the EXPECTED outcome so a mismatch between the
-    * harness's expectation and the actual counter reading is visible
-    * in the final diff (the harness prints both). */
-  private val QueryMix: List[(String, Boolean, QueryRequest)] = {
-    /** Build a single QueryRequest with the given dimensions/measures.
+  /** The query mix: each entry is (label, model, request, will-route).
+    * Each model has a different declared-dim shape vs the rollup it
+    * carries, so the mix hits every major refusal reason (the plans
+    * QueryBuilder.build emits are MODEL-shaped, not request-shaped —
+    * request.dimensions variation cannot trigger refusal, so the
+    * MODEL variation must). */
+  private val QueryMix: List[(String, String, QueryRequest, Boolean)] = {
+    /** Build a QueryRequest targeting a given model.
       *
+      * @param model the model name to query
       * @param dimensions the dimensions to group by (empty = global)
       * @param measures the measures to aggregate
-      * @return the typed QueryRequest for the fixture model
+      * @return the typed QueryRequest
       */
-    def req(dimensions: List[String], measures: List[String]): QueryRequest =
-      QueryRequest(model = "sales", dimensions = dimensions, measures = measures)
+    def req(model: String, dimensions: List[String], measures: List[String]): QueryRequest =
+      QueryRequest(model = model, dimensions = dimensions, measures = measures)
     List(
-      ("rollup-eligible: group by region",             true,  req(List("region"), List("order_count", "total_amount"))),
-      ("rollup-eligible: group by region (repeat)",    true,  req(List("region"), List("order_count", "total_amount"))),
-      ("rollup-eligible: group by region, sum only",   true,  req(List("region"), List("total_amount"))),
-      ("ineligible: group by item (not a rollup dim)", false, req(List("item"),   List("order_count"))),
-      ("ineligible: global aggregate (no dims)",       false, req(List(),         List("order_count"))),
-      ("ineligible: both dims (finer than rollup)",    false, req(List("region", "item"), List("order_count"))),
+      // sales: model dims = [region]; rollup covers [region].
+      // All shapes derive plan groupBy=[region]; all SHOULD route.
+      ("rollup-eligible: sales group by region",
+        "sales", req("sales", List("region"), List("order_count", "total_amount")), true),
+      ("rollup-eligible: sales group by region, repeat",
+        "sales", req("sales", List("region"), List("order_count", "total_amount")), true),
+      ("rollup-eligible: sales global aggregate",
+        "sales", req("sales", List(), List("order_count")), true),
+      ("rollup-eligible: sales subset-of rollup dims",
+        "sales", req("sales", List("region"), List("total_amount")), true),
+      // sales_by_item: model dims = [region, item]; rollup covers
+      // [region] only. The plan groups by [region, item]; the
+      // rewriter refuses because `item` is not a rollup dim.
+      ("ineligible: sales_by_item group by region+item (item not in rollup)",
+        "sales_by_item", req("sales_by_item", List("region", "item"), List("order_count")), false),
+      // sales_by_item: global aggregate — the model still carries
+      // [region, item] in the IR; rollup covers only [region].
+      ("ineligible: sales_by_item global aggregate (rollup only covers region)",
+        "sales_by_item", req("sales_by_item", List(), List("order_count")), false),
     )
   }
 
@@ -159,30 +175,49 @@ object RollupObservationHarness {
       import spark.implicits._
       Sales.toDF("region", "item", "amount", "units").createOrReplaceTempView("sales_base")
 
-      val model = io.sm8.core.model.Model.of(
-        name = "sales",
-        version = 1,
-        dimensions = List(io.sm8.core.model.Dimension.field("region", "region")),
-        measures = List(
-          io.sm8.core.model.Measure(
-            "order_count",
-            io.sm8.core.rel.AggregateCall(fn = io.sm8.core.rel.AggregateFn.Count, input = None, alias = "order_count")),
-          io.sm8.core.model.Measure.aggregate(
-            "total_amount", io.sm8.core.rel.AggregateFn.Sum, io.sm8.core.expr.Expr.FieldRef("amount"))),
-        defaultPolicies = io.sm8.core.model.ModelPolicyDefaults(
-          materialize = io.sm8.core.model.MaterializePolicy.None,
-          cache = io.sm8.core.model.CachePolicy.NoCache,
-          audit = io.sm8.core.model.AuditPolicy.NoAudit),
-        source = io.sm8.core.model.SourceRef.ByName(table = "sales_base"),
-        rollups = List(io.sm8.core.model.RollupSpec(
-          "by_region", List("region"), List("order_count", "total_amount"), None))
-      ) match {
-        case Right(m) => m
-        case Left(e)  => throw new IllegalStateException(s"fixture model invalid: $e")
+      /** Build the sales model with the given declared dimensions.
+        * Two variants drive the query mix: `sales` (region only —
+        * the rollup covers it) and `sales_by_item` (region + item —
+        * the rollup does NOT cover item, so those queries refuse).
+        *
+        * @param name the model name (and the QueryRequest target)
+        * @param withItemDim true adds the `item` dimension (used by
+        *                    the ineligible queries)
+        * @return the built model
+        */
+      def buildModel(name: String, withItemDim: Boolean): io.sm8.core.model.Model = {
+        val dims =
+          List(io.sm8.core.model.Dimension.field("region", "region")) ++
+            (if (withItemDim) List(io.sm8.core.model.Dimension.field("item", "item")) else Nil)
+        io.sm8.core.model.Model.of(
+          name = name,
+          version = 1,
+          dimensions = dims,
+          measures = List(
+            io.sm8.core.model.Measure(
+              "order_count",
+              io.sm8.core.rel.AggregateCall(fn = io.sm8.core.rel.AggregateFn.Count, input = None, alias = "order_count")),
+            io.sm8.core.model.Measure.aggregate(
+              "total_amount", io.sm8.core.rel.AggregateFn.Sum, io.sm8.core.expr.Expr.FieldRef("amount"))),
+          defaultPolicies = io.sm8.core.model.ModelPolicyDefaults(
+            materialize = io.sm8.core.model.MaterializePolicy.None,
+            cache = io.sm8.core.model.CachePolicy.NoCache,
+            audit = io.sm8.core.model.AuditPolicy.NoAudit),
+          source = io.sm8.core.model.SourceRef.ByName(table = "sales_base"),
+          rollups = List(io.sm8.core.model.RollupSpec(
+            "by_region", List("region"), List("order_count", "total_amount"), None))
+        ) match {
+          case Right(m) => m
+          case Left(e)  => throw new IllegalStateException(s"fixture model $name invalid: $e")
+        }
       }
+      val salesModel       = buildModel("sales", withItemDim = false)
+      val salesByItemModel = buildModel("sales_by_item", withItemDim = true)
+      val models: Map[String, io.sm8.core.model.Model] =
+        Map("sales" -> salesModel, "sales_by_item" -> salesByItemModel)
 
       // Materialize the real rollup via the production write path.
-      RollupMaterializer.materialize(spark, model, io.sm8.core.model.RollupSpec(
+      RollupMaterializer.materialize(spark, salesModel, io.sm8.core.model.RollupSpec(
         "by_region", List("region"), List("order_count", "total_amount"), None)) match {
         case Right(name) => println(s"[harness] materialized rollup: $name")
         case Left(e)     => throw new IllegalStateException(s"materialize failed: $e")
@@ -192,10 +227,11 @@ object RollupObservationHarness {
       val ctx = EngineContext.defaultContext
 
       println(s"[harness] driving ${QueryMix.size} queries through the production query() path ...")
-      val outcomes = QueryMix.map { case (label, expectedRoute, request) =>
+      val outcomes = QueryMix.map { case (label, modelName, request, expectedRoute) =>
+        val model = models(modelName)
         val result = provider.query(model, request, ctx)
         val ok = result.isRight
-        println(s"[harness] ${label.padTo(50, ' ' )} ok=$ok (expected-route=$expectedRoute)")
+        println(s"[harness] ${label.padTo(70, ' ')} ok=$ok (expected-route=$expectedRoute)")
         (label, expectedRoute, ok)
       }
 
@@ -215,7 +251,7 @@ object RollupObservationHarness {
           println(f"    ${reason.padTo(28, ' ')} $count  ($share)")
         }
       }
-      val expectedRewrites = QueryMix.count(_._2)
+      val expectedRewrites = QueryMix.count(_._4)
       val expectedRefusals = QueryMix.size - expectedRewrites
       println()
       println(s"  EXPECTED (from the query mix): rewrites=$expectedRewrites refusals=$expectedRefusals")

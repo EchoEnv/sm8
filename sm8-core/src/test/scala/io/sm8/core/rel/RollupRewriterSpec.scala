@@ -165,10 +165,35 @@ class RollupRewriterSpec extends AnyFunSuite with Matchers {
       RollupRewriter.RollupRewriteRefusal.NonCanonicalShape)
   }
 
-  test("Project above Aggregate (calculated dims) -> non-canonical in v1") {
+  test("Project above Aggregate (pass-through FieldRefs) is peeled and routes to the rollup") {
+    // The production shape: QueryBuilder.build emits
+    // Project(Aggregate(...)) for every measure-bearing model, and the
+    // pass-through projection (FieldRef -> same-name) re-emits the
+    // names the rewritten plan produces, so it is semantically a
+    // no-op wrapper. Routing MUST work through it.
     val plan = RelOp.Project(
       input = canonicalPlan(),
       expressions = List((Expr.FieldRef("carrier"), "carrier")))
+    val out = RollupRewriter.rewrite(plan, model(List(byCarrier)), None)
+    out match {
+      case RollupRewriter.RollupRewriteResult.Rewritten(p, name) =>
+        name shouldBe "by_carrier"
+        // The projection wrapper is re-emitted on the rewritten plan.
+        p shouldBe a[RelOp.Project]
+      case other =>
+        fail(s"expected Rewritten, got $other")
+    }
+  }
+
+  test("Project above Aggregate with CALCULATED expressions (non-FieldRef) -> non-canonical in v1") {
+    // The original v1 contract, preserved: a projection that computes
+    // (e.g. Alias of a non-FieldRef expression, or any non-FieldRef
+    // entry) changes semantics and is refused.
+    val plan = RelOp.Project(
+      input = canonicalPlan(),
+      expressions = List(
+        (Expr.Alias("carrier_plus_one",
+          Expr.Add(Expr.FieldRef("carrier"), Expr.Literal(io.sm8.core.expr.LiteralValue.IntValue(1), io.sm8.core.schema.SealedDataType.Int))), "carrier")))
     val out = RollupRewriter.rewrite(plan, model(List(byCarrier)), None)
     out shouldBe RollupRewriter.RollupRewriteResult.Unchanged(
       RollupRewriter.RollupRewriteRefusal.NonCanonicalShape)
