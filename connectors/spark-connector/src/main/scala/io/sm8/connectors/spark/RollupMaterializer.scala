@@ -84,6 +84,42 @@ object RollupMaterializer {
   case object Parquet extends TableFormat
   case object Iceberg extends TableFormat
 
+  /**
+   * Declared refresh scope for a Tier 1 (dynamic partition overwrite)
+   * refresh — the set of partition values the caller asserts the base
+   * increment touched (ADR-0029).
+   *
+   * The scope is a CONTRACT, not a hint: [[RefreshScope]]-aware refresh
+   * paths refuse
+   * (typed `EngineError`) when the recomputed source contains partition
+   * values outside the declared scope. This is the fail-closed guard
+   * against a partially-scoped refresh silently leaving stale
+   * partitions behind. It is an sm8-side check layered ON TOP of
+   * Iceberg's `overwritePartitions()` semantics (which delete by the
+   * partition values present in the written DataFrame, with no
+   * caller-supplied predicate) — Iceberg itself does not enforce it.
+   *
+   * The scope value lives in the connector layer (RFC §3: core stays
+   * format- and strategy-blind). The batch refresh orchestrator
+   * (sm8-platform refresh surface or an operator scheduler) computes
+   * and passes it; callers that omit it ([[NoScope]]) get Tier 0
+   * whole-table semantics — byte-identical to the pre-Tier-1 behavior.
+   */
+  sealed trait RefreshScope extends Product with Serializable
+  object RefreshScope {
+
+    /** No declared scope: Tier 0 whole-table overwrite (default).
+      * Tier 1 semantics are never applied implicitly. */
+    case object NoScope extends RefreshScope
+
+    /** Tier 1: overwrite exactly these partition values. Only valid
+      * for a rollup whose grain produces a partition column
+      * (`timeGrain` + `grainDimension` both set per `RollupSpec`);
+      * a grain-less rollup is single-partition and always falls back
+      * to Tier 0 regardless of the declared scope. */
+    final case class Partitions(values: List[Map[String, String]]) extends RefreshScope
+  }
+
   /** Materialize ONE declared rollup for the model.
     *
     * NOTE: with the v1 temp-view persistence the view creation is
@@ -130,6 +166,10 @@ object RollupMaterializer {
     * behavior) or `TableFormat.Iceberg` (atomic snapshot commit —
     * no reader window, failed refresh keeps the previous snapshot).
     *
+    * @param spark       the session (used for table IO only — never captured in closures)
+    * @param model       the host model (declares dims + measures)
+    * @param spec        the rollup declaration to materialize
+    * @param eager       true = saveAsTable (job runs, durable); false = temp view
     * @param tableFormat the storage format for the written rollup
     * @return the written table name, or a typed EngineError
     */
@@ -145,7 +185,65 @@ object RollupMaterializer {
       _ <- validateSpec(model, spec)
       baseDf <- readBase(spark, model)
       rollupDf <- buildRollupDf(baseDf, model, spec)
-      _ <- if (eager) persistCatalog(spark, model, spec, rollupDf, tableName, tableFormat)
+      _ <- if (eager) persistCatalog(
+              spark, model, spec, rollupDf, tableName, tableFormat,
+              RollupMaterializer.RefreshScope.NoScope)
+           else persist(spark, rollupDf, tableName)
+    } yield tableName
+  }
+
+  /** Eager variant with an explicit refresh scope (ADR-0029 Tier 1).
+    *
+    * When [[RollupMaterializer.RefreshScope.NoScope]] is passed (the
+    * default), behavior is byte-identical to the 5-arg overload — Tier
+    * 0 whole-table overwrite. When
+    * [[RollupMaterializer.RefreshScope.Partitions]] is passed:
+    *
+    *   - The strategy-select branch picks Tier 1 (DSv2
+    *     `df.writeTo(t).overwritePartitions()`) for Iceberg tables
+    *     on time-grained rollups whose partition values are fully
+    *     covered by the declared scope.
+    *   - The strategy falls back to Tier 0 when the rollup is
+    *     grain-less (single-partition cardinality in the source).
+    *   - The strategy refuses (typed `ScopeUncovered`) when the
+    *     recomputed source contains partition values outside the
+    *     declared scope.
+    *
+    * For Parquet tables the scope is currently unused (the Parquet
+    * `saveAsTable` path does not expose a partition-scoped overwrite);
+    * an attempt to scope a Parquet refresh refuses typed. (Tracked for
+    * the Tier 1 parity PR if/when Parquet dynamic-overwrite is added.)
+    *
+    * @param spark        the session (used for table IO only — never captured in closures)
+    * @param model        the host model (declares dims + measures)
+    * @param spec         the rollup declaration to materialize
+    * @param eager        must be true for a scoped refresh; the temp-view path refuses a scope
+    * @param tableFormat  the storage format for the written rollup
+    * @param refreshScope declared scope; [[RollupMaterializer.RefreshScope.NoScope]] = Tier 0
+    * @return the written table name, or a typed EngineError
+    */
+  def materialize(
+      spark: SparkSession,
+      model: Model,
+      spec: RollupSpec,
+      eager: Boolean,
+      tableFormat: RollupMaterializer.TableFormat,
+      refreshScope: RollupMaterializer.RefreshScope
+  ): Either[EngineError, String] = {
+    val tableName = RollupRewriter.rollupTableName(model, spec)
+    for {
+      _ <- validateSpec(model, spec)
+      baseDf <- readBase(spark, model)
+      rollupDf <- buildRollupDf(baseDf, model, spec)
+      _ <- if (eager) persistCatalog(
+              spark, model, spec, rollupDf, tableName, tableFormat, refreshScope)
+           else if (refreshScope != RollupMaterializer.RefreshScope.NoScope)
+             Left(EngineError.UnsupportedCapability(
+               engine = "spark-connector",
+               capability = "RollupMaterializer.materialize.refreshScope",
+               message =
+                 "refreshScope is only meaningful with eager=true (saveAsTable); " +
+                 "the v1 temp-view path is session-scoped and ignores scope"))
            else persist(spark, rollupDf, tableName)
     } yield tableName
   }
@@ -421,6 +519,143 @@ object RollupMaterializer {
     *
     * Note: temp views are LAZY — returning Right does not imply a
     * job has run; the first query against the view triggers it. */
+  /** The write strategy selected for ONE persistCatalog invocation
+    * (ADR-0029 Tier 0 vs Tier 1). Selection runs ONE distinct-partition
+    * scan (a Spark job, but a cheap metadata-scale one) and NO
+    * aggregation or write work — the full aggregation job only runs
+    * when a strategy is actually executed by the persistCatalog body.
+    */
+  private[spark] sealed trait PersistStrategy extends Product with Serializable
+  private[spark] object PersistStrategy {
+
+    /** Tier 0: whole-table overwrite via DSv1 saveAsTable — the
+      * pre-Tier-1 path, byte-identical to PR #358 behavior. */
+    case object Tier0 extends PersistStrategy
+
+    /** Tier 1: DSv2 `df.writeTo(t).overwritePartitions()` — dynamic
+      * partition overwrite, single atomic commit, only partitions
+      * present in the DataFrame are swapped. */
+    case object Tier1Iceberg extends PersistStrategy
+
+    /** Typed refusal: the recomputed source contains partition values
+      * outside the declared scope. Fail-closed — an uncovered scope
+      * must never silently widen to the whole table. */
+    final case class RefuseScopeUncovered(reason: String) extends PersistStrategy
+
+    /** Typed refusal: a partition scope was declared for a Parquet
+      * write. DSv1 saveAsTable has no partition-scoped overwrite; the
+      * scope is honored for Iceberg only (ADR-0029 scope fences). */
+    final case class RefuseScopeOnParquet(reason: String) extends PersistStrategy
+  }
+
+  /**
+   * Select the write strategy (driver-side; runs ONE small
+   * distinct-values metadata job on the recomputed source before the
+   * write — not zero-Spark-job, but no shuffle/aggregation beyond
+   * the distinct scan).
+   *
+   * Selection matrix (ADR-0029 §Tier 1):
+   *   - NoScope                                     → Tier0
+   *   - Partitions + Parquet                        → RefuseScopeOnParquet
+   *   - Partitions + grain-less rollup              → Tier0 (single-partition; nothing to scope)
+   *   - Partitions + scope keys ≠ partition column  → RefuseScopeUncovered
+   *   - Partitions + source ⊄ scope (any table state) → RefuseScopeUncovered (fail-closed,
+   *     INCLUDING first write — a scoped create never silently widens)
+   *   - Partitions + source ⊆ scope + !tableExists  → Tier0 (create path, partitioned CTAS)
+   *   - Partitions + source ⊆ scope + tableExists   → Tier1Iceberg
+   *
+   * The partition column of a time-grained rollup is the grain
+   * dimension itself (the materializer aliases
+   * `date_trunc(grain, dim)` back to the dimension name, so the
+   * written table's partition key IS that column). Partition values
+   * are read from the recomputed source via a distinct-count on that
+   * column — driver-side metadata read, no closure capture.
+   *
+   * @param df the recomputed rollup DataFrame (the distinct scan runs
+   *           at strategy-select time, before any write)
+   */
+  private[spark] def decideStrategy(
+      df: DataFrame,
+      spec: RollupSpec,
+      tableFormat: RollupMaterializer.TableFormat,
+      refreshScope: RollupMaterializer.RefreshScope,
+      tableExists: Boolean
+  ): PersistStrategy = refreshScope match {
+    case RollupMaterializer.RefreshScope.NoScope => PersistStrategy.Tier0
+    case RollupMaterializer.RefreshScope.Partitions(_) if tableFormat == Parquet =>
+      PersistStrategy.RefuseScopeOnParquet(
+        s"rollups[${spec.name}]: a refresh scope was declared but the Parquet writer has no " +
+          "partition-scoped overwrite — scope is honored for Iceberg only (ADR-0029)")
+    case RollupMaterializer.RefreshScope.Partitions(declared) =>
+      // Grain-less rollup → single partition → nothing to scope.
+      // (timeGrain and grainDimension are both-or-neither per
+      // RollupSpec; a grain-less rollup has no partition column.)
+      val grainColName = for {
+        _    <- spec.timeGrain
+        gd   <- spec.grainDimension
+      } yield gd
+      grainColName match {
+        case None => PersistStrategy.Tier0
+        case Some(col) if !df.columns.contains(col) =>
+          // Defense-in-depth mirror of validateSpec's grain guard:
+          // a declared grain dim that is not in the recomputed
+          // source means the model and the base diverged — refuse
+          // loud rather than silently falling back.
+          PersistStrategy.RefuseScopeUncovered(
+            s"rollups[${spec.name}]: declared grain dimension '$col' is not a column of the " +
+              "recomputed rollup source — model/base divergence, refusing scoped refresh")
+        case Some(col) =>
+          // Scope keys must name the partition column (defense-in-depth:
+          // the API accepts a Map per partition; silently ignoring a
+          // mistyped key would turn the scope into a value-bag).
+          val badKeys = declared.filterNot(_.contains(col))
+          if (badKeys.nonEmpty)
+            PersistStrategy.RefuseScopeUncovered(
+              s"rollups[${spec.name}]: scope entry keys ${badKeys.flatMap(_.keySet).mkString(", ")} " +
+                s"do not name the partition column '$col' — scope entries must be " +
+                s"Map('$col' -> value)")
+          else {
+            // Canonical partition-value vocabulary. Daily grain
+            // truncates to yyyy-MM-dd on BOTH sides (a caller
+            // declares "2026-09-08"; the Timestamp repr is
+            // "2026-09-08 00:00:00.0"). Sub-daily grains compare
+            // verbatim — take-10 would false-accept an hour-grain
+            // scope ("2026-09-08 10" collapsing to "2026-09-08").
+            // Case-insensitive gate (final-gate review, lion LOW):
+            // normalizeGrain lowercases, so "Day"/"DAY" labels hit the
+            // same path as "day".
+            val daily = RollupRewriter.normalizeGrain(spec.timeGrain).contains("day")
+            def canon(v: String): String =
+              if (daily && v.length > 10) v.take(10) else v
+            val sourceValues: Set[String] =
+              df.select(col).distinct().collect()
+                .map(row => canon(String.valueOf(row.get(0))))
+                .toSet
+            val declaredKeys: Set[String] = declared.flatMap(_.values.map(canon)).toSet
+            val uncovered = sourceValues.diff(declaredKeys)
+            // Coverage applies on FIRST WRITE too: a declared scope
+            // that the whole-source create would violate is refused —
+            // the caller narrows the source (or widens the scope);
+            // the create never silently widens the scope.
+            val uncoveredOnFirstWrite = !tableExists && uncovered.nonEmpty
+            if (uncovered.nonEmpty && tableExists)
+              PersistStrategy.RefuseScopeUncovered(
+                s"rollups[${spec.name}]: recomputed source contains partition value(s) " +
+                  s"[${uncovered.mkString(", ")}] outside the declared refresh scope " +
+                  s"[${declaredKeys.mkString(", ")}] — widen the scope or split the refresh " +
+                  "(ADR-0029 operator contract: silent widening defeats Tier 1's savings)")
+            else if (uncoveredOnFirstWrite)
+              PersistStrategy.RefuseScopeUncovered(
+                s"rollups[${spec.name}]: first-write source contains partition value(s) " +
+                  s"[${uncovered.mkString(", ")}] outside the declared scope " +
+                  s"[${declaredKeys.mkString(", ")}] — a scoped create must write only the " +
+                  "scoped partitions; narrow the source or drop the scope for a full create")
+            else if (!tableExists) PersistStrategy.Tier0
+            else PersistStrategy.Tier1Iceberg
+          }
+      }
+  }
+
   /** Eager catalog persist (Ticket 6 refresh surface): the
     * aggregation job RUNS here (saveAsTable is eager) — `Right`
     * means the rollup table is durable in the session catalog.
@@ -434,7 +669,8 @@ object RollupMaterializer {
       spec: RollupSpec,
       df: DataFrame,
       tableName: String,
-      tableFormat: RollupMaterializer.TableFormat
+      tableFormat: RollupMaterializer.TableFormat,
+      refreshScope: RollupMaterializer.RefreshScope
   ): Either[EngineError, Unit] = {
     // Name-convention guard: the table name must be EXACTLY what
     // the core rewriter will re-scan. (No regex: a regex
@@ -448,70 +684,129 @@ object RollupMaterializer {
         engine = "spark-connector",
         capability = "RollupMaterializer.persistCatalog.name",
         message = s"refusing to write '$tableName': not a <model>__<rollup> convention name"))
-    // Catalog-aware existence check (review R1 C1): the table lives
-    // in the catalog the WRITE targets. For Iceberg that is the
-    // iceberg_cat catalog (catalog-qualified), NOT spark_catalog —
-    // a bare-name tableExists would always return false for Iceberg
-    // and silently route refreshes into the create-only arm (the
-    // overwrite path would never fire).
-    else if (tableFormat match {
-      case Iceberg => spark.catalog.tableExists(s"iceberg_cat.$tableName")
-      case Parquet => spark.catalog.tableExists(tableName)
-    })
-      // Ticket 4/5 carry-item resolved: tableExists (O(1) lookup)
-      // instead of listTables().collect(); re-materializing our OWN
-      // rollup table is the refresh path — overwrite is intended.
-      // Whole-table overwrite (no partitionOverwriteMode configured).
-      // NonFatal catch: an aggregation-job SparkException on a big
-      // base is the LIKELY failure — it must become a typed
-      // per-rollup EngineError, not escape and abort the whole
-      // refresh (per-rollup isolation contract).
-      try {
-        val writer = tableFormat match {
-          // Iceberg: the DEPLOYMENT configures spark.sql.catalog.<icebergCat>
-          // session-side; the writer addresses the table through that
-          // catalog so the write commits as an Iceberg snapshot (atomic —
-          // no reader window, failed refresh keeps the old data).
-          case Iceberg => df.write.format("iceberg").mode("overwrite")
-          case Parquet => df.write.mode("overwrite")
-        }
-        val qualified =
-          if (tableFormat == Iceberg) s"$icebergCatalog.$tableName"
-          else tableName
-        writer.saveAsTable(qualified)
-        Right(())
-      } catch {
-        case scala.util.control.NonFatal(e) =>
+    else {
+      // Catalog-aware existence check (R1 C1): the table lives in the
+      // catalog the WRITE targets. For Iceberg that is the
+      // iceberg_cat catalog (catalog-qualified), NOT spark_catalog.
+      // Tier 1 REQUIRES an existing table — DSv2 overwritePartitions()
+      // throws NoSuchTableException on a first-time create — so an
+      // absent table falls back to Tier 0 create semantics even when
+      // a scope was declared (the first write IS the whole-table
+      // write; there is nothing to scope over yet).
+      val tableExists = tableFormat match {
+        case Iceberg => spark.catalog.tableExists(s"${icebergCatalog}.$tableName")
+        case Parquet => spark.catalog.tableExists(tableName)
+      }
+      // ADR-0029 Tier 1 strategy-select: pick DSv2 overwritePartitions()
+      // when (a) the caller declared a partition scope, (b) the
+      // table format supports it (Iceberg), (c) the rollup is
+      // time-grained (the partition column exists in the source),
+      // (d) the source's actual partition values are a subset of the
+      // declared scope (checked BEFORE the tableExists fallback — the
+      // coverage contract is unconditional, even on a first write),
+      // and (e) the table already exists. Otherwise fall back to
+      // Tier 0 whole-table overwrite; refuse typed when (d) fails
+      // (an uncovered scope must never silently widen).
+      // NOTE on timing (R1 review, goat): the coverage check reads the
+      // source at decision time T1; the write re-executes the
+      // aggregation at T2. A row landing in an out-of-scope partition
+      // between T1 and T2 would be aggregated into the written DF and
+      // overwritten WITH its partition — the write's own partition
+      // derivation (from the DF values) is the effective fence; the
+      // T1 check is the early-fail optimization, not the guarantee.
+      val strategy: PersistStrategy =
+        decideStrategy(df, spec, tableFormat, refreshScope, tableExists)
+      strategy match {
+        case PersistStrategy.RefuseScopeUncovered(reason) =>
           Left(EngineError.UnsupportedCapability(
             engine = "spark-connector",
-            capability = "RollupMaterializer.persistCatalog",
-            message = s"saveAsTable('$tableName') failed: ${e.getClass.getSimpleName}: ${e.getMessage}"))
-      }
-    else
-      try {
-        // Both arms use mode("overwrite"): for Iceberg the
-        // overwrite is an atomic snapshot commit (idempotent
-        // refresh); for Parquet it is the pre-existing
-        // whole-table-overwrite semantics. ErrorIfExists (the
-        // default when mode is omitted) would throw
-        // TableAlreadyExistsException on a second refresh of an
-        // Iceberg table — the exact bug the R1 review caught.
-        val writer = tableFormat match {
-          case Iceberg => df.write.format("iceberg").mode("overwrite")
-          case Parquet => df.write.mode("overwrite")
-        }
-        val qualified =
-          if (tableFormat == Iceberg) s"$icebergCatalog.$tableName"
-          else tableName
-        writer.saveAsTable(qualified)
-        Right(())
-      } catch {
-        case scala.util.control.NonFatal(e) =>
+            capability = "RollupMaterializer.persistCatalog.scope",
+            message = reason))
+        case PersistStrategy.RefuseScopeOnParquet(reason) =>
           Left(EngineError.UnsupportedCapability(
             engine = "spark-connector",
-            capability = "RollupMaterializer.persistCatalog",
-            message = s"saveAsTable('$tableName') failed: ${e.getClass.getSimpleName}: ${e.getMessage}"))
+            capability = "RollupMaterializer.persistCatalog.scope.parquet",
+            message = reason))
+        case PersistStrategy.Tier1Iceberg =>
+          try {
+            // DSv2 writeTo().overwritePartitions() — the Iceberg
+            // documented modern path (ADR-0029). Note: the
+            // session conf `spark.sql.sources.partitionOverwriteMode`
+            // is IGNORED by the DSv2 explicit API; using it
+            // deliberately bypasses that conf's 3.5↔4.x drift.
+            // Identical-correctness contract: atomic snapshot swap,
+            // single transaction, no reader window, failed write
+            // leaves the previous snapshot serving.
+            df.writeTo(s"${icebergCatalog}.$tableName")
+              .overwritePartitions()
+            Right(())
+          } catch {
+            case scala.util.control.NonFatal(e) =>
+              Left(EngineError.UnsupportedCapability(
+                engine = "spark-connector",
+                capability = "RollupMaterializer.persistCatalog.tier1",
+                message = s"overwritePartitions('$tableName') failed: " +
+                  s"${e.getClass.getSimpleName}: ${e.getMessage}"))
+          }
+        case PersistStrategy.Tier0 =>
+          // Tier 0 whole-table overwrite — both the exists-refresh
+          // and the first-time-create arms use mode("overwrite")
+          // (idempotent refresh; the R1 C1 fix). Single shared body.
+          // CREATE-TIME PARTITIONING (ADR-0029 Tier 1 precondition):
+          // a time-grained Iceberg rollup is created PARTITIONED BY
+          // its grain column so a later Tier 1 overwritePartitions()
+          // swaps per-partition. DSv1 saveAsTable would otherwise
+          // create an UNPARTITIONED Iceberg table — overwritePartitions
+          // on such a table replaces the WHOLE table (the bug the
+          // Tier 1 contract test caught: scoped refresh wiped other
+          // partitions). The SQL path (SparkCatalog DDL) is the
+          // portable way to attach the partition spec at create time.
+          val isTier1CapableCreate =
+            !tableExists &&
+              tableFormat == Iceberg &&
+              spec.timeGrain.isDefined && spec.grainDimension.isDefined &&
+              df.columns.contains(spec.grainDimension.get)
+          val qualified =
+            if (tableFormat == Iceberg) s"${icebergCatalog}.$tableName"
+            else tableName
+          try {
+            if (isTier1CapableCreate) {
+              val gd = spec.grainDimension.get
+              // CTAS needs a queryable source — register the rollup
+              // DataFrame as a transient temp view (session-scoped,
+              // never persists), then create the partitioned Iceberg
+              // table from it. Clean up the temp view after. The
+              // column is backtick-quoted (a reserved-word dimension
+              // name would otherwise break the DDL).
+              val stagingView = s"_${tableName}_ctas_staging"
+              df.createOrReplaceTempView(stagingView)
+              try {
+                spark.sql(
+                  s"CREATE TABLE IF NOT EXISTS $qualified " +
+                    s"USING iceberg PARTITIONED BY (`$gd`) AS " +
+                    s"SELECT * FROM $stagingView")
+              } finally {
+                spark.catalog.dropTempView(stagingView)
+              }
+              Right(())
+            } else {
+              val writer = tableFormat match {
+                case Iceberg => df.write.format("iceberg").mode("overwrite")
+                case Parquet => df.write.mode("overwrite")
+              }
+              writer.saveAsTable(qualified)
+              Right(())
+            }
+          } catch {
+            case scala.util.control.NonFatal(e) =>
+              Left(EngineError.UnsupportedCapability(
+                engine = "spark-connector",
+                capability = "RollupMaterializer.persistCatalog",
+                message = s"saveAsTable('$tableName') failed: " +
+                  s"${e.getClass.getSimpleName}: ${e.getMessage}"))
+          }
       }
+    }
   }
 
   /** The Iceberg catalog name the deployment configured in the
