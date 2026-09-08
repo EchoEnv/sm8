@@ -195,7 +195,7 @@ object ModelLoader {
   // entry: { name, dimensions, measures, time_grain? }. Name-less or
   // empty entries fail loud as typed ManifestError (never silent);
   // ref-existence is ModelValidator's job at the Model.of boundary.
-  val rollupsE = parseRollups(asSeq(root.get("rollups")))
+  val rollupsE = seqOrFail("rollups", root.get("rollups")).flatMap(parseRollups)
 
   for {
   dims    <- dimsE
@@ -230,6 +230,19 @@ object ModelLoader {
   case other =>
    Left(ManifestError.ParseFailure(
     s"$block: expected a list, got ${Option(other).map(_.getClass.getSimpleName).getOrElse("null")}"))
+ }
+
+ /** Strict asMap: a scalar at a per-block site fails loud as a typed
+  * ParseFailure naming the block (e.g. `source.byPath.options: prod`
+  * indentation slip should not silently load zero options). Absent
+  * is the canonical "no options" form and returns Right(empty map).
+  */
+ private def mapOrFail(block: String, v: Any): Either[ManifestError, java.util.Map[_, _]] = v match {
+  case null => Right(java.util.Collections.emptyMap())
+  case m: java.util.Map[_, _] => Right(m)
+  case other =>
+   Left(ManifestError.ParseFailure(
+    s"$block: expected a map, got ${Option(other).map(_.getClass.getSimpleName).getOrElse("null")}"))
  }
 
  private def asMap(v: Any): Option[java.util.Map[_, _]] = v match {
@@ -322,12 +335,6 @@ object ModelLoader {
   }
 }
 
- private def asSeq(v: Any): Seq[Any] = v match {
- case s: java.util.List[_] => s.asScala.toSeq
- case null    => Seq.empty
- case _     => Seq.empty
- }
-
  private def stringField(root: java.util.Map[_, _], key: String): Option[String] =
  Option(root.get(key)).map(_.toString).filter(_.nonEmpty)
 
@@ -364,12 +371,13 @@ object ModelLoader {
   else if (path.isEmpty)
   Left(ManifestError.MissingField("source.byPath.path", "source"))
   else {
-  val opts = asMap(inner.get("options")).map { o =>
-   o.asScala.toMap.collect {
-   case (k: String, v) => (k, v.toString)
+  val opts: Either[ManifestError, Map[String, String]] =
+   for {
+   optsRaw <- mapOrFail("source.byPath.options", inner.get("options"))
+   } yield optsRaw.asScala.toMap.collect {
+    case (k: String, v) => (k, v.toString)
    }.toMap
-  }.getOrElse(Map.empty)
-  Right(SourceRef.ByPath(format = format.get, path = path.get, options = opts))
+  opts.map(o => SourceRef.ByPath(format = format.get, path = path.get, options = o))
   }
  } else if (m.containsKey("byProvider")) {
   val inner = asMap(m.get("byProvider")).getOrElse(return Left(ManifestError.InvalidYaml("source.byProvider is not a map")))
@@ -437,7 +445,10 @@ object ModelLoader {
    val nameV = name.get
    val rightModelV = rightModel.getOrElse("")
    val kindStr = stringField(m, "kind").getOrElse("inner")
-   val keysRaw = asSeq(m.get("keys"))
+   val keysRaw: Seq[Any] = seqOrFail("joins[].keys", m.get("keys")) match {
+    case Left(e)  => return Left(e)
+    case Right(s) => s
+   }
    val kind: Either[ManifestError, io.sm8.core.rel.JoinKind] = kindStr.toLowerCase match {
      case "inner" => Right(io.sm8.core.rel.JoinKind.Inner)
      case "left"  => Right(io.sm8.core.rel.JoinKind.Left)

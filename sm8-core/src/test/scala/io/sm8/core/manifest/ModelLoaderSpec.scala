@@ -303,4 +303,113 @@ class ModelLoaderSpec extends AnyFunSuite with Matchers {
         fail(s"expected ParseFailure, got $other")
     }
   }
+
+  // -- parser-hardening tests: the previously-silent asMap/asSeq sites
+  //    now fail loud as typed ManifestError.ParseFailure (design:
+  //    docs/adr/0022 "Known v1 limits" follow-up lane).
+
+  test("hardening: a scalar at the rollups block fails loud instead of loading zero rollups") {
+    val yaml =
+      """
+        |name: m
+        |version: 1
+        |source:
+        |  byName:
+        |    table: t
+        |dimensions:
+        |  - name: region
+        |    expr: region
+        |measures:
+        |  - name: cnt
+        |    expr: count(*)
+        |rollups: myrollup
+        |""".stripMargin
+    val out = ModelLoader.fromString(yaml)
+    out.isLeft shouldBe true
+    out.swap.toOption.get match {
+      case ManifestError.ParseFailure(reason) =>
+        reason should include ("rollups: expected a list")
+      case other => fail(s"expected ParseFailure, got $other")
+    }
+  }
+
+  test("hardening: a scalar at joins[].keys fails loud instead of loading a zero-key join") {
+    val yaml =
+      """
+        |name: m
+        |version: 1
+        |source:
+        |  byName:
+        |    table: t
+        |dimensions:
+        |  - name: region
+        |    expr: region
+        |measures:
+        |  - name: cnt
+        |    expr: count(*)
+        |joins:
+        |  - name: j1
+        |    rightModel: customers
+        |    keys: region
+        |""".stripMargin
+    val out = ModelLoader.fromString(yaml)
+    out.isLeft shouldBe true
+    out.swap.toOption.get match {
+      case ManifestError.ParseFailure(reason) =>
+        reason should include ("joins[].keys: expected a list")
+      case other => fail(s"expected ParseFailure, got $other")
+    }
+  }
+
+  test("hardening: a scalar at source.byPath.options fails loud instead of loading zero options") {
+    val yaml =
+      """
+        |name: m
+        |version: 1
+        |source:
+        |  byPath:
+        |    format: csv
+        |    path: /tmp/data.csv
+        |    options: header=true
+        |dimensions:
+        |  - name: region
+        |    expr: region
+        |measures:
+        |  - name: cnt
+        |    expr: count(*)
+        |""".stripMargin
+    val out = ModelLoader.fromString(yaml)
+    out.isLeft shouldBe true
+    out.swap.toOption.get match {
+      case ManifestError.ParseFailure(reason) =>
+        reason should include ("source.byPath.options: expected a map")
+      case other => fail(s"expected ParseFailure, got $other")
+    }
+  }
+
+  test("hardening: absent optional blocks still load (no false positives on the strict paths)") {
+    val yaml =
+      """
+        |name: m
+        |version: 1
+        |source:
+        |  byPath:
+        |    format: csv
+        |    path: /tmp/data.csv
+        |dimensions:
+        |  - name: region
+        |    expr: region
+        |measures:
+        |  - name: cnt
+        |    expr: count(*)
+        |""".stripMargin
+    val out = ModelLoader.fromString(yaml)
+    out.isRight shouldBe true
+    out.right.get.rollups shouldBe empty
+    out.right.get.joins shouldBe empty
+    out.right.get.source match {
+      case s: SourceRef.ByPath => s.options shouldBe empty
+      case other => fail(s"expected ByPath source, got $other")
+    }
+  }
 }
