@@ -1008,7 +1008,7 @@ private[spark] def compileModelToDataFrame(
       capability = "PortableQueryCompiler.compileRelOp (null session)",
       message = "Cannot compile: SparkSession is null (SM8-only semantic path)"))
    }
-  df <- if (querySession != null) TypedQueryCompiler(querySession).apply(df0, request, skewCtx)
+  df <- if (querySession != null) TypedQueryCompiler(querySession).apply(df0, request, skewCtx, routedPreFilteredDf)
    else return Left(EngineError.UnsupportedCapability(
     engine = sparkEngineName,
     capability = "TypedQueryCompiler.apply (null session)",

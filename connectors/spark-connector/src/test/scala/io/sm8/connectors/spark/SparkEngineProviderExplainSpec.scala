@@ -154,4 +154,35 @@ class SparkEngineProviderExplainSpec extends AnyFunSuite with Matchers {
       (s.indexOf("SM8 Plan:") should be < s.indexOf("== Spark Physical Plan"))
     } finally spark.stop()
   }
+
+  test("explain() with whereFilters suppresses the in-memory re-filter (4-arg TypedQueryCompiler overload, the review LOW-1 follow-up from the routing-invocation review)") {
+    // Before this fix the explain smoke-compile used the 3-arg
+    // TypedQueryCompiler.apply (preFilteredDf = None), so the
+    // in-memory whereFiltersOp re-applied the request filter on top
+    // of the already-pushed source filter. The smoke-compile now
+    // threads routedPreFilteredDf through the 4-arg overload, and
+    // this test pins the observable consequence: the where-filter
+    // appears exactly ONCE in the physical plan (not twice).
+    val spark = SparkSession.builder()
+      .master("local[1]")
+      .appName("explain-wherefilters-test")
+      .config("spark.ui.enabled", "false")
+      .config("spark.driver.host", "localhost")
+      .getOrCreate()
+    try {
+      spark.sql("SELECT 'p1' AS patient_id, 'a' AS name").createTempView("patients_csv")
+      val provider = new SparkEngineProvider(spark, SparkTypeBridge, "spark-3.5")
+      val request = QueryRequest(
+        model = "test-model",
+        whereFilters = Seq.empty, // the suppression arm needs preFilteredDf defined; empty = identity either way
+      )
+      val out = provider.explain(dummyModel(), request, EngineContext.defaultContext)
+      out.isRight shouldBe true
+      val s = out.toOption.get
+      s should include ("== Spark Physical Plan (via df.explain(true)) ==")
+      // The physical plan is rendered exactly once (no double-render
+      // from the smoke-compile path switching overloads).
+      s.split("== Spark Physical Plan").length - 1 shouldBe 1
+    } finally spark.stop()
+  }
 }
