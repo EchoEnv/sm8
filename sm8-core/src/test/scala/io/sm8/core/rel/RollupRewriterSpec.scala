@@ -178,8 +178,12 @@ class RollupRewriterSpec extends AnyFunSuite with Matchers {
     out match {
       case RollupRewriter.RollupRewriteResult.Rewritten(p, name) =>
         name shouldBe "by_carrier"
-        // The projection wrapper is re-emitted on the rewritten plan.
+        // The projection wrapper is re-emitted on the rewritten plan,
+        // with the SAME column names as the original (pass-through
+        // contract).
         p shouldBe a[RelOp.Project]
+        val project = p.asInstanceOf[RelOp.Project]
+        project.expressions shouldBe List((Expr.FieldRef("carrier"), "carrier"))
       case other =>
         fail(s"expected Rewritten, got $other")
     }

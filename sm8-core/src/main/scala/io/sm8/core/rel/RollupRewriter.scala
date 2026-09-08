@@ -393,11 +393,13 @@ object RollupRewriter {
         // (caught by the observation harness scripts/rollup-observe.sh
         // on its first run; bug #354).
         case RelOp.Project(under, expressions)
-            if expressions.forall({
-              case Expr.FieldRef(_) => true
-              case Expr.Alias(_, Expr.FieldRef(_)) => true
-              case _ => false
-            }) =>
+            if expressions.forall { e =>
+              e._1 match {
+                case Expr.FieldRef(_)                => true
+                case Expr.Alias(_, Expr.FieldRef(_)) => true
+                case _                               => false
+              }
+            } =>
           peelUpper(under, (child => RelOp.Project(child, expressions)) :: acc)
         case _ => None
       }
