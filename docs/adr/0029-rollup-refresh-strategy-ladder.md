@@ -35,15 +35,38 @@ operators raised both:
    Worse: incremental maintenance without base-table CDC is silently
    wrong for the aggregate algebra — an update in the base requires
    *removing the old contribution*, which "insert new partial sums"
-   never does. AVG needs sum+count decomposition; MIN/MAX become
-   unmergeable when their contributing rows are deleted. No CDC, no
-   safe increment — MERGE would be theater.
+   never does.
+
+   The aggregate-algebra audit (precondition for any incremental tier)
+   follows sm8's own `AggregateFn`/`Decomposability` classification
+   (`sm8-core` rel/AggregateFn.scala, regression-guarded by
+   `AggregateFnDecomposabilitySpec`):
+
+   | `Decomposability` | `AggregateFn` cases | Incremental-merge status |
+   | --- | --- | --- |
+   | `Additive` | `Sum`, `Count`, `Min`, `Max` | merge-safe: `f(f(a,b),c) == f(a,b,c)`. MIN/MAX are algebraically additive (idempotent); the delete hazard below is a *MERGE-cost* issue (pre-image removal), not an algebra one. |
+   | `Algebraic` | `Avg`, `StddevSample`, `StddevPopulation`, `VarianceSample`, `VariancePopulation` | safe iff the rollup stores the named partial state (sum, count, sumSq) — sum+count for AVG, +sumSq for Stddev/Variance |
+   | `Approximable` | `CountDistinct`, `ApproxPercentile` | re-aggregable ONLY via sketch state (HLL/t-digest), result approximate — v1 routing refuses |
+   | `Holistic` | `Median`, `PercentileContinuous`, `PercentileDiscrete` | NOT re-aggregable, period |
+   | `Positional` | `First`, `Last` | NOT re-aggregable — needs argmin/argmax (value, timestamp) pre-image |
+
+   Only `Additive` (and `Algebraic` with partial-state storage) are
+   mergeable, and even they still need the old row's contribution
+   removed on update/delete — a CDC-grade requirement the refresh
+   source does not provide. `Holistic`/`Positional` are structurally
+   excluded from any incremental tier. No CDC, no safe increment —
+   MERGE would be theater.
 2. **DSv1 vs DSv2 writes.** Slice 1 uses DSv1 (`df.write...saveAsTable`)
    for cross-version safety (Spark 3.5 + Iceberg 1.5.x ↔ Spark 4 +
    Iceberg 1.7.x from one source line). Tier 1 below is the migration
    point to DSv2 (`df.writeTo(...).overwritePartitions()`), which is
-   also the Iceberg-documented modern path. The Trino writer (Slice 2)
-   is born on SQL `INSERT OVERWRITE`, so it is unaffected.
+   also the Iceberg-documented modern path. This is a **net
+   cross-version win, not a trade**: the DSv2 write surface is stable
+   from Spark 3.0 through 4.x, and Spark 4 deprecates more DSv1
+   surface than DSv2 — so migrating at Tier 1 *reduces* the
+   cross-version risk the DSv1 choice originally managed. The Trino
+   writer (Slice 2) is born on SQL `INSERT OVERWRITE`, so it is
+   unaffected.
 
 ## Decision
 
@@ -73,16 +96,39 @@ Validity assumption, **enforced not hoped**: the base increment touched
 only partitions the refresh recomputes. This holds for the dominant
 rollup lane — time-grained tables where the day's batch writes today's
 partition. Enforcement: refresh callers pass the partition scope; the
-materializer refuses (typed `EngineError`) a scope that doesn't cover
-every partition present in the recomputed source.
+materializer refuses (typed `EngineError`, e.g. `ScopeUncovered`) a scope
+that doesn't cover every partition present in the recomputed source.
+
+**Scope caller.** Per RFC §3 (core stays format- and strategy-blind),
+the scope type lives in the connector layer; the batch refresh
+orchestrator in `sm8-platform` (or an operator-supplied CronManager)
+passes scope, `RollupMaterializer` consumes and validates it. The
+Tier-1 PR brief will pin the signature so the implementer doesn't pick
+a layer-violating shape.
+
+**Operator contract on `ScopeUncovered`.** A late-arriving row landing
+in an old partition not in the caller's scope declaration triggers the
+refusal. The recovery action is to widen the scope to include the late
+partitions (or split into two refreshes). **Silent widening to "the
+whole table" defeats Tier 1's byte-savings** — the refusal exists
+precisely to prevent that.
+
+**Identity guarantee (Iceberg mechanics).** `overwritePartitions()`
+rewrites the manifest list and produces a new snapshot, but does NOT
+rewrite data files in untouched partitions — manifest reuse keeps the
+same data-file references. So **data-file content identity** is the
+contract; the manifest-list file is replaced. The contract test
+asserts data-file equality via `Table.currentSnapshot().manifests()` and
+the underlying file paths (and content hashes for the row file).
 
 Partition column derivation: a rollup with `timeGrain` +
 `grainDimension` (both-or-neither, validated at declaration per
 `RollupSpec`) partitions on the `date_trunc(grain, dim)` column the
-materializer already emits. Grain-less rollups (`kind: cross`,
-`keys: []`, or dimension-only grains) are **single-partition** and
-fall back to Tier 0 whole-table overwrite — degenerate-grain guard
-already typed in #352 carries over.
+materializer already emits. **Grain-less rollups** (timeGrain = None,
+grainDimension = None, both validated both-or-neither in RollupSpec)
+are single-partition and fall back to Tier 0 whole-table overwrite
+**at `persistCatalog`'s strategy-select branch, not at spec validation
+time** — the degenerate-grain guard from #352 already typed the case.
 
 Spark-version note: `spark.sql.sources.partitionOverwriteMode` semantics
 differ subtly between 3.5 and 4.x; the DSv2 explicit
@@ -93,17 +139,23 @@ part of why Tier 1 is the DSv2 migration point.
 
 Tier 2 opens only when ALL of:
 
-1. **Measured**: partition-level rewrite cost of Tier 1 exceeds
-   threshold on a representative model — refresh wall-clock > 5 min AND
-   rewritten-but-unchanged bytes > 30% of table, from the observation
-   harness (`scripts/rollup-observe.sh` + rollup-report telemetry), over
-   ≥ 2 weeks of production traces.
-2. **Base is Iceberg** (snapshot-diff delta source — no external CDC
+1. **Base is Iceberg** (snapshot-diff delta source — no external CDC
    pipeline).
-3. **Measure algebra audit is funded**: every measure class on every
-   live rollup has a delta-combination test (sum trivial, avg via
-   sum+count, min/max fallback to partition recompute on deletion,
-   count-distinct = not mergeable = explicitly out).
+2. **Measure algebra audit is funded**: every measure class on every
+   live rollup has a delta-combination test, partitioned by
+   `Decomposability` — `Additive` (trivial), `Algebraic` (pre-image +
+   named partial state), `Holistic`/`Positional`/`Approximable`
+   (Tier 1 fallback; never participate in Tier 2).
+3. **Post-Tier-1 cost evidence**: a representative model shows
+   *intra-partition-dominant* rewrite cost — refresh wall-clock > 5
+   min AND rewritten-but-unchanged bytes > 30% — measured from the
+   observation harness (`scripts/rollup-observe.sh` + rollup-report
+   telemetry) over ≥ 2 weeks of production traces. Note: the
+   pre-Tier-1 thresholds do not re-apply post-Tier-1; once partition
+   isolation is in production, the dominant cost case shifts from
+   "rewriting untouched partitions" to "rewriting rows inside a hot
+   partition that didn't actually change" — gate must measure the
+   latter, not the former.
 4. A signed-off ADR-0030 covering MOR vs COW (`write.merge.mode`),
    delete-file compaction cadence, and snapshot-diff fidelity limits.
 
@@ -111,12 +163,25 @@ If any gate fails, stay at Tier 1 and re-measure next quarter.
 
 ### What Tiers 2–4 are, briefly (scope fences)
 
-- **Tier 2**: partition-scoped `MERGE INTO` with the delta derived by
-  diffing base-table Iceberg snapshots (added/deleted files → changed
-  partitions only). COW (`write.merge.mode=copy-on-write`) is the
-  expected posture: rollup tables are read-mostly BI surfaces; scan
-  speed is the product; MOR's equality-delete files buy nothing at our
-  refresh cadence.
+- **Tier 2**: partition-scoped MERGE INTO with a **row-level delta**
+  (not a partition-level one). For each changed row, the delta carries
+  (pre-image, post-image) — the old and new row contents. Additive
+  measures (`Sum`/`Count`/`Min`/`Max`) combine pre-image removal +
+  post-image addition. Algebraic measures (`Avg`/`Stddev`×2/`Variance`×2)
+  need both pre and post to recompute sum / sumSq / count correctly.
+  `Holistic` / `Positional` / `Approximable` measures do NOT participate
+  in Tier 2 — those rollups fall back to Tier 1 semantics for those
+  measures (split the measure set per `Decomposability` and route the
+  unsafe class through Tier 1's partition overwrite). File-level
+  snapshot diff alone cannot produce a row-level delta: it sees
+  {added file, deleted file} entries, not which rows in those files
+  changed. Equality-delete files in Iceberg MOR carry row-target
+  information but it is opaque without a row-position map; Tier 2
+  therefore needs base-snapshot diff PLUS row-position map (or a CDC
+  source that supplies pre-image directly). COW
+  (`write.merge.mode=copy-on-write`) is the expected posture: rollup
+  tables are read-mostly BI surfaces; scan speed is the product; MOR's
+  equality-delete files buy nothing at our refresh cadence.
 - **Tier 3**: adds cross-partition row movement and a compaction
   policy coordinated with refresh concurrency. New failure class:
   one base row's update spans two grain levels.
