@@ -1,5 +1,5 @@
 /*
- * Rollup routing invocation tests (ADR-0026).
+ * Rollup routing invocation tests (design: docs/adr/0026).
  *
  * The fold under test is `SparkEngineProvider.routeThroughRollup`:
  * the single production call site for `RollupRewriter.rewrite`.
@@ -122,9 +122,10 @@ class RollupRoutingInvocationSpec extends AnyFunSuite with Matchers with org.sca
   private def request(grain: Option[String] = None): QueryRequest =
     QueryRequest(model = "sales", timeGrain = grain)
 
-  // The registry is JVM-global: park the NoOp sink between tests so
-  // a failed test cannot leak counters into a later test's deltas.
+  /** The registry is JVM-global: park the NoOp sink between tests so
+    * a failed test cannot leak counters into a later test's deltas. */
   override def beforeEach(): Unit = MetricsRegistry.register(MetricsSink.NoOp)
+  /** Park the NoOp sink after each test (registry is JVM-global). */
   override def afterEach(): Unit = MetricsRegistry.register(MetricsSink.NoOp)
 
   /** The routing fold must read counters through whatever sink is
@@ -134,12 +135,21 @@ class RollupRoutingInvocationSpec extends AnyFunSuite with Matchers with org.sca
   private class CountingSink extends MetricsSink {
     val rewrites = new java.util.concurrent.atomic.AtomicLong(0)
     val refusalsByReason = new java.util.concurrent.ConcurrentHashMap[String, java.util.concurrent.atomic.AtomicLong]()
+    /** Counts one rewrite event. */
     override def recordRollupRewrite(): Unit = rewrites.incrementAndGet()
+    /** Counts one refusal under its stable reason label.
+      *
+      * @param reason the typed refusal from the rewriter
+      */
     override def recordRollupRefusal(reason: RollupRewriter.RollupRewriteRefusal): Unit =
       refusalsByReason
         .computeIfAbsent(RollupRewriter.RollupRewriteRefusal.reasonName(reason),
                          _ => new java.util.concurrent.atomic.AtomicLong(0))
         .incrementAndGet()
+    /** Reads the counters as an immutable snapshot.
+      *
+      * @return the rollup counter snapshot
+      */
     override def rollupSnapshot(): RollupCountersSnapshot = {
       import scala.jdk.CollectionConverters._
       RollupCountersSnapshot(
