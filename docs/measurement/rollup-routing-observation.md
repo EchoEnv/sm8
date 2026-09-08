@@ -49,12 +49,12 @@ falls out of which one dominates.
 | --- | --- | --- |
 | `noGroupSetMatch` | The query's group set isn't a subset of the rollup's declared dimensions | Declare a rollup that covers this shape; or add the missing dim to an existing rollup (pure YAML, no code) |
 | `grainMismatch` | The query requests a grain the rollup doesn't store | Either add a coarser-grain rollup, or accept that the query misses the rollup (coarsen manually) |
-| `unsplittableAggregate` | A `Count(expr)`, `Sum(distinct)`, or positional/holistic/approximable aggregate — v1 has no re-aggregation algebra for these | This is a permanent refusal (counts toward `refusals_permanent_total`). If high, that query class is unsuited to rollups — pre-aggregate it server-side, or split into a different query |
-| `filterNotEvaluable` | A `where` filter references a column the rollup table doesn't carry | Add the column to the rollup's projected dimensions (must be a `RollupSpec.dimensions` member) |
+| `unsplittableAggregate` | A `Count(expr)`, `Sum(distinct)`, or holistic/positional/approximable aggregate — v1 has no re-aggregation algebra for these. **Fixable subset:** `Count(expr)` and `Sum(distinct)` are caller-side fixes (rewrite the measure). **Non-fixable:** holistic / positional / approximable (the query class is unsuited to rollups). | This is a permanent refusal (counts toward `refusals_permanent_total`). If high, investigate the dominant `unsplittableAggregate` shape: per-measure rewrite for the fixable subset; pre-aggregate server-side or split the query for the non-fixable subset. The rollup lane itself is doing the right thing |
+| `filterNotEvaluable` | A `where` filter references a column the rollup table doesn't carry | Add the column to the rollup's declared dimensions (must be a `RollupSpec.dimensions` member — see `RollupRewriter.scala:613,936`) |
 | `sourceKindUnsupported` | The model source is `ByPath` or `ByProvider` — v1 only routes `ByName` | This is structural — the source kind must change, not the rollup |
 | `nonCanonicalShape` | The plan isn't the canonical `Scan → Filter* → Aggregate` shape (e.g. projects the wrong place) | Caller-side — the query needs to be reshaped; the report can't help |
-| `algebraicStateNotWired` | Avg/Stddev/Variance on a rollup that doesn't carry the named partial-state columns (`count__F`, `sum__F`, `m2__F`) | This is the next major rollup PR: the Welford-migration ticket (ADR-0023 follow-up). When this dominates, the answer is "build the migration" |
-| `rollupSchemaStale` | A materializer wrote `count__rows` (pre-T8) but the rewriter routed `m2__F` (post-T8). Detected at `lowerScan`; surfaces as a typed `UnsupportedCapability` (LOUD, not silent) | Run `sm8 rollup-refresh <model>` — the rewriter is doing the right thing; the table is stale |
+| `algebraicStateNotWired` | An Avg / Stddev / Variance request routed, but the chosen rollup table does not carry the named partial-state columns (`count__F`, `sum__F`, `m2__F`). The rewriter + two-phase `Aggregate→Project` are already wired (the algebraic routing shipped with ADR-0023); this refusal is purely a *materializer* gap on the chosen rollup table. | Recover by re-materializing: `sm8 rollup-refresh <model>`, or add the measure to the rollup's `RollupSpec.measures` so the rewriter picks the right partials |
+| `rollupSchemaStale` | The connector detects at `lowerScan` that the chosen rollup's physical table is missing a column the rewriter routed against (e.g. `m2__F` absent on a rollup that was materialized before the Welford migration shipped). Surfaces as a typed `UnsupportedCapability` with the `"RollupSchemaStale"` capability tag — LOUD, not silent | Run `sm8 rollup-refresh <model>` — the rewriter is doing the right thing; the table is stale |
 
 ## 2. The interpretation rubric
 
@@ -105,6 +105,13 @@ rollup routing report
   dominant reason: unsplittableAggregate (3184) — permanent refusals (holistic/positional aggregates)
 ```
 
+> *Note on the example shares*: 72 + 18 + 9 = 99% (and 61 + 23 + 15 = 99%
+> in §2.2). The CLI uses integer truncation for display
+> (`sm8-cli/src/main/scala/io/sm8/cli/Main.scala`), so the per-reason
+> shares may sum to 99% or 100% depending on the data — the exact
+> value lives in the JSON output. Operationally the rounding is
+> off-by-one-point at most, well within diagnostic noise.
+
 `refusals_permanent` dominates AND `unsplittableAggregate` ranks #1.
 Two things to know: (a) the dominant reason is permanent — these
 queries will never route; (b) `refusals_total` is large but it's the
@@ -113,7 +120,7 @@ action is *not* "fix the routing" — it's "either accept the base
 path for this query class, or pre-aggregate it server-side". The
 fold is doing the right thing.
 
-### 2.4 Action-shape alert
+### 2.4 Caller-shape alert
 ```
 rollup routing report
   rewrites:            0
@@ -141,14 +148,19 @@ The intended operating loop:
    `--metrics-url`.
 
 2. **Hourly cron in production.** Once-per-hour `sm8 rollup-report
-   --json | jq '.sm8_rollup_refusals_*'` feeds a counter-delta metric
-   to your existing observability stack. Three thresholds to alert on:
+   --json` feeds the counter-delta stream to your observability
+   stack. Read the three scalar counters directly (avoid the
+   `sm8_rollup_refusals_*` glob — it also matches the scalar
+   `_total` keys). Three thresholds to alert on (all implicitly
+   assume `rewrites_total > 0` in the window — on a cold start with
+   zero queries, rates are undefined and the alert should stay
+   silent):
 
    | Metric | Alert at | Why |
    | --- | --- | --- |
-   | `sm8_rollup_refusals_total` rate | sustained > 50% of `sm8_rollup_rewrites_total` rate | The fold is being invoked but most calls fall through — likely a coverage gap |
+   | `sm8_rollup_refusals_total` rate | sustained > 50% of `sm8_rollup_rewrites_total` rate (both non-zero) | The fold is being invoked but most calls fall through — likely a coverage gap |
    | `sm8_rollup_refusals_permanent_total` rate | any non-zero over 1h | Permanent refusals never recover; investigate on the caller side |
-   | `sm8_rollup_refusals_algebraicStateNotWired` rate | sustained > 100/h | The algebraic state migration is now the priority ticket — the data has spoken |
+   | `sm8_rollup_refusals_algebraicStateNotWired` rate | sustained > 100/h | The dominant model's rollup table is missing partial-state columns — re-materialize it, or add the measure to the rollup declaration |
 
 3. **Dominant-reason decision tree.** When the daily report shows a
    single reason > 30% of refusals, that reason is the next pick.
@@ -173,9 +185,9 @@ The intended operating loop:
 ## 5. The first reading
 
 Captured at the moment of this PR's merge (no production deployment
-exists in this lineage yet — this lineage is the engineering side, not
-the operational side). When a real server runs `sm8 rollup-report` for
-the first time, the expected reading is:
+exists yet — this handbook ships the rubric, not a reading). When a
+real server runs `sm8 rollup-report` for the first time, the expected
+reading is:
 
 ```
 rollup routing report
