@@ -39,6 +39,8 @@ class RollupMaterializerIcebergSpec extends AnyFunSuite with Matchers with Befor
   private val warehouseDir: String =
     java.nio.file.Files.createTempDirectory("iceberg-warehouse").toString
 
+  /** Boot the Spark session + register the embedded HadoopCatalog
+    * (the ADR-0028 minimum viable catalog) before the first test. */
   override def beforeAll(): Unit = {
     // Per-test warehouse hygiene: ensure no stale managed-table
     // location from a previous run interferes with the parquet-default
@@ -70,6 +72,8 @@ class RollupMaterializerIcebergSpec extends AnyFunSuite with Matchers with Befor
     ()
   }
 
+  /** Stop the Spark session (the harness's temp warehouse dir is
+    * cleaned by the OS temp-dir policy, not by this test). */
   override def afterAll(): Unit = {
     if (spark != null) spark.stop()
   }
