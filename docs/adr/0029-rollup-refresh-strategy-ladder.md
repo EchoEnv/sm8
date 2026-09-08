@@ -82,7 +82,7 @@ measured evidence (criteria below), not anticipation.
 | --- | --- | --- | --- | --- |
 | 0 | Whole-table overwrite (`mode("overwrite")`) | none — full recompute | shipped (#358) | **current** |
 | 1 | Dynamic partition overwrite (DSv2 `overwritePartitions`) | none — only partitions present in the recomputed source are replaced | ~140 LOC + tests | **v2 target** |
-| 2 | Partition-scoped MERGE INTO, delta = Iceberg snapshot diff | aggregate algebra under deltas; MOR/COW choice; snapshot-diff fidelity | ~400 LOC | gated on criteria |
+| 2 | Row-level delta MERGE, delta = Iceberg snapshot diff + measure algebra | aggregate algebra under deltas (per Decomposability class); MOR/COW choice; snapshot-diff → row-delta recovery | ~400 LOC | gated on criteria |
 | 3 | Cross-partition MERGE + delete-file compaction policy | + compaction concurrency, split-row updates | ~700 LOC | gated on criteria |
 | 4 | Continuous incremental (external CDC) | + freshness SLO, late-arrival recovery, ordering | 1k+ LOC | deliberately out of scope |
 
@@ -130,10 +130,11 @@ are single-partition and fall back to Tier 0 whole-table overwrite
 **at `persistCatalog`'s strategy-select branch, not at spec validation
 time** — the degenerate-grain guard from #352 already typed the case.
 
-Spark-version note: `spark.sql.sources.partitionOverwriteMode` semantics
-differ subtly between 3.5 and 4.x; the DSv2 explicit
-`overwritePartitions` call bypasses the session-conf ambiguity, which is
-part of why Tier 1 is the DSv2 migration point.
+Spark-version note: DSv2 is the more cross-version-stable surface
+(see Context item 2); `overwritePartitions()` bypasses the
+`spark.sql.sources.partitionOverwriteMode` session-conf ambiguity
+entirely (the conf is ignored by the explicit DSv2 API), which removes
+a 3.5↔4.x behavioral divergence rather than adding one.
 
 ### Tier 2 gate (numbers, not vibes)
 
@@ -229,11 +230,19 @@ If any gate fails, stay at Tier 1 and re-measure next quarter.
 ## Tests (Tier 1, when implemented)
 
 - **Partition isolation.** Refresh with scope = today; assert
-  yesterday's partition files unchanged (byte/content identity via
-  snapshot metadata, not row spot-checks).
+  **data-file content identity** of untouched partitions via snapshot
+  `manifest_entries` (same `file_path` + `file_size_in_bytes` per
+  partition tuple) — data files are reused by manifest reference; the
+  manifest *list* is rewritten every commit and must NOT be the
+  identity assertion. Pin the Iceberg version under test (1.5.x and
+  1.7.x metadata write paths differ).
 - **Scope coverage refusal.** Recomputed source contains partitions
   outside the declared scope → typed `EngineError`, no commit.
-- **Degenerate grain fallback.** `kind: cross` / grain-less rollup
+- **Undeclared scope refusal.** `None`/empty scope on a time-grained
+  rollup refuses with typed `EngineError` *before* the aggregation job
+  runs (no wasted compute, no accidental whole-table refresh).
+- **Degenerate grain fallback.** Grain-less rollup (`timeGrain=None`,
+  `grainDimension=None`, both-or-neither validated in `RollupSpec`)
   takes the Tier 0 whole-table path; single-partition tables are
   byte-identical in behavior to #358.
 - **Atomicity preserved.** Failed refresh inside one partition set
