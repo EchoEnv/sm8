@@ -484,6 +484,8 @@ object RollupMaterializer {
     * viable catalog). Defaults to `iceberg_cat` so a deployment that
     * follows the README's session-config recipe works out of the box;
     * override via constructor arg or env if the catalog name differs.
+    *
+    * @return the Iceberg catalog name
     */
   def icebergCatalog: String = "iceberg_cat"
 
