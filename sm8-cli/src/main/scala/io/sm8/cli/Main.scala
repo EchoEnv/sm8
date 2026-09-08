@@ -66,6 +66,7 @@ object Main {
     case ("plugins" :: rest)    => withGlobalConfig(rest) { (cfg, rem) => safeRun(cmdPlugins(cfg)) }
     case ("hooks" :: rest)      => withGlobalConfig(rest) { (cfg, rem) => safeRun(cmdHooks(cfg)) }
     case ("rollup-refresh" :: rest) => withGlobalConfig(rest) { (cfg, rem) => safeRun(cmdRollupRefresh(cfg, rem)) }
+    case ("rollup-report" :: rest)  => withGlobalConfig(rest) { (cfg, rem) => safeRun(cmdRollupReport(cfg, rem)) }
     case other :: _ =>
       System.err.println(s"sm8: unknown command '$other'. Run 'sm8 --help'."); 2
   }
@@ -92,6 +93,7 @@ object Main {
       json:       Boolean,
       restateUrl: Option[String] = None,
       token:      Option[String] = None,
+      metricsUrl: Option[String] = None,
   )
 
   // -------------------------------------------------------------------
@@ -183,6 +185,7 @@ object Main {
         url: Option[String],
         json: Boolean,
         restateUrl: Option[String],
+        metricsUrl: Option[String],
         kept: List[String],
     ): Either[CliParseError, (Config, List[String])] = in match {
       case Nil =>
@@ -192,24 +195,27 @@ object Main {
               baseUrl    = url.getOrElse(defaultUrl),
               json       = json,
               restateUrl = restateUrl.orElse(sys.env.get("RESTATE_URL")),
+              metricsUrl = metricsUrl.orElse(sys.env.get("SM8_METRICS_URL")),
               token      = tok,
             ),
             kept.reverse,
           )
         }
-      case ("--url" :: u :: rest)         => loop(rest, Some(u), json, restateUrl, kept)
+      case ("--url" :: u :: rest)         => loop(rest, Some(u), json, restateUrl, metricsUrl, kept)
       case ("--url" :: Nil)               => Left(CliParseError.MissingFlagValue(flag = "--url"))
-      case ("--json" :: rest)             => loop(rest, url, json = true, restateUrl, kept)
-      case ("--restate-url" :: u :: rest) => loop(rest, url, json, Some(u), kept)
+      case ("--json" :: rest)             => loop(rest, url, json = true, restateUrl, metricsUrl, kept)
+      case ("--restate-url" :: u :: rest) => loop(rest, url, json, Some(u), metricsUrl, kept)
       case ("--restate-url" :: Nil)       => Left(CliParseError.MissingFlagValue(flag = "--restate-url"))
+      case ("--metrics-url" :: u :: rest) => loop(rest, url, json, restateUrl, Some(u), kept)
+      case ("--metrics-url" :: Nil)       => Left(CliParseError.MissingFlagValue(flag = "--metrics-url"))
       // Token file is consumed but the actual read happens in resolveToken
       // (below) — same precedence rule, but we already validated the flag
       // shape here.
-      case ("--token-file" :: p :: rest)  => loop(rest, url, json, restateUrl, kept)
+      case ("--token-file" :: p :: rest)  => loop(rest, url, json, restateUrl, metricsUrl, kept)
       case ("--token-file" :: Nil)        => Left(CliParseError.MissingFlagValue(flag = "--token-file"))
-      case other :: rest                  => loop(rest, url, json, restateUrl, other :: kept)
+      case other :: rest                  => loop(rest, url, json, restateUrl, metricsUrl, other :: kept)
     }
-    loop(args, None, json = false, None, Nil)
+    loop(args, None, json = false, None, None, Nil)
   }
 
   /** Resolve the bearer token. Precedence: `--token-file <path>` &
@@ -852,8 +858,16 @@ object Main {
       }
     }
 
-    def get(cfg: Config, path: String): Response = {
-      val b = HttpRequest.newBuilder(uri(cfg, path))
+    def get(cfg: Config, path: String): Response = getAt(cfg.baseUrl, path, cfg)
+
+    /** GET a path at an explicit base URL (e.g. the metrics port,
+      * which lives on a different endpoint than the MCP server).
+      * Token comes from cfg so the same auth path applies. */
+    def get(cfg: Config, path: String, baseUrl: String): Response =
+      getAt(baseUrl, path, cfg)
+
+    private def getAt(baseUrl: String, path: String, cfg: Config): Response = {
+      val b = HttpRequest.newBuilder(uri(baseUrl, path))
         .timeout(Duration.ofSeconds(30))
         .GET()
       cfg.token.foreach(t => b.header("Authorization", s"Bearer $t"))
@@ -870,7 +884,10 @@ object Main {
     }
 
     private def uri(cfg: Config, path: String): URI =
-      URI.create(cfg.baseUrl.replaceAll("/+$", "") + path)
+      uri(cfg.baseUrl, path)
+
+    private def uri(baseUrl: String, path: String): URI =
+      URI.create(baseUrl.replaceAll("/+$", "") + path)
 
     private def send(req: HttpRequest): Response =
       try {
@@ -1035,6 +1052,127 @@ object Main {
       System.err.println("sm8 rollup-refresh: too many arguments. Usage: sm8 rollup-refresh <model>"); 2
   }
 
+  // `sm8 rollup-report` — the refusal-measurement read surface
+  // (design: docs/adr/0027). Fetches the server's `GET /metrics`
+  // Prometheus text, filters to the rollup counter family, and
+  // renders a ranked report: which refusal reason dominates, with
+  // each reason's share of total refusals. Pure client-side read —
+  // no server change, no counters change; a fresh pair of eyes on
+  // data the routing fold already publishes.
+  //
+  // Exit codes (same convention as rollup-refresh): 0 OK, 1 metrics
+  // fetch failed / body not parseable, 3 transport failure, 2 usage.
+
+  /** Stable metric-name prefix shared by every rollup counter the
+    * routing fold publishes. */
+  private val RollupMetricPrefix = "sm8_rollup_"
+
+  /** The three scalar (non-per-reason) rollup counters, in report
+    * display order. */
+  private val RollupScalarMetrics: List[String] = List(
+    "sm8_rollup_rewrites_total",
+    "sm8_rollup_refusals_total",
+    "sm8_rollup_refusals_permanent_total")
+
+  /** Parse a Prometheus text-exposition body into a name->value map.
+    * Only counter lines (`name value`) are kept; HELP/TYPE comment
+    * lines and blanks are dropped. Values parse as Long; a malformed
+    * value line drops that sample (Prometheus counts are Longs in
+    * this project). No regex: the format in use here is
+    * `# HELP name text` / `# TYPE name type` / `name value`.
+    *
+    * @param body the raw /metrics response body
+    * @return name -> value for every parseable counter line
+    */
+  private[cli] def parsePrometheusCounters(body: String): Map[String, Long] =
+    body.linesIterator.foldLeft(Map.empty[String, Long]) { (acc, line) =>
+      val trimmed = line.trim
+      if (trimmed.isEmpty || trimmed.startsWith("#")) acc
+      else trimmed.split("\\s+") match {
+        case Array(name, value) =>
+          try acc + (name -> value.toLong)
+          catch { case _: NumberFormatException => acc }
+        case _ => acc
+      }
+    }
+
+  /** Render the ranked refusal report to stdout.
+    *
+    * @param counters the parsed counter map (rollup family only)
+    * @return true when the report has data; false for the
+    *         empty-state (no traffic since startup)
+    */
+  private def renderRollupReport(counters: Map[String, Long]): Boolean = {
+    val rewrites  = counters.getOrElse("sm8_rollup_rewrites_total", 0L)
+    val refusals  = counters.getOrElse("sm8_rollup_refusals_total", 0L)
+    val permanent = counters.getOrElse("sm8_rollup_refusals_permanent_total", 0L)
+    val byReason: List[(String, Long)] =
+      counters.toList
+        .collect { case (n, v) if n.startsWith("sm8_rollup_refusals_") &&
+                   n != "sm8_rollup_refusals_total" &&
+                   n != "sm8_rollup_refusals_permanent_total" => (n, v) }
+        .map { case (n, v) => (n.stripPrefix("sm8_rollup_refusals_"), v) }
+        .sortBy { case (reason, count) => (-count, reason) }
+    println(s"rollup routing report")
+    println(s"  rewrites:            $rewrites")
+    println(s"  refusals:            $refusals")
+    println(s"  refusals permanent:  $permanent")
+    if (byReason.isEmpty && refusals == 0L && rewrites == 0L) {
+      println("  no rollup traffic yet — the routing fold has not been exercised since startup")
+      false
+    } else {
+      if (byReason.nonEmpty) {
+        println("  refusals by reason (ranked):")
+        byReason.foreach { case (reason, count) =>
+          val share = if (refusals == 0L) "0%" else s"${count * 100 / refusals}%"
+          println(s"    ${reason.padTo(28, ' ')} $count  ($share)")
+        }
+      }
+      val dominant = byReason.headOption
+      dominant.foreach { case (reason, count) =>
+        val hint = reason match {
+          case "algebraicStateNotWired" => "algebraic state migration is the likely next pick"
+          case "noGroupSetMatch"        => "more rollup declarations likely needed"
+          case "grainMismatch"          => "review grain defaults / coarsening coverage"
+          case "nonCanonicalShape"      => "queries bypass the canonical shape — inspect callers"
+          case "filterNotEvaluable"     => "rollup tables missing filtered columns — widen specs"
+          case "sourceKindUnsupported"  => "non-ByName sources cannot route in v1"
+          case "rollupSchemaStale"      => "run `sm8 rollup-refresh` — a table is stale"
+          case "unsplittableAggregate"  => "permanent refusals (holistic/positional aggregates)"
+          case _                        => "inspect the reason taxonomy in core"
+        }
+        println(s"  dominant reason: $reason ($count) — $hint")
+      }
+      true
+    }
+  }
+
+  private def cmdRollupReport(cfg: Config, args: List[String]): Int = args match {
+    case Nil =>
+      val metricsBase = cfg.metricsUrl.getOrElse("http://localhost:9090")
+      val resp = Client.get(cfg, "/metrics", metricsBase)
+      if (resp.status / 100 == 5) return 3
+      if (resp.status != 200) {
+        System.err.println(s"sm8 rollup-report: metrics endpoint returned ${resp.status} (expected 200). Is the server running with --metrics-port?")
+        return 1
+      }
+      val counters = parsePrometheusCounters(resp.body)
+      val rollupCounters = counters.filter(_._1.startsWith(RollupMetricPrefix))
+      if (cfg.json) {
+        // Flat JSON map — machine consumption (cron, dashboards).
+        val jsonBody = rollupCounters.toList
+          .sortBy { case (k, _) => k }
+          .map { case (k, v) => s"""  "${k}": ${v}""" }
+          .mkString("{\n", ",\n", "\n}")
+        println(jsonBody)
+        0
+      } else {
+        if (renderRollupReport(rollupCounters)) 0 else 0
+      }
+    case _ =>
+      System.err.println("sm8 rollup-report: unexpected arguments (global options only). Usage: sm8 rollup-report [--metrics-url <base>]"); 2
+  }
+
   private def printUsage(): Unit = {
     println(
       """sm8 — a command-line client for SM8 REST + Restate APIs.
@@ -1051,6 +1189,7 @@ object Main {
         |  plugins                         list discovered plugins (registered flag per plugin)
         |  hooks                           list registered hooks (stage, priority, origin, plugin)
         |  rollup-refresh <model>          rebuild the model's rollup tables (Ticket 6 trigger)
+        |  rollup-report                   ranked rollup refusal report (reads the metrics endpoint)
         |
         |query/explain options:
         |  -d, --dim <name>                dimension (repeatable)
@@ -1066,6 +1205,7 @@ object Main {
         |
         |global options:
         |  --url <base>                    MCP REST URL (default $SDF_URL or http://localhost:8080)
+        |  --metrics-url <base>            metrics endpoint (default $SM8_METRICS_URL or http://localhost:9090)
         |  --restate-url <base>            Restate ingress URL for audit-tail (default $RESTATE_URL)
         |  --token-file <path>             bearer token file (default $SDF_TOKEN); chmod 600 it
         |  --json                          print raw JSON response

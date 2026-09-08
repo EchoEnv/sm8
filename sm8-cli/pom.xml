@@ -65,6 +65,19 @@
             <plugin>
                 <groupId>org.scalatest</groupId>
                 <artifactId>scalatest-maven-plugin</artifactId>
+                <executions>
+                    <!-- Bind scalatest to the test phase (same shape
+                         as the spark-connector pom). Without this
+                         execution block the plugin never runs: the
+                         CLI integration specs (CliIntegrationSpec,
+                         RollupReportSpec) were silently skipped in
+                         every `mvn test` before this fix. -->
+                    <execution>
+                        <id>test</id>
+                        <goals><goal>test</goal></goals>
+                        <phase>test</phase>
+                    </execution>
+                </executions>
             </plugin>
 
             <!-- `mvn exec:java` is the documented dev entrypoint; bin/sm8
