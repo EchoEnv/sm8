@@ -520,8 +520,10 @@ object RollupMaterializer {
     * Note: temp views are LAZY — returning Right does not imply a
     * job has run; the first query against the view triggers it. */
   /** The write strategy selected for ONE persistCatalog invocation
-    * (ADR-0029 Tier 0 vs Tier 1). Selection is pure (no Spark job
-    * runs); the strategy is executed by the persistCatalog body.
+    * (ADR-0029 Tier 0 vs Tier 1). Selection runs ONE distinct-partition
+    * scan (a Spark job, but a cheap metadata-scale one) and NO
+    * aggregation or write work — the full aggregation job only runs
+    * when a strategy is actually executed by the persistCatalog body.
     */
   private[spark] sealed trait PersistStrategy extends Product with Serializable
   private[spark] object PersistStrategy {
@@ -547,15 +549,20 @@ object RollupMaterializer {
   }
 
   /**
-   * Select the write strategy (pure — no Spark job, driver-side only).
+   * Select the write strategy (driver-side; runs ONE small
+   * distinct-values metadata job on the recomputed source before the
+   * write — not zero-Spark-job, but no shuffle/aggregation beyond
+   * the distinct scan).
    *
    * Selection matrix (ADR-0029 §Tier 1):
    *   - NoScope                                     → Tier0
    *   - Partitions + Parquet                        → RefuseScopeOnParquet
-   *   - Partitions + Iceberg + grain-less rollup    → Tier0 (single-partition; nothing to scope)
-   *   - Partitions + Iceberg + !tableExists         → Tier0 (first write IS the whole write)
-   *   - Partitions + Iceberg + source ⊄ scope       → RefuseScopeUncovered (fail-closed)
-   *   - Partitions + Iceberg + source ⊆ scope       → Tier1Iceberg
+   *   - Partitions + grain-less rollup              → Tier0 (single-partition; nothing to scope)
+   *   - Partitions + scope keys ≠ partition column  → RefuseScopeUncovered
+   *   - Partitions + source ⊄ scope (any table state) → RefuseScopeUncovered (fail-closed,
+   *     INCLUDING first write — a scoped create never silently widens)
+   *   - Partitions + source ⊆ scope + !tableExists  → Tier0 (create path, partitioned CTAS)
+   *   - Partitions + source ⊆ scope + tableExists   → Tier1Iceberg
    *
    * The partition column of a time-grained rollup is the grain
    * dimension itself (the materializer aliases
@@ -564,8 +571,8 @@ object RollupMaterializer {
    * are read from the recomputed source via a distinct-count on that
    * column — driver-side metadata read, no closure capture.
    *
-   * @param df the recomputed rollup DataFrame (analysis is lazy; the
-   *           distinct scan runs at strategy-select time, before any write)
+   * @param df the recomputed rollup DataFrame (the distinct scan runs
+   *           at strategy-select time, before any write)
    */
   private[spark] def decideStrategy(
       df: DataFrame,
@@ -598,27 +605,51 @@ object RollupMaterializer {
             s"rollups[${spec.name}]: declared grain dimension '$col' is not a column of the " +
               "recomputed rollup source — model/base divergence, refusing scoped refresh")
         case Some(col) =>
-          // Canonical partition-value vocabulary: date_trunc('day', ts)
-          // yields a Timestamp whose natural repr is "yyyy-MM-dd HH:mm:ss.0"
-          // but a caller naturally declares "yyyy-MM-dd". Normalize BOTH
-          // sides to the date-only form (the first 10 chars of the
-          // timestamp string) so the comparison is representation-
-          // independent. A non-timestamp grain column compares verbatim.
-          def canon(v: String): String = if (v.length > 10) v.take(10) else v
-          val sourceValues: Set[String] =
-            df.select(col).distinct().collect()
-              .map(row => canon(String.valueOf(row.get(0))))
-              .toSet
-          val declaredKeys: Set[String] = declared.flatMap(_.values.map(canon)).toSet
-          val uncovered = sourceValues.diff(declaredKeys)
-          if (uncovered.nonEmpty)
+          // Scope keys must name the partition column (defense-in-depth:
+          // the API accepts a Map per partition; silently ignoring a
+          // mistyped key would turn the scope into a value-bag).
+          val badKeys = declared.filterNot(_.contains(col))
+          if (badKeys.nonEmpty)
             PersistStrategy.RefuseScopeUncovered(
-              s"rollups[${spec.name}]: recomputed source contains partition value(s) " +
-                s"[${uncovered.mkString(", ")}] outside the declared refresh scope " +
-                s"[${declaredKeys.mkString(", ")}] — widen the scope or split the refresh " +
-                "(ADR-0029 operator contract: silent widening defeats Tier 1's savings)")
-          else if (!tableExists) PersistStrategy.Tier0
-          else PersistStrategy.Tier1Iceberg
+              s"rollups[${spec.name}]: scope entry keys ${badKeys.flatMap(_.keySet).mkString(", ")} " +
+                s"do not name the partition column '$col' — scope entries must be " +
+                s"Map('$col' -> value)")
+          else {
+            // Canonical partition-value vocabulary. Daily grain
+            // truncates to yyyy-MM-dd on BOTH sides (a caller
+            // declares "2026-09-08"; the Timestamp repr is
+            // "2026-09-08 00:00:00.0"). Sub-daily grains compare
+            // verbatim — take-10 would false-accept an hour-grain
+            // scope ("2026-09-08 10" collapsing to "2026-09-08").
+            val daily = spec.timeGrain.contains("day")
+            def canon(v: String): String =
+              if (daily && v.length > 10) v.take(10) else v
+            val sourceValues: Set[String] =
+              df.select(col).distinct().collect()
+                .map(row => canon(String.valueOf(row.get(0))))
+                .toSet
+            val declaredKeys: Set[String] = declared.flatMap(_.values.map(canon)).toSet
+            val uncovered = sourceValues.diff(declaredKeys)
+            // Coverage applies on FIRST WRITE too: a declared scope
+            // that the whole-source create would violate is refused —
+            // the caller narrows the source (or widens the scope);
+            // the create never silently widens the scope.
+            val uncoveredOnFirstWrite = !tableExists && uncovered.nonEmpty
+            if (uncovered.nonEmpty && tableExists)
+              PersistStrategy.RefuseScopeUncovered(
+                s"rollups[${spec.name}]: recomputed source contains partition value(s) " +
+                  s"[${uncovered.mkString(", ")}] outside the declared refresh scope " +
+                  s"[${declaredKeys.mkString(", ")}] — widen the scope or split the refresh " +
+                  "(ADR-0029 operator contract: silent widening defeats Tier 1's savings)")
+            else if (uncoveredOnFirstWrite)
+              PersistStrategy.RefuseScopeUncovered(
+                s"rollups[${spec.name}]: first-write source contains partition value(s) " +
+                  s"[${uncovered.mkString(", ")}] outside the declared scope " +
+                  s"[${declaredKeys.mkString(", ")}] — a scoped create must write only the " +
+                  "scoped partitions; narrow the source or drop the scope for a full create")
+            else if (!tableExists) PersistStrategy.Tier0
+            else PersistStrategy.Tier1Iceberg
+          }
       }
   }
 
@@ -668,9 +699,18 @@ object RollupMaterializer {
       // table format supports it (Iceberg), (c) the rollup is
       // time-grained (the partition column exists in the source),
       // (d) the source's actual partition values are a subset of the
-      // declared scope, and (e) the table already exists. Otherwise
-      // fall back to Tier 0 whole-table overwrite; refuse typed when
-      // (d) fails (an uncovered scope must never silently widen).
+      // declared scope (checked BEFORE the tableExists fallback — the
+      // coverage contract is unconditional, even on a first write),
+      // and (e) the table already exists. Otherwise fall back to
+      // Tier 0 whole-table overwrite; refuse typed when (d) fails
+      // (an uncovered scope must never silently widen).
+      // NOTE on timing (R1 review, goat): the coverage check reads the
+      // source at decision time T1; the write re-executes the
+      // aggregation at T2. A row landing in an out-of-scope partition
+      // between T1 and T2 would be aggregated into the written DF and
+      // overwritten WITH its partition — the write's own partition
+      // derivation (from the DF values) is the effective fence; the
+      // T1 check is the early-fail optimization, not the guarantee.
       val strategy: PersistStrategy =
         decideStrategy(df, spec, tableFormat, refreshScope, tableExists)
       strategy match {
@@ -732,13 +772,15 @@ object RollupMaterializer {
               // CTAS needs a queryable source — register the rollup
               // DataFrame as a transient temp view (session-scoped,
               // never persists), then create the partitioned Iceberg
-              // table from it. Clean up the temp view after.
+              // table from it. Clean up the temp view after. The
+              // column is backtick-quoted (a reserved-word dimension
+              // name would otherwise break the DDL).
               val stagingView = s"_${tableName}_ctas_staging"
               df.createOrReplaceTempView(stagingView)
               try {
                 spark.sql(
                   s"CREATE TABLE IF NOT EXISTS $qualified " +
-                    s"USING iceberg PARTITIONED BY ($gd) AS " +
+                    s"USING iceberg PARTITIONED BY (`$gd`) AS " +
                     s"SELECT * FROM $stagingView")
               } finally {
                 spark.catalog.dropTempView(stagingView)

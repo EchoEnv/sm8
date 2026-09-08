@@ -52,6 +52,7 @@ class RollupMaterializerTier1Spec extends AnyFunSuite with Matchers with BeforeA
     spark = SparkSession.builder()
       .appName("RollupMaterializerTier1Spec")
       .master("local[1]")
+      .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
       .config("spark.sql.catalog.iceberg_cat",
         "org.apache.iceberg.spark.SparkCatalog")
       .config("spark.sql.catalog.iceberg_cat.type", "hadoop")
@@ -83,7 +84,7 @@ class RollupMaterializerTier1Spec extends AnyFunSuite with Matchers with BeforeA
     name = "sales_t",
     version = 1,
     dimensions = List(
-      Dimension.field("order_date", "order_date"),
+      Dimension.field("order_date", "order_date", dataType = io.sm8.core.schema.SealedDataType.Timestamp),
       Dimension.field("region", "region")),
     measures = List(
       Measure("order_count", AggregateCall(fn = AggregateFn.Count, input = None, alias = "order_count")),
@@ -253,7 +254,7 @@ class RollupMaterializerTier1Spec extends AnyFunSuite with Matchers with BeforeA
     // value in the source is outside the declared scope.
     out match {
       case Left(e: EngineError.UnsupportedCapability) =>
-        e.message should include ("outside the declared refresh scope")
+        e.message should (include("outside the declared scope") or include("outside the declared refresh scope"))
       case other =>
         fail(s"expected typed refusal, got: $other")
     }
@@ -284,6 +285,22 @@ class RollupMaterializerTier1Spec extends AnyFunSuite with Matchers with BeforeA
       tableFormat = RollupMaterializer.Iceberg,
       refreshScope = scope)
     out.isRight shouldBe true
+    // Pin the strategy explicitly: assert decideStrategy selects
+    // Tier0 (not Tier1Iceberg) for a grain-less rollup. A future
+    // regression that routed grain-less to Tier 1 with arbitrary
+    // scope-widening would still pass the row-count check above
+    // but fail this one.
+    val recDf = RollupMaterializer.materialize(
+      spark, m, grainlessByRegion, eager = true,
+      tableFormat = RollupMaterializer.Iceberg,
+      refreshScope = scope)
+    val strat = RollupMaterializer.decideStrategy(
+      spark.table("iceberg_cat.sales_t__all_regions"),
+      grainlessByRegion,
+      RollupMaterializer.Iceberg,
+      scope,
+      tableExists = true)
+    strat shouldBe RollupMaterializer.PersistStrategy.Tier0
     spark.table("iceberg_cat.sales_t__all_regions").count() should be > 0L
   }
 
@@ -291,7 +308,7 @@ class RollupMaterializerTier1Spec extends AnyFunSuite with Matchers with BeforeA
   // Test 5: atomicity preserved — a failed Tier 1 refresh keeps
   // the previous snapshot serving.
   // ----------------------------------------------------------------
-  test("Tier 1 atomicity: a failed scoped refresh leaves the previous snapshot intact") {
+  test("Tier 1 atomicity: a failed scoped refresh leaves the previous snapshot intact (pre-write validation path)") {
     spark.sql("DROP TABLE IF EXISTS iceberg_cat.sales_t__by_day_region")
     seedThreeDays()
     val m = timeGrainedModel()
@@ -384,6 +401,9 @@ class RollupMaterializerTier1Spec extends AnyFunSuite with Matchers with BeforeA
   // timestamp-as-string representation would surface here.
   // ----------------------------------------------------------------
   test("Tier 1 partition-value format is stable across refresh (cross-version note)") {
+    // Pins the partition-value STRING FORMAT (what decideStrategy
+    // canon() reads off the distinct().collect()) so a Spark 3.5/4.x
+    // drift in Timestamp-as-string representation would surface here.
     spark.sql("DROP TABLE IF EXISTS iceberg_cat.sales_t__by_day_region")
     seedThreeDays()
     val m = timeGrainedModel()
@@ -392,8 +412,6 @@ class RollupMaterializerTier1Spec extends AnyFunSuite with Matchers with BeforeA
       tableFormat = RollupMaterializer.Iceberg,
       refreshScope = RollupMaterializer.RefreshScope.NoScope).isRight shouldBe true
 
-    val scope = RollupMaterializer.RefreshScope.Partitions(
-      List(Map("order_date" -> "2026-09-08")))
     // Narrow the source to the scoped partition (operator contract)
     // so the scoped refresh is accepted.
     spark.sql("DROP VIEW IF EXISTS sales_t_base")
@@ -401,6 +419,27 @@ class RollupMaterializerTier1Spec extends AnyFunSuite with Matchers with BeforeA
       "CREATE OR REPLACE TEMP VIEW sales_t_base AS " +
       "SELECT * FROM (VALUES " +
       "(timestamp'2026-09-08 10:00:00', 'east', 15L)) AS t(order_date, region, amount)")
+
+    // Capture the canonical partition values the materializer reads
+    // off the source. For daily grain the canon() trims to
+    // "yyyy-MM-dd"; the captured repr is what gets compared against
+    // the declared scope. If Spark's Timestamp.toString() format
+    // drifts (e.g. drops the trailing ".0"), this test pins it.
+    val sourceReprs: Set[String] =
+      spark.table("sales_t_base")
+        .select("order_date").distinct().collect()
+        .map(r => String.valueOf(r.get(0))).toSet
+    // Every repr in the source must contain the yyyy-MM-dd prefix
+    // — that's the substring canon() strips to. If Spark's repr
+    // ever stops including "2026-09-08", the scoped refresh below
+    // would fail (the declared scope is "2026-09-08" and the
+    // source repr would normalize to something different).
+    sourceReprs.foreach { repr =>
+      repr should include ("2026-09-08")
+    }
+
+    val scope = RollupMaterializer.RefreshScope.Partitions(
+      List(Map("order_date" -> "2026-09-08")))
     val out = RollupMaterializer.materialize(
       spark, m, dailyByRegion, eager = true,
       tableFormat = RollupMaterializer.Iceberg,
@@ -408,6 +447,58 @@ class RollupMaterializerTier1Spec extends AnyFunSuite with Matchers with BeforeA
     out match {
       case Left(e) => fail(s"scoped refresh returned Left: $e")
       case Right(_) => ()  // covered
+    }
+  }
+
+  test("Tier 1 first-write coverage: scope=[today] + full-source base refuses typed (no silent widening)") {
+    // Goat F1 fix: a scoped CREATE refuses if the source contains
+    // partitions outside the declared scope. The caller must
+    // either narrow the source OR drop the scope for a full create.
+    spark.sql("DROP TABLE IF EXISTS iceberg_cat.sales_t__by_day_region")
+    seedThreeDays()
+    val m = timeGrainedModel()
+
+    val scope = RollupMaterializer.RefreshScope.Partitions(
+      List(Map("order_date" -> "2026-09-08")))
+    val out = RollupMaterializer.materialize(
+      spark, m, dailyByRegion, eager = true,
+      tableFormat = RollupMaterializer.Iceberg,
+      refreshScope = scope)
+    out match {
+      case Left(e: EngineError.UnsupportedCapability) =>
+        e.message should include ("first-write source contains partition value(s)")
+        e.message should include ("outside the declared scope")
+      case other =>
+        fail(s"expected typed first-write refusal, got: $other")
+    }
+    // The table must NOT exist — the refusal happened before CTAS.
+    spark.catalog.tableExists("iceberg_cat.sales_t__by_day_region") shouldBe false
+  }
+
+  test("Tier 1 scope-key validation: scope entry keys must name the partition column") {
+    // Lion MED-4 fix: a scope entry whose key is NOT the grain
+    // column name is refused typed (defense-in-depth: the scope
+    // is a key+value mapping, not a value-bag).
+    spark.sql("DROP TABLE IF EXISTS iceberg_cat.sales_t__by_day_region")
+    seedThreeDays()
+    val m = timeGrainedModel()
+    RollupMaterializer.materialize(
+      spark, m, dailyByRegion, eager = true,
+      tableFormat = RollupMaterializer.Iceberg,
+      refreshScope = RollupMaterializer.RefreshScope.NoScope).isRight shouldBe true
+
+    val badScope = RollupMaterializer.RefreshScope.Partitions(
+      List(Map("wrong_col" -> "2026-09-08")))
+    val out = RollupMaterializer.materialize(
+      spark, m, dailyByRegion, eager = true,
+      tableFormat = RollupMaterializer.Iceberg,
+      refreshScope = badScope)
+    out match {
+      case Left(e: EngineError.UnsupportedCapability) =>
+        e.message should include ("scope entry keys")
+        e.message should include ("do not name the partition column")
+      case other =>
+        fail(s"expected typed bad-key refusal, got: $other")
     }
   }
 
@@ -419,21 +510,11 @@ class RollupMaterializerTier1Spec extends AnyFunSuite with Matchers with BeforeA
     * snapshot manifest. Used by the partition-isolation test to
     * verify untouched partitions reuse the same data files. */
   private def dataFilePathsFor(qualifiedTable: String): Seq[String] = {
-    // Iceberg exposes the manifest entries via a SQL helper that
-    // depends on the runtime version; use a portable Spark read of
-    // the underlying table files instead — Spark's Hadoop FS APIs
-    // return the same paths either way.
-    import scala.collection.JavaConverters._
-    val parts = qualifiedTable.split("\\.")
-    val dbName = parts(0)
-    val tblName = parts(1)
-    // Path varies by catalog implementation; use the snapshot
-    // metadata directly via iceberg's metadata table.
-    val metadataRows = spark.read
+    spark.read
       .format("iceberg")
       .load(s"$qualifiedTable.entries")
       .select("data_file.file_path")
       .collect()
-    metadataRows.map(_.getString(0)).toSeq
+      .map(_.getString(0)).toSeq
   }
 }
