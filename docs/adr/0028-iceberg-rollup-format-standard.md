@@ -171,6 +171,16 @@ the refresh).
   by connector config: `rollup.table.format = parquet | iceberg`
   (**default `parquet`** — zero behavior change for existing
   deployments until they opt in).
+- **Spark-3.5 vs Spark-4 runtime selection.** The Iceberg runtime
+  dependency is profile-gated in the spark-connector pom, mirroring
+  the existing `-Pspark4` profile: Spark 3.5 builds (default) depend
+  on `iceberg-spark-runtime-3.5_2.13:1.5.x`; `-Pspark4` builds
+  depend on `iceberg-spark-runtime-4.1_2.13:1.7.x+` (Iceberg 1.5.x
+  does not support Spark 4). No application code selects between
+  them — Maven resolves the correct runtime jar per profile, and the
+  Iceberg session factory binds to whichever is on the classpath. A
+  wrong pairing fails loud at session construction (documented in the
+  pinned-versions table above).
 - Iceberg branch: `df.write.format("iceberg").mode("overwrite")
   .saveAsTable(tableName)` — Iceberg's overwrite IS an atomic
   snapshot commit. No staging table, no swap, no drop-first.
