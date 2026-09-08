@@ -77,10 +77,15 @@ already depends on `sm8-core` (for shared types) and `sm8-platform`
 ## File-level change list
 
 - `sm8-cli/src/main/scala/io/sm8/cli/Main.scala` — new command dispatch
-  + `cmdRollupReport` (~120 LOC) + `--metrics-url` config field +
-  usage line.
-- `sm8-cli/src/test/scala/io/sm8/cli/...` — unit tests for the
-  Prometheus text parser (golden text → parsed counter map).
+  + `cmdRollupReport` + the Prometheus text parser + the ranked report
+  renderer + `--metrics-url` config field + usage line (~130 LOC).
+- `sm8-cli/src/test/scala/io/sm8/cli/RollupReportSpec.scala` (new) —
+  parser, ranking, empty-state, edge states, JSON, and HTTP-failure
+  tests against a real in-process HTTP server.
+- `sm8-cli/pom.xml` — **pre-existing defect fix**: the scalatest
+  plugin had no `<execution>` binding, so no CLI test ever ran under
+  `mvn test` (CliIntegrationSpec was silently skipped on main). Now
+  bound to the test phase, same shape as the spark-connector pom.
 - This ADR.
 
 ## Tests
@@ -121,3 +126,9 @@ already depends on `sm8-core` (for shared types) and `sm8-platform`
   has a stable shape.
 - **No operational runbook change.** `docs/runbooks/rollup-refresh.md`
   already documents the `/metrics` endpoint.
+- **Coupling note:** the per-reason extraction excludes exactly
+  `sm8_rollup_refusals_total` and `sm8_rollup_refusals_permanent_total`
+  and treats every other `sm8_rollup_refusals_*` name as a reason row.
+  If a future change adds a new SCALAR rollup counter under that
+  prefix, the exclusion list in `renderRollupReport` must be extended
+  in the same PR (the emitter and the reader are one wire contract).

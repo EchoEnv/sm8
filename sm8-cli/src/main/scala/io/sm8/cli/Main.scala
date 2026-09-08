@@ -1081,10 +1081,16 @@ object Main {
     * this project). No regex: the format in use here is
     * `# HELP name text` / `# TYPE name type` / `name value`.
     *
+    * Duplicate names use last-wins (matches Prometheus sample
+    * overwrite semantics; misconfigured proxies emitting duplicates
+    * will keep the last value).
+    *
     * @param body the raw /metrics response body
     * @return name -> value for every parseable counter line
     */
   private[cli] def parsePrometheusCounters(body: String): Map[String, Long] =
+    // Last-wins on duplicate names: matches Prometheus' scrape-side
+    // semantics for repeated metric names.
     body.linesIterator.foldLeft(Map.empty[String, Long]) { (acc, line) =>
       val trimmed = line.trim
       if (trimmed.isEmpty || trimmed.startsWith("#")) acc
@@ -1107,12 +1113,20 @@ object Main {
     val refusals  = counters.getOrElse("sm8_rollup_refusals_total", 0L)
     val permanent = counters.getOrElse("sm8_rollup_refusals_permanent_total", 0L)
     val byReason: List[(String, Long)] =
+      // Exclusion whitelist: a NEW scalar rollup counter named under
+      // the sm8_rollup_refusals_ prefix (other than these two) would
+      // silently render as a "reason" row. If MetricsHttpRoute gains
+      // another scalar rollup counter, extend the exclusions in the
+      // same change.
       counters.toList
         .collect { case (n, v) if n.startsWith("sm8_rollup_refusals_") &&
                    n != "sm8_rollup_refusals_total" &&
                    n != "sm8_rollup_refusals_permanent_total" => (n, v) }
         .map { case (n, v) => (n.stripPrefix("sm8_rollup_refusals_"), v) }
         .sortBy { case (reason, count) => (-count, reason) }
+    // Shares use integer truncation: counts may sum to <= 100% (off by
+    // up to one point per reason row). Truncation over round-to-nearest
+    // keeps the numbers honest — no false precision on a diagnostic.
     println(s"rollup routing report")
     println(s"  rewrites:            $rewrites")
     println(s"  refusals:            $refusals")
@@ -1124,12 +1138,20 @@ object Main {
       if (byReason.nonEmpty) {
         println("  refusals by reason (ranked):")
         byReason.foreach { case (reason, count) =>
+          // Integer-truncation share, pinned: 5/9 -> 55%, 4/9 -> 44%
+          // (sums may be 99%). Truncation keeps the display stable;
+          // exact shares live in the JSON output for consumers that
+          // need precision.
           val share = if (refusals == 0L) "0%" else s"${count * 100 / refusals}%"
           println(s"    ${reason.padTo(28, ' ')} $count  ($share)")
         }
       }
       val dominant = byReason.headOption
       dominant.foreach { case (reason, count) =>
+        // The 8 hint cases mirror the RollupRewriteRefusal taxonomy
+        // 1:1 (via reasonName). A new refusal case without a hint
+        // here degrades to the fallback arm — add the hint when the
+        // taxonomy grows.
         val hint = reason match {
           case "algebraicStateNotWired" => "algebraic state migration is the likely next pick"
           case "noGroupSetMatch"        => "more rollup declarations likely needed"
@@ -1158,6 +1180,12 @@ object Main {
       }
       val counters = parsePrometheusCounters(resp.body)
       val rollupCounters = counters.filter(_._1.startsWith(RollupMetricPrefix))
+      // Ambiguity guard (review M3): a 200 with a non-empty body that
+      // yields ZERO rollup counters usually means a proxy intercepted
+      // the request (HTML error page) — not "no traffic". Warn on
+      // stderr so the empty-state report cannot mask a real outage.
+      if (rollupCounters.isEmpty && resp.body.trim.nonEmpty)
+        System.err.println("sm8 rollup-report: warning — metrics body is non-empty but contains no recognizable sm8_rollup_* counters. A proxy may have intercepted the request.")
       if (cfg.json) {
         // Flat JSON map — machine consumption (cron, dashboards).
         val jsonBody = rollupCounters.toList

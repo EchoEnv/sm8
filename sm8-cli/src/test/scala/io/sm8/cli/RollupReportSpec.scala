@@ -195,11 +195,60 @@ class RollupReportSpec
 
     it("exits 1 on a non-Prometheus garbage body (parse-tolerant, no throw)") {
       responses("/metrics") = (200, "<html>not metrics</html>")
-      val (exit, out, _) = runCli(reportArgs())
+      val (exit, out, err) = runCli(reportArgs())
       // The parser drops unparseable lines; the report renders with
-      // zero counters (the empty-state path).
+      // zero counters (the empty-state path). The stderr warning
+      // distinguishes "proxy intercepted" from "no traffic".
       exit shouldBe 0
       out should include ("no rollup traffic yet")
+      err should include ("proxy may have intercepted")
+    }
+
+    it("renders totals without ranking when refusals exist but no per-reason counters") {
+      // Edge: refusals fired but the per-reason source published
+      // nothing (e.g. counters arrived before the observer plugin
+      // registered). Totals still render; no dominant line.
+      val scalarsOnly =
+        """# HELP sm8_rollup_rewrites_total rewrites
+          |sm8_rollup_rewrites_total 3
+          |# HELP sm8_rollup_refusals_total refusals
+          |sm8_rollup_refusals_total 2
+          |# HELP sm8_rollup_refusals_permanent_total permanent
+          |sm8_rollup_refusals_permanent_total 0
+          |""".stripMargin
+      responses("/metrics") = (200, scalarsOnly)
+      val (exit, out, _) = runCli(reportArgs())
+      exit shouldBe 0
+      out should include ("rewrites:            3")
+      out should include ("refusals:            2")
+      out should not include ("refusals by reason")
+      out should not include ("dominant reason")
+    }
+
+    it("renders perfect-routing state (rewrites>0, zero refusals) without a dominant line") {
+      val perfectRouting =
+        """# HELP sm8_rollup_rewrites_total rewrites
+          |sm8_rollup_rewrites_total 12
+          |# HELP sm8_rollup_refusals_total refusals
+          |sm8_rollup_refusals_total 0
+          |# HELP sm8_rollup_refusals_permanent_total permanent
+          |sm8_rollup_refusals_permanent_total 0
+          |""".stripMargin
+      responses("/metrics") = (200, perfectRouting)
+      val (exit, out, _) = runCli(reportArgs())
+      exit shouldBe 0
+      out should include ("rewrites:            12")
+      out should not include ("dominant reason")
+      out should not include ("no rollup traffic yet")
+    }
+
+    it("includes the JSON zero keys for an empty body (cron-friendly)") {
+      responses("/metrics") = (200, emptyBody)
+      val (exit, out, _) = runCli(reportArgs("--json"))
+      exit shouldBe 0
+      out should include ("\"sm8_rollup_rewrites_total\": 0")
+      out should include ("\"sm8_rollup_refusals_total\": 0")
+      out should include ("\"sm8_rollup_refusals_permanent_total\": 0")
     }
   }
 }
