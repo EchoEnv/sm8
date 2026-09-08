@@ -35,6 +35,12 @@
          pick is driver-side. No executor-side version negotiation. -->
     <spark.version>3.5.8</spark.version>
     <spark.binary.version>2.13</spark.binary.version>
+    <!-- Iceberg runtime artifact for the rollup table format
+         (ADR-0028). Default targets Spark 3.5; the -Pspark4
+         profile swaps the artifact name AND version (Iceberg
+         1.5.x does not support Spark 4 — 1.7.x+ does). -->
+    <iceberg.artifact>iceberg-spark-runtime-3.5_2.13</iceberg.artifact>
+    <iceberg.version>1.5.2</iceberg.version>
   </properties>
 
   <modules>
@@ -271,6 +277,11 @@
       <id>spark4</id>
       <properties>
         <spark.version>4.1.1</spark.version>
+        <!-- Iceberg 1.5.x does NOT support Spark 4; 1.7.x+ does.
+             Per ADR-0028 Slice 1: artifact name AND version swap
+             together with the Spark version profile. -->
+        <iceberg.artifact>iceberg-spark-runtime-4.1_2.13</iceberg.artifact>
+        <iceberg.version>1.7.1</iceberg.version>
       </properties>
       <build>
         <plugins>
