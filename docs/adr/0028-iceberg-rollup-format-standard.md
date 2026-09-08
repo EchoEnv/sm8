@@ -84,6 +84,8 @@ Three commitments follow:
 | Item | Value |
 | --- | --- |
 | Iceberg runtime (Spark 3.5 path) | `org.apache.iceberg:iceberg-spark-runtime-3.5_2.13:1.5.x` |
+| Iceberg runtime (Spark 4 path) | `org.apache.iceberg:iceberg-spark-runtime-4.1_2.13:1.7.x+` (when `-Pspark4` profile is active; Iceberg 1.5.x does NOT support Spark 4) |
+| Profile policy | The Spark connector supports `-Pspark4` (Spark 4.1.1) via `pom.xml`. The Iceberg runtime dep is profile-gated: Slice 1 ships with both dep variants and the materializer selects the matching one at classpath construction time based on the active profile. A deployment running `-Pspark4` MUST use Iceberg ≥ 1.7; a deployment running Spark 3.5 MUST use Iceberg 1.5.x. The wrong pairing fails loud at class construction (the Iceberg session factory does not bind to the runtime jar's Spark API surface). |
 | Minimum Spark session config (Iceberg branch) | `spark.sql.catalog.<name>=org.apache.iceberg.spark.SparkCatalog` and `spark.sql.catalog.<name>.type=hadoop` (the zero-extra-infra option; HMS/Nessie/Polaris/Glue all use the same writer path with the catalog-type swapped) |
 | Configuration knob | `rollup.table.format = parquet | iceberg` (connector-scoped config; default `parquet` for zero-behavior-change deployments) |
 
