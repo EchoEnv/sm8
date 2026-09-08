@@ -412,4 +412,116 @@ class ModelLoaderSpec extends AnyFunSuite with Matchers {
       case other => fail(s"expected ByPath source, got $other")
     }
   }
+
+  // -- per-pair join-keys hardening (closes the residual silent
+  //    path the R1 review flagged as F1) --
+
+  test("hardening: `keys: []` fails loud instead of producing a zero-key join") {
+    val yaml =
+      """
+        |name: m
+        |version: 1
+        |source:
+        |  byName:
+        |    table: t
+        |dimensions:
+        |  - name: region
+        |    expr: region
+        |measures:
+        |  - name: cnt
+        |    expr: count(*)
+        |joins:
+        |  - name: j1
+        |    rightModel: customers
+        |    keys: []
+        |""".stripMargin
+    val out = ModelLoader.fromString(yaml)
+    out.isLeft shouldBe true
+    out.swap.toOption.get match {
+      case ManifestError.ParseFailure(reason) =>
+        reason should include ("keys must contain at least one")
+      case other => fail(s"expected ParseFailure, got $other")
+    }
+  }
+
+  test("hardening: a malformed keys pair (size != 2) fails loud instead of being silently dropped") {
+    val yaml =
+      """
+        |name: m
+        |version: 1
+        |source:
+        |  byName:
+        |    table: t
+        |dimensions:
+        |  - name: region
+        |    expr: region
+        |measures:
+        |  - name: cnt
+        |    expr: count(*)
+        |joins:
+        |  - name: j1
+        |    rightModel: customers
+        |    keys:
+        |      - [region, region, extra]
+        |""".stripMargin
+    val out = ModelLoader.fromString(yaml)
+    out.isLeft shouldBe true
+    out.swap.toOption.get match {
+      case ManifestError.ParseFailure(reason) =>
+        reason should include ("each keys entry must be a [leftKey, rightKey] pair")
+      case other => fail(s"expected ParseFailure, got $other")
+    }
+  }
+
+  // -- source: root hardening (closes the F1 DE finding: scalar at
+  //    `source:` used to surface as misleading MissingField) --
+
+  test("hardening: a scalar at `source:` fails loud with a type error, not a misleading MissingField") {
+    val yaml =
+      """
+        |name: m
+        |version: 1
+        |source: mytable
+        |dimensions:
+        |  - name: region
+        |    expr: region
+        |measures:
+        |  - name: cnt
+        |    expr: count(*)
+        |""".stripMargin
+    val out = ModelLoader.fromString(yaml)
+    out.isLeft shouldBe true
+    out.swap.toOption.get match {
+      case ManifestError.ParseFailure(reason) =>
+        reason should include ("source: expected a map")
+      case other => fail(s"expected ParseFailure, got $other")
+    }
+  }
+
+  // -- options shape hardening variant (closes the F4 arch gap) --
+
+  test("hardening: `options: {}` is legal (empty map, distinct from absent)") {
+    val yaml =
+      """
+        |name: m
+        |version: 1
+        |source:
+        |  byPath:
+        |    format: csv
+        |    path: /tmp/data.csv
+        |    options: {}
+        |dimensions:
+        |  - name: region
+        |    expr: region
+        |measures:
+        |  - name: cnt
+        |    expr: count(*)
+        |""".stripMargin
+    val out = ModelLoader.fromString(yaml)
+    out.isRight shouldBe true
+    out.right.get.source match {
+      case s: SourceRef.ByPath => s.options shouldBe empty
+      case other => fail(s"expected ByPath source, got $other")
+    }
+  }
 }

@@ -15,7 +15,7 @@ Proposed. **Date:** 2026-09-06. **Author:** SM8 agent (per user directive 2026-0
 **Known v1 limits / follow-ups (deferred by review, not regressions):**
 - Algebraic measures (Avg/Stddev/Variance) are declared and validated but refused by BOTH the materializer and the router until partial-state columns land; when wired, prefer Welford-merge columns (n, mean, M2) over raw (n, sum, sumSq) and pin stddev n<2 -> NULL parity end-to-end (the guard builders exist in `RollupRewriter`).
 - Time-grain rollups declared but not bucketed/materialized; grain-dim value-domain contract must precede it.
-- Shared parser-hardening for joins/filters/calculated_measures YAML blocks (same silent asMap/asSeq paths the rollups parser fixed).
+- Shared parser-hardening for joins/filters/calculated_measures YAML blocks (same silent asMap/asSeq paths the rollups parser fixed). **RESOLVED** (shipped across PR-339 era block-root strictness and the parser-hardening PR: all block roots + per-entry maps + joins[].keys pairs + source.byPath.options now fail loud; the lenient plain `asSeq` helper is gone).
 - Schema-TYPE reconciliation between core `rollupSchema` and written tables (name parity test-pinned in `RollupSchemaParitySpec`).
 - Trino/DuckDB materialization per the original evaluation (Spark first).
 

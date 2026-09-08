@@ -177,7 +177,11 @@ object ModelLoader {
  }
 
  val source: Either[ManifestError, SourceRef] =
-  parseSource(asMap(root.get("source")).getOrElse(return Left(ManifestError.MissingField("source", "root"))))
+  Option(root.get("source")) match {
+   case None => Left(ManifestError.MissingField("source", "root"))
+   case Some(sourceV) =>
+    mapOrFail("source", sourceV).flatMap(parseSource)
+  }
 
  source.flatMap { src =>
   val dimsE = seqOrFail("dimensions", root.get("dimensions")).flatMap(parseDimensionsE)
@@ -396,40 +400,6 @@ object ModelLoader {
  // -- Dimension / measure / filter parsing --
 
 
- private def parseDimensions(seq: Seq[Any]): List[io.sm8.core.model.Dimension] =
- seq.toList.flatMap {
-  case m: java.util.Map[_, _] =>
-  val name = stringField(m, "name")
-  val expr = stringField(m, "expr").orElse(name)
-  (name, expr) match {
-   case (Some(n), Some(e)) => Some(io.sm8.core.model.Dimension.field(n, e))
-   case _ => None
-  }
-  case _ => None
- }
-
- /** Parses measures. PR-J (2026-08-16): the `expr:` field is now
- * parsed into a typed `AggregateCall`. The well-known legacy
- * string forms are recognized; unknown forms surface as
- * `None` (fail loud — the caller's validation reports the
- * missing measure, never a silent no-op).
- *
- * Recognized forms (case-insensitive fn name):
- * - "sum(x)"  -> AggregateCall(Sum, Some(FieldRef("x")), alias)
- * - "count(*)"  -> AggregateCall(Count, None, alias)
- * - "avg(x)", "min(x)", "max(x)",
- *  "count_distinct(x)", "countdistinct(x)" -> the matching fn
- * - bare "x" (no parens) -> AggregateCall(Sum, Some(FieldRef("x")), alias)
- *  (the legacy's implicit-sum default)
- */
- /** PR-M1 (ADR-008-L Appendix GAP 4): parse the `joins:` block.
- * YAML shape (each entry a map):
- * - name: j1
- *  rightModel: customers
- *  kind: inner   # inner|left|right|full|outer|cross (ci)
- *  keys: [[region, region]] # list of [leftKey, rightKey] pairs
- * Unknown kind -> typed ManifestError.ParseFailure (never silent).
- */
   private def parseJoins(seq: Seq[Any]): Either[ManifestError, List[io.sm8.core.model.JoinSpec]] = {
   /** Parse one join entry (a single map) into a typed JoinSpec.
     *
@@ -458,11 +428,25 @@ object ModelLoader {
      case other => Left(ManifestError.ParseFailure(
        s"joins[$nameV]: unknown kind '$other' (supported: inner, left, right, full, outer, cross)"))
    }
-   val keys: List[(String, String)] = keysRaw.toList.flatMap {
-     case pair: java.util.List[_] if pair.size == 2 =>
-       List((pair.get(0).toString, pair.get(1).toString))
-     case _ => Nil // malformed pairs skipped; ModelValidator cross-refs catch them
-   }
+   val keys: Either[ManifestError, List[(String, String)]] =
+    keysRaw.toList.foldLeft[Either[ManifestError, List[(String, String)]]](Right(Nil)) {
+     (accE, raw) => for {
+      acc <- accE
+      pair <- raw match {
+        case p: java.util.List[_] if p.size == 2 =>
+         Right((p.get(0).toString, p.get(1).toString))
+        case other =>
+         Left(ManifestError.ParseFailure(
+           s"joins[$nameV]: each keys entry must be a [leftKey, rightKey] pair " +
+           s"(got ${Option(other).map(_.getClass.getSimpleName).getOrElse("null")})"))
+      }
+     } yield acc :+ pair
+    }.flatMap { pairs =>
+     if (pairs.isEmpty)
+      Left(ManifestError.ParseFailure(
+        s"joins[$nameV]: keys must contain at least one [leftKey, rightKey] pair"))
+     else Right(pairs)
+    }
    val estimated: Either[ManifestError, Option[Long]] =
      stringField(m, "estimated_rows").orElse(stringField(m, "estimatedRows")) match {
        case Some(raw) =>
@@ -478,7 +462,8 @@ object ModelLoader {
    for {
      k <- kind
      est <- estimated
-   } yield io.sm8.core.model.JoinSpec(nameV, rightModelV, k, keys, est)
+     keyPairs <- keys
+   } yield io.sm8.core.model.JoinSpec(nameV, rightModelV, k, keyPairs, est)
   }
   seq.toList.foldLeft[Either[ManifestError, List[io.sm8.core.model.JoinSpec]]](Right(Nil)) { (accE, entry) =>
    for {
@@ -620,21 +605,8 @@ object ModelLoader {
  }
 
 
- private def parseMeasures(seq: Seq[Any]): List[io.sm8.core.model.Measure] =
- seq.toList.flatMap {
-  case m: java.util.Map[_, _] =>
-  val name = stringField(m, "name")
-  val expr = stringField(m, "expr").orElse(name)
-  (name, expr) match {
-   case (Some(n), Some(e)) => parseAggregateCall(n, e)
-   case _ => None
-  }
-  case _ => None
- }
-
  /** Parse a legacy measure-expression string into a typed
- * `AggregateCall`. 
- * unknown function names return `None` (the caller's
+ * `AggregateCall`. Unknown function names return `None` (the caller's
  * validation reports the missing measure; never a silent
  * default to a wrong aggregate). */
  private def parseAggregateCall(
