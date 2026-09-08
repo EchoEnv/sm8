@@ -61,6 +61,21 @@
       <version>${spark.version}</version>
     </dependency>
 
+    <!-- Iceberg runtime: the rollup table format standard (ADR-0028,
+         Slice 1). Artifact name + version are profile-gated —
+         iceberg-spark-runtime-3.5_2.13:1.5.x for Spark 3.5 (default),
+         iceberg-spark-runtime-4.1_2.13:1.7.1 for -Pspark4 (Iceberg
+         1.5.x does not support Spark 4). Runtime scope: the materializer
+         invokes it by Spark format name ("iceberg"), so main-scope
+         compilation does not bind to Iceberg classes directly; the jar
+         must be on the runtime classpath for the format branch to work. -->
+    <dependency>
+      <groupId>org.apache.iceberg</groupId>
+      <artifactId>${iceberg.artifact}</artifactId>
+      <version>${iceberg.version}</version>
+      <scope>runtime</scope>
+    </dependency>
+
     <!-- Contract-test base classes — pulled from sm8-core's test-jar
          so the Connector conformance spec ships to Plugin authors. -->
     <dependency>

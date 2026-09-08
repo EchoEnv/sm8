@@ -68,6 +68,22 @@ import org.apache.spark.sql.functions._
 
 object RollupMaterializer {
 
+  /** Storage format for a written rollup table (ADR-0028 Slice 1).
+    *
+    * - [[Parquet]]: plain catalog-managed Parquet (the pre-ADR
+    *   behavior; non-atomic overwrite).
+    * - [[Iceberg]]: Apache Iceberg table (atomic snapshot commit —
+    *   overwrite IS a metadata-only swap; readers on the previous
+    *   snapshot are untouched; a failed refresh never commits).
+    *   Requires the Iceberg runtime jar on the classpath AND a
+    *   configured Iceberg catalog in the Spark session
+    *   (spark.sql.catalog.<name> = SparkCatalog, type = hadoop or
+    *   a full catalog service).
+    */
+  sealed trait TableFormat extends Product with Serializable
+  case object Parquet extends TableFormat
+  case object Iceberg extends TableFormat
+
   /** Materialize ONE declared rollup for the model.
     *
     * NOTE: with the v1 temp-view persistence the view creation is
@@ -107,13 +123,30 @@ object RollupMaterializer {
       model: Model,
       spec: RollupSpec,
       eager: Boolean
+  ): Either[EngineError, String] = materialize(spark, model, spec, eager, tableFormat = RollupMaterializer.Parquet)
+
+  /** Eager variant with an explicit table format (ADR-0028 Slice 1):
+    * `TableFormat.Parquet` (default, byte-identical to the pre-ADR
+    * behavior) or `TableFormat.Iceberg` (atomic snapshot commit —
+    * no reader window, failed refresh keeps the previous snapshot).
+    *
+    * @param tableFormat the storage format for the written rollup
+    * @return the written table name, or a typed EngineError
+    */
+  def materialize(
+      spark: SparkSession,
+      model: Model,
+      spec: RollupSpec,
+      eager: Boolean,
+      tableFormat: RollupMaterializer.TableFormat
   ): Either[EngineError, String] = {
     val tableName = RollupRewriter.rollupTableName(model, spec)
     for {
       _ <- validateSpec(model, spec)
       baseDf <- readBase(spark, model)
       rollupDf <- buildRollupDf(baseDf, model, spec)
-      _ <- if (eager) persistCatalog(spark, model, spec, rollupDf, tableName) else persist(spark, rollupDf, tableName)
+      _ <- if (eager) persistCatalog(spark, model, spec, rollupDf, tableName, tableFormat)
+           else persist(spark, rollupDf, tableName)
     } yield tableName
   }
 
@@ -304,8 +337,27 @@ object RollupMaterializer {
       // dropDuplicates (the IR's Aggregate(Nil-aggregates) contract).
       if (stateCols.isEmpty)
         Right(baseDf.select(dimCols: _*).dropDuplicates(spec.dimensions))
-      else
-        Right(baseDf.groupBy(dimCols: _*).agg(stateCols.head, stateCols.tail: _*))
+      else {
+        // Spark analysis is LAZY: groupBy().agg() defers column
+        // resolution to the first action. A bad input column (e.g.
+        // amount renamed to amount_text between refreshes) would
+        // otherwise escape as an AnalysisException at collect time —
+        // past persistCatalog's typed-error boundary. Force schema
+        // resolution HERE (df.schema walks the resolved plan without
+        // running the job) so the failure becomes a typed
+        // EngineError at the materializer boundary.
+        try {
+          val rolled = baseDf.groupBy(dimCols: _*).agg(stateCols.head, stateCols.tail: _*)
+          rolled.schema // force analysis; throws AnalysisException on bad columns
+          Right(rolled)
+        } catch {
+          case e: org.apache.spark.sql.AnalysisException =>
+            Left(EngineError.UnsupportedCapability(
+              engine = "spark-connector",
+              capability = "RollupMaterializer.buildRollupDf",
+              message = s"rollups[${spec.name}]: base table missing a measure input column: ${e.getMessage}"))
+        }
+      }
     }
   }
 
@@ -381,7 +433,8 @@ object RollupMaterializer {
       model: Model,
       spec: RollupSpec,
       df: DataFrame,
-      tableName: String
+      tableName: String,
+      tableFormat: RollupMaterializer.TableFormat
   ): Either[EngineError, Unit] = {
     // Name-convention guard: the table name must be EXACTLY what
     // the core rewriter will re-scan. (No regex: a regex
@@ -395,7 +448,16 @@ object RollupMaterializer {
         engine = "spark-connector",
         capability = "RollupMaterializer.persistCatalog.name",
         message = s"refusing to write '$tableName': not a <model>__<rollup> convention name"))
-    else if (spark.catalog.tableExists(tableName))
+    // Catalog-aware existence check (review R1 C1): the table lives
+    // in the catalog the WRITE targets. For Iceberg that is the
+    // iceberg_cat catalog (catalog-qualified), NOT spark_catalog —
+    // a bare-name tableExists would always return false for Iceberg
+    // and silently route refreshes into the create-only arm (the
+    // overwrite path would never fire).
+    else if (tableFormat match {
+      case Iceberg => spark.catalog.tableExists(s"iceberg_cat.$tableName")
+      case Parquet => spark.catalog.tableExists(tableName)
+    })
       // Ticket 4/5 carry-item resolved: tableExists (O(1) lookup)
       // instead of listTables().collect(); re-materializing our OWN
       // rollup table is the refresh path — overwrite is intended.
@@ -405,7 +467,18 @@ object RollupMaterializer {
       // per-rollup EngineError, not escape and abort the whole
       // refresh (per-rollup isolation contract).
       try {
-        df.write.mode("overwrite").saveAsTable(tableName)
+        val writer = tableFormat match {
+          // Iceberg: the DEPLOYMENT configures spark.sql.catalog.<icebergCat>
+          // session-side; the writer addresses the table through that
+          // catalog so the write commits as an Iceberg snapshot (atomic —
+          // no reader window, failed refresh keeps the old data).
+          case Iceberg => df.write.format("iceberg").mode("overwrite")
+          case Parquet => df.write.mode("overwrite")
+        }
+        val qualified =
+          if (tableFormat == Iceberg) s"$icebergCatalog.$tableName"
+          else tableName
+        writer.saveAsTable(qualified)
         Right(())
       } catch {
         case scala.util.control.NonFatal(e) =>
@@ -416,7 +489,21 @@ object RollupMaterializer {
       }
     else
       try {
-        df.write.saveAsTable(tableName)
+        // Both arms use mode("overwrite"): for Iceberg the
+        // overwrite is an atomic snapshot commit (idempotent
+        // refresh); for Parquet it is the pre-existing
+        // whole-table-overwrite semantics. ErrorIfExists (the
+        // default when mode is omitted) would throw
+        // TableAlreadyExistsException on a second refresh of an
+        // Iceberg table — the exact bug the R1 review caught.
+        val writer = tableFormat match {
+          case Iceberg => df.write.format("iceberg").mode("overwrite")
+          case Parquet => df.write.mode("overwrite")
+        }
+        val qualified =
+          if (tableFormat == Iceberg) s"$icebergCatalog.$tableName"
+          else tableName
+        writer.saveAsTable(qualified)
         Right(())
       } catch {
         case scala.util.control.NonFatal(e) =>
@@ -426,6 +513,16 @@ object RollupMaterializer {
             message = s"saveAsTable('$tableName') failed: ${e.getClass.getSimpleName}: ${e.getMessage}"))
       }
   }
+
+  /** The Iceberg catalog name the deployment configured in the
+    * Spark session via `spark.sql.catalog.<name>` (ADR-0028 minimum
+    * viable catalog). Defaults to `iceberg_cat` so a deployment that
+    * follows the README's session-config recipe works out of the box;
+    * override via constructor arg or env if the catalog name differs.
+    *
+    * @return the Iceberg catalog name
+    */
+  def icebergCatalog: String = "iceberg_cat"
 
   private def persist(spark: SparkSession, df: DataFrame, tableName: String): Either[EngineError, Unit] = {
     val existing = spark.catalog.listTables().collect().find(_.name == tableName)
