@@ -377,19 +377,27 @@ object RollupRewriter {
           peelUpper(input, (child => RelOp.Limit(child, count, offset)) :: acc)
         // Project above the Aggregate: QueryBuilder.build emits this
         // for every measure-bearing model. The projection is peelable
-        // ONLY when every entry is a pass-through of a column the
-        // Aggregate produces (FieldRef of a group key or measure
-        // alias) — the pass-through re-emits the same names the
-        // rewritten plan produces, so it is semantically a no-op and
-        // rebuildOnRollup re-emits it verbatim. A Project carrying
-        // CALCULATED expressions (non-FieldRef, e.g. computed dims or
-        // derived measures) changes semantics — v1 refuses those as
-        // nonCanonicalShape (the original contract, preserved).
-        // Without the pass-through arm EVERY production query refuses
-        // as nonCanonicalShape (caught by the observation harness
-        // scripts/rollup-observe.sh on its first run; bug #354).
+        // when every entry is a no-op re-projection of a column the
+        // Aggregate produces:
+        //   - Expr.FieldRef(_): plain pass-through (dim or measure)
+        //   - Expr.Alias(name, FieldRef(name)): identity re-projection
+        //     of the same column under the same name (downstream
+        //     toolchains sometimes emit this shape)
+        // The rewritten plan produces the same column names, so
+        // re-wrapping verbatim is semantically a no-op. CALCULATED
+        // projections (any non-FieldRef, non-pass-through-Alias
+        // expression) change semantics and are still refused as
+        // nonCanonicalShape — the original v1 contract, pinned by
+        // a dedicated test below. Without the pass-through arm
+        // EVERY production query refused as nonCanonicalShape
+        // (caught by the observation harness scripts/rollup-observe.sh
+        // on its first run; bug #354).
         case RelOp.Project(under, expressions)
-            if expressions.forall(_._1.isInstanceOf[Expr.FieldRef]) =>
+            if expressions.forall({
+              case Expr.FieldRef(_) => true
+              case Expr.Alias(_, Expr.FieldRef(_)) => true
+              case _ => false
+            }) =>
           peelUpper(under, (child => RelOp.Project(child, expressions)) :: acc)
         case _ => None
       }

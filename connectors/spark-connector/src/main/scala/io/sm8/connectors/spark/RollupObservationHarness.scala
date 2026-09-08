@@ -255,7 +255,19 @@ object RollupObservationHarness {
       val expectedRefusals = QueryMix.size - expectedRewrites
       println()
       println(s"  EXPECTED (from the query mix): rewrites=$expectedRewrites refusals=$expectedRefusals")
-      val routeMatch = snap.rewrites == expectedRewrites && snap.refusals == expectedRefusals
+      // Verdict gates (review R1 MEDIUM): totals AND per-reason
+      // distribution. A totals-only check could pass while the
+      // per-reason breakdown silently drifts (e.g. all refusals
+      // landing on the wrong reason), which is the diagnostic drift
+      // the harness exists to catch.
+      val totalsMatch = snap.rewrites == expectedRewrites && snap.refusals == expectedRefusals
+      val expectedReasons = QueryMix.filterNot(_._4).size
+      val reasonMatch =
+        snap.refusalsByReason.size == 1 &&
+        snap.refusalsByReason.head._2 == expectedReasons.toLong
+      val routeMatch = totalsMatch && reasonMatch
+      println(s"  REASON MATCH: $reasonMatch (expected 1 reason class with $expectedReasons refusals; " +
+        s"got ${snap.refusalsByReason.map(r => s"${r._1}=${r._2}").mkString(", ")})")
       println(s"  ROUTING MATCH: $routeMatch")
       val allOk = outcomes.forall(_._3) && routeMatch
       println(s"  HARNESS VERDICT: ${if (allOk) "PASS" else "FAIL"}")
