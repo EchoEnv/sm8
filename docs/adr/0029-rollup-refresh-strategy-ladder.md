@@ -45,8 +45,8 @@ operators raised both:
    | `Decomposability` | `AggregateFn` cases | Incremental-merge status |
    | --- | --- | --- |
    | `Additive` | `Sum`, `Count`, `Min`, `Max` | merge-safe: `f(f(a,b),c) == f(a,b,c)`. MIN/MAX are algebraically additive (idempotent); the delete hazard below is a *MERGE-cost* issue (pre-image removal), not an algebra one. |
-   | `Algebraic` | `Avg`, `StddevSample`, `StddevPopulation`, `VarianceSample`, `VariancePopulation` | safe iff the rollup stores the named partial state (sum, count, sumSq) — sum+count for AVG, +sumSq for Stddev/Variance |
-   | `Approximable` | `CountDistinct`, `ApproxPercentile` | re-aggregable ONLY via sketch state (HLL/t-digest), result approximate — v1 routing refuses |
+   | `Algebraic` | `Avg`, `StddevSample`, `StddevPopulation`, `VarianceSample`, `VariancePopulation` | safe iff the rollup stores the named partial state — `(sum, count)` for `Avg`; `(count, sum, m2)` for Stddev/Variance, where `m2 = var_pop(f) * count(f)` is the Welford-style sum of squared deviations the connector already emits (`RollupMaterializer` Algebraic arm). NOT the naive `(n, sum, sumSq)` shape: ADR-0023's cancellation tripwire empirically BREACHED it on the 1e8±1.0 fixture (3e17-scale sumSq leaves no double digits for ±1 dispersion). Tier-2 delta-merge must combine `m2` additively (Chan et al. parallel form), never recompute from sum/sumSq.
+   | `Approximable` | `CountDistinct`, `ApproxPercentile` | re-aggregable ONLY via sketch state, result approximate — and the sketch families differ: HLL for `CountDistinct`; t-digest / GK-summary / DDSketch for `ApproxPercentile`. v1 routing refuses both.
    | `Holistic` | `Median`, `PercentileContinuous`, `PercentileDiscrete` | NOT re-aggregable, period |
    | `Positional` | `First`, `Last` | NOT re-aggregable — needs argmin/argmax (value, timestamp) pre-image |
 
@@ -169,7 +169,8 @@ If any gate fails, stay at Tier 1 and re-measure next quarter.
   (pre-image, post-image) — the old and new row contents. Additive
   measures (`Sum`/`Count`/`Min`/`Max`) combine pre-image removal +
   post-image addition. Algebraic measures (`Avg`/`Stddev`×2/`Variance`×2)
-  need both pre and post to recompute sum / sumSq / count correctly.
+  need both pre and post to recompute sum / m2 / count correctly (m2
+  per the Welford partial-state shape above, NOT sum-of-squares).
   `Holistic` / `Positional` / `Approximable` measures do NOT participate
   in Tier 2 — those rollups fall back to Tier 1 semantics for those
   measures (split the measure set per `Decomposability` and route the
