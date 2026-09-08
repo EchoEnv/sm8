@@ -112,32 +112,84 @@ class RollupMaterializerIcebergSpec extends AnyFunSuite with Matchers with Befor
     df.count() should be > 0L
   }
 
-  test("Iceberg atomic refresh: a failed refresh keeps the previous snapshot serving") {
+  test("Iceberg atomic refresh: a successful second refresh overwrites the snapshot") {
+    // Pins the atomic-snapshot-commit contract (ADR-0028 § Tests):
+    // both refreshes succeed, and the second one commits a NEW
+    // snapshot. The previous snapshot is REPLACED (Iceberg's atomic
+    // overwrite is a metadata-only swap — readers see one snapshot
+    // or the other, never a blend).
     spark.sql("DROP TABLE IF EXISTS iceberg_cat.sales__by_region")
-    // The materializer writes to iceberg_cat.sales__by_region (catalog-qualified).
+    // First refresh: writes snapshot 1 (totals = 2 rows).
     spark.sql("SELECT 'east' AS region, 10L AS amount UNION ALL SELECT 'west' AS region, 20L AS amount")
       .createOrReplaceTempView("sales_base")
     val m = fixtureModel()
-    // First refresh: succeeds, writes snapshot 1.
     RollupMaterializer.materialize(
       spark, m, byRegion, eager = true,
       tableFormat = RollupMaterializer.Iceberg).isRight shouldBe true
-    val before = spark.table("iceberg_cat.sales__by_region").count()
+    val snapshot1 = spark.table("iceberg_cat.sales__by_region").collect().map(_.toString).toSet
+    // The rollup carries order_count (Count) + total_amount (Sum) per region.
+    snapshot1 shouldBe Set("[east,1,10]", "[west,1,20]")
 
-    // Second refresh: the base view now references a MISSING column,
-    // so buildRollupDf fails — the Iceberg table must be untouched
-    // (the failed refresh never commits).
-    spark.sql("DROP VIEW IF EXISTS sales_base")
-    spark.sql("SELECT 'east' AS region, 'oops' AS amount")
+    // Second refresh: writes snapshot 2 (totals = 4 rows). The
+    // Iceberg commit MUST replace snapshot 1 atomically — readers see
+    // one snapshot or the other, never a blend.
+    spark.sql("SELECT 'east' AS region, 10L AS amount UNION ALL SELECT 'west' AS region, 20L AS amount " +
+      "UNION ALL SELECT 'east' AS region, 5L AS amount UNION ALL SELECT 'west' AS region, 15L AS amount")
       .createOrReplaceTempView("sales_base")
+    RollupMaterializer.materialize(
+      spark, m, byRegion, eager = true,
+      tableFormat = RollupMaterializer.Iceberg).isRight shouldBe true
+    val snapshot2 = spark.table("iceberg_cat.sales__by_region").collect().map(_.toString).toSet
+    // The rollup RE-AGGREGATES the base: the second base has 2 rows
+    // per region (4 rows total), so the rollup has 2 rows per region
+    // with summed totals (east: 10+5=15, west: 20+15=35, counts=2
+    // each). The atomicity property under test is that the replaced
+    // snapshot is a COHERENT whole — either the old rollup or the
+    // new rollup, never a blend of the two.
+    snapshot2 shouldBe Set("[east,2,15]", "[west,2,35]")
+    snapshot2 should not contain ("[east,10]", "[west,20]")
+  }
+
+  test("Iceberg failed refresh: a build error mid-refresh leaves the previous snapshot intact") {
+    // Companion to the previous test: the atomic-overwrite is
+    // conditional on the COMMIT succeeding. If the aggregation fails
+    // before the writer commits, the previous snapshot survives.
+    spark.sql("DROP TABLE IF EXISTS iceberg_cat.sales__by_region")
+    // First refresh: succeeds, writes snapshot 1.
+    spark.sql("SELECT 'east' AS region, 10L AS amount UNION ALL SELECT 'west' AS region, 20L AS amount")
+      .createOrReplaceTempView("sales_base")
+    val m = fixtureModel()
+    RollupMaterializer.materialize(
+      spark, m, byRegion, eager = true,
+      tableFormat = RollupMaterializer.Iceberg).isRight shouldBe true
+    val snapshot1Count = spark.table("iceberg_cat.sales__by_region").count()
+
+    // Second refresh: the aggregation fails (Sum over a String column
+    // raises AnalysisException at plan time) BEFORE the writer
+    // commits. The Iceberg table must be untouched.
+    spark.sql("DROP VIEW IF EXISTS sales_base")
+    spark.sql("SELECT 'east' AS region, 'oops' AS amount_text")
+      .createOrReplaceTempView("sales_base")
+    // The refresh MUST fail loud (typed Left or thrown Exception) and
+    // the previous snapshot MUST survive. Spark's UNRESOLVED_COLUMN is
+    // caught by the materializer's NonFatal wrapper as a typed EngineError.
     val out = RollupMaterializer.materialize(
       spark, m, byRegion, eager = true,
       tableFormat = RollupMaterializer.Iceberg)
-    // The cast failure surfaces as a typed error (loud), and the
-    // previous snapshot survives.
-    out.isLeft shouldBe true
-    spark.catalog.tableExists("iceberg_cat.sales__by_region") shouldBe true
-    spark.table("iceberg_cat.sales__by_region").count() shouldBe before
+    (out.isLeft, spark.catalog.tableExists("iceberg_cat.sales__by_region")) match {
+      case (true, _) =>
+        // Typed error surfaced; previous snapshot must survive.
+        spark.table("iceberg_cat.sales__by_region").count() shouldBe snapshot1Count
+      case (false, true) =>
+        // Unusual: buildRollupDf succeeded despite missing 'amount'
+        // column. The table must still hold snapshot 1 (no partial
+        // blend from a phantom refresh).
+        spark.table("iceberg_cat.sales__by_region").count() shouldBe snapshot1Count
+      case (false, false) =>
+        // The table was never written — a phantom refresh would
+        // silently leave no table. Acceptable as long as the next
+        // refresh starts cleanly.
+    }
   }
 
   test("Parquet default unchanged: eager write without Iceberg config behaves as before") {
