@@ -400,6 +400,18 @@ private def readResolve(): Object =
   // plan (the model's Filter chain) are part of the plan itself;
   // the base-table pushdown filter belongs to the base DF and is
   // dropped WITH the base DF on the rewritten path.
+  //
+  // REQUEST-LEVEL whereFilters DRIFT on the rewritten path
+  // (deliberate, see docs/adr/0026 Consequences): the base path
+  // pushes request.whereFilters into the BASE source (preFilteredDf)
+  // and SUPPRESSES the in-memory whereFiltersOp. The rewritten path
+  // drops the base DF, so whereFiltersOp RUNS — the request filter
+  // is re-applied in-memory as df.filter on the rollup-derived DF
+  // AFTER the aggregate. Two consequences operators must know:
+  // (a) the filter loses source-side pushdown (no Parquet row-group
+  // pruning on the rollup read); (b) predicates must reference
+  // columns present on the rollup scan (the model's declared dims —
+  // true for all v1 rollups, which store every declared dim column).
   routedPreFilteredDf = if (routing.rewritten) None else Some(preFilteredDf)
   // PR-32: canonical `compileRelOp(model, relOp, ctx, scan, preFilteredDf)`
   // overload validates the model against the resolved source's
@@ -855,7 +867,7 @@ private[spark] def applyPostCompilePipeline(
    *                  the caller must NOT pair it with the base
    *                  table's pre-filtered DataFrame
    */
- final case class RoutingOutcome(plan: io.sm8.core.rel.RelOp, rewritten: Boolean)
+ private[spark] final case class RoutingOutcome(plan: io.sm8.core.rel.RelOp, rewritten: Boolean)
 
  /** The rollup-routing fold (design: docs/adr/0026).
    *
