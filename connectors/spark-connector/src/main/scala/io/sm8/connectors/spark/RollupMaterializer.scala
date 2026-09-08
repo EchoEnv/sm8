@@ -621,7 +621,10 @@ object RollupMaterializer {
             // "2026-09-08 00:00:00.0"). Sub-daily grains compare
             // verbatim — take-10 would false-accept an hour-grain
             // scope ("2026-09-08 10" collapsing to "2026-09-08").
-            val daily = spec.timeGrain.contains("day")
+            // Case-insensitive gate (final-gate review, lion LOW):
+            // normalizeGrain lowercases, so "Day"/"DAY" labels hit the
+            // same path as "day".
+            val daily = RollupRewriter.normalizeGrain(spec.timeGrain).contains("day")
             def canon(v: String): String =
               if (daily && v.length > 10) v.take(10) else v
             val sourceValues: Set[String] =
