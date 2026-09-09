@@ -56,11 +56,26 @@ object RollupWatermark {
 
   /** The watermark table name for a rollup (deterministic sibling:
     * `<model>__<rollup>__watermark` in the same catalog). */
+  /** The watermark table name for one rollup (`<rollup>__watermark`,
+    * sibling in the same Iceberg catalog).
+    *
+    * @param model the host model
+    * @param spec  the rollup declaration
+    * @return the unqualified watermark table name
+    */
   def tableName(model: Model, spec: RollupSpec): String =
     s"${RollupRewriter.rollupTableName(model, spec)}__watermark"
 
   /** Ensure the watermark table exists (create-if-absent,
     * driver-side DDL; idempotent — second call is a no-op check). */
+  /** Create the watermark table if absent (unpartitioned,
+    * metadata-scale).
+    *
+    * @param spark the session
+    * @param model the host model
+    * @param spec  the rollup declaration
+    * @return the catalog-qualified table name
+    */
   def ensureTable(spark: SparkSession, model: Model, spec: RollupSpec): String = {
     val qualified = s"$IcebergCatalog.${tableName(model, spec)}"
     if (!spark.catalog.tableExists(qualified)) {
@@ -116,6 +131,10 @@ object RollupWatermark {
     * is the connector-side instantiation site the rewriter never
     * performs.
     *
+    * @param spark        the session
+    * @param model        the host model
+    * @param spec         the rollup declaration
+    * @param queryBuckets the canonical bucket values the query touches
     * @return Some(refusal) when the policy is FinalRequired and at
     *         least one queried bucket is non-final; None otherwise
     */

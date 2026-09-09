@@ -227,8 +227,10 @@ object RollupMergeRefresher {
     scopeValues: List[String],
     spec: RollupSpec): Either[EngineError, Unit] = {
     val daily = RollupRewriter.normalizeGrain(spec.timeGrain).contains("day")
-    def canon(v: String): String =
-      if (daily && v.length > 10) v.take(10) else v
+    // Local canonicalizer: day-grain values arrive as yyyy-MM-dd
+    // HH:mm:ss from the string cast; trim to the 10-char date form.
+    val canon: String => String =
+      v => if (daily && v.length > 10) v.take(10) else v
     val present = source.select(col(grainDim).cast("string"))
       .distinct().collect().map(r => canon(r.getString(0))).toSet
     val declared = scopeValues.map(canon).toSet
