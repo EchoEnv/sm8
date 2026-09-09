@@ -56,8 +56,11 @@ object GateBTraceRunner {
     * the previous sys.exit-inside-try pattern threw ControlThrowable,
     * racing spark.stop() in finally against Netty/listener-bus threads
     * that may still be mid-stop. The probe's own main avoids this
-    * pattern — we align.) */
-  def main(args: Array[String]): Int = {
+    * pattern — we align.)
+    *
+    * @param args the CLI arguments (see [[parseArgs]])
+    * @return the process exit code
+    */
     val parsed = parseArgs(args) match {
       case Right(c) => c
       case Left(usage) =>
@@ -71,6 +74,11 @@ object GateBTraceRunner {
     // will OOM; "staggering" is not a guard).
     val memLines = java.nio.file.Files
       .readAllLines(java.nio.file.Paths.get("/proc/meminfo")).asScala
+    /** Read a `/proc/meminfo` size value (e.g. `MemTotal: 7730 kB`).
+      *
+      * @param key the line prefix (e.g. `"MemTotal:"`)
+      * @return the value in kB, or 0 if the line is missing
+      */
     def kb(key: String): Long =
       memLines.find(_.startsWith(key)).map(_.trim.split("\\s+")(1).toLong).getOrElse(0L)
     val memTotal = kb("MemTotal:")
@@ -135,7 +143,10 @@ object GateBTraceRunner {
   }
 
   /** Scala-main entry — JVM exits AFTER main returns so Spark
-    * lifecycle completes cleanly. */
+    * lifecycle completes cleanly.
+    *
+    * @param args the CLI arguments (see [[parseArgs]])
+    */
   def mainEntry(args: Array[String]): Unit = sys.exit(main(args))
 
   /** CLI argument parsing — minimal two-flag parser (no deps on
