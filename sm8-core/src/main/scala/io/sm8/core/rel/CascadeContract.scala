@@ -334,26 +334,33 @@ object CascadeContract {
         // daily `order_date_day` — the target's dim is the
         // date_trunc'd form of the source's, SAME underlying axis.
         // Without calendar metadata, core's structural proxy for
-        // "same axis" is the naming convention: both names share
-        // a common base token (order_date_*) and differ only by
-        // the grain-suffix token. Shared-base + strictly-coarser
-        // grain = structurally consistent; the date_trunc relation
-        // itself is the author's declaration, verified dynamically
-        // connector-side. Names sharing NO base token are different
-        // axes (day grain over ship-date-hour is not a coarsening
-        // of order-date-hour) — refused.
-        // Same-axis rule (ibex F-HIGH fix): the canonical ADR-0031
-        // case is hourly `order_date_hour` → daily `order_date_day` —
-        // targets share ALL tokens with the source EXCEPT the last
-        // (the grain-suffix token). The old proxy's second disjunct
-        // false-accepted `order_date_day_carrier` (piggyback dim) and
-        // `ab_ef` vs `ab_cd` (different axis, same shape). Correct:
-        // sizes equal AND all-but-last tokens equal. The date_trunc
-        // relation itself is the author's declaration, verified
-        // dynamically connector-side.
+        // "same axis" is the naming convention: sizes equal, all-but-last
+        // tokens equal, AND the differing last token is a KNOWN GRAIN
+        // SUFFIX (the only legitimate change during coarsening).
+        // Shared-base + strictly-coarser grain = structurally
+        // consistent; the date_trunc relation itself is the author's
+        // declaration, verified dynamically connector-side. Names
+        // sharing NO base token are different axes (day grain over
+        // ship-date-hour is not a coarsening of order-date-hour) —
+        // refused.
+        // Same-axis rule (ibex F-HIGH round-2): the canonical
+        // ADR-0031 case is hourly `order_date_hour` → daily
+        // `order_date_day` — sizes equal, all-but-last tokens equal,
+        // AND the differing LAST token must be a known grain suffix
+        // (the only legitimate thing a dim name's last token can
+        // change to during a coarsening). The grain-vocab gate
+        // closes the residual false-accept `ab_ef` vs `ab_cd`
+        // (different axis, same shape — last tokens are not grain
+        // vocabulary values). Multi-token-piggyback
+        // `order_date_day_carrier` is still closed by the size
+        // equality. The date_trunc relation itself remains the
+        // author's declaration, verified dynamically connector-side.
         val aTok = sgd.split('_').toList
         val bTok = tgd.split('_').toList
-        val sameAxis = aTok.size == bTok.size && aTok.init == bTok.init
+        val lastIsGrainSuffix = aTok.size == bTok.size &&
+          aTok.lastOption.exists(RollupRewriter.KnownGrains.contains) &&
+          bTok.lastOption.exists(RollupRewriter.KnownGrains.contains)
+        val sameAxis = lastIsGrainSuffix && aTok.init == bTok.init
         if (grainOrdinal(tg) <= grainOrdinal(sg))
           Some(s"target grain '$tg' is NOT coarser than source grain '$sg'")
         else if (!sameAxis)
