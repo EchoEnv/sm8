@@ -325,10 +325,15 @@ object RollupRefreshCostProbe {
     val grainDim = spec.grainDimension.getOrElse("")
     val scopeDates: Set[String] = scope match {
       case RollupMaterializer.RefreshScope.Partitions(maps) =>
-        maps.flatMap(_.keySet).flatMap { key =>
-          val v = maps.flatMap(m => m.get(key)).headOption.getOrElse("")
-          Some(localDateOf(s"$key=$v"))
-        }.toSet
+        // L-D (R1 kitten): the previous headOption lookup dropped every
+        // value after the first for any repeated key. Collect all
+        // (key, value) pairs across maps and compute one localDate per
+        // pair — handles the multi-map Partitions shape (List[Map[...]])
+        // correctly. Runner only emits single-map scopes today, but the
+        // data model permits List[Map[...]].
+        maps.toSet[Map[String, String]].flatMap { m =>
+          m.toList.map { case (k, v) => localDateOf(s"$k=$v") }
+        }
       case RollupMaterializer.RefreshScope.NoScope => Set.empty
     }
     // grainDim is retained for the exclusion-reason wording; the

@@ -8,8 +8,9 @@
  *     first).
  *   - JSON output round-trip: the wrapper object carries
  *     requestedModel / collectedAtEpochMs / collectedAtIso /
- *     measuredFixture / report / rendered, and the report fields
- *     survive a Jackson write→read cycle.
+ *     measuredSource (R1 poodle H2 rename from measuredFixture) /
+ *     report / rendered, and the report fields survive a Jackson
+ *     write→read cycle.
  */
 package io.sm8.connectors.spark
 
@@ -106,6 +107,13 @@ class GateBTraceRunnerSpec extends AnyFunSuite with Matchers {
       "--rollup", "by_region"))
     out.isLeft shouldBe true
     out.left.get should include("--rollup requires --model-path")
+  }
+
+  test("parseArgs: --model-path + --rollup without --scope-date is rejected (ibis H2)") {
+    val out = callParseArgs(Array("--model", "m1", "--out-path", "/tmp/x.json",
+      "--model-path", "/tmp/m.yaml", "--rollup", "by_day_region"))
+    out.isLeft shouldBe true
+    out.left.get should include("--scope-date")
   }
 
   test("parseArgs: --scope-date without --model-path is rejected (synthetic has no scope)") {
