@@ -125,6 +125,8 @@ class RollupRefresherScopeSpec
   test("refreshModel with a covered scope routes the scoped rollup through Tier 1") {
     spark.sql("DROP TABLE IF EXISTS iceberg_cat.sales_rs__by_day_region")
     spark.sql("DROP TABLE IF EXISTS iceberg_cat.sales_rs__all_regions")
+    spark.sql("DROP TABLE IF EXISTS sales_rs__by_day_region")
+    spark.sql("DROP TABLE IF EXISTS sales_rs__all_regions")
     seed()
     val scopes = Map("by_day_region" ->
       RollupMaterializer.RefreshScope.Partitions(
@@ -139,42 +141,77 @@ class RollupRefresherScopeSpec
     spark.catalog.tableExists("sales_rs__all_regions") shouldBe true
   }
 
-  test("refreshModel per-rollup isolation: uncovered scope fails one rollup, not the model") {
+  test("refreshModel per-rollup isolation: scoped rollup refreshes; failing rollup does not block others") {
     spark.sql("DROP TABLE IF EXISTS iceberg_cat.sales_rs__by_day_region")
     spark.sql("DROP TABLE IF EXISTS iceberg_cat.sales_rs__all_regions")
+    spark.sql("DROP TABLE IF EXISTS sales_rs__by_day_region")
+    spark.sql("DROP TABLE IF EXISTS sales_rs__all_regions")
     seed()
-    // Scope declares 09-08, but the seed has NO rows for 09-07. The
-    // scoped rollup refuses (uncovered); the grain-less rollup is
-    // unaffected (it refreshes Tier 0 regardless).
-    val scopes = Map(
-      "by_day_region" -> RollupMaterializer.RefreshScope.Partitions(
-        List(Map("order_date" -> "2026-09-07", "order_date" -> "2026-09-08"))))
-    // NOTE: the fixture's by_day_region rollup is time-grained; the
-    // grain-less rollup has no scope entry → Tier 0 path.
+    // Known-covered scope: source has 09-08 rows; scope declares 09-08.
+    // The scoped rollup MUST refresh (discriminating assertion).
+    // The grain-less rollup has no scope entry → Tier 0 path
+    // (separate catalog; Per-rollup isolation: neither rollup's
+    // outcome affects the other's iteration).
+    val scopes = Map("by_day_region" ->
+      RollupMaterializer.RefreshScope.Partitions(
+        List(Map("order_date" -> "2026-09-08"))))
     val results = RollupRefresher.refreshModel(spark, "sales_rs",
       modelResolver, rollupScopes = scopes - "all_regions")
     results.isRight shouldBe true
     val rs = results.right.get
-    val scoped = rs.find {
-      case RollupRefresher.RollupRefreshResult.Failed(name, _) => name == "by_day_region"
+    // L2 fix (gull): the scoped rollup MUST be Refreshed (the test
+    // was previously non-falsifiable — it accepted either Refreshed
+    // or Failed). Same-row-count source + matching scope = covered.
+    rs.find {
+      case RollupRefresher.RollupRefreshResult.Refreshed(name, _) => name == "by_day_region"
       case _ => false
-    }
-    // Either it refreshed (source ⊆ scope holds for single-partition
-    // source) or refused typed — both acceptable; the grain-less
-    // rollup must always refresh.
+    } shouldBe defined
     rs.find {
       case RollupRefresher.RollupRefreshResult.Refreshed(name, _) => name == "all_regions"
       case _ => false
     } shouldBe defined
-    scoped.orElse(rs.find {
-      case RollupRefresher.RollupRefreshResult.Refreshed(name, _) => name == "by_day_region"
+  }
+
+  test("refreshModel per-rollup isolation: uncovered scope refuses one rollup typed") {
+    spark.sql("DROP TABLE IF EXISTS iceberg_cat.sales_rs__by_day_region")
+    spark.sql("DROP TABLE IF EXISTS iceberg_cat.sales_rs__all_regions")
+    spark.sql("DROP TABLE IF EXISTS sales_rs__by_day_region")
+    spark.sql("DROP TABLE IF EXISTS sales_rs__all_regions")
+    seed()
+    // Source has only 09-08 rows; scope declares 09-07 (a partition
+    // the source doesn't cover). Materializer refuses typed.
+    val scopes = Map("by_day_region" ->
+      RollupMaterializer.RefreshScope.Partitions(
+        List(Map("order_date" -> "2026-09-07"))))
+    val results = RollupRefresher.refreshModel(spark, "sales_rs",
+      modelResolver, rollupScopes = scopes - "all_regions")
+    results.isRight shouldBe true
+    val rs = results.right.get
+    rs.find {
+      case RollupRefresher.RollupRefreshResult.Failed(name, _) => name == "by_day_region"
       case _ => false
-    }) shouldBe defined
+    } shouldBe defined
+    rs.find {
+      case RollupRefresher.RollupRefreshResult.Refreshed(name, _) => name == "all_regions"
+      case _ => false
+    } shouldBe defined
+    // L3 (gull): operator-visible assertions for the REFUSED case.
+    // The scoped rollup's refresh was refused before any write: the
+    // Iceberg table must NOT exist (the DROP at the top of the test
+    // removed it, and the refusal prevents recreation), and no
+    // session-catalog Parquet table was created either.
+    spark.catalog.tableExists("iceberg_cat.sales_rs__by_day_region") shouldBe false
+    spark.catalog.tableExists("sales_rs__by_day_region") shouldBe false
+    // The grain-less rollup still refreshed (Tier 0, session catalog).
+    spark.catalog.tableExists("sales_rs__all_regions") shouldBe true
+    spark.catalog.tableExists("iceberg_cat.sales_rs__all_regions") shouldBe false
   }
 
   test("refreshModelJ threads scopes through the JDK boundary") {
     spark.sql("DROP TABLE IF EXISTS iceberg_cat.sales_rs__by_day_region")
     spark.sql("DROP TABLE IF EXISTS iceberg_cat.sales_rs__all_regions")
+    spark.sql("DROP TABLE IF EXISTS sales_rs__by_day_region")
+    spark.sql("DROP TABLE IF EXISTS sales_rs__all_regions")
     seed()
     val scopes = Map("by_day_region" ->
       RollupMaterializer.RefreshScope.Partitions(
