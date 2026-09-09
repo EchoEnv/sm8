@@ -271,7 +271,7 @@ class StdioEndToEndSpec extends AnyFunSuite with Matchers {
         // would pass even for an empty `"tools":[]` array. Parse the
         // JSON (via jackson, the same mapper the MCP wire uses) and
         // assert the actual count matches the smoke script's
-        // expectation of 5 tools.
+        // expectation of 7 tools.
         val mapper = new com.fasterxml.jackson.databind.ObjectMapper()
         val toolCount = try {
           val parsed = mapper.readTree(toolsResp)

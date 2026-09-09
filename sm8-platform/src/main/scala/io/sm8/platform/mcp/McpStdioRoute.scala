@@ -345,7 +345,9 @@ object McpStdioRoute {
  * calling `buildServer()` (which starts the SDK's read loop)
  * and `awaitClose(...)` to block the main thread.
  *
- * Per the stdio design §Files changed: the 5 tools come from the SHARED
+ * Per the stdio design §Files changed: the 7 tools (query, list_models,
+ * describe_model, list_engines, get_metrics — plus list_plugins and
+ * list_hooks from PR #313) come from the SHARED
  * `Sm8ToolHandlers` factory in sm8-platform (moved from sm8-mcp
  * by a prior PR cleanup). The factory enforces the JVM-singleton
  * invariant (a prior PR's de-L6).
