@@ -94,6 +94,47 @@ class GateBTraceRunnerSpec extends AnyFunSuite with Matchers {
     out.left.get should include("requires a non-empty value")
   }
 
+  test("parseArgs: live-model mode requires --rollup when --model-path set") {
+    val out = callParseArgs(Array("--model", "m1", "--out-path", "/tmp/x.json",
+      "--model-path", "/tmp/m.yaml"))
+    out.isLeft shouldBe true
+    out.left.get should include("--model-path requires --rollup")
+  }
+
+  test("parseArgs: --rollup without --model-path is rejected") {
+    val out = callParseArgs(Array("--model", "m1", "--out-path", "/tmp/x.json",
+      "--rollup", "by_region"))
+    out.isLeft shouldBe true
+    out.left.get should include("--rollup requires --model-path")
+  }
+
+  test("parseArgs: --scope-date without --model-path is rejected (synthetic has no scope)") {
+    val out = callParseArgs(Array("--model", "m1", "--out-path", "/tmp/x.json",
+      "--scope-date", "2026-09-08"))
+    out.isLeft shouldBe true
+    out.left.get should include("--scope-date requires --model-path")
+  }
+
+  test("parseArgs: live-model mode parses --model-path + --rollup + --scope-date") {
+    val out = callParseArgs(Array("--model", "m1", "--out-path", "/tmp/x.json",
+      "--model-path", "/tmp/m.yaml", "--rollup", "by_region",
+      "--scope-date", "2026-09-08"))
+    out.isRight shouldBe true
+    val c = out.right.get
+    c.modelPath shouldBe Some("/tmp/m.yaml")
+    c.rollup shouldBe Some("by_region")
+    c.scopeDate shouldBe Some("2026-09-08")
+  }
+
+  test("parseArgs: synthetic-mode (no --model-path) is still accepted") {
+    val out = callParseArgs(Array("--model", "m1", "--out-path", "/tmp/x.json"))
+    out.isRight shouldBe true
+    val c = out.right.get
+    c.modelPath shouldBe None
+    c.rollup shouldBe None
+    c.scopeDate shouldBe None
+  }
+
   test("JSON wrapper round-trips through Jackson write→read") {
     val mapper = new ObjectMapper()
     val wrapper = new java.util.LinkedHashMap[String, Object]()

@@ -9,17 +9,45 @@ Operational procedure for ADR-0029 §Gate B item 3: collecting the ≥
 `GateBTraceRunner` (spark-connector) — a cron-friendly wrapper around
 `RollupRefreshCostProbe` that persists one JSON report per run.
 
-## Honest limitation (read first)
+## Two modes: live model vs synthetic fixture (read first)
 
-The probe currently measures its **documented synthetic fixture**
-(a 1-partition, 3-row seed exercising scoped Tier 0 + Tier 1). It does
-NOT yet measure a live production model. The instrumentation shape,
-the metric definitions, and the JSON persistence are production-ready;
-the data source is synthetic. Wiring the probe against a live
-registered model is future work (tracked under ADR-0029 §Gate B item
-3's "representative model" clause). Until then, running the trace
-clock exercises the procedure and produces comparable-shape data — it
-does not yet produce Gate B decision-grade numbers.
+The runner supports TWO modes:
+
+**Live-model mode** (decision-grade — this is the Gate B evidence):
+
+```bash
+spark-submit --class io.sm8.connectors.spark.GateBTraceRunner \
+  <connector-jar> \
+  --model <label-for-logs> \
+  --out-path /var/lib/sm8/gate-b/traces/$(date +%Y-%m-%d).json \
+  --model-path /path/to/model.yaml \
+  --rollup <rollup-name> \
+  --scope-date <yyyy-MM-dd>
+```
+
+Loads the model YAML manifest via `ModelLoader.fromStream`, resolves
+the named rollup, and measures a REAL scoped refresh against the
+model's actual base table (the same materializer path the production
+refresh uses). The scope-date selects the partition to refresh — pick
+a **low-stakes bucket** (e.g. the oldest partition) for first runs.
+
+**Synthetic-fixture mode** (procedure exercise — NOT decision-grade):
+
+```bash
+spark-submit --class io.sm8.connectors.spark.GateBTraceRunner \
+  <connector-jar> \
+  --model <label-for-logs> \
+  --out-path /var/lib/sm8/gate-b/traces/synthetic-$(date +%Y-%m-%d).json
+```
+
+Measures the documented 1-partition synthetic fixture. Use this to
+validate the cron wiring and the output shape before pointing the
+runner at a production model.
+
+The output JSON's `measuredFixture` field records which mode ran, and
+the `rendered` text is banner-prefixed (`[LIVE MODEL]` vs
+`[SYNTHETIC FIXTURE — not production model]`) so log greps cannot
+confuse the two.
 
 ## Invocation
 
@@ -89,12 +117,11 @@ Each JSON file is self-describing:
 
 ## Evaluation at week 2+
 
-> **The accumulated data is NOT Gate B decision-grade.** It is
-> procedure-exercise data from the synthetic fixture. Its value now:
-> validates the instrumentation, the cron wiring, and the output
-> shape. Decision-grade numbers require live-model measurement
-> (see the Honest limitation above) before the evaluation below
-> applies.
+> **Only LIVE-MODEL runs are Gate B decision-grade.** Synthetic-
+> fixture runs validate the procedure and the instrumentation; their
+> numbers do NOT open or close Gate B. Check each JSON's
+> `measuredFixture` field before evaluating: live-model runs
+> (`[LIVE MODEL]` banner) count; synthetic runs do not.
 
 Apply the ADR-0029 §Gate B thresholds to the accumulated JSON files:
 

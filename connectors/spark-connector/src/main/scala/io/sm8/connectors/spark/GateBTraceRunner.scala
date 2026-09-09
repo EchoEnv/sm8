@@ -97,31 +97,60 @@ object GateBTraceRunner {
 
     val spark = RollupRefreshCostProbe.buildSpark(warehouse)
     try {
-      val report = RollupRefreshCostProbe.run(spark, warehouse)
+      // Dispatch: live-model mode (modelPath set) vs synthetic fixture.
+      val (report, measuredWhat) = parsed.modelPath match {
+        case Some(yamlPath) =>
+          // Live-model mode: load the YAML manifest, resolve the named
+          // rollup, build the scope, run runModel. Non-destructive: the
+          // Tier 0 overwrite is the same operation the production
+          // refresh path performs; no table is dropped.
+          val stream = new java.io.FileInputStream(yamlPath)
+          val loaded = try {
+            io.sm8.core.manifest.ModelLoader.fromStream(stream, yamlPath)
+          } finally stream.close()
+          loaded match {
+            case Left(err) =>
+              return 1 // can't use Either-style early return in try; handled below
+            case Right(model) =>
+              val spec = model.rollups.find(_.name == parsed.rollup.get)
+              spec match {
+                case None =>
+                  System.err.println(s"[gate-b-trace] rollup '${parsed.rollup.get}' " +
+                    s"not found on model '${model.name}' — available: " +
+                    model.rollups.map(_.name).mkString(", "))
+                  return 1
+                case Some(s) =>
+                  val scope = RollupMaterializer.RefreshScope.Partitions(
+                    List(Map(spec.get.grainDimension.getOrElse("order_date") ->
+                      parsed.scopeDate.getOrElse(""))))
+                  val rep = RollupRefreshCostProbe.runModel(spark, model, s, scope)
+                  val what = s"live model '${model.name}' rollup '${s.name}' " +
+                    s"scope ${parsed.scopeDate.getOrElse("")}"
+                  (rep, what)
+              }
+          }
+        case None =>
+          // Synthetic fixture (procedure exercise; NOT decision-grade).
+          val rep = RollupRefreshCostProbe.run(spark, warehouse)
+          (rep, "RollupRefreshCostProbe synthetic fixture (single partition, scoped Tier 0 + Tier 1)")
+      }
       val mapper = new ObjectMapper()
         .enable(SerializationFeature.INDENT_OUTPUT)
       val outPath = Paths.get(parsed.outPath)
       if (outPath.getParent != null) Files.createDirectories(outPath.getParent)
-      // Wrap the report with trace metadata so the JSON is
-      // self-describing: which model was REQUESTED (even though the
-      // probe currently measures the synthetic fixture — see the
-      // class-level HONEST LIMITATION), when the run happened, and
-      // the probe's own rendered text for grep-ability in logs.
       val wrapper = new java.util.LinkedHashMap[String, Object]()
       wrapper.put("requestedModel", parsed.model)
       wrapper.put("collectedAtEpochMs", java.lang.Long.valueOf(System.currentTimeMillis()))
       wrapper.put("collectedAtIso",
         java.time.Instant.ofEpochMilli(System.currentTimeMillis()).toString)
-      wrapper.put("measuredFixture",
-        "RollupRefreshCostProbe synthetic fixture (single partition, scoped Tier 0 + Tier 1)")
+      wrapper.put("measuredFixture", measuredWhat)
       wrapper.put("report", report)
-      // Banner prefix (R1 zebra LOW): log-greps on `rendered` must
-      // surface the synthetic-fixture warning, not just the metrics.
-      wrapper.put("rendered",
-        "[SYNTHETIC FIXTURE — not production model]\n" + report.render)
+      // Banner prefix (R1 zebra LOW + live-model distinction): log-greps
+      // on `rendered` must surface WHICH mode ran, not just the metrics.
+      val banner = if (parsed.modelPath.isDefined) "[LIVE MODEL]" else
+        "[SYNTHETIC FIXTURE — not production model]"
+      wrapper.put("rendered", banner + "\n" + report.render)
       mapper.writeValue(outPath.toFile, wrapper)
-      // Also print to stdout — the cron's log file captures it without
-      // needing to read the JSON.
       System.out.println(s"[gate-b-trace] model=${parsed.model} → ${parsed.outPath}")
       System.out.println(report.render)
       0
@@ -132,13 +161,11 @@ object GateBTraceRunner {
         1
     } finally {
       spark.stop()
-      // Clean only if WE created the warehouse (cron-supplied warehouses
-      // are operator-owned; we never auto-delete them).
       parsed.warehouse match {
         case None =>
           val wh = new java.io.File(warehouse)
           if (wh.exists()) recursiveDelete(wh)
-        case Some(_) => () // operator-owned; leave alone
+        case Some(_) => ()
       }
     }
   }
@@ -156,17 +183,27 @@ object GateBTraceRunner {
   final case class CliConfig(
     model: String,
     outPath: String,
-    warehouse: Option[String])
+    warehouse: Option[String],
+    /** Live-model mode (ADR-0029 §Gate B item 3 "representative
+      * model"): path to the model YAML manifest. When set, the probe
+      * measures a real scoped refresh of the named rollup on the
+      * loaded model. When empty, the synthetic fixture runs. */
+    modelPath: Option[String] = None,
+    /** Live-model mode: the rollup name to measure (required when
+      * modelPath is set). */
+    rollup: Option[String] = None,
+    /** Live-model mode: the scope partition date (yyyy-MM-dd local).
+      * Required when modelPath is set and the rollup is time-grained. */
+    scopeDate: Option[String] = None)
 
   /** Recognized flags — unknown-flag detection (R1 scorpion LOW F3). */
   private val recognizedFlags: Set[String] =
-    Set("--model", "--out-path", "--bootstrap-warehouse")
+    Set("--model", "--out-path", "--bootstrap-warehouse",
+        "--model-path", "--rollup", "--scope-date")
 
   private def parseArgs(args: Array[String]): Either[String, CliConfig] = {
     // R1 scorpion HIGH F2: args.sliding(2,2) silently swallows a
-    // dangling trailing flag (`--out-path /tmp/x.json --model`
-    // forgets the value and gets the misleading "missing required
-    // flag --model" instead of a structural error). Detect first.
+    // dangling trailing flag. Detect first.
     if (args.length % 2 != 0)
       return Left(s"odd number of arguments (${args.length}): " +
         s"every flag requires a value. Got: ${args.mkString(" ")}")
@@ -187,21 +224,50 @@ object GateBTraceRunner {
         case Some(_) => errors += s"$flag requires a non-empty value"; None
         case None    => errors += s"missing required flag $flag"; None
       }
+    /** Look up an optional flag.
+      *
+      * @param flag the flag name to look up (including the leading `--`)
+      * @return Some(value) if present and non-empty; None otherwise
+      */
+    def opt(flag: String): Option[String] = byKey.get(flag).filter(_.nonEmpty)
+
     val model = req("--model")
     val outPath = req("--out-path")
-    val warehouse = byKey.get("--bootstrap-warehouse")
-    (model, outPath, warehouse) match {
-      case (Some(m), Some(p), w) => Right(CliConfig(m, p, w))
-      case _ => Left(
-        s"""usage: GateBTraceRunner --model <name> --out-path <file> [--bootstrap-warehouse <dir>]
-           |  --model              registered model name (required)
-           |  --out-path           output JSON file (required)
-           |  --bootstrap-warehouse  optional: directory for the probe's
-           |                         embedded HadoopCatalog; defaults to a
-           |                         temp dir cleaned at end. Production
-           |                         uses a cluster-side catalog config;
-           |                         this flag is for offline fixtures.
-           |${errors.mkString("", "\n  error: ", "")}""".stripMargin)
+    val warehouse = opt("--bootstrap-warehouse")
+    val modelPath = opt("--model-path")
+    val rollup = opt("--rollup")
+    val scopeDate = opt("--scope-date")
+
+    // Cross-flag validation (ADR-0031 §D1 / ADR-0030 §D1):
+    // --model-path requires --rollup. --scope-date requires
+    // --model-path (the synthetic fixture has no scope parameter).
+    if (modelPath.isDefined && rollup.isEmpty)
+      errors += "--model-path requires --rollup <name>"
+    if (scopeDate.isDefined && modelPath.isEmpty)
+      errors += "--scope-date requires --model-path (the synthetic fixture has no scope)"
+    if (rollup.isDefined && modelPath.isEmpty)
+      errors += "--rollup requires --model-path"
+
+    (model, outPath, warehouse, modelPath, rollup, scopeDate) match {
+      case (Some(m), Some(p), w, mp, r, sd)
+          if errors.isEmpty =>
+        Right(CliConfig(m, p, w, mp, r, sd))
+      case _ =>
+        Left(
+          s"""usage: GateBTraceRunner --model <name> --out-path <file>
+             |                    [--bootstrap-warehouse <dir>]
+             |                    [--model-path <yaml> --rollup <name> [--scope-date <yyyy-MM-dd>]]
+             |  --model                 label recorded in the output (required)
+             |  --out-path              output JSON file (required)
+             |  --bootstrap-warehouse   optional: directory for the probe's
+             |                          embedded HadoopCatalog; defaults to a
+             |                          temp dir cleaned at end
+             |  --model-path            live-model mode: path to the model YAML
+             |                          manifest (measures a real scoped refresh)
+             |  --rollup                live-model mode: rollup name to measure
+             |  --scope-date            live-model mode: scope partition date
+             |                          (yyyy-MM-dd local)
+             |${errors.mkString("", "\n  error: ", "")}""".stripMargin)
     }
   }
 
