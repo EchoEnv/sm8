@@ -5,6 +5,9 @@
  * The "one command rebuilds a model's rollups" surface: resolves a
  * model by name, then eagerly re-materializes EVERY rollup the
  * model declares (saveAsTable — the job runs; `Right` = durable).
+ * Per-rollup refresh scopes (ADR-0029 Tier 1) are optionally
+ * declared via `rollupScopes`; scope-less rollups keep the
+ * whole-table Tier 0 behavior.
  *
  * ==Why eager (not the v1 temp-view path)==
  *
@@ -60,6 +63,16 @@ object RollupRefresher {
     *                     Iceberg rollups whose recomputed source is
     *                     covered by the scope; typed refusal otherwise
     *                     (fail-closed, never a silent widening).
+    *
+    *                     FORMAT NOTE (R1 gnat F5): a declared scope
+    *                     forces the Iceberg writer for that rollup
+    *                     (Tier 1 is Iceberg-only). Deployments with
+    *                     pre-existing Parquet rollup tables will see
+    *                     a NEW Iceberg table created at
+    *                     iceberg_cat.<model>__<rollup> on the first
+    *                     scoped refresh; the Parquet table remains
+    *                     untouched. Runbook "Upgrading" note covers
+    *                     the operator actions.
     * @return per-rollup results in declaration order
     */
   def refreshModel(

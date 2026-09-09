@@ -21,6 +21,8 @@ import io.sm8.core.rel.{AggregateCall, AggregateFn}
 
 import java.nio.file.Files
 
+import scala.collection.JavaConverters._
+
 import org.apache.spark.sql.SparkSession
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.funsuite.AnyFunSuite
@@ -123,11 +125,14 @@ class RollupRefresherScopeSpec
   }
 
   test("refreshModel with a covered scope routes the scoped rollup through Tier 1") {
-    spark.sql("DROP TABLE IF EXISTS iceberg_cat.sales_rs__by_day_region")
-    spark.sql("DROP TABLE IF EXISTS iceberg_cat.sales_rs__all_regions")
-    spark.sql("DROP TABLE IF EXISTS sales_rs__by_day_region")
-    spark.sql("DROP TABLE IF EXISTS sales_rs__all_regions")
+    // PRE-SEED the iceberg table (R1 gnat F3): without this, the
+    // first scoped write is the Tier 0 create path (Tier 1 falls back
+    // when the table doesn't exist) and the test cannot distinguish
+    // which strategy ran. With the table present, the scoped refresh
+    // MUST go through Tier 1 (overwritePartitions).
     seed()
+    // Bootstrap: one Tier 0 refresh to create the table.
+    RollupRefresher.refreshModel(spark, "sales_rs", modelResolver)
     val scopes = Map("by_day_region" ->
       RollupMaterializer.RefreshScope.Partitions(
         List(Map("order_date" -> "2026-09-08"))))
@@ -174,7 +179,7 @@ class RollupRefresherScopeSpec
       RollupMaterializer.RefreshScope.Partitions(
         List(Map("order_date" -> "2026-09-08"))))
     val results = RollupRefresher.refreshModel(spark, "sales_rs",
-      modelResolver, rollupScopes = scopes - "all_regions")
+      modelResolver, rollupScopes = scopes)
     results.isRight shouldBe true
     val rs = results.right.get
     // L2 fix (gull): the scoped rollup MUST be Refreshed (the test
@@ -202,7 +207,7 @@ class RollupRefresherScopeSpec
       RollupMaterializer.RefreshScope.Partitions(
         List(Map("order_date" -> "2026-09-07"))))
     val results = RollupRefresher.refreshModel(spark, "sales_rs",
-      modelResolver, rollupScopes = scopes - "all_regions")
+      modelResolver, rollupScopes = scopes)
     results.isRight shouldBe true
     val rs = results.right.get
     rs.find {
@@ -231,11 +236,20 @@ class RollupRefresherScopeSpec
     spark.sql("DROP TABLE IF EXISTS sales_rs__by_day_region")
     spark.sql("DROP TABLE IF EXISTS sales_rs__all_regions")
     seed()
-    val scopes = Map("by_day_region" ->
+    // Uncovered scope (09-07) must FAIL the scoped rollup through the
+    // JDK boundary too — this discriminates scope threading: without
+    // threading, the scope is dropped and the refresh would succeed.
+    val uncovered = Map("by_day_region" ->
       RollupMaterializer.RefreshScope.Partitions(
-        List(Map("order_date" -> "2026-09-08"))))
+        List(Map("order_date" -> "2026-09-07"))))
     val out = RollupRefresher.refreshModelJ(spark, "sales_rs",
-      name => modelResolver(name), rollupScopes = scopes)
-    out.get("ok") shouldBe java.lang.Boolean.TRUE
+      name => modelResolver(name), rollupScopes = uncovered)
+    out.get("ok") shouldBe java.lang.Boolean.FALSE
+    val results = out.get("results").asInstanceOf[java.util.List[java.util.Map[String, String]]]
+    val scoped = results.asScala.find(_.get("rollup") == "by_day_region").get
+    scoped.get("error") should include("outside the declared")
+    // The other rollup (all_regions, no scope) must have succeeded.
+    val other = results.asScala.find(_.get("rollup") == "all_regions").get
+    other.get("error") shouldBe ""
   }
 }
