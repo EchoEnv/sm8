@@ -373,6 +373,30 @@ class RollupMergeTier2Spec
     }
   }
 
+  test("H1 pin: unsafe identifiers refuse typed at the MERGE boundary") {
+    writeBase(baseRows("2026-09-07")(("2026-09-07", "emea", 10.0)))
+    seedRollup()
+    val hostile = tier2Model.copy(name = "tier2m;DROP TABLE--")
+    RollupMergeRefresher.mergeRefresh(spark, hostile, tier2Spec,
+      List("2026-09-07")) match {
+      case Left(io.sm8.core.engine.EngineError.UnsupportedCapability(
+        "spark-connector", "RollupMergeRefresher.identifiers", msg)) =>
+        msg should include ("tier2m;DROP TABLE--")
+      case other => fail(s"expected identifiers refusal, got $other")
+    }
+  }
+
+  test("L2 pin: null is_final reads as non-final (fail-safe, no NPE)") {
+    writeBase(baseRows("2026-09-07")(("2026-09-07", "emea", 10.0)))
+    seedRollup()
+    val wm = RollupWatermark.ensureTable(spark, tier2Model, tier2Spec)
+    spark.sql(s"INSERT INTO $wm VALUES " +
+      "('tier2m', 'by_day_region', '2026-09-07', null, " +
+      "timestamp'2026-09-09 00:00:00', 0)")
+    RollupWatermark.nonFinalBuckets(spark, tier2Model, tier2Spec,
+      Set("2026-09-07")) shouldBe Set("2026-09-07") // null = non-final
+  }
+
   test("missing Iceberg table refuses typed (Tier 2 refreshes, never creates)") {
     writeBase(baseRows("2026-09-07")(("2026-09-07", "emea", 10.0)))
     // NO seedRollup() — and a DISTINCT model name, so no earlier
