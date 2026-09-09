@@ -142,6 +142,10 @@ class RollupRefreshCostProbeSpec
       timeGrain = Some("day"), grainDimension = Some("event_date"))
 
     spark.sql("DROP VIEW IF EXISTS ship_base")
+    // Refresh the catalog so the freshly created view resolves
+    // immediately (sequential tests share the Spark session; stale
+    // catalog metadata from the prior test's tables can shadow).
+    spark.catalog.refreshTable("iceberg_cat.sales_t__by_day_region")
     spark.sql(
       "CREATE OR REPLACE TEMP VIEW ship_base AS SELECT * FROM VALUES " +
         "(timestamp'2026-09-08 10:00:00', 'east', 15L), " +
