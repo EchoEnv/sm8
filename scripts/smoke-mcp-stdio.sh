@@ -7,7 +7,7 @@
 # and assert:
 # - The handshake completes (initialize response + tools/list
 #   response, both valid JSON-RPC on stdout)
-# - tools/list returns all 5 tools
+# - tools/list returns all 7 tools
 # - The JVM exits cleanly on EOF (within 15s CI tolerance)
 # - java's exit code is 0 (C5-de-H2 — previously not verified)
 # - Every stdout line PARSES as valid JSON (not just prefix check;
@@ -76,7 +76,24 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-[ -f "$JAR" ] || { echo "smoke-mcp-stdio FAIL: jar not found: $JAR" >&2; exit 1; }
+# Classpath entries: COMPILED CLASSES dirs primary (always present after
+# mvn test-compile), packaged jars as fallback. Same rationale as the
+# StdioEndToEndSpec.scala fix (PR #372): mvn test never packages jars,
+# so jar-only classpaths silently pointed at nonexistent files.
+SERVER_DIR="${REPO_ROOT}/sm8-server/target/classes"
+SERVER_JAR="${REPO_ROOT}/sm8-server/target/sm8-server_2.13-0.1.0-SNAPSHOT.jar"
+CONN_DIR="${REPO_ROOT}/connectors/in-memory-connector/target/classes"
+CONN_JAR="${REPO_ROOT}/connectors/in-memory-connector/target/in-memory-connector_2.13-0.1.0-SNAPSHOT.jar"
+SERVER_ENTRY="$([ -d "$SERVER_DIR" ] && echo "$SERVER_DIR" || echo "$SERVER_JAR")"
+CONN_ENTRY="$([ -d "$CONN_DIR" ] && echo "$CONN_DIR" || echo "$CONN_JAR")"
+
+# Default --jar is the packaged jar; allow the compiled classes dir as a fallback
+# when the user did NOT override --jar (mvn test does not produce the jar).
+if [ "$JAR" = "$JAR_DEFAULT" ]; then
+  [ -d "$SERVER_DIR" ] || [ -f "$JAR" ] || { echo "smoke-mcp-stdio FAIL: neither $SERVER_DIR nor $JAR found" >&2; exit 1; }
+else
+  [ -f "$JAR" ] || { echo "smoke-mcp-stdio FAIL: jar not found: $JAR" >&2; exit 1; }
+fi
 # $MODEL is created by the heredoc below; no pre-existence check.
 
 fail() { echo "smoke-mcp-stdio FAIL: $*" >&2; exit "${2:-1}"; }
@@ -105,7 +122,7 @@ source:
 YAML
 
 # Per the stdio design: the MCP stdio server runs in-process with the
-# Restate ingress. The 5 tools delegate to the Restate ingress; this
+# Restate ingress. The 7 tools delegate to the Restate ingress; this
 # smoke asserts the wire protocol (handshake + tools/list + EOF exit +
 # stdout cleanliness). Tool execution is covered by smoke-e2e.sh.
 
@@ -138,7 +155,7 @@ OUTPUT=$(
     # locally. 0.5s gives ample margin (10x) without slowing the smoke.
     sleep 0.5
   )
-  java -cp "$JAR:$CONN:$(cat "$CP_FILE")" io.sm8.server.Main \
+  java -cp "$SERVER_ENTRY:$CONN_ENTRY:$(cat "$CP_FILE")" io.sm8.server.Main \
     --model "$MODEL" \
     --port 0 \
     --metrics-port 0 \
@@ -194,12 +211,12 @@ echo "smoke-mcp-stdio: initialize response carries serverInfo.name=sm8 + protoco
 
 # Verify: tools/list response has the result with a NON-EMPTY tools
 # array (per the stdio design the in-process stdio server carries the
-# same 5 tools as the HTTP transport).
+# same 7 tools as the HTTP transport).
 TOOLS_RESP=$(echo "$OUTPUT" | grep -F '"id":2' | head -1)
 [ -n "$TOOLS_RESP" ] || fail "tools/list response not found: $OUTPUT"
 TOOL_COUNT=$(echo "$TOOLS_RESP" | python3 -c 'import json,sys; d=json.loads(sys.stdin.read()); print(len(d["result"]["tools"]))')
-[ "$TOOL_COUNT" -eq 5 ] || fail "expected 5 tools, got $TOOL_COUNT (tools/list response: $TOOLS_RESP)"
-echo "smoke-mcp-stdio: tools/list response has all 5 tools (count=$TOOL_COUNT)"
+[ "$TOOL_COUNT" -eq 7 ] || fail "expected 7 tools, got $TOOL_COUNT (tools/list response: $TOOLS_RESP)"
+echo "smoke-mcp-stdio: tools/list response has all 7 tools (count=$TOOL_COUNT)"
 
 # Verify: stderr DOES contain the expected startup banners.
 [ -f "$STDERR_LOG" ] || fail "stderr log not captured"

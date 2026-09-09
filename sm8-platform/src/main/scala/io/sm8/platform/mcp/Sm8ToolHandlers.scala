@@ -1,7 +1,7 @@
 /*
  * SM8 MCP — ToolHandlers.
  *
- * Per the MCP design (a prior PR): 5 MCP tools that delegate 1:1 to the existing
+ * Per the MCP design (a prior PR): 7 MCP tools that delegate 1:1 to the existing
  * Restate ingress endpoints. Each tool:
  * 1. Parses its tool arguments from the `CallToolRequest.arguments` map.
  * 2. POSTs the canonical Restate ingress request body to the
