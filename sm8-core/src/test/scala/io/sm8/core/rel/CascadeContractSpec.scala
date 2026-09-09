@@ -209,6 +209,44 @@ class CascadeContractSpec extends AnyFunSuite with Matchers {
     CascadeContract.grainCoarsens(tgt, src) shouldBe None
   }
 
+  // Regression (R1 review ibex HIGH): false-accept pair the old
+  // shared-base proxy let through (order_date_hour vs
+  // order_date_day_carrier — sizes differ; piggyback dim). The
+  // stricter rule (sizes equal AND init equal) refuses this.
+  test("D2 regression: piggyback grain dim (different size) refused") {
+    val src = RollupSpec(
+      name = "hourly", dimensions = List("order_date_hour", "region"),
+      measures = List("total"), timeGrain = Some("hour"),
+      grainDimension = Some("order_date_hour"))
+    val tgt = RollupSpec(
+      name = "daily_carrier", dimensions = List("order_date_day_carrier", "region"),
+      measures = List("total"), timeGrain = Some("day"),
+      grainDimension = Some("order_date_day_carrier"),
+      cascadeSource = Some("hourly"))
+    // Predicate called directly (no Model.of dependency).
+    // The stricter same-axis rule catches this at the GRAIN axis
+    // arm (earlier than DimensionsNotContained) — correct: refuse
+    // at the earliest discriminating clause.
+    val v = CascadeContract.eligibility(tgt, src, allMeasures)
+    v match {
+      case CascadeVerdict.GrainCoarseningFailed(_) => succeed
+      case other => fail(s"expected GrainCoarseningFailed, got $other")
+    }
+  }
+  test("D2 regression: same-shape different-axis (ab_cd → ab_ef) refused") {
+    val src = RollupSpec(
+      name = "src", dimensions = List("ab_cd", "x"),
+      measures = List("total"))
+    val tgt = RollupSpec(
+      name = "tgt", dimensions = List("ab_ef"),
+      measures = List("total"), cascadeSource = Some("src"))
+    // DimensionsNotContained path (carve-out doesn't fire: tgt's
+    // 'ab_ef' is not the source's grain-dim, source has no
+    // grain-dim declared — the ungrained arms run).
+    val v = CascadeContract.eligibility(tgt, src, allMeasures)
+    v should not be CascadeVerdict.Eligible
+  }
+
   test("D2: ungrained target with MORE dims than source fails") {
     val src = RollupSpec(
       name = "region", dimensions = List("region"),
@@ -375,12 +413,11 @@ class CascadeContractSpec extends AnyFunSuite with Matchers {
           Some(Expr.FieldRef("amount")), "med"))),
       rollups = List(src, tgt))
     if (res.isLeft) println("MIXED-MEASURES DEBUG: " + res)
-    // Debug: surface the Left error if the load refuses.
-    res match {
-      case scala.util.Right(_) => ()
-      case scala.util.Left(err) =>
-        fail(s"expected Right (warning must not refuse), got Left: $err")
-    }
+    // Narwhal F1 regression pin: the WARNING must NOT refuse
+    // (the cascade subset proceeds; the non-cascading measure
+    // falls back to base). Old code put this line into errs and
+    // silently refused the whole model. assertRight enforces the
+    // corrected contract.
     res.isRight shouldBe true
   }
 }
