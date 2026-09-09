@@ -148,6 +148,32 @@ object RollupRewriter {
       * (re-materializes with the current schema contract). */
     case object RollupSchemaStale extends RollupRewriteRefusal
 
+    /** One queried grain bucket reported non-final by the
+      * connector's watermark lookup (ADR-0030 D3, Tier 2). Emission
+      * rule mirrors `RollupSchemaStale`: the rewriter NEVER
+      * instantiates this case — the connector's resolution layer
+      * does, after consulting the rollup watermark table — and only
+      * when the rollup's `RollupSpec.freshness` declares
+      * `FinalRequired` (a policy-less rollup routes normally even
+      * with non-final buckets; the default behavior is
+      * pre-Tier-2). Carries the FULL non-final bucket set (one
+      * refusal, N buckets — per-bucket emission would flood the
+      * vocabulary; the harness and routing metrics read the
+      * cardinality from the set).
+      *
+      * Recovery = wait for the bucket's lateness window to close
+      * (the next refresh marks it final), or relax the policy. */
+    final case class RollupBucketStale(buckets: Set[BucketKey])
+        extends RollupRewriteRefusal
+
+    /** The bucket identity for a `RollupBucketStale` refusal: the
+      * grain value of one partition (the canonical string form the
+      * watermark table stores — `yyyy-MM-dd` for day grain, the
+      * URL-encoded minute-precision UTC form for sub-daily). Pure
+      * data; the connector produces and consumes it (core never
+      * IO-touches the watermark table, RFC §3). */
+    final case class BucketKey(value: String) extends Product with Serializable
+
     /** Stable machine-readable label for a refusal, one per case.
       * Observers and metrics surfaces key counters on this string
       * instead of pattern-matching the sealed trait inline, so the
@@ -166,6 +192,7 @@ object RollupRewriter {
       case SourceKindUnsupported  => "sourceKindUnsupported"
       case AlgebraicStateNotWired => "algebraicStateNotWired"
       case RollupSchemaStale      => "rollupSchemaStale"
+      case _: RollupBucketStale    => "rollupBucketStale"
     }
 
     /** Whether a refusal is permanent (the same query can never be

@@ -64,6 +64,15 @@ package io.sm8.core.model
   *                   and breaks when two date dims exist — order
   *                   date vs ship date); the axis is stated at the
   *                   declaration site.
+  * @param freshness optional freshness policy (ADR-0030 D3,
+  *                   Tier 2): `None` (default) = route normally
+  *                   (pre-Tier-2 behavior); `Some(FinalRequired)` =
+  *                   the connector's resolution layer refuses
+  *                   non-final buckets (`RollupBucketStale`).
+  *                   Requires `timeGrain` + `grainDimension`
+  *                   (validated); core never looks up watermarks
+  *                   (RFC §3 — the watermark table is connector
+  *                   side).
   *
   * @note No defaults on `dimensions`/`measures`: a ref-less rollup
   * is a degenerate declaration (it would vacuously match by
@@ -77,5 +86,6 @@ final case class RollupSpec(
     dimensions: List[String],
     measures: List[String],
     timeGrain: Option[String] = None,
-    grainDimension: Option[String] = None
+    grainDimension: Option[String] = None,
+    freshness: Option[FreshnessPolicy] = None
 ) extends Product with Serializable

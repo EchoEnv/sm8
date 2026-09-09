@@ -33,7 +33,8 @@
 package io.sm8.connectors.spark
 
 import io.sm8.core.engine.EngineError
-import io.sm8.core.model.Model
+import io.sm8.core.model.{Model, RollupSpec}
+import io.sm8.core.rel.RollupRewriter
 
 import org.apache.spark.sql.SparkSession
 
@@ -131,6 +132,55 @@ object RollupRefresher {
     * @param modelOf scala Function1 name -> Model (server supplies
     *                its boot-model resolver)
     * @return the JDK result map described above
+    */
+  /** Tier 2 refresh arm (ADR-0030 D2+D3, puma final H4-close):
+    * mergeRefresh followed — only on success — by the watermark
+    * advance over the scope's buckets (the D3 ordering contract:
+    * watermark FOLLOWS the data commit, never before). Day-grain
+    * buckets strictly before today latch final via RollupWatermark.finalityFor
+    * (the v1 day-grain heuristic); today, future, and sub-day
+    * buckets stay non-final (conservative read).
+    *
+    * Failure isolation mirrors the Tier 0/1 arm: a merge failure
+    * returns Failed WITHOUT touching the watermark (a failed
+    * refresh never advances it — the monotonicity contract's
+    * writer-side half).
+    *
+    * @param spark       the session
+    * @param model       the host model
+    * @param spec        the rollup declaration (must be grained)
+    * @param scopeValues canonical bucket values to merge + latch
+    * @return Refreshed(table) when both the merge and the watermark
+    *         advance succeed; Failed otherwise (per-rollup
+    *         isolation — one failure never aborts siblings)
+    */
+  def mergeRefreshModel(
+      spark: SparkSession,
+      model: Model,
+      spec: RollupSpec,
+      scopeValues: List[String]): RollupRefreshResult =
+    RollupMergeRefresher.mergeRefresh(spark, model, spec, scopeValues) match {
+      case Right(m) =>
+        RollupWatermark.advanceForScope(spark, model, spec,
+          scopeValues.toSet) match {
+          case Right(_) =>
+            RollupRefreshResult.Refreshed(spec.name,
+              m match {
+                case RollupMergeRefresher.MergeRefreshResult.Merged(_, table, _, _) => table
+                case _ => s"${RollupMaterializer.icebergCatalog}.${RollupRewriter.rollupTableName(model, spec)}"
+              })
+          case Left(e) => RollupRefreshResult.Failed(spec.name, e)
+        }
+      case Left(e) => RollupRefreshResult.Failed(spec.name, e)
+    }
+
+  /** Java-friendly refreshModel: per-rollup results as a map
+    * (same behavior, same isolation contract; scope-less = Tier 0).
+    *
+    * @param spark     the session
+    * @param modelName registered model name
+    * @param modelOf   name -> Model resolver
+    * @return per-rollup results keyed by rollup name
     */
   def refreshModelJ(
       spark: SparkSession,

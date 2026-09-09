@@ -71,9 +71,33 @@ object ModelValidator {
           errs += s"rollups[${r.name}] references unknown measure '$m'"
       }
       errs ++= validateGrainDimensionDeclared(r, model)
+      errs ++= validateFreshnessPolicy(r)
     }
     if (errs.isEmpty) Right(()) else Left(ModelValidationError.SchemaValidation(errs.toList))
   }
+
+  /** Validate a rollup's freshness policy (ADR-0030 D3, Tier 2).
+    *
+    * The policy is meaningful only for grain-bucketed rollups: the
+    * `RollupBucketStale` refusal is per (model, rollup, bucket), and
+    * a grain-less rollup has exactly one implicit bucket (the whole
+    * table) whose finality IS the table's existence — a
+    * `FinalRequired` policy there is a no-op that would silently
+    * mislead authors into thinking a freshness gate exists. Refuse
+    * loud (fail-closed, same discipline as the half-declared grain
+    * pair).
+    *
+    * @param r the rollup declaration under validation
+    * @return the error messages (empty = valid)
+    */
+  private def validateFreshnessPolicy(
+      r: RollupSpec): List[String] =
+    r.freshness match {
+      case Some(_) if r.grainDimension.isEmpty || r.timeGrain.isEmpty =>
+        List(s"rollups[${r.name}]: a freshness policy requires timeGrain + grainDimension " +
+          "(the staleness verdict is per bucket; a grain-less rollup has no buckets to gate)")
+      case _ => Nil
+    }
 
   /** Grain-dimension contract checks that need only the DECLARED
     * model data (pure, no resolved schema):
