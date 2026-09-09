@@ -556,4 +556,149 @@ class ModelLoaderSpec extends AnyFunSuite with Matchers {
       case other => fail(s"expected ByPath source, got $other")
     }
   }
+
+  // -- cascade_source loader parsing (ADR-0031 D4; narwhal final-gate
+  //    F5 follow-up: dual-key convention + empty/non-string refusals) --
+
+  test("cascade loader: cascade_source (snake) parses into RollupSpec.cascadeSource") {
+    val yaml =
+      """name: casc
+        |version: 1
+        |source:
+        |  byName:
+        |    table: events
+        |dimensions:
+        |  - name: order_date_hour
+        |    expr: order_date_hour
+        |    dataType: Timestamp
+        |  - name: order_date_day
+        |    expr: order_date_day
+        |    dataType: Date
+        |  - name: region
+|    expr: region
+        |measures:
+        |  - name: total
+|    expr: sum(amount)
+        |rollups:
+        |  - name: hourly
+        |    dimensions: [order_date_hour, region]
+        |    measures: [total]
+        |    time_grain: hour
+        |    grain_dimension: order_date_hour
+        |  - name: daily
+        |    dimensions: [order_date_day, region]
+        |    measures: [total]
+        |    time_grain: day
+        |    grain_dimension: order_date_day
+        |    cascade_source: hourly
+        |""".stripMargin
+    val res = ModelLoader.fromString(yaml)
+    res match {
+      case scala.util.Right(m) =>
+        val daily = m.rollups.find(_.name == "daily")
+          .getOrElse(fail("daily rollup not parsed"))
+        daily.cascadeSource shouldBe Some("hourly")
+      case scala.util.Left(err) =>
+        fail(s"expected Right, got manifest error: $err")
+    }
+  }
+
+  test("cascade loader: cascadeSource (camel) parses identically — silent-drop regression pin") {
+    val yaml =
+      """name: casc
+        |version: 1
+        |source:
+        |  byName:
+        |    table: events
+        |dimensions:
+        |  - name: order_date_hour
+        |    expr: order_date_hour
+        |    type: timestamp
+        |  - name: order_date_day
+        |    expr: order_date_day
+        |    type: date
+        |  - name: region
+        |    expr: region
+        |measures:
+        |  - name: total
+        |    expr: sum(amount)
+        |rollups:
+        |  - name: hourly
+        |    dimensions: [order_date_hour, region]
+        |    measures: [total]
+        |    time_grain: hour
+        |    grain_dimension: order_date_hour
+        |  - name: daily
+        |    dimensions: [order_date_day, region]
+        |    measures: [total]
+        |    time_grain: day
+        |    grain_dimension: order_date_day
+        |    cascadeSource: hourly
+        |""".stripMargin
+    val res = ModelLoader.fromString(yaml)
+    // Narwhal F5: the camel key MUST NOT silently drop (pre-fix
+    // behavior — the cascade would be absent and daily would build
+    // from base with no signal).
+    res match {
+      case scala.util.Right(m) =>
+        val daily = m.rollups.find(_.name == "daily")
+          .getOrElse(fail("daily rollup not parsed"))
+        daily.cascadeSource shouldBe Some("hourly")
+      case scala.util.Left(err) =>
+        fail(s"expected Right, got manifest error: $err")
+    }
+  }
+
+  test("cascade loader: both keys set fails loud (ambiguous declaration)") {
+    val yaml =
+      """name: casc
+        |version: 1
+        |source:
+        |  byName:
+        |    table: events
+        |dimensions:
+        |  - name: order_date_day
+        |    expr: order_date_day
+        |    type: date
+        |measures:
+        |  - name: total
+        |    expr: sum(amount)
+        |rollups:
+        |  - name: daily
+        |    dimensions: [order_date_day]
+        |    measures: [total]
+        |    time_grain: day
+        |    grain_dimension: order_date_day
+        |    cascade_source: hourly
+        |    cascadeSource: hourly
+        |""".stripMargin
+    val res = ModelLoader.fromString(yaml)
+    res.isLeft shouldBe true
+  }
+
+  test("cascade loader: empty-string cascade_source fails loud") {
+    val yaml =
+      """name: casc
+        |version: 1
+        |source:
+        |  byName:
+        |    table: events
+        |dimensions:
+        |  - name: order_date_day
+        |    expr: order_date_day
+        |    type: date
+        |measures:
+        |  - name: total
+        |    expr: sum(amount)
+        |rollups:
+        |  - name: daily
+        |    dimensions: [order_date_day]
+        |    measures: [total]
+        |    time_grain: day
+        |    grain_dimension: order_date_day
+        |    cascade_source: ""
+        |""".stripMargin
+    val res = ModelLoader.fromString(yaml)
+    res.isLeft shouldBe true
+  }
 }

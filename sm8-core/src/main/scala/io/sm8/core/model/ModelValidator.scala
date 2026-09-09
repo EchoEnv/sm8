@@ -73,7 +73,111 @@ object ModelValidator {
       errs ++= validateGrainDimensionDeclared(r, model)
       errs ++= validateFreshnessPolicy(r)
     }
+    errs ++= validateCascadeDag(model.rollups,
+      model.measures.map(m => m.name -> m).toMap)
     if (errs.isEmpty) Right(()) else Left(ModelValidationError.SchemaValidation(errs.toList))
+  }
+
+  /** Validate the cascade declaration graph (ADR-0031 D4).
+    *
+    * Walks the `RollupSpec.cascadeSource` name-refs across the
+    * model's rollups and refuses at DEPLOYMENT time (never at
+    * refresh time — cycles are a configuration error):
+    *   - unknown source name (the ref names no rollup on this
+    *     model — cascade sources are same-model only in v1),
+    *   - self-cycle (A declares A),
+    *   - two-node cycle (A from B, B from A),
+    *   - longer cycles (three-node and up — walked iteratively;
+    *     recursion is bounded by the rollup count but the walk is
+    *     written as a loop per the stack-safety rule).
+    *
+    * Eligibility SHAPES (does B's grain coarsen A's? do the
+    * measures cascade?) are checked per-pair by
+    * `CascadeContract.eligibility` here too — a declared cascade
+    * that could never be eligible is a config error worth refusing
+    * at load, same discipline as an unknown measure ref. The
+    * partial-state-presence clause is NOT checked here (it needs
+    * the source's physical columns — connector-side, refresh time).
+    *
+    * @param rollups the model's rollup declarations
+    * @return the error messages (empty = the cascade DAG is valid)
+    */
+  private[model] def validateCascadeDag(
+    rollups: List[RollupSpec],
+    measuresOf: Map[String, Measure]): List[String] = {
+    val byName = rollups.map(r => r.name -> r).toMap
+    val out = scala.collection.mutable.ListBuffer.empty[String]
+    rollups.foreach { r =>
+      r.cascadeSource match {
+        case None => () // no cascade — nothing to check
+        case Some(srcName) if srcName == r.name =>
+          out += s"rollups[${r.name}]: cascadeSource names itself — " +
+            "self-cycles are refused at deployment (ADR-0031 D4)"
+        case Some(srcName) =>
+          byName.get(srcName) match {
+            case None =>
+              out += s"rollups[${r.name}]: cascadeSource '$srcName' names no " +
+                "rollup on this model (cascade sources are same-model in v1)"
+            case Some(src) =>
+              // Per-pair eligibility (structural clauses only —
+              // partial-state presence needs the source's physical
+              // columns and is connector-side).
+              io.sm8.core.rel.CascadeContract.eligibility(r, src, measuresOf) match {
+                case io.sm8.core.rel.CascadeContract.CascadeVerdict.Eligible => ()
+                case io.sm8.core.rel.CascadeContract.CascadeVerdict.PartiallyEligible(non) =>
+                  // Tolerated by design (D1: the cascade subset
+                  // proceeds; the rest fall back to base). This is
+                  // a WARNING, NOT a refusal: it must NOT enter the
+                  // `errs` list (SchemaValidation refuses on any
+                  // non-empty list — narwhal F1). Emitted to stderr
+                  // so the operator still sees it at load; the model
+                  // loads fine.
+                  Console.err.println(
+                    s"[warn] rollups[${r.name}]: measures " +
+                    s"${non.mkString(", ")} do not cascade; they will fall back to " +
+                    "base-derived build (ADR-0031 D1)")
+                case io.sm8.core.rel.CascadeContract.CascadeVerdict.DimensionsNotContained(missing) =>
+                  out += s"rollups[${r.name}]: cascadeSource '$srcName' is missing " +
+                    s"dimension(s) ${missing.mkString(", ")} — a coarsening must not " +
+                    "reference dimensions the source lacks (ADR-0031 D1)"
+                case io.sm8.core.rel.CascadeContract.CascadeVerdict.GrainCoarseningFailed(reason) =>
+                  out += s"rollups[${r.name}]: cascadeSource '$srcName' fails grain " +
+                    s"coarsening: $reason (ADR-0031 D2)"
+                case io.sm8.core.rel.CascadeContract.CascadeVerdict.PartialStateMissing(m, req, found) =>
+                  // Cannot happen at declaration time (sourceMeasures
+                  // is empty), but the match must be exhaustive.
+                  out += s"rollups[${r.name}]: cascadeSource '$srcName' lacks state " +
+                    s"columns for measure '$m' (required ${req.mkString(", ")}, " +
+                    s"found ${found.mkString(", ")})"
+              }
+          }
+      }
+    }
+    // Cycle detection over the declaration graph (iterative walk,
+    // bounded by rollup count). A cycle is A→B→A (2-node) or
+    // longer; self-cycles were refused above.
+    def sourceOf(name: String): Option[String] =
+      byName.get(name).flatMap(_.cascadeSource)
+    rollups.foreach { r =>
+      // Walk from r following cascadeSource refs; if we return to
+      // r, r is on a cycle. Visited-set bounds the walk.
+      var current = sourceOf(r.name)
+      var steps = 0
+      var cycleFound = false
+      val visited = scala.collection.mutable.Set.empty[String]
+      while (current.isDefined && !cycleFound && steps <= rollups.size) {
+        val n = current.get
+        if (n == r.name) cycleFound = true
+        else if (!visited.add(n)) () // re-visited a node not on r's cycle — stop
+        else current = sourceOf(n)
+        steps += 1
+      }
+      if (cycleFound)
+        out += s"rollups[${r.name}]: cascade declaration forms a cycle " +
+          "(A from B, B from A or longer) — cycles are configuration " +
+          "errors, refused at deployment (ADR-0031 D4)"
+    }
+    out.toList
   }
 
   /** Validate a rollup's freshness policy (ADR-0030 D3, Tier 2).

@@ -991,7 +991,17 @@ class ReconciledRollupSchemaSpec extends AnyFunSuite with Matchers {
     RollupRewriter.RollupRewriteRefusal.AlgebraicStateNotWired,
     RollupRewriter.RollupRewriteRefusal.RollupSchemaStale,
     RollupRewriter.RollupRewriteRefusal.RollupBucketStale(
-      Set(RollupRewriter.RollupRewriteRefusal.BucketKey("2026-09-08")))
+      Set(RollupRewriter.RollupRewriteRefusal.BucketKey("2026-09-08"))),
+    // ADR-0031 cascade refusal siblings — every case must appear
+    // here so the label-uniqueness + permanence tests cover the
+    // FULL closed taxonomy (narwhal final-gate F4: a subset here
+    // silently un-pins new cases).
+    RollupRewriter.RollupRewriteRefusal.CascadeSourceNotFinal(
+      Set(RollupRewriter.RollupRewriteRefusal.BucketKey("2026-09-08"))),
+    RollupRewriter.RollupRewriteRefusal.CascadeSourceMissing,
+    RollupRewriter.RollupRewriteRefusal.CascadeSourceFailed,
+    RollupRewriter.RollupRewriteRefusal.CascadeCoverageUncovered(
+      "2026-09-08 uncovered (source has 23/24 hours)")
   )
 
   test("reasonName labels are unique across the whole refusal ADT") {
