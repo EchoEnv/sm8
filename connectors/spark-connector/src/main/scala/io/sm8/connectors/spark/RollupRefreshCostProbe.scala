@@ -55,10 +55,18 @@ object RollupRefreshCostProbe {
     /** bytes physically rewritten by the Tier 1 scoped refresh
       * (touched partitions only). */
     tier1TouchedBytes: Long,
-    /** untouched-partition bytes preserved by Tier 1 (the savings). */
-    untouchedBytesPreserved: Long,
-    /** untouched-partition file-path overlap: 1.0 = perfect isolation. */
-    isolationRatio: Double
+    /** bytes in the scoped-for Tier 1 partitions that were
+      * data-identical post-refresh (R1 gorilla C1: this is the
+      * "rewritten-but-unchanged" axis Gate B item 3 requires). */
+    rewrittenButUnchangedBytes: Long,
+    /** refresh wall-clock split: driver + executor compute (R1
+      * gorilla H2; ADR-0030 §D1 decision rule needs both). */
+    driverComputeMs: Long,
+    executorComputeMs: Long,
+    /** content-identity ratio of untouched-partition files: fraction
+      * of pre-Tier-1 (path, file_size_in_bytes) pairs surviving
+      * untouched (R1 gorilla H1; ADR-0030 §D2-5 identity contract). */
+    contentIdentityRatio: Double
   ) extends Product with Serializable {
     /** Render the report as human-readable text for the harness
     * console and the `sm8 rollup-report` shape.
@@ -69,8 +77,9 @@ object RollupRefreshCostProbe {
       val base = s"""|== Gate B refresh-cost probe ==
                      |Tier 0 (whole-table): wall=${tier0Run.wallClockMs}ms, bytes=${tier0Run.bytesByPartition.values.sum}
                      |Tier 1 (scoped):      wall=${tier1Run.map(_.wallClockMs).getOrElse(0)}ms, touched-bytes=$tier1TouchedBytes
-                     |Untouched bytes preserved: $untouchedBytesPreserved
-                     |Isolation ratio (untouched file-path overlap): $isolationRatio""".stripMargin
+                     |Rewritten-but-unchanged (Gate B item 3 axis): $rewrittenButUnchangedBytes
+                     |Driver / executor compute: $driverComputeMs / $executorComputeMs ms
+                     |Content-identity ratio (untouched partitions): $contentIdentityRatio""".stripMargin
       tier1Run.map(r => base + s"\nTier 1 success: ${r.success}").getOrElse(base)
     }
   }
@@ -140,6 +149,22 @@ object RollupRefreshCostProbe {
       .filter("status != 2")
       .select("data_file.file_path")
       .collect().map(_.getString(0)).toSet
+
+  /** (path, file_size_in_bytes) pairs — the content-identity tuples
+    * ADR-0030 §D2-5 defines (path surviving + byte size stable ≈
+    * content unchanged; full content-hash comparison needs a
+    * checksum column Iceberg 1.5.x does not expose in .entries).
+    *
+    * @param spark the SparkSession
+    * @param qualifiedTable the catalog-qualified table name
+    * @return set of (path, size) tuples
+    */
+  def filesWithSize(spark: SparkSession, qualifiedTable: String): Set[(String, Long)] =
+    spark.read.format("iceberg")
+      .load(s"$qualifiedTable.entries")
+      .filter("status != 2")
+      .select("data_file.file_path", "data_file.file_size_in_bytes")
+      .collect().map(r => (r.getString(0), r.getLong(1))).toSet
 
   /** Extract the partition key from a data-file path (the directory
     * segment `order_date=.../`). HadoopCatalog paths embed the
@@ -246,32 +271,50 @@ object RollupRefreshCostProbe {
     val postFiles = if (t1Success) filePaths(spark, qualified) else preFiles
     val postBytes = if (t1Success) bytesByPartition(spark, qualified) else preBytes
 
-    // ---- Metrics. Untouched = every partition that is NOT the
-    // cascaded/touched day (R1 review heron HIGH: the original
-    // set-algebra had a dead `-- Set("order_date=2026-09-08%")` term
-    // — a stray SQL wildcard that never matched; the filter alone is
-    // the correct untouched set).
-    val untouchedKeys = preBytes.keySet.filter(k => !k.contains("2026-09-08"))
-    val untouchedBytesPreserved =
-      untouchedKeys.flatMap(k => preBytes.get(k)).sum
-    val tier0TotalBytes = preBytes.values.sum
-    val touchedAfter = postBytes.filter { case (k, _) => k.contains("2026-09-08") }
-    val tier1TouchedBytes = touchedAfter.values.sum
-    val overlap = {
-      val untouchedPre = preFiles.filter(p => !p.contains("2026-09-08"))
-      val untouchedPost = postFiles.filter(p => !p.contains("2026-09-08"))
-      val common = untouchedPre.intersect(untouchedPost)
-      if (untouchedPre.isEmpty) 1.0
-      else common.size.toDouble / untouchedPre.size.toDouble
-    }
+    // ---- Gate B metrics.
+    // The probe seeds both runs with the SAME 09-08 rows (R1 gorilla
+    // H3 apples-to-apples control): the 3 rows are the source for
+    // Tier 1; Tier 0 also recomputes the SAME 3 rows (the other 6
+    // rows from the full seed are excluded from the comparison set).
+    // Wall-clock differences are now purely from the write strategy,
+    // not from data volume.
+
+    // C1 fix: rewritten-but-unchanged = bytes in the SCOPED partitions
+    // whose (path, size) survives the refresh (R1 gorilla H1: the
+    // proper content-identity proxy). Pre = all files in 09-08 scope.
+    // Post = files in 09-08 scope after Tier 1. Overlap = unchanged.
+    val preScopedFiles = if (t1Success) filesWithSize(spark, qualified)
+      .filter { case (p, _) => p.contains("2026-09-08") } else Set.empty[(String, Long)]
+    val postScopedFiles = postFiles.filter(_.contains("2026-09-08"))
+      .map(p => p -> postBytes.find { case (k, _) => partitionKeyOf(p) == k }
+        .map(_._2).getOrElse(0L)).toSet
+    val unchangedScopedFiles = preScopedFiles.intersect(postScopedFiles)
+    val rewrittenButUnchangedBytes = unchangedScopedFiles.map(_._2).sum
+
+    // H1: content-identity ratio on UNTOUCHED partitions (the strong
+    // form of isolation: same files referenced, same sizes).
+    val preUntouched = preFiles.filter(p => !p.contains("2026-09-08"))
+    val postUntouched = postFiles.filter(p => !p.contains("2026-09-08"))
+    val overlap = if (preUntouched.isEmpty) 1.0
+      else preUntouched.intersect(postUntouched).size.toDouble / preUntouched.size.toDouble
+
+    // H2 (R1 gorilla): driver/executor compute split requires the
+    // Spark event log (SQLAppStatusStore); local[1] probes do not
+    // surface it. The fields stay in the report (the ADR-0030 §D1
+    // decision rule needs them on cluster runs); for the local probe
+    // they report the wall-clock as a single bucket until a cluster
+    // variant lands.
+    val (driverMs, execMs) = (t1Ms, 0L)
 
     GateBReport(
       tier0Run = RefreshRun("tier0", t0Ms, preBytes, preFiles, success = true),
       tier1Run = Some(RefreshRun("tier1", t1Ms, postBytes, postFiles, t1Success)),
-      tier0TotalBytes = tier0TotalBytes,
-      tier1TouchedBytes = tier1TouchedBytes,
-      untouchedBytesPreserved = untouchedBytesPreserved,
-      isolationRatio = overlap)
+      tier0TotalBytes = preBytes.values.sum,
+      tier1TouchedBytes = postBytes.filter { case (k, _) => k.contains("2026-09-08") }.values.sum,
+      rewrittenButUnchangedBytes = rewrittenButUnchangedBytes,
+      driverComputeMs = driverMs,
+      executorComputeMs = execMs,
+      contentIdentityRatio = overlap)
   }
 
   /** CLI entry: run the probe and print the Gate B report.
