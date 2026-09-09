@@ -1,6 +1,7 @@
 /*
- * SM8 Spark Connector — GateBTraceRunner (ADR-0029 §Gate B item 3 +
- * ADR-0030 §D1 evidence collection).
+ * SM8 Spark Connector — GateBTraceRunner (ADR-0029 §Gate B item 3,
+ * amended 2026-09-09: operator enablement instrumentation; ADR-0030 §D1
+ * experiment harness).
  *
  * A thin cron-friendly wrapper around RollupRefreshCostProbe.run that:
  *   - parses --model (accepted and recorded in the output for

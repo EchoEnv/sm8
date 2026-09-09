@@ -1,7 +1,7 @@
 # ADR-0029: Rollup refresh strategy ladder
 
-**Status:** Proposed.
-**Date:** 2026-09-08.
+**Status:** Proposed (amended 2026-09-09: §Gate B reframed from maintainer build gate to operator enablement guidance).
+**Date:** 2026-09-08 (last amended 2026-09-09).
 
 ## Context
 
