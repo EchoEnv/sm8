@@ -211,6 +211,54 @@ object RollupWatermark {
     qualified
   }
 
+  /** v1 finality heuristic (day-grain only, puma final H4-close):
+    * a bucket strictly before today (canonical yyyy-MM-dd, system
+    * default zone) is final — its window closed and no further
+    * re-processing is expected. Today and future buckets stay
+    * open; sub-day grains have no lateness model yet and stay
+    * non-final (disclosed v1 boundary — the conservative read
+    * ADR-0030 D3 requires: never claim finality without grounds).
+    */
+  private[spark] def finalityFor(
+      grain: Option[String],
+      bucketValue: String): Boolean =
+    RollupRewriter.normalizeGrain(grain).contains("day") &&
+      bucketValue < java.time.LocalDate.now().toString
+
+  /** The refresh-path entry: advance the watermark for a scope's
+    * buckets AFTER a successful data commit (the D3 ordering
+    * contract — watermark FOLLOWS data, never before), computing
+    * per-bucket finality via [[finalityFor]]. Two monotone
+    * advances: open buckets latch non-final, closed day-grain
+    * buckets latch final (an earlier final verdict is never
+    * demoted — the OR-latch enforces it table-side).
+    *
+    * @return the qualified watermark table name, or a typed refusal
+    *         if the advance fails (a failed advance never corrupts
+    *         the data commit that preceded it — only the freshness
+    *         signal lags, and the next refresh re-advances).
+    */
+  def advanceForScope(
+      spark: SparkSession,
+      model: Model,
+      spec: RollupSpec,
+      buckets: Set[String]): Either[io.sm8.core.engine.EngineError, String] = {
+    val (latchFinal, stayOpen) =
+      buckets.partition(b => finalityFor(spec.timeGrain, b))
+    try {
+      if (stayOpen.nonEmpty) advance(spark, model, spec, stayOpen, isFinal = false)
+      if (latchFinal.nonEmpty) advance(spark, model, spec, latchFinal, isFinal = true)
+      Right(s"$IcebergCatalog.${tableName(model, spec)}")
+    } catch {
+      case scala.util.control.NonFatal(e) =>
+        Left(io.sm8.core.engine.EngineError.UnsupportedCapability(
+          engine = "spark-connector",
+          capability = "RollupWatermark.advanceForScope",
+          message = s"watermark advance for '${tableName(model, spec)}' failed: " +
+            s"${e.getClass.getSimpleName}: ${e.getMessage}"))
+    }
+  }
+
   /** The rollup table's current Iceberg snapshot id.
     *
     * Failure semantics (the 0L sentinel): any read failure or a

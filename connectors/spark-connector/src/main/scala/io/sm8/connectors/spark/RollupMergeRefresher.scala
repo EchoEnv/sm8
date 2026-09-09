@@ -168,8 +168,12 @@ object RollupMergeRefresher {
   private[spark] def requireSafeIdentifiers(
     model: Model, spec: RollupSpec): Either[EngineError, Unit] = {
     val safe = "^[A-Za-z0-9_]+$".r
-    val names = (model.name :: spec.name :: spec.dimensions) ++
-      spec.dimensions // physical columns flow from the same list
+    // Measure input field names matter too (puma final H1-close): a
+    // FieldRef on a base column becomes the sum__<f>/min__<f> state
+    // column that the MERGE's SET/INSERT lists backtick-quote.
+    val measureFields: List[String] = model.measures
+      .map(_.expr.input).collect { case Some(io.sm8.core.expr.Expr.FieldRef(f)) => f }
+    val names = model.name :: spec.name :: spec.dimensions ::: measureFields
     val bad = names.filter(n => safe.findFirstIn(n).isEmpty)
     if (bad.isEmpty) Right(())
     else Left(EngineError.UnsupportedCapability(

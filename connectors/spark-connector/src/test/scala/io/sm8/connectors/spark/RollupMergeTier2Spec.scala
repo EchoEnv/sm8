@@ -373,6 +373,38 @@ class RollupMergeTier2Spec
     }
   }
 
+  test("M1 pin: grained rollup with Nil scope refuses scopeEmpty (no silent no-op)") {
+    writeBase(baseRows("2026-09-07")(("2026-09-07", "emea", 10.0)))
+    seedRollup()
+    RollupMergeRefresher.mergeRefresh(spark, tier2Model, tier2Spec, Nil) match {
+      case Left(io.sm8.core.engine.EngineError.UnsupportedCapability(
+        "spark-connector", "RollupMergeRefresher.scopeEmpty", _)) => succeed
+      case other => fail(s"expected scopeEmpty refusal for Nil scope, got $other")
+    }
+  }
+
+  test("H4 pin: mergeRefreshModel wires watermark advance after the data commit") {
+    writeBase(baseRows("2026-09-07")(("2026-09-07", "emea", 10.0)))
+    seedRollup()
+    RollupRefresher.mergeRefreshModel(spark, tier2Model, tier2Spec,
+      List("2026-09-07")) match {
+      case RollupRefresher.RollupRefreshResult.Refreshed(_, _) => succeed
+      case other => fail(s"expected Refreshed, got $other")
+    }
+    // 2026-09-07 < today: day-grain finality latched final by the advance
+    val wm = s"iceberg_cat.${RollupWatermark.tableName(tier2Model, tier2Spec)}"
+    spark.table(wm).filter("bucket_value = '2026-09-07'")
+      .collect().head.getBoolean(3) shouldBe true
+    // the end-to-end freshness verdict: FinalRequired routes the
+    // now-final bucket, refuses the untouched one (absence = non-final)
+    val policyModel = tier2Model.copy(rollups = List(tier2Spec.copy(
+      freshness = Some(FreshnessPolicy.FinalRequired))))
+    RollupWatermark.stalenessRefusal(spark, policyModel,
+      policyModel.rollups.head, Set("2026-09-07")) shouldBe None
+    RollupWatermark.stalenessRefusal(spark, policyModel,
+      policyModel.rollups.head, Set("2099-12-31")).isDefined shouldBe true
+  }
+
   test("H1 pin: unsafe identifiers refuse typed at the MERGE boundary") {
     writeBase(baseRows("2026-09-07")(("2026-09-07", "emea", 10.0)))
     seedRollup()
