@@ -73,6 +73,53 @@ Note: `snapshot()` reads each counter atomically but the set of reads is not a s
 - Shape keys use measure ALIASES: renaming an alias fragments its counts across the rename boundary. Treat alias renames as telemetry resets.
 - Shape keys are transport-dependent: REST queries key on the request's measure strings, MCP/DSL queries on the declared measure aliases. If the two transports normalize names differently, counts split across two keys for the same logical shape.
 
+## File hygiene (small-file compaction)
+
+Scoped Tier 1 refreshes (one partition per refresh) add a new data
+file to the touched partition on every run. A partition refreshed
+hourly for a month accumulates ~720 small files; scan latency degrades
+as file count grows. This is the standard Iceberg small-file problem —
+handled by periodic compaction, not by the refresh path.
+
+### Table properties (set at rollup creation)
+
+```sql
+ALTER TABLE iceberg_cat.<model>__<rollup> SET TBLPROPERTIES (
+  'write.target-file-size-bytes'='134217728'  -- 128 MB
+);
+```
+
+The materializer does not set this today; deployments with large
+rollups should set it once per table after the first refresh.
+
+### Scheduled compaction
+
+Run `rewrite_data_files` on each rollup table on a schedule slower
+than the refresh cadence (e.g. daily compaction for hourly refreshes):
+
+```sql
+CALL iceberg_cat.system.rewrite_data_files(
+  table => 'iceberg_cat.<model>__<rollup>',
+  options => map('min-input-files','2')
+);
+```
+
+**Serialization with refreshes** (ADR-0030 §D1): compaction and
+refresh must not run concurrently on the same table. Gate the
+compaction cron outside the refresh window (e.g. compaction at 04:00,
+refresh cron at :15/:45 past each hour), or hold the per-rollup
+advisory lock ADR-0030 §D1 describes.
+
+### When to compact
+
+- File count per partition > ~100, or
+- average file size < 10 MB, or
+- scan latency on the rollup measurably exceeds the base table for
+  the same predicate (check with the observation harness).
+
+The `sm8 rollup-report` reader surfaces per-table stats; the probe
+(`RollupRefreshCostProbe`) prints per-partition byte/file counts.
+
 ## Known limits (v1)
 
 - Time-grain rollups (`time_grain:` + `grain_dimension:`) materialize and route: the grain dimension must be `Date`/`Timestamp` (declared or resolved), and a query at a coarser grain re-buckets a finer rollup for Additive measures and Avg. Truncation is session-timezone. Week-bucket boundaries are whatever the engine's `date_trunc('week')` emits (pinned by test in `RollupMaterializerSpec`); re-verify the pin on a Spark upgrade.

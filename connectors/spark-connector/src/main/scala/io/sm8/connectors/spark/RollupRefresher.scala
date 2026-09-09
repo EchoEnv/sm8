@@ -45,17 +45,28 @@ object RollupRefresher {
 
   /** Refresh every rollup declared on the named model.
     *
-    * @param spark       the session (table IO only — no closure
-    *                    capture; see file header)
-    * @param modelName   registered model name to look up
-    * @param modelOf     resolver from name -> Model (the caller's
-    *                    model source; the CLI/server wires its own)
+    * @param spark        the session (table IO only — no closure
+    *                     capture; see file header)
+    * @param modelName    registered model name to look up
+    * @param modelOf      resolver from name -> Model (the caller's
+    *                     model source; the CLI/server wires its own)
+    * @param rollupScopes optional per-rollup partition scopes
+    *                     (ADR-0029 Tier 1): rollup name -> scope.
+    *                     Rollups without an entry refresh Tier 0
+    *                     (whole-table) — the pre-Tier-1 behavior.
+    *                     A declared scope routes the refresh through
+    *                     the materializer's strategy-select: Tier 1
+    *                     dynamic partition overwrite for time-grained
+    *                     Iceberg rollups whose recomputed source is
+    *                     covered by the scope; typed refusal otherwise
+    *                     (fail-closed, never a silent widening).
     * @return per-rollup results in declaration order
     */
   def refreshModel(
       spark: SparkSession,
       modelName: String,
-      modelOf: String => Option[Model]
+      modelOf: String => Option[Model],
+      rollupScopes: Map[String, RollupMaterializer.RefreshScope] = Map.empty
   ): Either[EngineError, List[RollupRefreshResult]] =
     modelOf(modelName) match {
       case None =>
@@ -65,9 +76,25 @@ object RollupRefresher {
           message = s"model '$modelName' not found — cannot refresh rollups"))
       case Some(model) =>
         val results = model.rollups.map { spec =>
-          RollupMaterializer.materialize(spark, model, spec, eager = true) match {
-            case Right(table) => RollupRefreshResult.Refreshed(spec.name, table)
-            case Left(e)      => RollupRefreshResult.Failed(spec.name, e)
+          val scope = rollupScopes.getOrElse(spec.name,
+            RollupMaterializer.RefreshScope.NoScope)
+          // Format preservation (R1 self-review): the original call
+          // omitted tableFormat (4-arg overload default = Parquet).
+          // A scope REQUIRES Iceberg (Tier 1 is Iceberg-only), so:
+          // scope present -> Iceberg; scope absent -> the original
+          // 4-arg call (Parquet default, byte-identical behavior).
+          if (scope == RollupMaterializer.RefreshScope.NoScope) {
+            RollupMaterializer.materialize(spark, model, spec, eager = true) match {
+              case Right(table) => RollupRefreshResult.Refreshed(spec.name, table)
+              case Left(e)      => RollupRefreshResult.Failed(spec.name, e)
+            }
+          } else {
+            RollupMaterializer.materialize(spark, model, spec, eager = true,
+              tableFormat = RollupMaterializer.Iceberg,
+              refreshScope = scope) match {
+              case Right(table) => RollupRefreshResult.Refreshed(spec.name, table)
+              case Left(e)      => RollupRefreshResult.Failed(spec.name, e)
+            }
           }
         }
         Right(results)
@@ -96,9 +123,28 @@ object RollupRefresher {
       spark: SparkSession,
       modelName: String,
       modelOf: scala.Function1[String, Option[Model]]
+  ): java.util.Map[String, Object] = refreshModelJ(spark, modelName, modelOf, Map.empty)
+
+  /** JDK-typed adapter with per-rollup scopes (ADR-0029 Tier 1).
+    *
+    * @param spark        the session (table IO only)
+    * @param modelName    the model name to refresh
+    * @param modelOf      resolver from name -> Model
+    * @param rollupScopes Scala map of rollup name -> RefreshScope;
+    *        rollups without an entry refresh Tier 0 (default).
+    *        Convenience for reflective callers that have built the
+    *        scope map on the Scala side before crossing the JDK
+    *        boundary.
+    * @return the JDK result map (see the no-scope overload)
+    */
+  def refreshModelJ(
+      spark: SparkSession,
+      modelName: String,
+      modelOf: scala.Function1[String, Option[Model]],
+      rollupScopes: Map[String, RollupMaterializer.RefreshScope]
   ): java.util.Map[String, Object] = {
     val out = new java.util.HashMap[String, Object]()
-    refreshModel(spark, modelName, name => modelOf(name)) match {
+    refreshModel(spark, modelName, name => modelOf(name), rollupScopes) match {
       case Left(e) =>
         out.put("ok", java.lang.Boolean.FALSE)
         out.put("error", e.message)
