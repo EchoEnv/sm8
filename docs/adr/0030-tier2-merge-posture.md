@@ -53,8 +53,11 @@ rejected as a default and adopted as an experiment.** Rationale:
   ops — `overwritePartitions` is a metadata swap — so the posture choice
   is moot today.
 - Under Tier 2, MOR buys cheap writes but taxes every read (merge data +
-  delete files at scan time) and adds a compaction obligation. Our read
-  path is the routing lane's product surface (`RollupRewriter` routes
+  delete files at scan time) AND carries a **read-side latency tax that
+  persists between compaction runs** (R1 review, teal H1): until the
+  next `rewrite_data_files` snapshot is published AND query planners
+  route to it, the routed surface pays the MoR scan tax. Our read path
+  is the routing lane's product surface (`RollupRewriter` routes
   production queries at these tables); trading scan speed for write
   cheapness inverts the cost model.
 - **However**, the hybrid (MOR for still-open windows, compaction
@@ -65,65 +68,131 @@ rejected as a default and adopted as an experiment.** Rationale:
 **The experiment (runs only if Gate B opens Tier 2):** one representative
 model runs dual rollup tables — identical grain/measures, one COW, one
 MOR-hybrid with post-close `rewrite_data_files` — behind a routing
-allowlist. The observation harness (PRs #351/#355) measures: refresh
-wall-clock, scan latency at the routed surface, delete-file accumulation
-between compactions, compaction cost, and refusal/telemetry deltas.
-Decision rule: MOR-hybrid adopts per-table only where measured scan cost
-delta < 10% AND refresh cost saving > 30%. Otherwise COW stays
-universal. The experiment's dual-table period is bounded (2 weeks) and
-its tables are excluded from production routing until the rule picks a
-winner.
+allowlist. The observation harness (PRs #351/#355) measures per
+candidate table with rigorously specified metrics (R1 review, teal H4):
+
+```text
+Scan-latency p95 at the routed surface, measured over a 7-day window,
+STRATIFIED BY snapshots-since-last-compaction (the MoR read tax is
+conditional on that stratification — a single mean hides it).
+Refresh cost = wall-clock from job-start to data-commit-snapshot-
+published, plus total compute time (driver + executor seconds).
+Ambiguity rate: fraction of buckets that fell back to full-bucket
+re-aggregation (D2-6) per refresh cycle.
+Decision rule: MOR-hybrid adopts per-table only where scan-p95 delta
+< 10% AND refresh-wall-clock saving > 30%. Otherwise COW stays
+universal for that table.
+```
+
+The experiment needs a **synthetic-probe path** in the observation
+harness (R1 review, wren H3): the current harness has no way to measure
+scan latency for a table that production routing excludes. The probe is
+a scheduled query loop against the candidate tables; it is part of the
+Tier 2 implementation work, not a platform obligation.
+
+The experiment's dual-table period is bounded (2 weeks of refresh
+traffic, not wall-clock — explicitly anchored to refresh count, R1
+review, teal M2) and its tables are excluded from production routing
+until the rule picks a winner.
 
 Table properties are set per-table by the **connector** at create time
 (the same CTAS/create surface Tier 1 uses); the platform never sets
 them out-of-band. Compaction (`rewrite_data_files`) is a **platform-side
-scheduled maintenance** op — it is not part of the refresh path and must
-not run concurrently with a refresh on the same table (serialized by the
-orchestrator; same discipline as ADR-0029's refresh concurrency note).
+scheduled maintenance** op — it is not part of the refresh path.
+
+**Compaction-vs-refresh serialization** (R1 review, wren M2): the
+orchestrator holds a per-rollup advisory lock. Refresh and compaction
+each acquire the lock before reading the rollup's current snapshot id;
+whichever begins first runs to completion before the other acquires.
+The lock is advisory (a row in a small `compaction_coordination`
+Iceberg table, not a JVM primitive) so platform restarts do not strand
+it. The lock implementation is platform-side and out-of-scope here;
+this ADR pins the rule.
 
 ### D2 — Merge-key and idempotency contract (Tier 2 invariants)
 
 Any Tier 2 MERGE implementation MUST satisfy all of the following. These
 are contract tests, not conventions:
 
-1. **Merge key = grain bucket + all dimension columns** (composite). The
-   key is derived from the rollup declaration (grain dimension +
-   `spec.dimensions`), never hand-specified per refresh. Including the
-   partition column in the ON clause is required (it is the grain bucket
-   by construction) so Iceberg can prune.
-2. **Source-key uniqueness**: the delta source must be unique on the
+1. **Merge key = grain bucket + all dimension columns** (composite).
+   The key is derived from the rollup declaration (grain dimension +
+   `spec.dimensions`), never hand-specified per refresh. The merge-key
+   shape matches `RollupRewriter.rollupSourceRef(model, spec)` — the
+   same identity the router uses — so the on-the-wire and on-the-table
+   keys are identical. Including the partition column in the ON clause
+   is required (it is the grain bucket by construction).
+2. **Partition-pruning verification** (R1 review, teal C3). The claim
+   that the bucket predicate is pushed into the scan side of MERGE is
+   **verified by a plan check, not asserted in prose.** Contract test:
+   capture the Iceberg physical plan for the MERGE; assert the plan
+   contains a partition filter on the grain column on the scan side
+   before the join/merge node. If a runtime version stops pushing the
+   predicate (Iceberg Spark integration does this for some ON forms),
+   the test fails loud. **Tier 2 must NOT ship with the pruning test
+   failing** — either the merge key form is adjusted to push the
+   predicate or this ADR is amended to remove the pruning claim.
+3. **Source-key uniqueness**: the delta source must be unique on the
    merge key. A duplicate-key delta refuses typed
    (`EngineError.UnsupportedCapability`, capability
    `RollupMaterializer.merge.duplicateKeys`) — matching the
    `ScopeUncovered` refusal pattern from Tier 1. Non-unique keys are a
    model/base divergence, which must fail loud, not last-write-wins.
-3. **Idempotency (the spark-batch retried-job rule, made testable):**
-   re-running the same merge against an unchanged source must leave the
-   table byte-identical (snapshot content hash equal). Contract test:
-   merge → snapshot-hash → merge again → hash unchanged. Any `+=`-style
-   accumulation into rollup measures is forbidden; matched rows are
-   **overwritten with the recomputed value** (`UPDATE SET m = s.m`), not
-   incremented.
-4. **Exact-delta primary, full-bucket-recompute fallback.** The primary
+4. **Duplicate-key detection timing** (R1 review, teal H2): the refusal
+   fires at the EARLIEST stage that can detect it, not after the
+   aggregation job has wasted compute. Pre-shuffle distinct-count probe
+   on the delta source; if the probe fails, refuse before aggregation.
+   The cost of the probe is part of the contract test (probe must be
+   cheaper than the aggregation it replaces).
+5. **Idempotency (spark-batch retried-job rule, formalized):** re-running
+   the same merge against an unchanged source must leave the table
+   **content-identical**. "Content-identical" is defined the same way
+   ADR-0029 defines it for Tier 1 (the Tier 1 spec pins the contract):
+   data-file references are reused AND per-file content hashes match
+   (R1 reviews, both reviewers flag C1 — every Iceberg MERGE produces
+   a new snapshot id; that is normal and not a violation). The
+   contract test is:
+   ```
+   merge(source)
+     post1 = manifest_entries(snapshot).map(m =>
+            (m.data_file.file_path, m.data_file.content_hash)).sorted
+     merge(source)            // identical source
+     post2 = manifest_entries(snapshot).map(m =>
+            (m.data_file.file_path, m.data_file.content_hash)).sorted
+     assert post1 == post2     // content-identity, not snapshot-identity
+   ```
+   Any `+=`-style accumulation into rollup measures is forbidden;
+   matched rows are **overwritten with the recomputed value**
+   (`UPDATE SET m = s.m`), not incremented.
+6. **Exact-delta primary, full-bucket-recompute fallback.** The primary
    Tier 2 strategy merges the snapshot-diff delta with pre/post-images
    (per ADR-0029: Additive measures combine contributions; Algebraic
-   need pre+post to maintain sum/count/sumSq; Positional/Holistic/
-   Approximable never participate and fall back to Tier 1 partition
-   recompute for their columns). When delta extraction is unreliable for
-   a bucket (overlapping windows, ambiguous lineage), the documented
-   fallback is **full-bucket re-aggregation from base + overwrite of
-   exactly those buckets** — the same invariant, the safer mechanism.
-   Strategy choice is per-bucket, decided by data properties
-   (delta fidelity), not hardcoded per table (scala-data-driven-refactor:
-   classify data, dispatch behavior).
-5. **Layer-1 raw-event dedup is explicitly out of scope.** The rollup
+   measures maintain the **Welford partial state** `(sum, count, m2)`
+   for variance/Stddev — NOT `(sum, count, sumSq)`, which is the wrong
+   shape; the Welford schema is the established one in `AggregateFn`
+   algebra and must be reused, R1 review teal H3). Positional / Holistic
+   / Approximable never participate; for those measure classes the
+   bucket falls back to a Tier 1-style partition recompute for that
+   measure's columns specifically (not for the bucket wholesale —
+   additive measures in the same bucket still get the row-level delta).
+   When delta extraction is unreliable for a bucket, the fallback
+   (R1 review, teal C4 — the dominant fallback case in practice) is
+   **full-bucket re-aggregation from base + overwrite of exactly that
+   bucket's partitions via Tier 1's `overwritePartitions`**. This is
+   **structurally identical to Tier 1 on those partitions** — not a
+   duplicate mechanism, but the same one. The D1 experiment therefore
+   measures the **ambiguity rate** as its primary signal: if the rate
+   is high, MOR-hybrid wins nothing because we are mostly doing Tier 1
+   work; if the rate is low, MOR-hybrid's per-bucket delta wins as
+   predicted. The classification rule for "ambiguous" is pinned in D5
+   (snapshot-diff fidelity boundaries).
+7. **Layer-1 raw-event dedup is explicitly out of scope.** The rollup
    lane does not silently deduplicate base-table rows (`ROW_NUMBER()`
    tricks). Base-table hygiene belongs to the producing pipeline; a
    rollup layer that dedupes silently masks upstream data-quality
    failures — exactly the "silently wrong" class the observation
    harness exists to surface. If dedup-at-read ever becomes a real
-   requirement it must be an explicitly declared model feature with its
-   own telemetry, decided in its own ADR.
+   requirement it must be an explicitly declared model feature with
+   its own telemetry, decided in its own ADR.
 
 ### D3 — Refresh watermark metadata (freshness/finality signal)
 
@@ -138,29 +207,56 @@ without core learning about Iceberg.
 **Decision:**
 
 - The connector maintains a **rollup watermark table** — itself an
-  Iceberg table, one row per (rollup_table, partition bucket):
-  `is_final` (lateness threshold passed; no further re-processing
-  expected), `last_refreshed_at`, `last_commit_snapshot_id`.
-- Written by the refresh path (connector) after each successful commit;
-  read by the connector's resolution layer (the same seam that resolves
-  rollup table names for the router).
-- **Core consumes it only through the existing refusal vocabulary.** The
-  router's staleness gate gains a sibling refusal —
-  `RollupBucketStale(bucket)` — emitted when the resolution layer
-  reports the queried bucket non-final AND the model declares a freshness
-  policy requiring finality. Core never queries the watermark table; the
-  connector passes a boolean/bucket-set verdict across the existing
-  resolution seam. If the model has no freshness policy, routing behaves
-  exactly as today (existence + schema only).
+  Iceberg table in the same catalog as the rollup. Schema (R1 review,
+  teal M4): one row per `(model_name, rollup_name, bucket_value)`;
+  columns `is_final` (lateness threshold passed; no further
+  re-processing expected), `last_refreshed_at` (driver wall-clock),
+  `last_commit_snapshot_id` (Iceberg snapshot id of the data commit
+  that produced this state, for diagnostic joins).
+- Written by the refresh path (connector) after each successful data
+  commit; read by the connector's resolution layer (the same seam that
+  resolves rollup table names for the router).
+- **Cross-table atomicity is sequential-but-not-atomic, by Iceberg's
+  design** (R1 review, teal C2): two commits to two separate Iceberg
+  tables are NEVER cross-table atomic. The watermark commit follows the
+  data commit; a crash between them leaves the watermark stale-but-valid
+  (data is current; the watermark simply does not yet reflect it — it
+  advances on the next refresh and never claims "more final" than the
+  data). The orchestrator pins the rule: a watermark row is committed
+  **only after** the data commit returned success; never before. A
+  **monotonicity contract** (test) asserts `is_final` never regresses
+  from true to false for a given (model, rollup, bucket). A watermark
+  row whose snapshot id does not match the rollup's current snapshot id
+  is treated as stale and re-derived on the next refresh.
+- **Core consumes it only through the existing refusal vocabulary**
+  (RFC §3). The refusal vocabulary gains a sibling —
+  `RollupBucketStale(buckets: Set[BucketKey])` — emitted when the
+  resolution layer reports queried buckets non-final AND the model
+  declares a freshness policy requiring finality. **The rewriter
+  signature does NOT change** (R1 review, wren H2): the freshness
+  verdict rides in the `RelOp.Scan.resolution` slot that is today
+  `None` for rollup scans. **Emission rule mirrors `RollupSchemaStale`**
+  (R1 review, wren H1): the rewriter never instantiates the case —
+  only the connector's resolution layer does, after it looks up the
+  watermark table.
+- **Freshness policy home** (R1 review, wren M3): the policy is a
+  declarative optional field on `RollupSpec`
+  (`freshness: Option[FreshnessPolicy]`) — no rewriter signature
+  change, no connector-injected config. A model without `freshness`
+  routes unchanged (today's behavior). A model with
+  `freshness = FinalRequired` gets `RollupBucketStale` on any
+  non-final bucket in its scope. This keeps the routing contract's
+  default behavior identical.
+- **Bucket-key cardinality** (R1 review, wren M1): the refusal carries
+  a `Set[BucketKey]`, not a singular bucket — real queries touch N
+  partitions; per-bucket emission would either flood the refusal
+  vocabulary or hide the verdict. One refusal, full set; the harness
+  and routing metric see the cardinality.
 - The watermark table is **observability surface, not correctness
   authority**: the rollup row data remains the source of truth; the
-  watermark only scopes re-processing (D2-4's "non-final buckets only")
+  watermark only scopes re-processing (D2-6's "non-final buckets only")
   and powers the harness's freshness report (PR #350's
   `sm8 rollup-report` gains a per-bucket finality column).
-- Watermark writes ride the refresh's atomicity: a watermark row is
-  committed only after the data commit succeeded (never before), so a
-  failed refresh can never advance the watermark (Tier 1/2 atomicity
-  inherited, not re-implemented).
 
 ### D4 — Cascading rollup sources: previewed, deferred to ADR-0031
 
@@ -177,6 +273,18 @@ ADR-0031 will define: the core-side validity predicate, the
 connector-side cascade-source resolution, the platform-side sequencing
 (hourly completes before daily), and the staleness propagation rules.
 Until then, all rollups build from base (status quo).
+
+### D5 — Snapshot-diff fidelity boundaries (R1 review, teal M3)
+
+The Tier 2 delta is the diff of base-table Iceberg snapshots. The diff
+is reliable for: appended data files, deleted data files, removed
+position deletes (in MOR). The diff is NOT reliable for: schema
+evolution (column additions/drops/type changes), partition evolution
+(adding a partition transform), or wholesale partition rewrites (COW
+refresh of the base). When any boundary is crossed, the affected
+bucket falls back to full-bucket re-aggregation (D2-6). This is a
+sibling decision (not buried in D2-6 prose) so it is discoverable
+from a single read of the Decisions section.
 
 ## Alternatives considered
 
@@ -223,30 +331,40 @@ Until then, all rollups build from base (status quo).
 - Core changes are limited to the `RollupBucketStale` refusal variant
   (same closed vocabulary as `RollupSchemaStale`) — no IO, no format
   concepts, no strategy concepts cross the seam (RFC §3).
-- The small-file/compaction runbook item applies at Tier 1 now: hourly
-  scoped writes fragment touched partitions; schedule periodic
-  `rewrite_data_files` + set `write.target-file-size-bytes` on rollup
-  tables. Platform-side, no code change.
-
+- 
 ## Tests (when Tier 2 is funded — listed now to pin the contract early)
 
-- **Idempotency.** Same merge twice against unchanged source → identical
-  snapshot content hash (D2-3).
-- **Duplicate-key refusal.** Delta source with duplicate merge keys →
-  typed refusal, no commit (D2-2).
-- **Partition pruning in the physical plan.** The executed MERGE plan
-  shows the bucket predicate pushed to the Iceberg scan (spark-batch
-  mantra 1: what you wrote isn't what runs — verify the plan, not the
-  SQL).
-- **Watermark monotonicity.** A failed refresh never advances the
-  watermark; a successful one advances it atomically after the data
-  commit (D3).
+- **Idempotency (content-identity, R1 C1).** Same merge twice against
+  unchanged source → the sorted set of
+  `(data_file.file_path, data_file.content_hash)` pairs from the
+  manifest entries is identical across the two post-merge snapshots
+  (snapshot ids differ — that is expected and not a violation).
+- **Duplicate-key refusal timing (R1 teal H2).** Delta source with
+  duplicate merge keys → typed refusal BEFORE the aggregation job
+  runs (asserted via SparkListener job count or
+  `df.queryExecution.numJobs`); probe cost < aggregation cost.
+- **Partition pruning in the physical plan (R1 teal C3).** The executed
+  MERGE plan shows the bucket predicate pushed to the Iceberg scan
+  side (spark-batch mantra 1: verify the plan, not the SQL).
+- **Watermark monotonicity (R1 teal C2).** A failed refresh never
+  advances the watermark; `is_final` never regresses true → false; a
+  successful refresh advances it after the data commit (sequential
+  ordering asserted, cross-table atomicity explicitly NOT claimed).
 - **Policy-gated staleness refusal.** Model without freshness policy →
-  non-final buckets route normally; model with policy →
-  `RollupBucketStale` refusal observed and counted by the harness (D3).
-- **MOR-hybrid experiment gates.** Harness traces produce the D1
-  decision-rule numbers (scan delta < 10%, refresh saving > 30%) for
-  each candidate table.
-- **Fallback fidelity.** A bucket whose delta extraction is ambiguous
-  falls back to full-bucket re-aggregation and yields byte-identical
-  results to a from-base recompute of that bucket (D2-4).
+  non-final buckets route normally; model with
+  `freshness = FinalRequired` → `RollupBucketStale(buckets)` refusal
+  observed and counted by the harness (D3).
+- **MOR-hybrid experiment gates (R1 teal H4).** Harness traces produce
+  the D1 decision-rule numbers — scan-latency p95 stratified by
+  snapshots-since-last-compaction, refresh wall-clock +
+  compute-time, ambiguity rate — for each candidate table.
+- **Fallback fidelity (R1 teal C4).** A bucket whose delta extraction
+  is ambiguous falls back to full-bucket re-aggregation and yields
+  content-identical results to a from-base recompute of that bucket.
+- **File-size hygiene (R1 teal M5).** After N scoped Tier 1 refreshes
+  on a partition, assert file count and total bytes stay within a
+  bound (or explicitly surface the drift), so small-file growth is a
+  failing test rather than an ops-only concern.
+- **Synthetic probe (R1 wren H3).** The harness can measure scan
+  latency on routing-excluded candidate tables (needed by the D1
+  experiment).
