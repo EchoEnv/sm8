@@ -44,7 +44,7 @@ aggregate-algebra source of truth (ADR-0029 §Context).
 ### D1 — Write-distribution posture: COW remains the default; MOR-hybrid is a gated experiment
 
 The ADR-0029 posture stands: rollup tables are **read-mostly BI surfaces;
-scan speed is the product**. Defaults when Tier 2 opens:
+scan speed is the product**. Defaults when an operator enables Tier 2:
 
 ```text
 write.delete.mode = copy-on-write

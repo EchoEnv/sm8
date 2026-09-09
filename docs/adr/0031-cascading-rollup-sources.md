@@ -7,8 +7,10 @@
 
 ADR-0028 made Iceberg the format standard. ADR-0029 shipped Tier 1
 (dynamic partition overwrite via DSv2, PR #361). ADR-0030 set the
-posture for Tier 2 (row-level delta MERGE — gated, not opened). This
-ADR does NOT open Tier 2 either. It opens a **separate question** the
+posture for Tier 2 (row-level delta MERGE; per ADR-0029 §Gate B as
+amended 2026-09-09, its numeric criteria are operator enablement
+guidance, not a build gate). This ADR does not itself schedule any
+Tier 2 work. It opens a **separate question** the
 sibling ADRs explicitly deferred:
 
 > What happens when a rollup is **built FROM another rollup** instead

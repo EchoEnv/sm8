@@ -16,7 +16,7 @@ ADR-0029 §Gate B for the open-source rationale).
 
 The runner supports TWO modes:
 
-**Live-model mode** (decision-grade metrics — but SHADOW WRITES):
+**Live-model mode** (enablement-evaluation-grade metrics — but SHADOW WRITES):
 
 ```bash
 spark-submit --class io.sm8.connectors.spark.GateBTraceRunner \
@@ -56,7 +56,7 @@ against the rollup's declared base table.
 > writes to production). This is by design — it prevents accidental
 > production writes during evidence collection.
 
-**Synthetic-fixture mode** (procedure exercise — NOT decision-grade):
+**Synthetic-fixture mode** (procedure exercise — NOT evaluation-grade):
 
 ```bash
 spark-submit --class io.sm8.connectors.spark.GateBTraceRunner \
@@ -100,7 +100,7 @@ Exit codes: 0 = trace written; 1 = probe failed; 2 = bad arguments.
 Daily alongside the existing refresh cron (example):
 
 ```cron
-# Gate B trace collection — Tier 2 evidence (ADR-0029 §Gate B item 3)
+# Gate B trace collection — Tier 2 operator enablement evidence (ADR-0029 §Gate B)
 30 3 * * * java -cp $HOME/bin/sm8-connector.jar \
   io.sm8.connectors.spark.GateBTraceRunner \
   --model <representative-model> \
@@ -130,7 +130,7 @@ runs per day.
 ### Retention
 
 Files accumulate one-per-day for the 2-week window. After the Gate B
-decision lands, archive or delete: `rm $HOME/logs/gate-b/*.json`.
+enablement evaluation completes, archive or delete: `rm $HOME/logs/gate-b/*.json`.
 Files are owned by the cron user with the default umask; no logrotate
 hook is provided.
 
@@ -149,14 +149,14 @@ Each JSON file is self-describing:
 
 ## Evaluation at week 2+
 
-> **The Gate B decision metric is a DISTRIBUTION over many runs, not
+> **The Gate B enablement-evaluation metric is a DISTRIBUTION over many runs, not
 > a single daily-cron sample.** Schedule live-model traces at the
 > production refresh cadence (or denser) for the 2-week window;
 > one file per day is a minimum, not the target. This cadence
 > requirement applies equally to enablement evaluation (amended
-> §Gate B): 14 daily single samples are NOT decision-grade.
+> §Gate B): 14 daily single samples are NOT evaluation-grade.
 >
-> **Only LIVE-MODEL runs are Gate B decision-grade.** Synthetic-
+> **Only LIVE-MODEL runs are Gate B enablement-evaluation-grade.** Synthetic-
 > fixture runs validate the procedure and the instrumentation; their
 > numbers do NOT open or close Gate B. Check each JSON's
 > `measuredSource` field before evaluating: live-model runs

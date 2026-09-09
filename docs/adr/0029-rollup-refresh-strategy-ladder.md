@@ -86,7 +86,7 @@ deployment), not the build decision.
 | 0 | Whole-table overwrite (`mode("overwrite")`) | none — full recompute | shipped (#358) | **current** |
 | 1 | Dynamic partition overwrite (DSv2 `overwritePartitions`) | none — only partitions present in the recomputed source are replaced | ~140 LOC + tests | **v2 target** |
 | 2 | Row-level delta MERGE, delta = Iceberg snapshot diff + measure algebra | aggregate algebra under deltas (per Decomposability class); MOR/COW choice; snapshot-diff → row-delta recovery | ~400 LOC | **building** (per amended §Gate B; operator enablement criteria below) |
-| 3 | Cross-partition MERGE + delete-file compaction policy | + compaction concurrency, split-row updates | ~700 LOC | gated on criteria |
+| 3 | Cross-partition MERGE + delete-file compaction policy | + compaction concurrency, split-row updates | ~700 LOC | unscheduled — requires its own ADR (the §Gate B numeric criteria serve as operator enablement guidance for whatever tier they gate, never a maintainer build gate) |
 | 4 | Continuous incremental (external CDC) | + freshness SLO, late-arrival recovery, ordering | 1k+ LOC | deliberately out of scope |
 
 ### Tier 1 — dynamic partition overwrite (v2 target)
