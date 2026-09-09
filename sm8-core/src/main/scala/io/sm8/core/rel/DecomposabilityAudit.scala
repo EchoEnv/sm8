@@ -53,14 +53,59 @@ final case class DecomposabilityAuditRow(
 
 object DecomposabilityAudit {
 
-  /** The partial-state column names a Decomposability class requires
-    * to be materialized on a cascade source. Additive needs the raw
-    * aggregated column; Algebraic needs the Welford triple; the other
-    * three classes cannot cascade at all (empty = no cascade). */
+  /** The partial-state column-name prefix a SPECIFIC aggregate fn
+    * requires on a cascade source. Returns PREFIXES, not full column
+    * names: the cascade source carries one partial column per measure
+    * FIELD, so the audit checks presence by prefix and the caller
+    * resolves field→prefix.
+    *
+    * Per-fn, NOT per-class (R1 review heron MEDIUM+HIGH): Sum needs
+    * only `sum__<F>`; Min needs only `min__<F>`; Max needs only
+    * `max__<F>`; Avg/Stddev/Variance need the Welford triple.
+    * Additive class returns the union of the member fns' prefixes
+    * for the AUDIT row's exclusion-reason wording only.
+    */
+  private[rel] def requiredPartialStatesFor(fn: AggregateFn): List[String] = fn match {
+    case AggregateFn.Sum  => List("sum__")
+    case AggregateFn.Min  => List("min__")
+    case AggregateFn.Max  => List("max__")
+    case AggregateFn.Avg  => List("count__", "sum__", "m2__")
+    case AggregateFn.StddevSample | AggregateFn.StddevPopulation
+      | AggregateFn.VarianceSample | AggregateFn.VariancePopulation
+        => List("count__", "sum__", "m2__")
+    case _ => Nil
+  }
+
+  /** Per-class minimum prefixes (union of member fns) — for the
+    * exclusion-reason wording only. NOT used for the boolean check
+    * (which is per-fn, not per-class).
+    */
   private[rel] def requiredPartialStates(d: Decomposability): List[String] = d match {
-    case Decomposability.Additive  => List("sum__", "min__", "max__") // sum-type + binary-reducible
-    case Decomposability.Algebraic => List("count__", "sum__", "m2__") // Welford triple
-    case _                         => Nil // Positional/Holistic/Approximable never cascade
+    case Decomposability.Additive  => List("sum__", "min__", "max__")
+    case Decomposability.Algebraic => List("count__", "sum__", "m2__")
+    case _                         => Nil
+  }
+
+  /** Whether the source has the partial-state columns this specific
+    * measure needs. Per-measure (R1 review heron HIGH): a source
+    * with `sum__amount` but not `m2__amount` should allow Sum cascade
+    * and reject Avg cascade.
+    *
+    * @param fn the measure's aggregate fn (per-fn granularity: Sum
+    *        needs only sum__; Avg needs the Welford triple)
+    * @param field the source measure field (e.g. "amount")
+    * @param sourceHasPartialStateFor caller-resolved: does the source
+    *        have the named prefix for the named field?
+    * @return true iff every required prefix is present on the source
+    *         for this measure's field
+    */
+  def sourceCarriesPartialState(
+    fn: AggregateFn,
+    field: String,
+    sourceHasPartialStateFor: (String, String) => Boolean
+  ): Boolean = {
+    val required = requiredPartialStatesFor(fn)
+    required.forall(prefix => sourceHasPartialStateFor(field, prefix))
   }
 
   /** Whether a measure's class participates in Tier 2 row-level delta
@@ -95,36 +140,41 @@ object DecomposabilityAudit {
     * @param cascadeSource optional declared cascade source (ADR-0031
     *                      §D5: declaration lives on the caller; core
     *                      only evaluates the pure predicate)
-    * @param sourceHasPartialState does the source materialize the
-    *                      partial-state columns? (connector-resolved;
-    *                      ignored when cascadeSource is None)
+    * @param sourceHasPartialStateFor per-measure partial-state check
+    *        (field, prefix) ⇒ present-on-source. Caller resolves the
+    *        source's table schema; core asks for the verdict.
     * @return one audit row per measure on the rollup
     */
   def auditRollup(
     spec: RollupSpec,
     model: Model,
     cascadeSource: Option[RollupSpec],
-    sourceHasPartialState: Boolean
+    sourceHasPartialStateFor: (String, String) => Boolean
   ): List[DecomposabilityAuditRow] = {
     val declared = model.measures.filter(m => spec.measures.contains(m.name))
     declared.map { measure =>
       val d = AggregateFn.decomposability(measure.expr.fn)
       val deltaOk = deltaCombinable(d)
+      val field = measure.expr.input match {
+        case Some(io.sm8.core.expr.Expr.FieldRef(name)) => name
+        case _                                          => ""
+      }
       val (cascadeOk, cascadeVerdict, exclusion) = cascadeSource match {
         case None => (None: Option[Boolean], None: Option[Boolean], None: Option[String])
         case Some(_) if !cascadeCapable(d) =>
           (Some(false), Some(false),
-            Some(s"class ${cls(d)} never cascades (ADR-0031 §D1)"))
-        case Some(_) if !sourceHasPartialState =>
+            Some(s"class ${d.toString} never cascades (ADR-0031 §D1)"))
+        case Some(_) if !sourceCarriesPartialState(measure.expr.fn, field, sourceHasPartialStateFor) =>
+          val missing = requiredPartialStates(d)
+            .filterNot(p => sourceHasPartialStateFor(field, p))
           (Some(false), Some(false),
-            Some(s"class ${cls(d)} cascades but source lacks the " +
-              requiredPartialStates(d).filter(_.nonEmpty).map(p => s"'$p*'")
-                .mkString(", ") + " partial columns"))
+            Some(s"class ${d.toString} cascades but source missing partials for field '$field': " +
+              missing.map(p => s"'$p*'").mkString(", ")))
         case Some(_) =>
           (Some(true), Some(true), None)
       }
       val reason = exclusion.orElse {
-        if (!deltaOk) Some(s"class ${cls(d)} never delta-merges (ADR-0030 §D2-7)") else None
+        if (!deltaOk) Some(s"class ${d.toString} never delta-merges (ADR-0030 §D2-7)") else None
       }
       DecomposabilityAuditRow(
         rollupName = spec.name,
@@ -141,23 +191,17 @@ object DecomposabilityAudit {
     *
     * @param model the model whose rollups are audited
     * @param cascadeSources per-rollup declared cascade source (default: none)
-    * @param partialStatePresence per-rollup source partial-state flag (default: false)
+    * @param sourceHasPartialStateFor per-measure partial-state check
+    *        (field, prefix) ⇒ present-on-source
     * @return one audit row per (rollup, measure) pair
     */
   def auditModel(
     model: Model,
     cascadeSources: RollupSpec => Option[RollupSpec] = _ => None,
-    partialStatePresence: RollupSpec => Boolean = _ => false
+    sourceHasPartialStateFor: (String, String) => Boolean = (_, _) => false
   ): List[DecomposabilityAuditRow] =
     model.rollups.flatMap { spec =>
-      auditRollup(spec, model, cascadeSources(spec), partialStatePresence(spec))
+      auditRollup(spec, model, cascadeSources(spec), sourceHasPartialStateFor)
     }
 
-  private def cls(d: Decomposability): String = d match {
-    case Decomposability.Additive    => "Additive"
-    case Decomposability.Algebraic   => "Algebraic"
-    case Decomposability.Positional  => "Positional"
-    case Decomposability.Holistic    => "Holistic"
-    case Decomposability.Approximable => "Approximable"
-  }
 }

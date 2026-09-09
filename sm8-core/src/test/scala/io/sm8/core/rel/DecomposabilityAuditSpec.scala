@@ -55,7 +55,7 @@ class DecomposabilityAuditSpec extends AnyFunSuite with Matchers {
   test("audit is total: every AggregateFn case produces an audit row") {
     val model = fixtureModel(allFns: _*)
     val spec = specWith(allFns: _*)
-    val rows = DecomposabilityAudit.auditRollup(spec, model, None, sourceHasPartialState = false)
+    val rows = DecomposabilityAudit.auditRollup(spec, model, None, sourceHasPartialStateFor = (_, _) => false)
     rows should have size allFns.size.toLong
     rows.map(_.fn) should contain theSameElementsAs allFns
   }
@@ -63,7 +63,7 @@ class DecomposabilityAuditSpec extends AnyFunSuite with Matchers {
   test("deltaCombinable is true exactly for Additive + Algebraic classes") {
     val model = fixtureModel(allFns: _*)
     val spec = specWith(allFns: _*)
-    val rows = DecomposabilityAudit.auditRollup(spec, model, None, sourceHasPartialState = false)
+    val rows = DecomposabilityAudit.auditRollup(spec, model, None, sourceHasPartialStateFor = (_, _) => false)
     val deltaFns = rows.filter(_.deltaCombinable).map(_.fn).toSet
     deltaFns shouldBe Set(
       AggregateFn.Sum, AggregateFn.Count, AggregateFn.Min, AggregateFn.Max,
@@ -79,7 +79,7 @@ class DecomposabilityAuditSpec extends AnyFunSuite with Matchers {
   test("cascadeEligible is None when no cascade source is declared") {
     val model = fixtureModel(AggregateFn.Sum, AggregateFn.Avg)
     val spec = specWith(AggregateFn.Sum, AggregateFn.Avg)
-    val rows = DecomposabilityAudit.auditRollup(spec, model, None, sourceHasPartialState = false)
+    val rows = DecomposabilityAudit.auditRollup(spec, model, None, sourceHasPartialStateFor = (_, _) => false)
     rows.foreach(r => r.cascadeEligible shouldBe None)
   }
 
@@ -88,35 +88,61 @@ class DecomposabilityAuditSpec extends AnyFunSuite with Matchers {
     val spec = specWith(AggregateFn.Sum, AggregateFn.Avg)
     val srcSpec = specWith(AggregateFn.Sum) // source only declares Sum
 
-    // Source WITH partial state: Sum and Avg both cascade.
-    val withState = DecomposabilityAudit.auditRollup(spec, model, Some(srcSpec),
-      sourceHasPartialState = true)
-    withState.foreach { r =>
+    // Source WITH all required prefixes present for "amount": Sum and
+    // Avg both cascade. Prefix-aware: returns true only when the
+    // requested prefix is in the present set.
+    val presentAll = Set("sum__", "count__", "m2__", "min__", "max__")
+    val withFullState = DecomposabilityAudit.auditRollup(spec, model, Some(srcSpec),
+      sourceHasPartialStateFor = (field, prefix) =>
+        field == "amount" && presentAll.contains(prefix))
+    withFullState.foreach { r =>
       r.cascadeEligible shouldBe Some(true)
       r.exclusionReason shouldBe None
     }
 
-    // Source WITHOUT partial state: Avg (Algebraic) loses cascade —
-    // the Welford triple is required; Sum (Additive) still cascades
-    // only if the sum-type partial column exists. Our predicate is
-    // conservative: without state, nothing cascades.
+    // Source with only sum__amount present (R1 heron HIGH): Sum (needs
+    // only sum__) cascades; Avg (needs count__+sum__+m2__) refuses
+    // with the missing-m2 reason named in the message.
+    val presentSumOnly = Set("sum__")
+    val sumOnly = DecomposabilityAudit.auditRollup(spec, model, Some(srcSpec),
+      sourceHasPartialStateFor = (field, prefix) =>
+        field == "amount" && presentSumOnly.contains(prefix))
+    val sumRow = sumOnly.find(_.measureName == "m0").get
+    val avgRow = sumOnly.find(_.measureName == "m1").get
+    sumRow.cascadeEligible shouldBe Some(true)
+    avgRow.cascadeEligible shouldBe Some(false)
+    avgRow.exclusionReason.get should include("m2__")
+    avgRow.exclusionReason.get should include("amount")
+
+    // Source with NO partial state at all: nothing cascades.
     val withoutState = DecomposabilityAudit.auditRollup(spec, model, Some(srcSpec),
-      sourceHasPartialState = false)
+      sourceHasPartialStateFor = (_, _) => false)
     withoutState.foreach { r =>
       r.cascadeEligible shouldBe Some(false)
       r.exclusionReason shouldBe defined
-      r.exclusionReason.get should include("partial columns")
+      r.exclusionReason.get should include("missing partials")
     }
   }
 
   test("non-cascadable classes refuse cascade with class-specific reason") {
-    val model = fixtureModel(AggregateFn.Median, AggregateFn.First, AggregateFn.CountDistinct)
-    val spec = specWith(AggregateFn.Median, AggregateFn.First, AggregateFn.CountDistinct)
-    val srcSpec = specWith(AggregateFn.Median, AggregateFn.First, AggregateFn.CountDistinct)
+    // R1 heron LOW: exercise every non-cascadable case, not three
+    // samples. Positional (First, Last), Holistic (Median,
+    // PercentileContinuous, PercentileDiscrete), Approximable
+    // (CountDistinct, ApproxPercentile) — 7 cases total.
+    val nonCascadable: List[AggregateFn] = List(
+      AggregateFn.Median, AggregateFn.PercentileContinuous,
+      AggregateFn.PercentileDiscrete,
+      AggregateFn.First, AggregateFn.Last,
+      AggregateFn.CountDistinct, AggregateFn.ApproxPercentile)
+    val model = fixtureModel(nonCascadable: _*)
+    val spec = specWith(nonCascadable: _*)
+    val srcSpec = specWith(nonCascadable: _*)
     val rows = DecomposabilityAudit.auditRollup(spec, model, Some(srcSpec),
-      sourceHasPartialState = true)
+      sourceHasPartialStateFor = (_, _) => true)
+    rows should have size nonCascadable.size.toLong
     rows.foreach { r =>
       r.cascadeEligible shouldBe Some(false)
+      r.exclusionReason shouldBe defined
       r.exclusionReason.get should include("never cascades")
     }
   }
@@ -143,4 +169,19 @@ class DecomposabilityAuditSpec extends AnyFunSuite with Matchers {
     rows.find(_.rollupName == "r_additive").get.deltaCombinable shouldBe true
     rows.find(_.rollupName == "r_holistic").get.deltaCombinable shouldBe false
   }
+  test("per-measure partial-state check: Sum cascades, Avg refuses, when source lacks m2") {
+    val model = fixtureModel(AggregateFn.Sum, AggregateFn.Avg)
+    val spec = specWith(AggregateFn.Sum, AggregateFn.Avg)
+    val srcSpec = specWith(AggregateFn.Sum)
+    // Source carries sum__F but NOT m2__F / count__F (R1 heron HIGH:
+    // the Boolean sourceHasPartialState was too coarse — Avg needs the
+    // Welford triple, Sum needs only sum__F).
+    val src = DecomposabilityAudit.auditRollup(spec, model, Some(srcSpec),
+      sourceHasPartialStateFor = (field, prefix) => prefix == "sum__")
+    val byMeasure = src.map(r => r.measureName -> r).toMap
+    byMeasure("m0").cascadeEligible shouldBe Some(true)   // Sum: sum__ present
+    byMeasure("m1").cascadeEligible shouldBe Some(false)  // Avg: m2/count missing
+    byMeasure("m1").exclusionReason.get should include("partial")
+  }
+
 }

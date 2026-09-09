@@ -98,6 +98,12 @@ object RollupRefreshCostProbe {
   /** Data-file bytes grouped by partition value, read from the
     * Iceberg `.entries` metadata table. Driver-side only.
     *
+    * Status filter is `status != 2` (exclude DELETED): the current
+    * snapshot's live files are ADDED (0) + EXISTING (1) entries
+    * (R1 review heron CRITICAL: filtering status = 1 alone would
+    * miss all ADDED files after a first refresh, zeroing every
+    * byte metric).
+    *
     * @param spark the SparkSession
     * @param qualifiedTable the catalog-qualified table name
     * @return map of partition key → byte total
@@ -105,7 +111,7 @@ object RollupRefreshCostProbe {
   def bytesByPartition(spark: SparkSession, qualifiedTable: String): Map[String, Long] = {
     val rows = spark.read.format("iceberg")
       .load(s"$qualifiedTable.entries")
-      .filter("status = 1") // EXISTING entries only (ADDED=0 at snapshot level; EXISTING=1 after first merge)
+      .filter("status != 2") // live files: ADDED (0) + EXISTING (1)
       .select("data_file.file_path", "data_file.file_size_in_bytes",
         "partition")
       .collect()
@@ -121,7 +127,8 @@ object RollupRefreshCostProbe {
       .map { case (k, m) => k → m.values.sum }
   }
 
-  /** Distinct data-file paths (all partitions).
+  /** Distinct data-file paths (all partitions), same live-file filter
+    * as [[bytesByPartition]] (`status != 2`).
     *
     * @param spark the SparkSession
     * @param qualifiedTable the catalog-qualified table name
@@ -130,6 +137,7 @@ object RollupRefreshCostProbe {
   def filePaths(spark: SparkSession, qualifiedTable: String): Set[String] =
     spark.read.format("iceberg")
       .load(s"$qualifiedTable.entries")
+      .filter("status != 2")
       .select("data_file.file_path")
       .collect().map(_.getString(0)).toSet
 
@@ -238,9 +246,12 @@ object RollupRefreshCostProbe {
     val postFiles = if (t1Success) filePaths(spark, qualified) else preFiles
     val postBytes = if (t1Success) bytesByPartition(spark, qualified) else preBytes
 
-    // ---- Metrics.
-    val untouchedKeys = preBytes.keySet -- Set("order_date=2026-09-08%") ++
-      preBytes.keySet.filter(k => !k.contains("2026-09-08"))
+    // ---- Metrics. Untouched = every partition that is NOT the
+    // cascaded/touched day (R1 review heron HIGH: the original
+    // set-algebra had a dead `-- Set("order_date=2026-09-08%")` term
+    // — a stray SQL wildcard that never matched; the filter alone is
+    // the correct untouched set).
+    val untouchedKeys = preBytes.keySet.filter(k => !k.contains("2026-09-08"))
     val untouchedBytesPreserved =
       untouchedKeys.flatMap(k => preBytes.get(k)).sum
     val tier0TotalBytes = preBytes.values.sum
