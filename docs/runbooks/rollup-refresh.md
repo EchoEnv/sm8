@@ -10,6 +10,7 @@ Ticket 6 of `docs/wayfinder/2026-09-06-pre-aggregation.md` · Design: `docs/adr/
 | `RollupRefreshService/refresh` | adapter (sm8-platform) | server-side trigger surface (Restate SERVICE+SHARED) |
 | `RollupRefresher.refreshModel` | connector (spark-connector) | eager re-materialization of every declared rollup |
 | `RollupMaterializer.persistCatalog` | connector (spark-connector) | durable `saveAsTable` write (job runs before return) |
+| Tier 2 merge refresh (`RollupRefresher.mergeRefreshModel`) | connector (spark-connector) | **programmatic-only** row-level MERGE refresh for scoped buckets + watermark advance (PR #370); no CLI/REST surface yet |
 | `query-frequency-observer` plugin | plugin | counts query shapes per model (PostExecute observer) |
 | `QueryShapeCounters.snapshot()` | plugin | programmatic counts read (hottest shapes first) |
 
@@ -153,6 +154,17 @@ MB. Latency regression is measurable with the observation harness
 
 ## Tier 2 merge refresh (row-level MERGE, PR #370)
 
+> **NO CLI/REST ENTRY POINT YET.** Tier 2 is **programmatic-only in
+> v1**: it is invoked by calling
+> `RollupRefresher.mergeRefreshModel(spark, model, spec, scopeValues)`
+> from a Spark job (connector API). The `sm8 rollup-refresh` CLI and
+> the `RollupRefreshService/refresh` endpoint drive Tier 0/1 ONLY —
+> running them never triggers a merge refresh (they route to
+> `RollupMaterializer.materialize`). Wiring a `--tier 2 --scope
+> <buckets>` selector through CLI + REST is future work; until it
+> ships, operators adopt Tier 2 by scheduling their own job against
+> the connector API (or waiting for the wrapper ticket).
+
 Tier 2 refreshes a rollup by **merging only the recomputed rows for
 the declared scope's buckets** into the existing Iceberg rollup table
 (`RollupRefresher.mergeRefreshModel`), instead of swapping whole
@@ -184,12 +196,15 @@ that is the ladder working as designed.
   `last_commit_snapshot_id`). Day-grain buckets strictly before
   today latch `is_final = true` and it never regresses
   (monotone OR-latch). A merge failure never advances the watermark.
-- Typed refusals (fail-loud, never silent): duplicate merge keys
-  (`RollupMergeRefresher.duplicateKeys`), scope buckets not covered
-  by the recomputed source (`scopeUncovered`), empty scope on a
-  grained rollup (`scopeEmpty`), missing rollup table (`table` —
-  Tier 2 refreshes, it never creates; run a Tier 0/1 refresh first),
-  unsafe identifiers (`identifiers`).
+- Typed refusals (fail-loud, never silent): grain-less rollup
+  (`RollupMergeRefresher.grain`), missing rollup table (`table` —
+  Tier 2 refreshes, it never creates; run a Tier 1 refresh first),
+  unsafe identifiers (`identifiers`), duplicate merge keys
+  (`RollupMergeRefresher.duplicateKeys`), scope naming no source
+  buckets (`scopeEmpty`), recomputed source containing buckets
+  outside the scope (`scopeUncovered`), and the MERGE step itself
+  failing (`merge` — Iceberg optimistic-concurrency conflicts surface
+  here; retry is the caller's policy).
 
 ### Freshness policy (optional, per rollup)
 
@@ -203,13 +218,18 @@ that late data could still change.
 
 ### Operational notes
 
-- **Prerequisites**: the rollup table must already exist as Iceberg
-  (one Tier 0/1 refresh first) and the rollup must be grain-bucketed
-  (`time_grain` + `grain_dimension`).
-- **Scope = the delta declaration**: v1 Tier 2 refreshes every bucket
-  the scope names (the hot-window pattern: re-merge today's partition
+- **Prerequisites**: the rollup table must already exist as an
+  **Iceberg** table — which means **one Tier 1 refresh first (a
+  declared scope; Tier 0 alone writes Parquet and does NOT satisfy
+  this)** — and the rollup must be grain-bucketed (`time_grain` +
+  `grain_dimension`; a grain-less rollup refuses with the `grain`
+  capability).
+- **Scope = the delta declaration**: v1 Tier 2 takes the scope as a
+  plain `scopeValues: List[String]` of canonical bucket strings
+  (NOT the Tier 1 `RefreshScope` ADT) and refreshes every bucket the
+  list names (the hot-window pattern: re-merge today's partition
   every run). Base-table snapshot-diff change detection is a future
-  refinement (ADR-0030 D5).
+  refinement.
 - **Concurrency**: MERGE is optimistic-concurrent; a concurrent
   commit fails the merge loudly (no internal retry by design — the
   caller owns the retry policy, same single-writer discipline as
@@ -239,8 +259,11 @@ that late data could still change.
 - Time-grain rollups (`time_grain:` + `grain_dimension:`) materialize and route: the grain dimension must be `Date`/`Timestamp` (declared or resolved), and a query at a coarser grain re-buckets a finer rollup for Additive measures and Avg. Truncation is session-timezone. Week-bucket boundaries are whatever the engine's `date_trunc('week')` emits (pinned by test in `RollupMaterializerSpec`); re-verify the pin on a Spark upgrade.
 - Dispersion measures (Stddev/Variance) are refused on the coarsening arm — declare the rollup at the coarser grain instead.
 - The refresh surface is session-catalog scoped in tests; point `saveAsTable` at your production catalog via the server's Spark session configuration.
-- **Tier 2 v1 boundaries** (ADR-0030 D5, disclosed): the delta is
-  scope-declared, not base-snapshot-diffed; sub-day grains report
-  non-final until a lateness model exists; Positional/Holistic/
-  Approximable measures never participate (bucket falls back to
-  Tier 1 recompute for those columns).
+- **Tier 2 v1 boundaries** (ADR-0030 D2-6; D5 governs the FUTURE
+  snapshot-diff path, disclosed): the delta is scope-declared, not
+  base-snapshot-diffed; sub-day grains report non-final until a
+  lateness model exists. (The design-level "non-decomposable measure
+  columns fall back to Tier 1 recompute" clause is for that future
+  path — today such measures are refused at materialization time,
+  capability `RollupMaterializer.measureState`, so a Tier 2 rollup
+  never carries them.)
