@@ -28,6 +28,10 @@ class RollupRefreshCostProbeSpec
   private val warehouseDir: String =
     Files.createTempDirectory("gateb-probe-spec").toString
 
+  /** Boot the Spark session with the embedded HadoopCatalog
+    * (mirrors the production recipe: iceberg_cat default name,
+    * warehouse-local temp dir, IcebergSparkSessionExtensions).
+    * Per-test warehouse hygiene: clean the dir before each suite. */
   override def beforeAll(): Unit = {
     spark = SparkSession.builder()
       .appName("RollupRefreshCostProbeSpec")
@@ -46,6 +50,7 @@ class RollupRefreshCostProbeSpec
     wh.mkdirs()
   }
 
+  /** Tear down the Spark session and remove the warehouse directory. */
   override def afterAll(): Unit = {
     if (spark != null) spark.stop()
     val wh = new java.io.File(warehouseDir)
@@ -108,3 +113,4 @@ class RollupRefreshCostProbeSpec
     report.rewrittenButUnchangedBytes should be <= totalBytes
   }
 }
+
