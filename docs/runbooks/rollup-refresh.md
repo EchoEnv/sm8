@@ -124,10 +124,12 @@ realistic gap between refresh windows. Options:
 - **Tables with few partitions (≤ 8) and small data**: time-window
   gating works (compaction at 04:00; refreshes at :15/:45).
 - **Larger tables**: switch compaction to a slower cadence (every 6h
-  or daily) at a known quiet period, OR hold the per-rollup advisory
-  lock ADR-0030 §D1 describes (compaction and refresh each acquire
-  it before reading the table's snapshot; whichever runs first
-  completes before the other starts).
+  or daily) at a known quiet period, OR use the per-rollup advisory
+  lock ADR-0030 §D1 specifies (compaction and refresh each acquire it
+  before reading the table's snapshot; whichever runs first completes
+  before the other starts). NOTE: the advisory lock is ADR-specified
+  but NOT yet implemented in sm8-platform — until it ships, the
+  time-window gating is the only available mechanism.
 
 ### When to compact (checkable query)
 

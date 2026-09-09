@@ -131,14 +131,32 @@ class RollupRefresherScopeSpec
     val scopes = Map("by_day_region" ->
       RollupMaterializer.RefreshScope.Partitions(
         List(Map("order_date" -> "2026-09-08"))))
-    val results = RollupRefresher.refreshModel(spark, "sales_rs",
+    // FIRST refresh: the table does not exist → the strategy-select
+    // falls back to Tier 0 (CTAS create, ADR-0029 §Tier 1). This is
+    // the documented first-write path, not a Tier 1 exercise.
+    val first = RollupRefresher.refreshModel(spark, "sales_rs",
       modelResolver, rollupScopes = scopes)
-    results.isRight shouldBe true
-    // The scoped rollup committed through Iceberg (iceberg_cat);
-    // the grain-less rollup refreshed through the session catalog
-    // (Tier 0 fallback, Parquet).
+    first.isRight shouldBe true
     spark.catalog.tableExists("iceberg_cat.sales_rs__by_day_region") shouldBe true
     spark.catalog.tableExists("sales_rs__all_regions") shouldBe true
+    val preFiles = RollupRefreshCostProbe.filePaths(
+      spark, "iceberg_cat.sales_rs__by_day_region")
+
+    // SECOND refresh: the table now exists → Tier 1
+    // (overwritePartitions) actually runs. Pin: at least one data
+    // file survives (untouched... well, single-partition fixture —
+    // so pin the row CONTENT is correct after the scoped re-agg).
+    seed()
+    val second = RollupRefresher.refreshModel(spark, "sales_rs",
+      modelResolver, rollupScopes = scopes)
+    second.isRight shouldBe true
+    val rows = spark.table("iceberg_cat.sales_rs__by_day_region").count()
+    rows should be > 0L
+    // The scoped partition's data is served from the Iceberg table.
+    val regions = spark.table("iceberg_cat.sales_rs__by_day_region")
+      .select("region").collect().map(_.getString(0)).toSet
+    regions should contain ("east")
+    regions should contain ("west")
   }
 
   test("refreshModel per-rollup isolation: scoped rollup refreshes; failing rollup does not block others") {
