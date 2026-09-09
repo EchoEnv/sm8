@@ -1,16 +1,17 @@
 /*
- * RollupRefreshCostProbe — Gate B item 3 instrumentation (ADR-0029
- * §Gate B item 3; ADR-0030 §D1 experiment metrics).
+ * RollupRefreshCostProbe — Gate B instrumentation (ADR-0029 §Gate B,
+ * amended 2026-09-09; ADR-0030 §D1 experiment metrics).
  *
  * A synthetic-probe path for the observation harness: measures the
- * post-Tier-1 refresh-cost metrics the Tier 2 gates require, which
- * the routing-focused harness does not capture:
+ * post-Tier-1 refresh-cost metrics the Tier 2 operator enablement
+ * evaluation requires, which the routing-focused harness does not
+ * capture:
  *
  *   - refresh wall-clock (job-start → data-commit-snapshot-published)
  *   - rewritten-but-unchanged bytes: after a scoped refresh, the byte
  *     volume of data files in the touched partitions vs the byte
  *     volume that a full recompute would have rewritten — the ratio
- *     is the "wasted rewrite" signal Gate B item 3 requires
+ *     is the "wasted rewrite" signal the enablement evaluation requires
  *   - data-file identity check: untouched partitions reuse the same
  *     data files (the ADR-0029 Tier 1 isolation contract, measured
  *     here as an observation, not just a test assertion)

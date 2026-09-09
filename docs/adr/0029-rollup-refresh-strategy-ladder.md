@@ -1,7 +1,7 @@
 # ADR-0029: Rollup refresh strategy ladder
 
-**Status:** Proposed.
-**Date:** 2026-09-08.
+**Status:** Proposed (amended 2026-09-09: §Gate B reframed from maintainer build gate to operator enablement guidance).
+**Date:** 2026-09-08 (last amended 2026-09-09).
 
 ## Context
 
@@ -75,15 +75,18 @@ optimization (identical correctness contract, less I/O). Tiers 2–4 add
 a correctness surface (aggregate algebra under deltas) and each requires
 its own ADR before implementation.
 
-**v2 policy: ship Tier 1, stop there.** Tier 2 opens only against
-measured evidence (criteria below), not anticipation.
+**v2 policy (amended 2026-09-09): ship Tier 1, then Tier 2 per the
+funded roadmap.** Originally "stop at Tier 1"; amended for the
+open-source rationale in §Gate B below. The §Gate B numeric criteria
+now govern operator enablement (when to turn Tier 2 ON per
+deployment), not the build decision.
 
 | Tier | Strategy | Correctness surface | Est. size | Status |
 | --- | --- | --- | --- | --- |
 | 0 | Whole-table overwrite (`mode("overwrite")`) | none — full recompute | shipped (#358) | **current** |
 | 1 | Dynamic partition overwrite (DSv2 `overwritePartitions`) | none — only partitions present in the recomputed source are replaced | ~140 LOC + tests | **v2 target** |
-| 2 | Row-level delta MERGE, delta = Iceberg snapshot diff + measure algebra | aggregate algebra under deltas (per Decomposability class); MOR/COW choice; snapshot-diff → row-delta recovery | ~400 LOC | gated on criteria |
-| 3 | Cross-partition MERGE + delete-file compaction policy | + compaction concurrency, split-row updates | ~700 LOC | gated on criteria |
+| 2 | Row-level delta MERGE, delta = Iceberg snapshot diff + measure algebra | aggregate algebra under deltas (per Decomposability class); MOR/COW choice; snapshot-diff → row-delta recovery | ~400 LOC | **building** (per amended §Gate B; operator enablement criteria below) |
+| 3 | Cross-partition MERGE + delete-file compaction policy | + compaction concurrency, split-row updates | ~700 LOC | unscheduled — requires its own ADR (the §Gate B numeric criteria serve as operator enablement guidance for whatever tier they gate, never a maintainer build gate) |
 | 4 | Continuous incremental (external CDC) | + freshness SLO, late-arrival recovery, ordering | 1k+ LOC | deliberately out of scope |
 
 ### Tier 1 — dynamic partition overwrite (v2 target)
@@ -136,31 +139,64 @@ Spark-version note: DSv2 is the more cross-version-stable surface
 entirely (the conf is ignored by the explicit DSv2 API), which removes
 a 3.5↔4.x behavioral divergence rather than adding one.
 
-### Tier 2 gate (numbers, not vibes)
+### Tier 2 gate — amended 2026-09-09: operator guidance, not a maintainer build gate
 
-Tier 2 opens only when ALL of:
+**Amendment rationale (open-source context).** The original gate made
+the Tier 2 *build decision* contingent on ≥ 2 weeks of maintainer-side
+production traces. That logic holds for a single-deployment company
+but breaks for an open-source engine: the workload diversity lives in
+future users' deployments, not in one maintainer measurement box, and
+a gate that cannot fire blocks the project indefinitely. The build
+decision is therefore no longer gated on maintainer-side measurement
+(implementation proceeds per the funded roadmap); the numeric
+thresholds below are retained as **operator enablement guidance** —
+when to turn Tier 2 ON for your deployment — not a maintainer build
+gate.
+
+**Build prerequisites (all satisfied):**
 
 1. **Base is Iceberg** (snapshot-diff delta source — no external CDC
-   pipeline).
-2. **Measure algebra audit is funded**: every measure class on every
-   live rollup has a delta-combination test, partitioned by
-   `Decomposability` — `Additive` (trivial), `Algebraic` (pre-image +
-   named partial state), `Holistic`/`Positional`/`Approximable`
+   pipeline). ✅ ADR-0028.
+2. **Measure algebra audit**: every measure class has a
+   delta-combination contract, partitioned by `Decomposability` —
+   `Additive` (trivial), `Algebraic` (Welford pre-image + named
+   partial state), `Holistic`/`Positional`/`Approximable`
    (Tier 1 fallback; never participate in Tier 2).
-3. **Post-Tier-1 cost evidence**: a representative model shows
-   *intra-partition-dominant* rewrite cost — refresh wall-clock > 5
-   min AND rewritten-but-unchanged bytes > 30% — measured from the
-   observation harness (`scripts/rollup-observe.sh` + rollup-report
-   telemetry) over ≥ 2 weeks of production traces. Note: the
-   pre-Tier-1 thresholds do not re-apply post-Tier-1; once partition
-   isolation is in production, the dominant cost case shifts from
-   "rewriting untouched partitions" to "rewriting rows inside a hot
-   partition that didn't actually change" — gate must measure the
-   latter, not the former.
-4. A signed-off ADR-0030 covering MOR vs COW (`write.merge.mode`),
-   delete-file compaction cadence, and snapshot-diff fidelity limits.
+   ✅-partial: the engine-side audit shipped as
+   `DecomposabilityAudit` (PR #364) — the per-measure-class verdict
+   table. The per-live-rollup delta-combination **tests** land with
+   the Tier 2 implementation (ADR-0030 pre-specified contract
+   tests).
+3. **ADR-0030 signed off** (MOR vs COW posture, idempotency contract,
+   watermark design, snapshot-diff fidelity limits). ✅ PR #362.
 
-If any gate fails, stay at Tier 1 and re-measure next quarter.
+**Operator enablement guidance (when to turn Tier 2 ON):**
+
+Measure your refresh with the Gate B probe
+(`GateBTraceRunner`, live-model mode) at production refresh cadence
+for a representative window (≥ 2 weeks recommended). Enable Tier 2
+for a rollup when BOTH:
+
+- refresh wall-clock (Tier 1 scoped) > **5 minutes**, AND
+- rewritten-but-unchanged bytes > **30%** of the rollup table
+
+Below either threshold, Tier 1's partition overwrite is efficient
+enough; Tier 2's row-level MERGE machinery is unnecessary complexity
+for that rollup. Above both, enable Tier 2 for that rollup via its
+refresh-strategy configuration; Tier 2's delta merge eliminates the
+intra-partition rewrite waste (rows rewritten that didn't change).
+Measure at production refresh cadence (a distribution over many
+runs), not one sample per day — see
+`docs/runbooks/gate-b-trace-collection.md` §Evaluation.
+
+The instrumentation for this evaluation ships with the engine
+(`RollupRefreshCostProbe`, `DecomposabilityAudit`,
+`docs/runbooks/gate-b-trace-collection.md`) — operators self-serve
+the measurement; no maintainer involvement required.
+
+If the thresholds never fire for a deployment, stay at Tier 1 —
+that is the ladder working as designed: "no" is as defensible as
+"yes," per deployment.
 
 ### What Tiers 2–4 are, briefly (scope fences)
 
@@ -224,7 +260,8 @@ If any gate fails, stay at Tier 1 and re-measure next quarter.
 - Observation harness gains a Tier-1 check: unchanged-partition
   byte-identity + refresh-scope refusal test. This becomes the evidence
   source for the Tier 2 gate.
-- If the Tier 2 gates never open, the ladder still paid for itself:
+- If an operator's Tier 2 enablement thresholds never fire (amended
+  §Gate B: per-deployment guidance), the ladder still paid for itself:
   Tier 1 removes most of the O(N) rewrite cost for the dominant
   time-grain lane at ~half-day cost.
 
