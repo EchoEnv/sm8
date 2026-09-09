@@ -61,6 +61,7 @@ object GateBTraceRunner {
     * @param args the CLI arguments (see [[parseArgs]])
     * @return the process exit code
     */
+  def main(args: Array[String]): Int = {
     val parsed = parseArgs(args) match {
       case Right(c) => c
       case Left(usage) =>
