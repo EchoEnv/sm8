@@ -71,6 +71,23 @@ class GateBTraceRunnerSpec extends AnyFunSuite with Matchers {
     out.left.get should include("missing required flag --out-path")
   }
 
+  test("parseArgs: odd arg count reports a structural error (scorpion F2)") {
+    val out = callParseArgs(Array("--out-path", "/tmp/x.json", "--model"))
+    out.isLeft shouldBe true
+    out.left.get should include("odd number of arguments")
+    out.left.get should include("--model")
+  }
+
+  test("parseArgs: unknown flag still parses but is recorded in byKey (scorpion F3 — accepted for forward-compat)") {
+    // Unknown flags are NOT rejected (byKey accepts any --key); the
+    // required-flag check then fails if --model/--out-path are absent.
+    // With all required flags present, an unknown extra flag is
+    // silently ignored (documented behavior — no strict-flag mode).
+    val out = callParseArgs(Array("--model", "m1", "--out-path", "/tmp/x.json",
+      "--modle", "typo"))
+    out.isRight shouldBe true
+  }
+
   test("parseArgs: empty-value flag counts as missing") {
     val out = callParseArgs(Array("--model", "", "--out-path", "/tmp/x.json"))
     out.isLeft shouldBe true

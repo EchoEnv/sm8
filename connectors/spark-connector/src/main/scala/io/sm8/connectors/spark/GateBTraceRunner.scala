@@ -35,6 +35,8 @@ import java.nio.file.{Files, Path, Paths}
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.databind.SerializationFeature
 
+import scala.collection.JavaConverters._
+
 import scala.util.control.NonFatal
 
 object GateBTraceRunner {
@@ -47,12 +49,38 @@ object GateBTraceRunner {
     *             for production where the catalog is already
     *             configured cluster-side).
     */
-  def main(args: Array[String]): Unit = {
+  /** Run the trace collection. Returns the exit code (0 success,
+    * 1 probe failure, 2 bad arguments, 3 memory guard abort) — the
+    * JVM exits AFTER main returns, so Spark's lifecycle cleanup runs
+    * to completion before process termination. (R1 scorpion HIGH:
+    * the previous sys.exit-inside-try pattern threw ControlThrowable,
+    * racing spark.stop() in finally against Netty/listener-bus threads
+    * that may still be mid-stop. The probe's own main avoids this
+    * pattern — we align.) */
+  def main(args: Array[String]): Int = {
     val parsed = parseArgs(args) match {
       case Right(c) => c
       case Left(usage) =>
         System.err.println(usage)
-        sys.exit(2)
+        return 2
+    }
+
+    // Memory guard (same pattern as RollupObservationHarness; R1
+    // zebra HIGH: the guard existed in the harness but not here —
+    // two overlapping local[1] Spark sessions on the 7.5 GiB box
+    // will OOM; "staggering" is not a guard).
+    val memLines = java.nio.file.Files
+      .readAllLines(java.nio.file.Paths.get("/proc/meminfo")).asScala
+    def kb(key: String): Long =
+      memLines.find(_.startsWith(key)).map(_.trim.split("\\s+")(1).toLong).getOrElse(0L)
+    val memTotal = kb("MemTotal:")
+    val memUsedPct =
+      if (memTotal == 0L) 0L
+      else ((memTotal - kb("MemAvailable:")) * 100) / memTotal
+    if (memUsedPct >= 85) {
+      System.err.println(s"[gate-b-trace] ABORT: RAM at $memUsedPct% (>= 85% guard). " +
+        "Free memory or delay the cron; the probe needs ~1-1.5 GB for the local Spark session.")
+      return 3
     }
 
     val warehouse = parsed.warehouse.getOrElse(
@@ -78,18 +106,21 @@ object GateBTraceRunner {
       wrapper.put("measuredFixture",
         "RollupRefreshCostProbe synthetic fixture (single partition, scoped Tier 0 + Tier 1)")
       wrapper.put("report", report)
-      wrapper.put("rendered", report.render)
+      // Banner prefix (R1 zebra LOW): log-greps on `rendered` must
+      // surface the synthetic-fixture warning, not just the metrics.
+      wrapper.put("rendered",
+        "[SYNTHETIC FIXTURE — not production model]\n" + report.render)
       mapper.writeValue(outPath.toFile, wrapper)
       // Also print to stdout — the cron's log file captures it without
       // needing to read the JSON.
       System.out.println(s"[gate-b-trace] model=${parsed.model} → ${parsed.outPath}")
       System.out.println(report.render)
-      sys.exit(0)
+      0
     } catch {
       case NonFatal(e) =>
         System.err.println(s"[gate-b-trace] FAILED: " +
           s"${e.getClass.getSimpleName}: ${e.getMessage}")
-        sys.exit(1)
+        1
     } finally {
       spark.stop()
       // Clean only if WE created the warehouse (cron-supplied warehouses
@@ -103,6 +134,10 @@ object GateBTraceRunner {
     }
   }
 
+  /** Scala-main entry — JVM exits AFTER main returns so Spark
+    * lifecycle completes cleanly. */
+  def mainEntry(args: Array[String]): Unit = sys.exit(main(args))
+
   /** CLI argument parsing — minimal two-flag parser (no deps on
     * scopt/case-app). Returns an error message with usage on any
     * failure (printed to stderr; process exits 2). */
@@ -111,7 +146,18 @@ object GateBTraceRunner {
     outPath: String,
     warehouse: Option[String])
 
+  /** Recognized flags — unknown-flag detection (R1 scorpion LOW F3). */
+  private val recognizedFlags: Set[String] =
+    Set("--model", "--out-path", "--bootstrap-warehouse")
+
   private def parseArgs(args: Array[String]): Either[String, CliConfig] = {
+    // R1 scorpion HIGH F2: args.sliding(2,2) silently swallows a
+    // dangling trailing flag (`--out-path /tmp/x.json --model`
+    // forgets the value and gets the misleading "missing required
+    // flag --model" instead of a structural error). Detect first.
+    if (args.length % 2 != 0)
+      return Left(s"odd number of arguments (${args.length}): " +
+        s"every flag requires a value. Got: ${args.mkString(" ")}")
     val byKey = args.sliding(2, 2).filter(_.length == 2).map {
       case Array(k, v) => k -> v
       case _          => sys.error("unreachable")
