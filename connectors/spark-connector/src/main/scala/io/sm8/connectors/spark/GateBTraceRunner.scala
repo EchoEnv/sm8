@@ -110,7 +110,11 @@ object GateBTraceRunner {
           } finally stream.close()
           loaded match {
             case Left(err) =>
-              return 1 // can't use Either-style early return in try; handled below
+              // M1 (R1 ibis): surface the parse error to the operator
+              // (the rollup-not-found branch below already does this).
+              System.err.println(s"[gate-b-trace] failed to load model from " +
+                s"'$yamlPath': $err")
+              return 1
             case Right(model) =>
               val spec = model.rollups.find(_.name == parsed.rollup.get)
               spec match {
@@ -119,7 +123,7 @@ object GateBTraceRunner {
                     s"not found on model '${model.name}' — available: " +
                     model.rollups.map(_.name).mkString(", "))
                   return 1
-                case Some(s) =>
+                case Some(s) => // s bound here; used below via `s` (L1: no spec.get)
                   // C1 (R1 poodle CRITICAL): derive the scope key from the
                   // rollup's actual grainDimension — the previous hardcoded
                   // "order_date" silently built a no-op scope (0 bytes touched)
@@ -274,6 +278,13 @@ object GateBTraceRunner {
       errors += "--scope-date requires --model-path (the synthetic fixture has no scope)"
     if (rollup.isDefined && modelPath.isEmpty)
       errors += "--rollup requires --model-path"
+    // H2 (R1 ibis): live-model mode without --scope-date was silently
+    // passing an empty scope (the runner's getOrElse("") substituted a
+    // blank partition value, which the materializer refuses typed as
+    // RefuseScopeUncovered — but the operator got exit 1 with no
+    // useful message). Reject the missing scope-date here.
+    if (modelPath.isDefined && rollup.isDefined && scopeDate.isEmpty)
+      errors += "--model-path + --rollup requires --scope-date <yyyy-MM-dd>"
 
     (model, outPath, warehouse, modelPath, rollup, scopeDate) match {
       case (Some(m), Some(p), w, mp, r, sd)

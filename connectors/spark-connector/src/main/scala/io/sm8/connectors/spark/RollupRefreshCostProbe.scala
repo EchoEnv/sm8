@@ -269,6 +269,30 @@ object RollupRefreshCostProbe {
     // ---- Tier 0: whole-table refresh (no scope). On first run this
     // creates the table (CTAS); on subsequent runs it's a full
     // overwrite. Either way it's the baseline measurement.
+    // M2 (R1 ibis): warn if the base table looks large — a whole-table
+    // refresh on a multi-GB table from a 7.5 GiB box risks OOM. The
+    // operator can redirect --bootstrap-warehouse to a machine with
+    // headroom, or reduce the base-table scan via a narrower model.
+    // (Estimated from the source-table row count via a cheap count(*)
+    // Spark action — NOT the full aggregation.)
+    val baseTable: String = model.source match {
+      case s: io.sm8.core.model.SourceRef.ByName => s.table
+      case _ => ""
+    }
+    if (baseTable.nonEmpty) {
+      try {
+        val baseCount = spark.table(baseTable).count()
+        if (baseCount > 1_000_000L)
+          System.err.println(s"[gate-b-probe] WARNING: base table '$baseTable' has " +
+            s"$baseCount rows — a whole-table Tier 0 refresh on a constrained box " +
+            "risks OOM. Consider running on a machine with more memory, or using a " +
+            "narrower model scope.")
+      } catch {
+        case NonFatal(e) =>
+          System.err.println(s"[gate-b-probe] (could not pre-count base table: " +
+            s"${e.getClass.getSimpleName})")
+      }
+    }
     val (t0Ms, t0Out) = timed {
       RollupMaterializer.materialize(spark, model, spec, eager = true,
         tableFormat = RollupMaterializer.Iceberg,
@@ -293,11 +317,23 @@ object RollupRefreshCostProbe {
     // ---- Metrics (same as the synthetic run).
     // Scope keys are partition-value maps; the touched partitions are
     // those whose localDate matches any scope value's localDateOf.
+    // H1 (R1 ibis): derive the scope-key prefix from the rollup's
+    // actual grainDimension — the hardcoded "order_date=" silently
+    // mismatched partition paths for any model with a different
+    // grainDimension (e.g. event_date), collapsing Tier 1 metrics
+    // to zero.
+    val grainDim = spec.grainDimension.getOrElse("")
     val scopeDates: Set[String] = scope match {
       case RollupMaterializer.RefreshScope.Partitions(maps) =>
-        maps.flatMap(_.values).map(v => localDateOf(s"order_date=$v")).toSet
+        maps.flatMap(_.keySet).flatMap { key =>
+          val v = maps.flatMap(m => m.get(key)).headOption.getOrElse("")
+          Some(localDateOf(s"$key=$v"))
+        }.toSet
       case RollupMaterializer.RefreshScope.NoScope => Set.empty
     }
+    // grainDim is retained for the exclusion-reason wording; the
+    // scopeDates above use the map's own keys (which the runner
+    // populated from grainDimension).
     val untouchedKeys = preBytes.keySet.filter(k =>
       !scopeDates.exists(sd => localDateOf(k) == sd))
     val untouchedBytesPreserved =
