@@ -47,7 +47,8 @@
 package io.sm8.connectors.spark
 
 import io.sm8.core.engine.EngineError
-import io.sm8.core.model.{Model, RollupSpec}
+import io.sm8.core.model.{Model, RollupSpec, SourceRef}
+import io.sm8.core.rel.RollupRewriter
 
 import org.apache.spark.sql.{DataFrame, SparkSession}
 import org.apache.spark.sql.functions.col
@@ -70,34 +71,23 @@ object RollupMergeRefresher {
         extends MergeRefreshResult
   }
 
-  /** Extract the changed-bucket set for a Tier 2 refresh.
-    *
-    * v1 Tier 2 (this implementation) refreshes every bucket the
-    * declared scope names — the operator's scope IS the delta
-    * declaration (the hot-window pattern: refresh today's partition
-    * every run). Bucket-level change detection (base-table snapshot
-    * diff) is the D1-gated refinement; the seam returns the scope
-    * buckets so the refinement is a drop-in.
-    *
-    * @param spark the session
-    * @param baseTable the catalog-qualified base table
-    * @param grainDim the grain dimension (bucket column)
-    * @param scopeValues canonical scope bucket values
-    * @return the DataFrame filtered to the scope's buckets
-    */
-  private[spark] def scopedSource(
-    spark: SparkSession,
-    baseTable: String,
+  /** Scoped base rows (the scope IS the delta declaration in v1
+    * Tier 2 — see the header's D5 note). String-canonical bucket
+    * comparison, same discipline as decideStrategy's canon. */
+  private[spark] def scopedBase(
+    base: DataFrame,
     grainDim: String,
     scopeValues: List[String]): DataFrame = {
-    val base = spark.table(baseTable)
-    // Date/timestamp partition values compare canonically as
-    // strings (the same yyyy-MM-dd / minute-precision form the
-    // scope declares — RollupMaterializer.decideStrategy's canon
-    // discipline). Cast once on the driver side; no UDF.
     val grainCol = col(grainDim).cast("string")
     base.filter(grainCol.isInCollection(scopeValues))
   }
+
+  /** Resolve the base DataFrame via the materializer's readBase
+    * (same ByName extraction, same typed failure). */
+  private def baseDataFrame(
+    spark: SparkSession,
+    model: Model): Either[EngineError, DataFrame] =
+    RollupMaterializer.readBase(spark, model)
 
   /** Tier 2 merge refresh for one rollup's declared scope.
     *
@@ -136,12 +126,12 @@ object RollupMergeRefresher {
       _ <- requireGrained(spec)
       _ <- requireIcebergTable(spark, qualified, rollupTable)
       grainDim <- Right(spec.grainDimension.get)
-      baseTable <- baseTableName(spark, model)
+      baseDf <- baseDataFrame(spark, model)
       // D2-3/D2-4: duplicate-key probe on the RECOMPUTED source,
       // before the merge job (probe = distinct-count comparison,
       // cheaper than the merge it guards).
-      source <- Right(recomputeScoped(spark, model, spec, baseTable,
-        grainDim, scopeValues))
+      scopedDf <- Right(scopedBase(baseDf, grainDim, scopeValues))
+      source <- RollupMaterializer.buildRollupDf(scopedDf, model, spec)
       _ <- verifySourceUnique(spark, source, spec, grainDim)
       _ <- verifyScopeCoverage(spark, source, grainDim, scopeValues, spec)
       res <- executeMerge(spark, source, qualified, spec, grainDim)
@@ -175,42 +165,8 @@ object RollupMergeRefresher {
       message = s"rollup '$rollup': table '$qualified' does not exist — " +
         "materialize it first (Tier 0 create), Tier 2 refreshes an existing table"))
 
-  /** Resolve the base table name (the model's ByName source,
-    * catalog-qualified for Iceberg rollup tables written from an
-    * unqualified base — mirrors RollupMaterializer.readBase). */
-  private def baseTableName(
-    spark: SparkSession,
-    model: Model): Either[EngineError, String] =
-    model.source match {
-      case io.sm8.core.model.SourceRef.ByName(name) =>
-        Right(if (spark.catalog.tableExists(name)) name
-              else s"$IcebergCatalog.$name")
-      case other =>
-        Left(EngineError.UnsupportedCapability(
-          engine = "spark-connector",
-          capability = "RollupMergeRefresher.sourceKind",
-          message = s"model '${model.name}' source is not ByName " +
-            s"(${other.getClass.getSimpleName}) — rollup bucketing needs a nameable base table"))
-    }
-
-  /** Recompute the rollup aggregate over the scoped base buckets.
-    * Reuses the materializer's aggregation-shape builder so the
-    * merged row images are byte-compatible with Tier 0/1 writes of
-    * the same declaration (schema drift between tiers would make
-    * MERGE matched/unmatched classification lie). */
-  private def recomputeScoped(
-    spark: SparkSession,
-    model: Model,
-    spec: RollupSpec,
-    baseTable: String,
-    grainDim: String,
-    scopeValues: List[String]): DataFrame = {
-    val scoped = scopedSource(spark, baseTable, grainDim, scopeValues)
-    // RollupMaterializer.buildRollupDf applies the same aggregation
-    // shape as Tier 0/1 (grouping set, measure columns, partial
-    // states). It is private[spark]; same-package access.
-    RollupMaterializer.buildRollupDf(scoped, model, spec)
-  }
+  /** Resolve the base DataFrame (see [[baseDataFrame]] — removed
+    * duplicate ByName logic in favor of the materializer's seam). */
 
   /** D2-3/D2-4: the merge source must be unique on the merge key
     * (grain bucket + all dimension columns). Duplicate keys mean
