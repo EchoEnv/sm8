@@ -167,6 +167,9 @@ object GateBTraceRunner {
       // once live-model mode landed — for live runs the value names
       // a live model, not a fixture. Renamed to measuredSource.
       wrapper.put("measuredSource", measuredWhat)
+      // Structured mode flag (R1 dragon #10): downstream tooling
+      // needs a grep-friendly boolean, not a banner-string parse.
+      wrapper.put("isLiveModel", java.lang.Boolean.valueOf(parsed.modelPath.isDefined))
       wrapper.put("report", report)
       // Banner prefix (R1 zebra LOW + live-model distinction): log-greps
       // on `rendered` must surface WHICH mode ran, not just the metrics.

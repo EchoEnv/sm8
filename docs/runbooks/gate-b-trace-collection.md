@@ -146,6 +146,11 @@ Each JSON file is self-describing:
 
 ## Evaluation at week 2+
 
+> **The Gate B decision metric is a DISTRIBUTION over many runs, not
+> a single daily-cron sample.** Schedule live-model traces at the
+> production refresh cadence (or denser) for the 2-week window;
+> one file per day is a minimum, not the target.
+>
 > **Only LIVE-MODEL runs are Gate B decision-grade.** Synthetic-
 > fixture runs validate the procedure and the instrumentation; their
 > numbers do NOT open or close Gate B. Check each JSON's
