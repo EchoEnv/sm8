@@ -103,12 +103,22 @@ object CascadeContract {
     *
     * @param target the coarser rollup (cascade target / B)
     * @param source the finer rollup (cascade source / A)
-    * @param sourceMeasures the source rollup's MEASURE column names
-    *        actually present in the source's physical table (the
-    *        connector's resolution layer fills this from the source
-    *        rollup's manifest). At validator time (declaration-only)
-    *        this is empty and partial-state checks skip; at refresh
-    *        time it's the source's manifest column names.
+    * @param measuresOf the HOST MODEL's measure-name → Measure map
+    *        (rollup `measures` are NAME-STRINGS; resolving them to
+    *        `AggregateCall`s needs the host model — the validator
+    *        has it, the connector resolves the model by name first)
+    * @param sourceStateColumns the state-column names actually
+    *        present in the source's physical table (the connector's
+    *        resolution layer fills this from the source rollup's
+    *        manifest at refresh time). At validator time
+    *        (declaration-only) this is EMPTY and partial-state
+    *        checks skip; at refresh time it's the source's live
+    *        column names
+    * @return the D1 verdict — Eligible, PartiallyEligible (the
+    *         non-cascading measure subset), or a specific failure
+    *         (DimensionsNotContained / GrainCoarseningFailed /
+    *         PartialStateMissing) naming exactly what blocks the
+    *         cascade
     */
   def eligibility(
     target: RollupSpec,
@@ -196,16 +206,19 @@ object CascadeContract {
     else CascadeVerdict.Eligible
   }
 
-  /** The state columns an Algebraic measure requires on its source
-    * rollup (D1 partial-state clause). Pure — derived from the
-    * measure's `AggregateCall`. For Additive measures: one column
-    * named per the convention (sum__F, count__rows, min__F, max__F).
-    * For Algebraic measures (Avg, Stddev×2, Variance×2): the Welford
+  /** The state columns a measure requires on its source rollup
+    * (D1 partial-state clause). Pure — derived from the measure's
+    * `AggregateCall`. For Additive measures: one column named per
+    * the convention (sum__F, count__rows, min__F, max__F). For
+    * Algebraic measures (Avg, Stddev×2, Variance×2): the Welford
     * triple (count__F, sum__F, m2__F).
     *
     * The naming convention must match the connector's
     * `RollupMaterializer` state-column emission; this is the
     * single source of truth for that contract on the core side.
+    *
+    * @param m the measure whose state columns to enumerate
+    * @return the required state-column names
     */
   def requiredStateColumns(m: Measure): Set[String] =
     m.expr match {
@@ -228,7 +241,12 @@ object CascadeContract {
     }
 
   /** Whether a measure's `Decomposability` makes it cascade-eligible
-    * (D1: Additive + Algebraic only). */
+    * (D1: Additive + Algebraic only).
+    *
+    * @param m the measure to classify
+    * @return true when the measure's aggregate function is Additive
+    *         (incl. binary-reducible Min/Max) or Algebraic (Welford)
+    */
   def eligibleForCascade(m: Measure): Boolean = {
     val d = AggregateFn.decomposability(m.expr.fn)
     d == Decomposability.Additive || d == Decomposability.Algebraic
@@ -246,9 +264,11 @@ object CascadeContract {
 
   /** Structural grain coarsening (D2). Pure; no IO.
     *
-    * Returns `Some(reason)` if B's grain does NOT coarsen A's;
-    * `None` if the structural relation holds (the dynamic
-    * completeness check is connector-side, per ADR-0031).
+    * @param target the coarser rollup (cascade target / B)
+    * @param source the finer rollup (cascade source / A)
+    * @return None when the structural relation holds (the dynamic
+    *         completeness check is connector-side, per ADR-0031);
+    *         Some(reason) naming the failing axis/label otherwise
     *
     * Cases considered:
     *  1. Both grained: B's grain must be coarser than A's on the
