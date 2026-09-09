@@ -13,7 +13,7 @@ Operational procedure for ADR-0029 §Gate B item 3: collecting the ≥
 
 The runner supports TWO modes:
 
-**Live-model mode** (decision-grade — this is the Gate B evidence):
+**Live-model mode** (decision-grade metrics — but SHADOW WRITES):
 
 ```bash
 spark-submit --class io.sm8.connectors.spark.GateBTraceRunner \
@@ -26,10 +26,32 @@ spark-submit --class io.sm8.connectors.spark.GateBTraceRunner \
 ```
 
 Loads the model YAML manifest via `ModelLoader.fromStream`, resolves
-the named rollup, and measures a REAL scoped refresh against the
-model's actual base table (the same materializer path the production
-refresh uses). The scope-date selects the partition to refresh — pick
-a **low-stakes bucket** (e.g. the oldest partition) for first runs.
+the named rollup, and measures a scoped refresh + whole-table refresh
+against the rollup's declared base table.
+
+> **SHADOW-WRITE WARNING**: the runner builds an EMBEDDED HadoopCatalog
+> in a temp warehouse (or `--bootstrap-warehouse` if supplied) — NOT
+> your production Iceberg catalog. The base table is read via
+> `spark.table(<model>.source.table)`, which resolves against THIS
+> embedded catalog. If your production base table lives in a
+> production catalog namespace, the probe will fail with a
+> table-not-found error — **this is safe** (the probe never writes
+> to production). For production-data measurement, configure the
+> embedded catalog to point at the production warehouse, or stage a
+> copy of the base data. See ADR-0030 §D1 for the production-catalog
+> wiring (future work).
+>
+> **TIER 0 OVERWRITES THE FULL ROLLUP TABLE** (not just the scoped
+> partition). The `--scope-date` flag scopes Tier 1 ONLY; Tier 0
+> ignores it and does a full-table overwrite. Plan accordingly.
+>
+> **M3 (R1 loon)**: the embedded catalog is a SHADOW of production —
+> same schema, same table names, but a different physical warehouse.
+> The probe reads the base table via `spark.table(...)` against this
+> shadow; if the base table doesn't exist in the shadow warehouse,
+> the probe errors with a table-not-found message (safe: it never
+> writes to production). This is by design — it prevents accidental
+> production writes during evidence collection.
 
 **Synthetic-fixture mode** (procedure exercise — NOT decision-grade):
 
@@ -85,8 +107,15 @@ Daily alongside the existing refresh cron (example):
 
 Time it AFTER the refresh cron (the probe boots its own Spark
 session; it does not race the refresh path, but staggering avoids
-memory contention on the same box — see the memory guard in
+memory contention on the same box — the runner has an 85% /proc/meminfo
+guard that aborts instead of OOMing, same pattern as
 `RollupObservationHarness`).
+
+NOTE for live-model mode (L1): the 85% guard assumes ~1-1.5 GB for a
+local[1] Spark session over the synthetic fixture. A live production
+model may pull in much more (the base table scan + the rollup write).
+For production measurement, run on a machine with adequate headroom or
+reduce the scope to a smaller partition subset.
 
 ## Output shape
 

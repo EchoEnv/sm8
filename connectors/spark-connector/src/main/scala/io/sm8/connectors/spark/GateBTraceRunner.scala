@@ -120,9 +120,20 @@ object GateBTraceRunner {
                     model.rollups.map(_.name).mkString(", "))
                   return 1
                 case Some(s) =>
+                  // C1 (R1 poodle CRITICAL): derive the scope key from the
+                  // rollup's actual grainDimension — the previous hardcoded
+                  // "order_date" silently built a no-op scope (0 bytes touched)
+                  // for any model whose grainDimension is something else.
+                  val grainDim = s.grainDimension.getOrElse("")
+                  val scopeDate = parsed.scopeDate.getOrElse("")
+                  if (grainDim.isEmpty) {
+                    System.err.println(s"[gate-b-trace] rollup '${s.name}' has no " +
+                      "grainDimension — cannot build a scoped refresh without one. " +
+                      "Add timeGrain + grainDimension to the rollup declaration.")
+                    return 1
+                  }
                   val scope = RollupMaterializer.RefreshScope.Partitions(
-                    List(Map(spec.get.grainDimension.getOrElse("order_date") ->
-                      parsed.scopeDate.getOrElse(""))))
+                    List(Map(grainDim -> scopeDate)))
                   val rep = RollupRefreshCostProbe.runModel(spark, model, s, scope)
                   val what = s"live model '${model.name}' rollup '${s.name}' " +
                     s"scope ${parsed.scopeDate.getOrElse("")}"
@@ -143,7 +154,10 @@ object GateBTraceRunner {
       wrapper.put("collectedAtEpochMs", java.lang.Long.valueOf(System.currentTimeMillis()))
       wrapper.put("collectedAtIso",
         java.time.Instant.ofEpochMilli(System.currentTimeMillis()).toString)
-      wrapper.put("measuredFixture", measuredWhat)
+      // H2 (R1 poodle): the field name measuredFixture was misleading
+      // once live-model mode landed — for live runs the value names
+      // a live model, not a fixture. Renamed to measuredSource.
+      wrapper.put("measuredSource", measuredWhat)
       wrapper.put("report", report)
       // Banner prefix (R1 zebra LOW + live-model distinction): log-greps
       // on `rendered` must surface WHICH mode ran, not just the metrics.
@@ -236,7 +250,20 @@ object GateBTraceRunner {
     val warehouse = opt("--bootstrap-warehouse")
     val modelPath = opt("--model-path")
     val rollup = opt("--rollup")
-    val scopeDate = opt("--scope-date")
+    val scopeDateOpt = opt("--scope-date")
+    val scopeDate = scopeDateOpt.filter(_.nonEmpty).flatMap { s =>
+      // M2 (R1 poodle): validate yyyy-MM-dd format; reject anything else.
+      val ok = s.length == 10 &&
+        s(4) == '-' && s(7) == '-' &&
+        s.substring(0, 4).forall(_.isDigit) &&
+        s.substring(5, 7).forall(_.isDigit) &&
+        s.substring(8, 10).forall(_.isDigit)
+      if (ok) Some(s)
+      else {
+        errors += s"--scope-date must match yyyy-MM-dd (got: '$s')"
+        None
+      }
+    }
 
     // Cross-flag validation (ADR-0031 §D1 / ADR-0030 §D1):
     // --model-path requires --rollup. --scope-date requires
