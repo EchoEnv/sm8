@@ -153,8 +153,13 @@ object GateBTraceRunner {
         .enable(SerializationFeature.INDENT_OUTPUT)
       val outPath = Paths.get(parsed.outPath)
       if (outPath.getParent != null) Files.createDirectories(outPath.getParent)
+      val isLive = parsed.modelPath.isDefined
       val wrapper = new java.util.LinkedHashMap[String, Object]()
       wrapper.put("requestedModel", parsed.model)
+      // Structured mode marker (R1 loon L2 / dragon final gate): a
+      // boolean downstream tooling can branch on without string
+      // parsing the banner or measuredSource.
+      wrapper.put("isLiveModel", java.lang.Boolean.valueOf(isLive))
       wrapper.put("collectedAtEpochMs", java.lang.Long.valueOf(System.currentTimeMillis()))
       wrapper.put("collectedAtIso",
         java.time.Instant.ofEpochMilli(System.currentTimeMillis()).toString)

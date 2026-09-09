@@ -66,7 +66,7 @@ Measures the documented 1-partition synthetic fixture. Use this to
 validate the cron wiring and the output shape before pointing the
 runner at a production model.
 
-The output JSON's `measuredFixture` field records which mode ran, and
+The output JSON's `measuredSource` field records which mode ran, and
 the `rendered` text is banner-prefixed (`[LIVE MODEL]` vs
 `[SYNTHETIC FIXTURE — not production model]`) so log greps cannot
 confuse the two.
@@ -138,7 +138,7 @@ Each JSON file is self-describing:
   "requestedModel": "<model-name>",
   "collectedAtEpochMs": 1757400000000,
   "collectedAtIso": "2026-09-09T03:30:00Z",
-  "measuredFixture": "RollupRefreshCostProbe synthetic fixture (...)",
+  "measuredSource": "RollupRefreshCostProbe synthetic fixture (...)",
   "report": { "...GateBReport fields..." },
   "rendered": "...human-readable text for grep..."
 }
@@ -149,7 +149,7 @@ Each JSON file is self-describing:
 > **Only LIVE-MODEL runs are Gate B decision-grade.** Synthetic-
 > fixture runs validate the procedure and the instrumentation; their
 > numbers do NOT open or close Gate B. Check each JSON's
-> `measuredFixture` field before evaluating: live-model runs
+> `measuredSource` field before evaluating: live-model runs
 > (`[LIVE MODEL]` banner) count; synthetic runs do not.
 
 Apply the ADR-0029 §Gate B thresholds to the accumulated JSON files:
