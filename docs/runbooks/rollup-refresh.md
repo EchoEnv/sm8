@@ -73,8 +73,101 @@ Note: `snapshot()` reads each counter atomically but the set of reads is not a s
 - Shape keys use measure ALIASES: renaming an alias fragments its counts across the rename boundary. Treat alias renames as telemetry resets.
 - Shape keys are transport-dependent: REST queries key on the request's measure strings, MCP/DSL queries on the declared measure aliases. If the two transports normalize names differently, counts split across two keys for the same logical shape.
 
+## File hygiene (small-file compaction)
+
+Scoped Tier 1 refreshes (one partition per refresh) add a new data
+file to the touched partition on every run. File count is CUMULATIVE
+per partition: a partition refreshed hourly for a month accumulates
+~720 small files in total, not per refresh. Scan latency degrades as
+cumulative file count grows. This is the standard Iceberg small-file
+problem — handled by periodic compaction, not by the refresh path.
+
+### Table properties (set at rollup creation)
+
+```sql
+ALTER TABLE iceberg_cat.<model>__<rollup> SET TBLPROPERTIES (
+  'write.target-file-size-bytes'='134217728'  -- 128 MB
+);
+```
+
+Set the property once per table — before or after the first refresh
+(the property governs subsequent writes only). The materializer does
+not set it automatically.
+
+### Scheduled compaction
+
+Run `rewrite_data_files` on each rollup table on a schedule slower
+than the refresh cadence (e.g. daily compaction for hourly refreshes):
+
+```sql
+CALL iceberg_cat.system.rewrite_data_files(
+  table => '<model>__<rollup>',
+  options => map(
+    'min-input-files', '5',
+    'target-file-size-bytes', '134217728'
+  )
+);
+```
+
+For a HadoopCatalog the `table` argument is the table name WITHOUT the
+catalog prefix (the CALL's `system` namespace is resolved against
+`iceberg_cat` already). Note `target-file-size-bytes` as a procedure
+option governs the compaction OUTPUT; the table property governs
+subsequent writes — set both.
+
+**Serialization with refreshes** (ADR-0030 §D1): compaction and
+refresh must not run concurrently on the same table. A
+`rewrite_data_files` job typically takes 10-45 minutes — for hourly
+refresh on tables with more than a few partitions, there is no
+realistic gap between refresh windows. Options:
+
+- **Tables with few partitions (≤ 8) and small data**: time-window
+  gating works (compaction at 04:00; refreshes at :15/:45).
+- **Larger tables**: switch compaction to a slower cadence (every 6h
+  or daily) at a known quiet period, OR use the per-rollup advisory
+  lock ADR-0030 §D1 specifies (compaction and refresh each acquire it
+  before reading the table's snapshot; whichever runs first completes
+  before the other starts). NOTE: the advisory lock is ADR-specified
+  but NOT yet implemented in sm8-platform — until it ships, the
+  time-window gating is the only available mechanism.
+
+### When to compact (checkable query)
+
+Run this against the rollup's metadata to get per-partition file
+counts and average sizes:
+
+```sql
+SELECT
+  data_file.partition,
+  count(*) AS files,
+  sum(data_file.file_size_in_bytes) / count(*) AS avg_bytes
+FROM iceberg_cat.<model>__<rollup>.files
+GROUP BY data_file.partition
+ORDER BY files DESC;
+```
+
+Compact when: any partition shows `files > ~100`, or `avg_bytes` < 10
+MB. Latency regression is measurable with the observation harness
+(`RollupObservationHarness`, see PR #351) and the Gate B probe
+(`RollupRefreshCostProbe`, prints per-partition byte/file counts).
+
 ## Known limits (v1)
 
+- **Refresh tiers** (ADR-0029/0030/0031): a rollup refreshed WITHOUT a
+  declared scope writes Tier 0 — a Parquet table
+  `<model>__<rollup>` in the session catalog. A rollup refreshed WITH
+  a declared scope writes Tier 1 — an Iceberg table
+  `iceberg_cat.<model>__<rollup>`. Same rollup name, DIFFERENT
+  catalogs and formats: when investigating a missing or stale rollup,
+  check both locations. See ADR-0029 for the strategy ladder.
+- **Upgrading from Parquet-only refreshes**: on the first refresh with
+  a declared scope, a NEW Iceberg table `iceberg_cat.<model>__<rollup>`
+  is created; the pre-existing Parquet `<model>__<rollup>` in the
+  session catalog is NOT touched or removed. Operators must (a)
+  explicitly drop or archive the old Parquet table after verifying
+  the Iceberg table serves correct results, and (b) confirm the
+  routing lane resolves the Iceberg table (it wins by ADR-0028's
+  format-standard resolution).
 - Time-grain rollups (`time_grain:` + `grain_dimension:`) materialize and route: the grain dimension must be `Date`/`Timestamp` (declared or resolved), and a query at a coarser grain re-buckets a finer rollup for Additive measures and Avg. Truncation is session-timezone. Week-bucket boundaries are whatever the engine's `date_trunc('week')` emits (pinned by test in `RollupMaterializerSpec`); re-verify the pin on a Spark upgrade.
 - Dispersion measures (Stddev/Variance) are refused on the coarsening arm — declare the rollup at the coarser grain instead.
 - The refresh surface is session-catalog scoped in tests; point `saveAsTable` at your production catalog via the server's Spark session configuration.
