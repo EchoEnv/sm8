@@ -595,6 +595,26 @@ object ModelLoader {
    // ModelValidator's job (policy requires grain; the parser
    // accepts the field, the validator rejects the grain-less
    // policy state).
+   // cascadeSource (ADR-0031 D4, Tier 2 cascade): optional name of
+   // the finer-grained rollup (same model) this rollup builds from.
+   // A plain name-STRING at parse time; existence + eligibility +
+   // cycle checks are ModelValidator.validateCascadeDag's job at
+   // Model.of (deployment-time refusal, never refresh-time).
+   val cascadeSourceE: Either[ManifestError, Option[String]] =
+    Option(m.get("cascade_source")) match {
+    case None | Some(null) => Right(None)
+    case Some(raw: String) =>
+     val trimmed = raw.trim
+     if (trimmed.isEmpty)
+      Left(ManifestError.ParseFailure(
+       s"rollups[${name.getOrElse("?")}]: cascade_source is empty — " +
+       "declare a rollup name or drop the key"))
+     else Right(Some(trimmed))
+    case Some(other) =>
+     Left(ManifestError.ParseFailure(
+      s"rollups[${name.getOrElse("?")}].cascade_source must be a string " +
+      s"(got ${other.getClass.getSimpleName})"))
+   }
    val freshnessE: Either[ManifestError, Option[io.sm8.core.model.FreshnessPolicy]] =
     Option(m.get("freshness")) match {
     case None | Some(null) => Right(None)
@@ -622,6 +642,7 @@ object ModelLoader {
      dims <- refList("dimensions")
      meas <- refList("measures")
      freshness <- freshnessE
+     cascadeSource <- cascadeSourceE
      _ <- if (dims.isEmpty && meas.isEmpty)
       Left(ManifestError.ParseFailure(
       s"rollups[$n]: dimensions and measures must not both be empty"))
@@ -632,7 +653,8 @@ object ModelLoader {
      measures = meas,
      timeGrain = grain,
      grainDimension = grainDim,
-     freshness = freshness)
+     freshness = freshness,
+     cascadeSource = cascadeSource)
    }
   }
   seq.toList.foldLeft[Either[ManifestError, List[io.sm8.core.model.RollupSpec]]](Right(Nil)) { (accE, entry) =>

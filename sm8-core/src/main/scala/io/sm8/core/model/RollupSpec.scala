@@ -73,6 +73,22 @@ package io.sm8.core.model
   *                   (validated); core never looks up watermarks
   *                   (RFC §3 — the watermark table is connector
   *                   side).
+  * @param cascadeSource optional cascade declaration (ADR-0031 D4,
+  *                   Tier 2): the NAME of the finer-grained rollup
+  *                   (on the SAME model) this rollup is built from
+  *                   (e.g. daily declares `cascadeSource: hourly`).
+  *                   A name-string, not an object ref: same
+  *                   name-string discipline as `dimensions`/
+  *                   `measures` (YAML round-trip; existence +
+  *                   eligibility validated by
+  *                   `ModelValidator.validateCascadeDag`, which
+  *                   walks the declaration graph and refuses
+  *                   cycles/self-cycles/unknown names at
+  *                   deployment time — never at refresh time).
+  *                   `None` = build from base (pre-cascade
+  *                   behavior unchanged). The eligibility predicate
+  *                   itself lives in `CascadeContract.eligibility`
+  *                   (pure, ADR-0031 D1).
   *
   * @note No defaults on `dimensions`/`measures`: a ref-less rollup
   * is a degenerate declaration (it would vacuously match by
@@ -87,5 +103,6 @@ final case class RollupSpec(
     measures: List[String],
     timeGrain: Option[String] = None,
     grainDimension: Option[String] = None,
-    freshness: Option[FreshnessPolicy] = None
+    freshness: Option[FreshnessPolicy] = None,
+    cascadeSource: Option[String] = None
 ) extends Product with Serializable

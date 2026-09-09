@@ -166,6 +166,50 @@ object RollupRewriter {
     final case class RollupBucketStale(buckets: Set[BucketKey])
         extends RollupRewriteRefusal
 
+    /** The cascade source's watermark reports one or more buckets
+      * in the coarsened build scope as non-final (ADR-0031 D3
+      * rule 1: "the cascade source must be is_final=true for every
+      * bucket in the build scope"; a stale hourly rollup makes a
+      * stale daily rollup by definition). Sibling to
+      * `RollupBucketStale` — same vocabulary class, same
+      * connector-only emission rule (the rewriter never
+      * instantiates; the connector's resolution layer does, after
+      * the watermark lookup on the SOURCE rollup). Carries the full
+      * non-final source-bucket set (cardinality for the harness).
+      * Recovery = wait for the source's lateness window to close
+      * (its next refresh marks it final), or refresh the source
+      * explicitly before the cascade. */
+    final case class CascadeSourceNotFinal(buckets: Set[BucketKey])
+        extends RollupRewriteRefusal
+
+    /** The declared cascade source's rollup table does not exist
+      * (never materialized, or dropped). Distinct from NotFinal
+      * (source exists but has open buckets) and from Failed (the
+      * source's own refresh errored): the operator action differs —
+      * build the source first. Connector-only emission (resolution
+      * layer, at build start). */
+    case object CascadeSourceMissing extends RollupRewriteRefusal
+
+    /** The source rollup's own refresh FAILED (its last_refreshed_at
+      * is set but its last commit errored, or its refresh result
+      * recorded failure). Cascading from a failed source would
+      * propagate the failure silently into the coarser rollup.
+      * Connector-only emission. Recovery = fix the source refresh
+      * first; the harness attributes to the root cause. */
+    case object CascadeSourceFailed extends RollupRewriteRefusal
+
+    /** The cascade source covers only PART of the target scope
+      * (ADR-0031 D2's partial-coarsening prohibition: e.g. a daily
+      * bucket whose hourly source is missing the last hour — the
+      * daily bucket would silently undercount). The refusal names
+      * the missing coverage so the operator can widen the source's
+      * refresh scope or narrow the target's. Connector-only
+      * emission (dynamic completeness is connector-side per the D2
+      * layer split; the STRUCTURAL coarsening check is core's
+      * `CascadeContract.grainCoarsens`). */
+    final case class CascadeCoverageUncovered(reason: String)
+        extends RollupRewriteRefusal
+
     /** The bucket identity for a `RollupBucketStale` refusal: the
       * grain value of one partition (the canonical string form the
       * watermark table stores — `yyyy-MM-dd` for day grain, the
@@ -193,6 +237,10 @@ object RollupRewriter {
       case AlgebraicStateNotWired => "algebraicStateNotWired"
       case RollupSchemaStale      => "rollupSchemaStale"
       case _: RollupBucketStale    => "rollupBucketStale"
+      case _: CascadeSourceNotFinal => "cascadeSourceNotFinal"
+      case CascadeSourceMissing     => "cascadeSourceMissing"
+      case CascadeSourceFailed      => "cascadeSourceFailed"
+      case _: CascadeCoverageUncovered => "cascadeCoverageUncovered"
     }
 
     /** Whether a refusal is permanent (the same query can never be
