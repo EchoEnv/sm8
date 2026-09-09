@@ -136,9 +136,13 @@ A partial-coarsening case is **forbidden**: B with
 `timeGrain = day, grainDimension = order_date_day` but B's source A
 was `timeGrain = hour` with a missing last hour (incomplete day) is
 **NOT cascade-eligible** — the resulting daily bucket would silently
-undercount. The same refusal vocabulary pattern as ADR-0029's
-`ScopeUncovered` applies: `CascadeCoverageUncovered(reason: String)`,
-typed `EngineError.UnsupportedCapability`.
+undercount. The refusal is `CascadeCoverageUncovered(reason)` — a
+**`RollupRewriteRefusal` sibling** (same closed vocabulary as
+`RollupSchemaStale`/`RollupBucketStale`), NOT an
+`EngineError.UnsupportedCapability` (R1 review, owl M6: coverage is a
+data/configuration state, not a missing engine capability; the
+`UnsupportedCapability` class is reserved for operations the engine
+cannot perform).
 
 **Layer split** (R1 review, turtle M2): the STRUCTURAL coarsening
 relation (declared shapes coarsen each other) is a **core** predicate
