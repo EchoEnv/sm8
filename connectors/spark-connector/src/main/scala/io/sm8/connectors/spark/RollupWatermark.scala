@@ -233,6 +233,10 @@ object RollupWatermark {
     * buckets latch final (an earlier final verdict is never
     * demoted — the OR-latch enforces it table-side).
     *
+    * @param spark   the session
+    * @param model   the host model
+    * @param spec    the rollup declaration
+    * @param buckets the canonical bucket values the refresh covered
     * @return the qualified watermark table name, or a typed refusal
     *         if the advance fails (a failed advance never corrupts
     *         the data commit that preceded it — only the freshness

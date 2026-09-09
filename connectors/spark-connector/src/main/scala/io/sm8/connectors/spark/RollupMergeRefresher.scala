@@ -185,6 +185,20 @@ object RollupMergeRefresher {
         "embed these (rename, or extend the builder with an escaping layer)"))
   }
 
+  /** Execute one scoped Tier 2 refresh (ADR-0030 D2): re-aggregate
+    * the scoped base slice, verify uniqueness + coverage, MERGE the
+    * row images into the existing Iceberg rollup table.
+    *
+    * Preconditions refuse typed in order: identifiers, grain,
+    * table-exists, empty scope, duplicate keys, scope coverage —
+    * all BEFORE the merge job.
+    *
+    * @param spark       the session (table IO + SQL; no closures)
+    * @param model       the host model
+    * @param spec        the rollup declaration
+    * @param scopeValues canonical bucket values (e.g. yyyy-MM-dd)
+    * @return the merge outcome, or a typed EngineError
+    */
   def mergeRefresh(
     spark: SparkSession,
     model: Model,
