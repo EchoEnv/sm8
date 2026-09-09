@@ -51,7 +51,7 @@ import io.sm8.core.model.{Model, RollupSpec, SourceRef}
 import io.sm8.core.rel.RollupRewriter
 
 import org.apache.spark.sql.{DataFrame, SparkSession}
-import org.apache.spark.sql.functions.col
+import org.apache.spark.sql.functions.{col, lit}
 
 object RollupMergeRefresher {
 
@@ -78,8 +78,15 @@ object RollupMergeRefresher {
     base: DataFrame,
     grainDim: String,
     scopeValues: List[String]): DataFrame = {
-    val grainCol = col(grainDim).cast("string")
-    base.filter(grainCol.isInCollection(scopeValues))
+    // Pushdown-preserving bucket filter (D2-2): cast the LITERAL to
+    // the column's type, never the column to string — a cast on the
+    // column side makes the predicate non-pushable (the plan check
+    // in RollupMergeTier2Spec pins this: the bucket predicate must
+    // reach PushedFilters, not linger as a post-scan Filter).
+    val dt = base.schema(grainDim).dataType
+    val grainCol = col(grainDim)
+    val preds = scopeValues.map(v => grainCol === lit(v).cast(dt))
+    base.filter(preds.reduceOption(_ || _).getOrElse(lit(false)))
   }
 
   /** Resolve the base DataFrame via the materializer's readBase
@@ -132,6 +139,21 @@ object RollupMergeRefresher {
       // cheaper than the merge it guards).
       scopedDf <- Right(scopedBase(baseDf, grainDim, scopeValues))
       source <- RollupMaterializer.buildRollupDf(scopedDf, model, spec)
+      // Empty-scope guard: the scoped recompute produced no rows —
+      // the scope names no bucket present in the base. Refuse loud
+      // (a silent zero-row "success" would read as refreshed);
+      // legitimate empty-bucket deletion semantics are Tier 3's
+      // delete-file territory, not v1's.
+      _ <- if (scopeValues.nonEmpty && source.isEmpty)
+             Left(EngineError.UnsupportedCapability(
+               engine = "spark-connector",
+               capability = "RollupMergeRefresher.scopeCoverage",
+               message = s"rollups[${spec.name}]: the declared scope " +
+                 s"[${scopeValues.mkString(", ")}] matches no rows in the " +
+                 "base — no bucket of the recomputed source is covered " +
+                 "(stale scope or base divergence; refusing silent " +
+                 "zero-row success)"))
+           else Right(())
       _ <- verifySourceUnique(spark, source, spec, grainDim)
       _ <- verifyScopeCoverage(spark, source, grainDim, scopeValues, spec)
       res <- executeMerge(spark, source, qualified, spec, grainDim)
@@ -175,7 +197,7 @@ object RollupMergeRefresher {
     * aggregations over the already-materialized source; both run
     * pre-merge (the contract test asserts the refusal fires with
     * zero merge jobs run). */
-  private def verifySourceUnique(
+  private[spark] def verifySourceUnique(
     spark: SparkSession,
     source: DataFrame,
     spec: RollupSpec,
@@ -238,14 +260,17 @@ object RollupMergeRefresher {
     val keyCols = grainDim :: spec.dimensions.filter(_ != grainDim)
     val nonKeyCols = source.columns.filterNot(keyCols.toSet).toList
     val onClause = keyCols.map(k => s"t.`$k` = s.`$k`").mkString(" AND ")
-    val setClause = nonKeyCols.map(c => s"t.`$c` = s.`$c`").mkString(", ")
+    val setClause = nonKeyCols.map(c =>
+      s"t.`$c` = s.`$c`").mkString(", ")
+    val changedGuard = nonKeyCols.map(c => s"t.`$c` IS DISTINCT FROM s.`$c`")
+      .mkString(" OR ")
     val insertCols = (keyCols ++ nonKeyCols).map(c => s"`$c`").mkString(", ")
     val insertVals = (keyCols ++ nonKeyCols).map(c => s"s.`$c`").mkString(", ")
     val sql =
       s"""MERGE INTO $qualified t
          |USING $viewName s
          |ON $onClause
-         |WHEN MATCHED THEN UPDATE SET $setClause
+         |WHEN MATCHED AND ($changedGuard) THEN UPDATE SET $setClause
          |WHEN NOT MATCHED THEN INSERT ($insertCols) VALUES ($insertVals)"""
         .stripMargin
     try {

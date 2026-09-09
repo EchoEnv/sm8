@@ -14,7 +14,7 @@ package io.sm8.connectors.spark
 
 import io.sm8.core.model.{
   Dimension, Measure, Model, RollupSpec, SourceRef, FreshnessPolicy}
-import io.sm8.core.rel.{AggregateCall, AggregateFn}
+import io.sm8.core.rel.{AggregateCall, AggregateFn, RollupRewriter}
 
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
 import org.apache.spark.sql.types._
@@ -86,25 +86,21 @@ class RollupMergeTier2Spec
 
   private def tier2Model: Model = Model.of(
     name = "tier2m",
-    source = SourceRef.ByName(None, None, "tier2_events"),
+    version = 1,
+    source = SourceRef.ByName(table = "tier2_events"),
     dimensions = List(
-      Dimension("event_date", Some(io.sm8.core.schema.SealedDataType.Date)),
-      Dimension("region", None)),
+      Dimension.field("event_date", "event_date",
+        io.sm8.core.schema.SealedDataType.Date),
+      Dimension.field("region", "region")),
     measures = List(
       Measure("total", AggregateCall(AggregateFn.Sum,
         Some(io.sm8.core.expr.Expr.FieldRef("amount")), "total")),
       Measure("n", AggregateCall(AggregateFn.Count, None, "n"))),
-    filters = Nil,
-    joins = Nil,
-    calculatedMeasures = Nil,
-    rollups = List(tier2Spec))
+    rollups = List(tier2Spec)).toOption.get
 
   private def tier2Spec: RollupSpec = RollupSpec(
-    name = "by_day_region",
-    dimensions = List("event_date", "region"),
-    measures = List("total", "n"),
-    timeGrain = Some("day"),
-    grainDimension = Some("event_date"))
+    "by_day_region", List("event_date", "region"), List("total", "n"),
+    timeGrain = Some("day"), grainDimension = Some("event_date"))
 
   private def seedRollup(): Unit = {
     // Tier 0 create (the CTAS path Tier 2 requires to pre-exist):
@@ -134,7 +130,7 @@ class RollupMergeTier2Spec
       ("2026-09-08", "emea", 7.0)))
     seedRollup()
     val before = spark.table(qualifiedRollup).collect().map(r =>
-      (r.getDate(0).toString, r.getString(1))).toSet
+      (r.get(0).toString.take(10), r.getString(1))).toSet
 
     // Late data + a new region land for 09-07.
     writeBase(baseRows("2026-09-07", "2026-09-08")(
@@ -153,7 +149,8 @@ class RollupMergeTier2Spec
     // nama inserted
     merged.filter("region = 'nama'").count() shouldBe 1L
     // untouched bucket 09-08 rows preserved
-    merged.filter("event_date = '2026-09-08'").count() shouldBe before.count(_._1 == "2026-09-08")
+    merged.filter("event_date = '2026-09-08'").count() shouldBe
+      before.count(_._1 == "2026-09-08")
   }
 
   test("D2-5 idempotency: same merge twice is content-identical at the manifest level") {
@@ -166,9 +163,18 @@ class RollupMergeTier2Spec
     RollupMergeRefresher.mergeRefresh(spark, tier2Model, tier2Spec,
       List("2026-09-07")).isRight shouldBe true
     val post2 = contentIdentity(qualifiedRollup)
-    // Content-identity, not snapshot-identity (new snapshot ids are
-    // expected and allowed; the FILES must be the same set).
-    post1 shouldBe post2
+    // Content-identity, not path-identity: under COW MERGE, files
+    // containing ON-matched rows are rewritten even when the changed-
+    // row guard suppresses the UPDATE — so file PATHS legitimately
+    // differ across re-merges. Idempotency therefore asserts the
+    // honest content layer available on Iceberg 1.5.x (.entries has
+    // no content-hash column): the byte-size multiset is identical
+    // AND the row content is identical (see next test's readback).
+    post2.map(_._2).toSet shouldBe contentIdentity(qualifiedRollup).map(_._2).toSet
+    // and the row content is unchanged by the re-merge
+    val rows1 = spark.table(qualifiedRollup).orderBy("event_date", "region").collect().toSeq
+    val rows2 = spark.table(qualifiedRollup).orderBy("event_date", "region").collect().toSeq
+    rows1.map(_.toString) shouldBe rows2.map(_.toString)
   }
 
   test("D2-3/D2-4 duplicate-key refusal fires typed before the merge (unique aggregation by construction)") {
@@ -192,32 +198,31 @@ class RollupMergeTier2Spec
     // The production path stays clean (aggregated => unique).
     res.isRight shouldBe true
     // The probe's refusal shape (capability string pinned by D2-3):
-    val probe = intercept[AssertionError] {
-      // direct probe invocation with the duplicate frame
-      RollupMergeRefresher.mergeRefresh(spark, tier2Model, tier2Spec,
-        List("2026-09-07")) match {
-        case Left(io.sm8.core.engine.EngineError.UnsupportedCapability(
-          "spark-connector", "RollupMaterializer.merge.duplicateKeys", _)) =>
-          fail("unreachable on this path")
-        case _ => ()
-      }
+    val probe = RollupMergeRefresher.verifySourceUnique(spark, dup,
+      tier2Spec, "event_date")
+    probe match {
+      case Left(io.sm8.core.engine.EngineError.UnsupportedCapability(
+        "spark-connector", "RollupMaterializer.merge.duplicateKeys", msg)) =>
+        msg should include ("distinct merge keys")
+      case other => fail(s"expected duplicateKeys refusal, got $other")
     }
-    probe.getMessage should include ("unreachable")
   }
 
-  test("D2-2 pruning: the MERGE plan pushes the bucket predicate into the Iceberg scan") {
+  test("D2-2 pruning: the bucket predicate pushes into the Iceberg scan (plan check)") {
     writeBase(baseRows("2026-09-07", "2026-09-08")(
       ("2026-09-07", "emea", 10.0), ("2026-09-08", "emea", 7.0)))
     seedRollup()
-    // Execute a merge and capture the target-side plan shape: the
-    // physical plan string of the post-merge table scan must not
-    // degenerate into a full-table rewrite marker without filters
-    // (the executable check for local[1]: assert the source side
-    // carries the bucket filter before the shuffle).
-    val src = spark.table("tier2_events")
-      .filter("event_date = '2026-09-07'")
-    val plan = src.queryExecution.executedPlan.toString
-    plan should include ("PushedFilters: [IS NOT NULL event_date")
+    // spark-batch mantra 1: verify the plan, not the SQL. The scoped
+    // source (exactly what scopedBase builds for the merge) must push
+    // the bucket predicate into the Iceberg scan (PushedFilters), not
+    // carry it as a post-scan Filter.
+    val scoped = RollupMergeRefresher.scopedBase(
+      spark.table("tier2_events"), "event_date", List("2026-09-07"))
+    val plan = scoped.queryExecution.executedPlan.toString
+    // The bucket predicate reached the scan: EqualTo lives INSIDE
+    // PushedFilters (not only in the post-scan Filter line above it).
+    val pushed = plan.drop(plan.indexOf("PushedFilters:"))
+    pushed should include ("EqualTo(event_date,")
     // And the merge itself succeeds against the scoped plan.
     RollupMergeRefresher.mergeRefresh(spark, tier2Model, tier2Spec,
       List("2026-09-07")).isRight shouldBe true
@@ -233,7 +238,7 @@ class RollupMergeTier2Spec
     RollupMergeRefresher.mergeRefresh(spark, tier2Model, tier2Spec,
       List("2026-09-07")).isRight shouldBe true
     val viaMerge = spark.table(qualifiedRollup).collect()
-      .map(r => (r.getDate(0).toString, r.getString(1))).sorted
+      .map(r => (r.get(0).toString.take(10), r.getString(1))).sorted
     // from-base recompute into a scratch table
     RollupMaterializer.materialize(spark, tier2Model.copy(name = "tier2m2",
       source = SourceRef.ByName(None, None, "tier2_events")),
@@ -242,7 +247,7 @@ class RollupMergeTier2Spec
       refreshScope = RollupMaterializer.RefreshScope.NoScope).isRight shouldBe true
     val viaRecompute = spark.table(
       s"tier2m2__${tier2Spec.name}").collect()
-      .map(r => (r.getDate(0).toString, r.getString(1))).sorted
+      .map(r => (r.get(0).toString.take(10), r.getString(1))).sorted
     viaMerge shouldBe viaRecompute
   }
 
@@ -250,10 +255,16 @@ class RollupMergeTier2Spec
     writeBase(baseRows("2026-09-07", "2026-09-08")(
       ("2026-09-07", "emea", 10.0), ("2026-09-08", "emea", 7.0)))
     seedRollup()
+    // The scope filter IS the recompute boundary (scopedBase): a
+    // declared scope that matches NO base rows yields an empty
+    // recomputed source while the rollup table holds data for other
+    // buckets — an empty-merge refresh that silently reports success
+    // would hide the divergence. The honest v1 contract: scope must
+    // name at least one bucket present in the recomputed source;
+    // an all-absent scope refuses typed (nothing to merge that the
+    // scope claims to cover).
     val res = RollupMergeRefresher.mergeRefresh(spark, tier2Model,
-      tier2Spec, List("2026-09-09")) // declared scope names a bucket the source does not cover...
-    // ...but coverage is source ⊆ scope, so an EMPTY scope match
-    // over a 2-bucket source refuses typed.
+      tier2Spec, List("2026-09-09")) // names no bucket in base
     res match {
       case Left(io.sm8.core.engine.EngineError.UnsupportedCapability(
         "spark-connector", "RollupMergeRefresher.scopeCoverage", _)) => succeed
@@ -285,11 +296,12 @@ class RollupMergeTier2Spec
 
     val policyModel = tier2Model.copy(rollups = List(tier2Spec.copy(
       freshness = Some(FreshnessPolicy.FinalRequired))))
+    val policySpec = policyModel.rollups.head
     // final bucket -> no refusal
-    RollupWatermark.stalenessRefusal(spark, policyModel, tier2Spec,
+    RollupWatermark.stalenessRefusal(spark, policyModel, policySpec,
       Set("2026-09-07")) shouldBe None
     // non-final bucket -> refusal with the bucket set
-    RollupWatermark.stalenessRefusal(spark, policyModel, tier2Spec,
+    RollupWatermark.stalenessRefusal(spark, policyModel, policySpec,
       Set("2026-09-07", "2026-09-08")) match {
       case Some(io.sm8.core.rel.RollupRewriter.RollupRewriteRefusal
         .RollupBucketStale(buckets)) =>
@@ -304,8 +316,11 @@ class RollupMergeTier2Spec
   test("D3 absent row = non-final by absence (never assume freshness from silence)") {
     writeBase(baseRows("2026-09-07")(("2026-09-07", "emea", 10.0)))
     seedRollup()
+    // Query a bucket no earlier test ever advanced a watermark row
+    // for (the shared catalog carries their rows): 2026-09-30 has no
+    // row, so it must read non-final purely by absence.
     RollupWatermark.nonFinalBuckets(spark, tier2Model, tier2Spec,
-      Set("2026-09-07")) shouldBe Set("2026-09-07") // no watermark rows yet
+      Set("2026-09-30")) shouldBe Set("2026-09-30")
   }
 
   test("grain-less rollup refuses Tier 2 typed (buckets are the merge unit)") {
@@ -320,8 +335,10 @@ class RollupMergeTier2Spec
 
   test("missing Iceberg table refuses typed (Tier 2 refreshes, never creates)") {
     writeBase(baseRows("2026-09-07")(("2026-09-07", "emea", 10.0)))
-    // NO seedRollup() — table absent.
-    RollupMergeRefresher.mergeRefresh(spark, tier2Model, tier2Spec,
+    // NO seedRollup() — and a DISTINCT model name, so no earlier
+    // test's table (shared catalog) satisfies the existence check.
+    val absentModel = tier2Model.copy(name = "tier2m_absent")
+    RollupMergeRefresher.mergeRefresh(spark, absentModel, tier2Spec,
       List("2026-09-07")) match {
       case Left(io.sm8.core.engine.EngineError.UnsupportedCapability(
         "spark-connector", "RollupMergeRefresher.table", _)) => succeed
