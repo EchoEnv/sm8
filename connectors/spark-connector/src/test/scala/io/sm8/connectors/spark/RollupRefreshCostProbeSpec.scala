@@ -112,6 +112,55 @@ class RollupRefreshCostProbeSpec
     paths.foreach(_ should endWith(".parquet"))
   }
 
+  test("runModel: scope key derives from grainDimension (R1 ibis H1 regression test)") {
+    // H1 regression test: a rollup with a non-order_date grainDimension
+    // must have its scope matched by that grainDimension's name, not
+    // by the hardcoded order_date prefix. Seed two partition dates
+    // under a non-standard grainDimension name (event_date).
+    val model = io.sm8.core.model.Model.of(
+      name = "ship_t",
+      version = 1,
+      dimensions = List(
+        io.sm8.core.model.Dimension.field("event_date", "event_date",
+          dataType = io.sm8.core.schema.SealedDataType.Timestamp),
+        io.sm8.core.model.Dimension.field("region", "region")),
+      measures = List(
+        io.sm8.core.model.Measure("order_count",
+          io.sm8.core.rel.AggregateCall(fn = io.sm8.core.rel.AggregateFn.Count,
+            input = None, alias = "order_count")),
+        io.sm8.core.model.Measure.aggregate("total_amount",
+          io.sm8.core.rel.AggregateFn.Sum,
+          io.sm8.core.expr.Expr.FieldRef("amount"))),
+      source = io.sm8.core.model.SourceRef.ByName(table = "ship_base")
+    ) match {
+      case Right(m) => m
+      case Left(e)  => fail(s"fixture model invalid: $e")
+    }
+    val spec = io.sm8.core.model.RollupSpec(
+      "by_day_region", List("event_date", "region"),
+      List("order_count", "total_amount"),
+      timeGrain = Some("day"), grainDimension = Some("event_date"))
+
+    spark.sql("DROP VIEW IF EXISTS ship_base")
+    // Refresh the catalog so the freshly created view resolves
+    // immediately (sequential tests share the Spark session; stale
+    // catalog metadata from the prior test's tables can shadow).
+    spark.catalog.refreshTable("iceberg_cat.sales_t__by_day_region")
+    spark.sql(
+      "CREATE OR REPLACE TEMP VIEW ship_base AS SELECT * FROM VALUES " +
+        "(timestamp'2026-09-08 10:00:00', 'east', 15L), " +
+        "(timestamp'2026-09-08 11:00:00', 'west', 10L) " +
+        "AS t(event_date, region, amount)")
+
+    val scope = RollupMaterializer.RefreshScope.Partitions(
+      List(Map("event_date" -> "2026-09-08")))
+    val report = RollupRefreshCostProbe.runModel(spark, model, spec, scope)
+    // Non-zero touched bytes means the scopeDates matched the
+    // event_date-partitioned files (the bug would have zeroed these).
+    report.tier1TouchedBytes should be > 0L
+    report.rewrittenButUnchangedBytes should be >= 0L
+  }
+
   test("rewritten-but-unchanged bytes axis is bounded (the Gate B item 3 signal)") {
     val report = RollupRefreshCostProbe.run(spark, warehouseDir)
     report.rewrittenButUnchangedBytes should be >= 0L

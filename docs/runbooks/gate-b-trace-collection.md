@@ -9,17 +9,67 @@ Operational procedure for ADR-0029 §Gate B item 3: collecting the ≥
 `GateBTraceRunner` (spark-connector) — a cron-friendly wrapper around
 `RollupRefreshCostProbe` that persists one JSON report per run.
 
-## Honest limitation (read first)
+## Two modes: live model vs synthetic fixture (read first)
 
-The probe currently measures its **documented synthetic fixture**
-(a 1-partition, 3-row seed exercising scoped Tier 0 + Tier 1). It does
-NOT yet measure a live production model. The instrumentation shape,
-the metric definitions, and the JSON persistence are production-ready;
-the data source is synthetic. Wiring the probe against a live
-registered model is future work (tracked under ADR-0029 §Gate B item
-3's "representative model" clause). Until then, running the trace
-clock exercises the procedure and produces comparable-shape data — it
-does not yet produce Gate B decision-grade numbers.
+The runner supports TWO modes:
+
+**Live-model mode** (decision-grade metrics — but SHADOW WRITES):
+
+```bash
+spark-submit --class io.sm8.connectors.spark.GateBTraceRunner \
+  <connector-jar> \
+  --model <label-for-logs> \
+  --out-path /var/lib/sm8/gate-b/traces/$(date +%Y-%m-%d).json \
+  --model-path /path/to/model.yaml \
+  --rollup <rollup-name> \
+  --scope-date <yyyy-MM-dd>
+```
+
+Loads the model YAML manifest via `ModelLoader.fromStream`, resolves
+the named rollup, and measures a scoped refresh + whole-table refresh
+against the rollup's declared base table.
+
+> **SHADOW-WRITE WARNING**: the runner builds an EMBEDDED HadoopCatalog
+> in a temp warehouse (or `--bootstrap-warehouse` if supplied) — NOT
+> your production Iceberg catalog. The base table is read via
+> `spark.table(<model>.source.table)`, which resolves against THIS
+> embedded catalog. If your production base table lives in a
+> production catalog namespace, the probe will fail with a
+> table-not-found error — **this is safe** (the probe never writes
+> to production). For production-data measurement, configure the
+> embedded catalog to point at the production warehouse, or stage a
+> copy of the base data. See ADR-0030 §D1 for the production-catalog
+> wiring (future work).
+>
+> **TIER 0 OVERWRITES THE FULL ROLLUP TABLE** (not just the scoped
+> partition). The `--scope-date` flag scopes Tier 1 ONLY; Tier 0
+> ignores it and does a full-table overwrite. Plan accordingly.
+>
+> **M3 (R1 loon)**: the embedded catalog is a SHADOW of production —
+> same schema, same table names, but a different physical warehouse.
+> The probe reads the base table via `spark.table(...)` against this
+> shadow; if the base table doesn't exist in the shadow warehouse,
+> the probe errors with a table-not-found message (safe: it never
+> writes to production). This is by design — it prevents accidental
+> production writes during evidence collection.
+
+**Synthetic-fixture mode** (procedure exercise — NOT decision-grade):
+
+```bash
+spark-submit --class io.sm8.connectors.spark.GateBTraceRunner \
+  <connector-jar> \
+  --model <label-for-logs> \
+  --out-path /var/lib/sm8/gate-b/traces/synthetic-$(date +%Y-%m-%d).json
+```
+
+Measures the documented 1-partition synthetic fixture. Use this to
+validate the cron wiring and the output shape before pointing the
+runner at a production model.
+
+The output JSON's `measuredSource` field records which mode ran, and
+the `rendered` text is banner-prefixed (`[LIVE MODEL]` vs
+`[SYNTHETIC FIXTURE — not production model]`) so log greps cannot
+confuse the two.
 
 ## Invocation
 
@@ -57,8 +107,15 @@ Daily alongside the existing refresh cron (example):
 
 Time it AFTER the refresh cron (the probe boots its own Spark
 session; it does not race the refresh path, but staggering avoids
-memory contention on the same box — see the memory guard in
+memory contention on the same box — the runner has an 85% /proc/meminfo
+guard that aborts instead of OOMing, same pattern as
 `RollupObservationHarness`).
+
+NOTE for live-model mode (L1): the 85% guard assumes ~1-1.5 GB for a
+local[1] Spark session over the synthetic fixture. A live production
+model may pull in much more (the base table scan + the rollup write).
+For production measurement, run on a machine with adequate headroom or
+reduce the scope to a smaller partition subset.
 
 ## Output shape
 
@@ -81,7 +138,7 @@ Each JSON file is self-describing:
   "requestedModel": "<model-name>",
   "collectedAtEpochMs": 1757400000000,
   "collectedAtIso": "2026-09-09T03:30:00Z",
-  "measuredFixture": "RollupRefreshCostProbe synthetic fixture (...)",
+  "measuredSource": "RollupRefreshCostProbe synthetic fixture (...)",
   "report": { "...GateBReport fields..." },
   "rendered": "...human-readable text for grep..."
 }
@@ -89,12 +146,16 @@ Each JSON file is self-describing:
 
 ## Evaluation at week 2+
 
-> **The accumulated data is NOT Gate B decision-grade.** It is
-> procedure-exercise data from the synthetic fixture. Its value now:
-> validates the instrumentation, the cron wiring, and the output
-> shape. Decision-grade numbers require live-model measurement
-> (see the Honest limitation above) before the evaluation below
-> applies.
+> **The Gate B decision metric is a DISTRIBUTION over many runs, not
+> a single daily-cron sample.** Schedule live-model traces at the
+> production refresh cadence (or denser) for the 2-week window;
+> one file per day is a minimum, not the target.
+>
+> **Only LIVE-MODEL runs are Gate B decision-grade.** Synthetic-
+> fixture runs validate the procedure and the instrumentation; their
+> numbers do NOT open or close Gate B. Check each JSON's
+> `measuredSource` field before evaluating: live-model runs
+> (`[LIVE MODEL]` banner) count; synthetic runs do not.
 
 Apply the ADR-0029 §Gate B thresholds to the accumulated JSON files:
 

@@ -232,6 +232,164 @@ object RollupRefreshCostProbe {
     * @param warehouseDir the local warehouse directory for the probe
     * @return the Gate B report with both runs and the metrics
     */
+  /** Run the probe against a LIVE registered model + rollup spec
+    * (ADR-0029 §Gate B item 3's "representative model" clause).
+    *
+    * This is the general path: the caller supplies a loaded `Model`
+    * (via `ModelLoader.fromStream`), the rollup spec to measure, and
+    * the scope (partition value) to refresh. The probe performs:
+    *
+    *   1. Tier 0 whole-table refresh (measures the baseline)
+    *   2. Tier 1 scoped refresh (measures the delta)
+    *   3. Gate B metrics from the Iceberg `.entries` metadata
+    *
+    * NON-DESTRUCTIVE GUARANTEE: the probe does NOT drop any table.
+    * The Tier 0 refresh overwrites the rollup table in place (same
+    * semantics as the production refresh path); the Tier 1 scoped
+    * refresh overwrites only the scoped partition. Callers targeting
+    * a production rollup should pick a low-stakes scope (e.g. the
+    * oldest partition) or run against a staging copy.
+    *
+    * @param spark the SparkSession (with an iceberg_cat catalog
+    *              configured via [[buildSpark]])
+    * @param model the loaded model (from ModelLoader.fromStream)
+    * @param spec the rollup declaration to measure
+    * @param scope the partition scope for the Tier 1 run
+    * @return the Gate B report
+    */
+  def runModel(
+    spark: SparkSession,
+    model: io.sm8.core.model.Model,
+    spec: io.sm8.core.model.RollupSpec,
+    scope: RollupMaterializer.RefreshScope
+  ): GateBReport = {
+    val tableName = io.sm8.core.rel.RollupRewriter.rollupTableName(model, spec)
+    val qualified = s"iceberg_cat.$tableName"
+
+    // ---- Tier 0: whole-table refresh (no scope). On first run this
+    // creates the table (CTAS); on subsequent runs it's a full
+    // overwrite. Either way it's the baseline measurement.
+    // M2 (R1 ibis): warn if the base table looks large — a whole-table
+    // refresh on a multi-GB table from a 7.5 GiB box risks OOM. The
+    // operator can redirect --bootstrap-warehouse to a machine with
+    // headroom, or reduce the base-table scan via a narrower model.
+    // (Estimated from the source-table row count via a cheap count(*)
+    // Spark action — NOT the full aggregation.)
+    val baseTable: String = model.source match {
+      case s: io.sm8.core.model.SourceRef.ByName => s.table
+      case _ => ""
+    }
+    if (baseTable.nonEmpty) {
+      try {
+        val baseCount = spark.table(baseTable).count()
+        if (baseCount > 1_000_000L)
+          System.err.println(s"[gate-b-probe] WARNING: base table '$baseTable' has " +
+            s"$baseCount rows — a whole-table Tier 0 refresh on a constrained box " +
+            "risks OOM. Consider running on a machine with more memory, or using a " +
+            "narrower model scope.")
+      } catch {
+        case NonFatal(e) =>
+          System.err.println(s"[gate-b-probe] (could not pre-count base table: " +
+            s"${e.getClass.getSimpleName})")
+      }
+    }
+    val (t0Ms, t0Out) = timed {
+      RollupMaterializer.materialize(spark, model, spec, eager = true,
+        tableFormat = RollupMaterializer.Iceberg,
+        refreshScope = RollupMaterializer.RefreshScope.NoScope)
+    }
+    require(t0Out.isRight, s"Tier 0 refresh failed: ${t0Out.left.get}")
+
+    val preFiles = filePaths(spark, qualified)
+    val preBytes = bytesByPartition(spark, qualified)
+
+    // ---- Tier 1: scoped refresh (measures the delta strategy).
+    val (t1Ms, t1Out) = timed {
+      RollupMaterializer.materialize(spark, model, spec, eager = true,
+        tableFormat = RollupMaterializer.Iceberg,
+        refreshScope = scope)
+    }
+    val t1Success = t1Out.isRight
+
+    val postFiles = if (t1Success) filePaths(spark, qualified) else preFiles
+    val postBytes = if (t1Success) bytesByPartition(spark, qualified) else preBytes
+
+    // ---- Metrics (same as the synthetic run).
+    // Scope keys are partition-value maps; the touched partitions are
+    // those whose localDate matches any scope value's localDateOf.
+    // H1 (R1 ibis): derive the scope-key prefix from the rollup's
+    // actual grainDimension — the hardcoded "order_date=" silently
+    // mismatched partition paths for any model with a different
+    // grainDimension (e.g. event_date), collapsing Tier 1 metrics
+    // to zero.
+    val grainDim = spec.grainDimension.getOrElse("")
+    val scopeDates: Set[String] = scope match {
+      case RollupMaterializer.RefreshScope.Partitions(maps) =>
+        // L-D (R1 kitten): the previous headOption lookup dropped every
+        // value after the first for any repeated key. Collect all
+        // (key, value) pairs across maps and compute one localDate per
+        // pair — handles the multi-map Partitions shape (List[Map[...]])
+        // correctly. Runner only emits single-map scopes today, but the
+        // data model permits List[Map[...]].
+        maps.toSet[Map[String, String]].flatMap { m =>
+          m.toList.map { case (k, v) => localDateOf(s"$k=$v") }
+        }
+      case RollupMaterializer.RefreshScope.NoScope => Set.empty
+    }
+    // grainDim is retained for the exclusion-reason wording; the
+    // scopeDates above use the map's own keys (which the runner
+    // populated from grainDimension).
+    val untouchedKeys = preBytes.keySet.filter(k =>
+      !scopeDates.exists(sd => localDateOf(k) == sd))
+    val untouchedBytesPreserved =
+      untouchedKeys.flatMap(k => preBytes.get(k)).sum
+    val tier0TotalBytes = preBytes.values.sum
+    val postScopedBytes = postBytes.filter { case (k, _) =>
+      scopeDates.exists(sd => localDateOf(k) == sd) }.values.sum
+    val tier1TouchedBytes = postScopedBytes
+    val preUntouchedTuples = preFiles.filter(p =>
+      !scopeDates.exists(sd => localDateOf(partitionKeyOf(p)) == sd))
+      .map(p => p -> preBytes.getOrElse(partitionKeyOf(p), 0L)).toSet
+    val postUntouchedTuples = postFiles.filter(p =>
+      !scopeDates.exists(sd => localDateOf(partitionKeyOf(p)) == sd))
+      .map(p => p -> postBytes.getOrElse(partitionKeyOf(p), 0L)).toSet
+    val contentIdentityRatio =
+      if (preUntouchedTuples.isEmpty) 1.0
+      else preUntouchedTuples.intersect(postUntouchedTuples).size.toDouble /
+        preUntouchedTuples.size.toDouble
+    // Rewritten-but-unchanged (Gate B item 3 axis): scoped-partition
+    // files that SURVIVED the scoped refresh (content-identical).
+    val preScopedTuples = preFiles.filter(p =>
+      scopeDates.exists(sd => localDateOf(partitionKeyOf(p)) == sd))
+      .map(p => p -> preBytes.getOrElse(partitionKeyOf(p), 0L)).toSet
+    val postScopedTuples = postFiles.filter(p =>
+      scopeDates.exists(sd => localDateOf(partitionKeyOf(p)) == sd))
+      .map(p => p -> postBytes.getOrElse(partitionKeyOf(p), 0L)).toSet
+    val rewrittenButUnchangedBytes =
+      preScopedTuples.intersect(postScopedTuples).map(_._2).sum
+
+    val (driverMs, execMs) = (t1Ms, 0L)
+
+    GateBReport(
+      tier0Run = RefreshRun("tier0", t0Ms, preBytes, preFiles, success = true),
+      tier1Run = Some(RefreshRun("tier1", t1Ms, postBytes, postFiles, t1Success)),
+      tier0TotalBytes = tier0TotalBytes,
+      tier1TouchedBytes = tier1TouchedBytes,
+      rewrittenButUnchangedBytes = rewrittenButUnchangedBytes,
+      driverComputeMs = driverMs,
+      executorComputeMs = execMs,
+      contentIdentityRatio = contentIdentityRatio)
+  }
+
+  /** Synthetic-fixture variant: delegates to [[runModel]] with the
+    * documented 1-partition fixture. Retained for tests and for
+    * offline procedure-exercise runs; production Gate B evidence
+    * uses [[runModel]] against a live model.
+    *
+    * @param spark the SparkSession
+    * @param warehouseDir the local warehouse directory for the probe
+    * @return the Gate B report
+    */
   def run(spark: SparkSession, warehouseDir: String): GateBReport = {
     import spark.implicits._
 
