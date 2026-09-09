@@ -23,6 +23,9 @@ would adopt if the gates open:
    "the bucket is final").
 4. **Cascading rollup sources** (hourly → daily built FROM hourly, not
    from base) — previewed here, deferred to its own ADR-0031.
+5. **Snapshot-diff fidelity boundaries** — when the Iceberg
+   snapshot-diff extraction is reliable vs when it must defer to
+   full-bucket recompute (closes ADR-0029 §Gate B's open item 4).
 
 Everything here is written against the established seams: core stays
 format- and strategy-blind (RFC §3); Iceberg is the format standard
@@ -143,6 +146,15 @@ are contract tests, not conventions:
    on the delta source; if the probe fails, refuse before aggregation.
    The cost of the probe is part of the contract test (probe must be
    cheaper than the aggregation it replaces).
+
+**D2-5 — Ambiguity rate as the Tier 2 real metric (R1 review, teal C4).**
+Tier 2's refresh-cost saving is bounded by `(1 − ambiguity_rate)`. The
+D1 experiment reports ambiguity rate alongside its scan/refresh numbers;
+a high ambiguity rate collapses Tier 2's expected value over Tier 1
+regardless of the MOR-hybrid decision. Ambiguity rate is per-refresh,
+per-bucket: any bucket hitting D2-4's classification rule (a/b/c/d)
+counts as ambiguous for that refresh.
+
 5. **Idempotency (spark-batch retried-job rule, formalized):** re-running
    the same merge against an unchanged source must leave the table
    **content-identical**. "Content-identical" is defined the same way
@@ -185,7 +197,7 @@ are contract tests, not conventions:
    work; if the rate is low, MOR-hybrid's per-bucket delta wins as
    predicted. The classification rule for "ambiguous" is pinned in D5
    (snapshot-diff fidelity boundaries).
-7. **Layer-1 raw-event dedup is explicitly out of scope.** The rollup
+7. **Input-layer raw-event dedup is explicitly out of scope.** The rollup
    lane does not silently deduplicate base-table rows (`ROW_NUMBER()`
    tricks). Base-table hygiene belongs to the producing pipeline; a
    rollup layer that dedupes silently masks upstream data-quality
