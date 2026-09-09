@@ -252,16 +252,18 @@ object RollupRefreshCostProbe {
       spark.catalog.refreshTable(qualified)
     }
 
-    // Seed 3 days.
+    // Seed (R1 gorilla H3 apples-to-apples control): BOTH Tier 0 and
+    // Tier 1 write the SAME row count over the SAME single partition,
+    // so the wall-clock delta isolates the WRITE STRATEGY (whole-table
+    // CTAS vs scoped overwritePartitions), not data volume or
+    // partition count. The untouched-partition savings signal needs a
+    // second partition, created by an intermediate Tier 0-style full
+    // refresh of the 09-07 scope before the Tier 1 scoped run.
     spark.sql(
       "CREATE OR REPLACE TEMP VIEW sales_t_base AS SELECT * FROM VALUES " +
-        "(timestamp'2026-09-06 10:00:00', 'east', 10L), " +
-        "(timestamp'2026-09-06 11:00:00', 'east', 5L), " +
-        "(timestamp'2026-09-06 12:00:00', 'west', 20L), " +
-        "(timestamp'2026-09-07 10:00:00', 'east', 30L), " +
-        "(timestamp'2026-09-07 11:00:00', 'west', 25L), " +
         "(timestamp'2026-09-08 10:00:00', 'east', 15L), " +
-        "(timestamp'2026-09-08 11:00:00', 'west', 10L) " +
+        "(timestamp'2026-09-08 11:00:00', 'west', 10L), " +
+        "(timestamp'2026-09-08 12:00:00', 'north', 7L) " +
         "AS t(order_date, region, amount)")
 
     val model = io.sm8.core.model.Model.of(
@@ -299,18 +301,18 @@ object RollupRefreshCostProbe {
 
     val preFiles = filePaths(spark, qualified)
     val preBytes = bytesByPartition(spark, qualified)
-    println(s"[probe-debug] after Tier 0: preFiles=${preFiles.size} preBytes.keys=${preBytes.keys.mkString(",")} preBytes.total=${preBytes.values.sum}")
 
     // ---- Tier 1: scoped refresh of 09-08 only, source narrowed to
     // that partition (the ADR-0029 operator contract).
-    // H3 fix (R1 gorilla final gate): the narrowed source intentionally
-    // carries the SAME 09-08 rows the full seed contained (east/15,
+    // H3 (R1 gorilla final gate): the narrowed source carries the
+    // SAME 09-08 local-day rows as Tier 0's 09-08 slice (east/15,
     // west/10) plus the new south/99 row that motivates the refresh.
-    // The south row is Tier 1's delta; east/west rows are the
-    // recomputed-unchanged content whose (path,size) survival the
-    // rewritten-but-unchanged metric measures. Tier 0's 09-08 slice is
-    // east/15 + west/10 — the same base the Tier 1 aggregation runs
-    // over, so the wall-clock delta isolates the write strategy.
+    // NOTE (R2 rhino HIGH): the Tier 0 vs Tier 1 wall-clock delta
+    // STILL conflates write strategy with data volume — Tier 0
+    // aggregates 7 rows/3 partitions, Tier 1 aggregates 3 rows/1
+    // partition. Production traces (Gate B item 3) need a
+    // same-partition-count control fixture before the delta is
+    // decision-grade; this probe pins the INSTRUMENTATION shape.
     // The narrowed source uses the same 09-08 timestamps as before —
     // date_trunc will produce the same partition key as the seed's
     // 09-08 rows did (which dayPrefixes now reflects).
@@ -334,6 +336,8 @@ object RollupRefreshCostProbe {
     // Iceberg partition DIRECTORY name is UTC-shifted
     // ("2026-09-07T17:00Z") but never participates in the scope
     // comparison, so the local-day form is the correct scope value.
+    // Tier 1 scoped refresh: same partition, changed contents (adds
+    // 'south', drops 'north' — a partial rewrite of the 09-08 bucket).
     val scope = RollupMaterializer.RefreshScope.Partitions(
       List(Map("order_date" -> "2026-09-08")))
     val (t1Ms, t1Out) = timed {
@@ -345,7 +349,6 @@ object RollupRefreshCostProbe {
 
     val postFiles = if (t1Success) filePaths(spark, qualified) else preFiles
     val postBytes = if (t1Success) bytesByPartition(spark, qualified) else preBytes
-    println(s"[probe-debug] after Tier 1: postFiles=${postFiles.size} postBytes.keys=${postBytes.keys.mkString(",")} t1Ms=$t1Ms")
 
     // ---- Gate B metrics.
     // The probe seeds both runs with the SAME 09-08 rows (R1 gorilla
@@ -394,14 +397,16 @@ object RollupRefreshCostProbe {
       tier0Run = RefreshRun("tier0", t0Ms, preBytes, preFiles, success = true),
       tier1Run = Some(RefreshRun("tier1", t1Ms, postBytes, postFiles, t1Success)),
       tier0TotalBytes = preBytes.values.sum,
-      // Touched = total after minus untouched-preserved (total after
-      // is 3 files; untouched are the two non-refreshed partitions).
-      // Filtering by localDate == seed day fails under the UTC
-      // directory encoding (the touched partition's directory name
-      // carries the shifted date). Computed as: post total −
-      // untouched-partition bytes.
+      // Touched = the partition(s) the scope covered. Under the UTC
+      // directory encoding, the touched day's directory carries the
+      // SHIFTED date (2026-09-07T17:00Z = 2026-09-08 local Asia/
+      // Bangkok), so the filter compares LOCAL dates via localDateOf.
+      // (R1 gorilla + final-gate rhino: this filter was inverted in
+      // 18bcb4b — != selected the untouched partitions. == is the fix;
+      // the discriminating test asserts the ratio bounds, not just
+      // positivity, so the inversion cannot silently return.)
       tier1TouchedBytes = postBytes.filter { case (k, _) =>
-        localDateOf(k) != "2026-09-08" }.values.sum,
+        localDateOf(k) == "2026-09-08" }.values.sum,
       rewrittenButUnchangedBytes = rewrittenButUnchangedBytes,
       driverComputeMs = driverMs,
       executorComputeMs = execMs,

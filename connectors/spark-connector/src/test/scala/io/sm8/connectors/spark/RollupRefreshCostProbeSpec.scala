@@ -78,6 +78,15 @@ class RollupRefreshCostProbeSpec
     val report = RollupRefreshCostProbe.run(spark, warehouseDir)
     report.tier0TotalBytes should be > 0L
     report.tier1TouchedBytes should be > 0L
+    // Discriminating assertion (final-gate rhino): touched must be a
+    // STRICT SUBSET of total — if the filter accidentally inverted
+    // (18bcb4b regression), touched would equal the UNTOUCHED byte
+    // sum, which is strictly less than total in this fixture (two
+    // untouched partitions outweigh one touched).
+    report.tier1TouchedBytes should be < report.tier0TotalBytes
+    // And rewritten-but-unchanged is bounded by touched (it is a
+    // subset of the scoped partition files).
+    report.rewrittenButUnchangedBytes should be <= report.tier1TouchedBytes
   }
 
   test("isolation ratio: untouched partitions reuse their data files") {
@@ -112,5 +121,24 @@ class RollupRefreshCostProbeSpec
         spark, "iceberg_cat.sales_t__by_day_region").values.sum
     report.rewrittenButUnchangedBytes should be <= totalBytes
   }
+  test("localDateOf decodes URL-encoded minute-precision UTC instants (rhino M3)") {
+    // 17:00Z = 2026-09-08 00:00 +07 (Asia/Bangkok) — the UTC-shifted
+    // directory name decodes to the NEXT local day. The assertions
+    // pin the host-TZ-dependent decode; on a UTC host the minute-
+    // precision case would decode to 09-07 instead (this fixture
+    // assumes +07, matching the CI box; if that changes, update).
+    RollupRefreshCostProbe.localDateOf("order_date=2026-09-07T17%3A00Z") shouldBe "2026-09-08"
+    // Plain date form (no shift)
+    RollupRefreshCostProbe.localDateOf("order_date=2026-09-07") shouldBe "2026-09-07"
+  }
+
+  test("contentIdentityRatio equals 1.0 for healthy Tier 1 isolation (rhino M4)") {
+    // Bounds-only assertions let a 0.5 ratio pass; healthy isolation
+    // on this fixture MUST be exactly 1.0 (untouched partitions are
+    // byte-identical). (R2 rhino M4.)
+    val report = RollupRefreshCostProbe.run(spark, warehouseDir)
+    report.contentIdentityRatio shouldBe 1.0
+  }
+
 }
 
