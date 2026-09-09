@@ -989,7 +989,9 @@ class ReconciledRollupSchemaSpec extends AnyFunSuite with Matchers {
     RollupRewriter.RollupRewriteRefusal.GrainMismatch,
     RollupRewriter.RollupRewriteRefusal.SourceKindUnsupported,
     RollupRewriter.RollupRewriteRefusal.AlgebraicStateNotWired,
-    RollupRewriter.RollupRewriteRefusal.RollupSchemaStale
+    RollupRewriter.RollupRewriteRefusal.RollupSchemaStale,
+    RollupRewriter.RollupRewriteRefusal.RollupBucketStale(
+      Set(RollupRewriter.RollupRewriteRefusal.BucketKey("2026-09-08")))
   )
 
   test("reasonName labels are unique across the whole refusal ADT") {

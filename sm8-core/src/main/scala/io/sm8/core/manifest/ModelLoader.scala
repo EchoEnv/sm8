@@ -584,6 +584,34 @@ object ModelLoader {
      Left(ManifestError.ParseFailure(
      s"rollups[${name.getOrElse("?")}].$key must be a list (got ${other.getClass.getSimpleName})"))
     }
+   // freshness (ADR-0030 D3, Tier 2): optional `freshness:`
+   // policy on a rollup. Accepted spellings: `final_required`,
+   // `finalRequired`, `final-required`, `FinalRequired` (case-
+   // insensitive; snake/camel/kegel author convenience). Any other
+   // value fails loud (never a silent None — a typo'd policy name
+   // that silently routes non-final buckets would violate the
+   // FinalRequired author's intent in the worst way: wrong
+   // freshness with no signal). Co-presence with grain fields is
+   // ModelValidator's job (policy requires grain; the parser
+   // accepts the field, the validator rejects the grain-less
+   // policy state).
+   val freshnessE: Either[ManifestError, Option[io.sm8.core.model.FreshnessPolicy]] =
+    Option(m.get("freshness")) match {
+    case None | Some(null) => Right(None)
+    case Some(raw: String) =>
+     raw.trim.toLowerCase.replace('-', '_') match {
+      case "final_required" | "finalrequired" =>
+       Right(Some(io.sm8.core.model.FreshnessPolicy.FinalRequired))
+      case other =>
+       Left(ManifestError.ParseFailure(
+        s"rollups[${name.getOrElse("?")}]: unknown freshness policy '$raw' " +
+        "(accepted: final_required / FinalRequired)"))
+     }
+    case Some(other) =>
+     Left(ManifestError.ParseFailure(
+      s"rollups[${name.getOrElse("?")}].freshness must be a string (got " +
+      s"${other.getClass.getSimpleName})"))
+   }
    name match {
     case None => Left(ManifestError.ParseFailure("rollups[]: missing 'name'"))
     case Some(n) =>
@@ -592,6 +620,7 @@ object ModelLoader {
      grainDim <- grainDimE
      dims <- refList("dimensions")
      meas <- refList("measures")
+     freshness <- freshnessE
      _ <- if (dims.isEmpty && meas.isEmpty)
       Left(ManifestError.ParseFailure(
       s"rollups[$n]: dimensions and measures must not both be empty"))
@@ -601,7 +630,8 @@ object ModelLoader {
      dimensions = dims,
      measures = meas,
      timeGrain = grain,
-     grainDimension = grainDim)
+     grainDimension = grainDim,
+     freshness = freshness)
    }
   }
   seq.toList.foldLeft[Either[ManifestError, List[io.sm8.core.model.RollupSpec]]](Right(Nil)) { (accE, entry) =>
