@@ -605,7 +605,8 @@ object ModelLoader {
       case other =>
        Left(ManifestError.ParseFailure(
         s"rollups[${name.getOrElse("?")}]: unknown freshness policy '$raw' " +
-        "(accepted: final_required / FinalRequired)"))
+        "(accepted spellings: final_required / finalRequired / " +
+        "final-required / FinalRequired — all case-insensitive)"))
      }
     case Some(other) =>
      Left(ManifestError.ParseFailure(

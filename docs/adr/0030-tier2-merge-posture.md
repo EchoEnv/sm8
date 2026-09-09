@@ -8,7 +8,10 @@
 ADR-0029 defined the rollup refresh strategy ladder and shipped Tier 1
 (dynamic partition overwrite via DSv2, PR #361). Tier 2 — **row-level
 delta MERGE with the delta derived from base-table Iceberg snapshot
-diffs** — was, at writing time, gated behind the numeric criteria in
+diffs** (the full vision; the SHIPPED v1 of PR #370 uses scoped full
+re-aggregation as the exact-delta primary per D2-6, with the
+snapshot-diff extraction as the D5-gated refinement) — was, at
+writing time, gated behind the numeric criteria in
 ADR-0029 §Gate B. **Update 2026-09-09:** ADR-0029 §Gate B has been
 amended (open-source rationale; see that ADR): the numeric criteria
 are now **operator enablement guidance** — when to turn Tier 2 ON per
