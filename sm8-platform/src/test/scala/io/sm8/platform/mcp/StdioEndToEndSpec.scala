@@ -96,9 +96,25 @@ class StdioEndToEndSpec extends AnyFunSuite with Matchers {
     }
     if (!cache.exists()) cancel("sm8-smoke-cp.txt not buildable (CI-only test)")
     val deps = scala.io.Source.fromFile(cache).mkString.trim
+    // Classpath assembly (C10 PR-371-followup fix): use the COMPILED
+    // CLASSES dirs, not packaged jars. `mvn test` runs test-compile
+    // but does NOT package sm8-server/in-memory-connector jars — the
+    // old jar-based classpath silently pointed at files that do not
+    // exist in a test-phase build, so the spawned JVM died on a
+    // missing Main class and every test read "(no messages)".
+    // target/classes always exists after compile (same approach as
+    // scripts/smoke-e2e.sh's CP line); jars are kept as a FALLBACK
+    // prefix for CI layouts that package without compiling.
+    def existingOr(paths: List[String]): String =
+      paths.find(p => new java.io.File(p).exists()).getOrElse(paths.head)
+    val serverEntry = existingOr(List(
+      s"$repoRoot/sm8-server/target/classes",
+      s"$repoRoot/sm8-server/target/sm8-server_2.13-0.1.0-SNAPSHOT.jar"))
+    val connectorEntry = existingOr(List(
+      s"$repoRoot/connectors/in-memory-connector/target/classes",
+      s"$repoRoot/connectors/in-memory-connector/target/in-memory-connector_2.13-0.1.0-SNAPSHOT.jar"))
     val full =
-      s"$repoRoot/sm8-server/target/sm8-server_2.13-0.1.0-SNAPSHOT.jar:" +
-      s"$repoRoot/connectors/in-memory-connector/target/in-memory-connector_2.13-0.1.0-SNAPSHOT.jar:" +
+      s"$serverEntry:$connectorEntry:" +
       deps
     Some(full)
   }
@@ -267,8 +283,11 @@ class StdioEndToEndSpec extends AnyFunSuite with Matchers {
         }
         toolsResp should include ("\"result\"")
         toolsResp should include ("\"tools\":")
-        withClue(s"tools/list response should have 5 tools, got $toolCount: $toolsResp") {
-          toolCount shouldBe 5
+        // 7 tools since PR #313 (C10 PR-C): the original 5 (query,
+        // list_models, describe_model, list_engines, get_metrics) +
+        // list_plugins + list_hooks (registry inspector surfaces).
+        withClue(s"tools/list response should have 7 tools, got $toolCount: $toolsResp") {
+          toolCount shouldBe 7
         }
       }
 
