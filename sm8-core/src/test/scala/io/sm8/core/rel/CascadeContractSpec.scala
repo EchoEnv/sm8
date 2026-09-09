@@ -350,10 +350,37 @@ class CascadeContractSpec extends AnyFunSuite with Matchers {
     val src = hourlyDecl.copy(measures = List("total", "avg_amt"))
     val tgt = RollupSpec(
       name = "daily", dimensions = List("order_date_day", "region"),
-      measures = List("total", "avg_amt", "med"),
+      measures = List("total", "med"),
       timeGrain = Some("day"), grainDimension = Some("order_date_day"),
       cascadeSource = Some("hourly"))
-    val errs = cascadeErrorsOf(List(src, tgt))
-    errs.filterNot(_.contains("med")) shouldBe Nil
+    // WARNING must NOT refuse: the model loads (Right) despite the
+    // mixed-measure declaration (narwhal F1 — the old code put the
+    // warning into errs and silently refused the whole model).
+    val res = Model.of(
+      name = "cascadem",
+      version = 1,
+      source = SourceRef.ByName(table = "events"),
+      dimensions = List(
+        Dimension.field("order_date_hour", "order_date_hour",
+          io.sm8.core.schema.SealedDataType.Timestamp),
+        Dimension.field("order_date_day", "order_date_day",
+          io.sm8.core.schema.SealedDataType.Date),
+        Dimension.field("region", "region")),
+      measures = List(
+        Measure("total", AggregateCall(AggregateFn.Sum,
+          Some(Expr.FieldRef("amount")), "total")),
+        Measure("avg_amt", AggregateCall(AggregateFn.Avg,
+          Some(Expr.FieldRef("amount")), "avg_amt")),
+        Measure("med", AggregateCall(AggregateFn.Median,
+          Some(Expr.FieldRef("amount")), "med"))),
+      rollups = List(src, tgt))
+    if (res.isLeft) println("MIXED-MEASURES DEBUG: " + res)
+    // Debug: surface the Left error if the load refuses.
+    res match {
+      case scala.util.Right(_) => ()
+      case scala.util.Left(err) =>
+        fail(s"expected Right (warning must not refuse), got Left: $err")
+    }
+    res.isRight shouldBe true
   }
 }

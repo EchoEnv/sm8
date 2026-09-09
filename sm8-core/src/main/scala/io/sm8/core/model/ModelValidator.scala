@@ -126,12 +126,16 @@ object ModelValidator {
                 case io.sm8.core.rel.CascadeContract.CascadeVerdict.Eligible => ()
                 case io.sm8.core.rel.CascadeContract.CascadeVerdict.PartiallyEligible(non) =>
                   // Tolerated by design (D1: the cascade subset
-                  // proceeds; the rest fall back to base) — but SAY
-                  // so at load time so the operator knows the
-                  // fallback exists before the first refresh.
-                  out += s"rollups[${r.name}]: WARNING (not a refusal) — measures " +
+                  // proceeds; the rest fall back to base). This is
+                  // a WARNING, NOT a refusal: it must NOT enter the
+                  // `errs` list (SchemaValidation refuses on any
+                  // non-empty list — narwhal F1). Emitted to stderr
+                  // so the operator still sees it at load; the model
+                  // loads fine.
+                  Console.err.println(
+                    s"[warn] rollups[${r.name}]: measures " +
                     s"${non.mkString(", ")} do not cascade; they will fall back to " +
-                    "base-derived build (ADR-0031 D1)"
+                    "base-derived build (ADR-0031 D1)")
                 case io.sm8.core.rel.CascadeContract.CascadeVerdict.DimensionsNotContained(missing) =>
                   out += s"rollups[${r.name}]: cascadeSource '$srcName' is missing " +
                     s"dimension(s) ${missing.mkString(", ")} — a coarsening must not " +

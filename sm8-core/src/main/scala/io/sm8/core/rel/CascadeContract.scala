@@ -342,13 +342,18 @@ object CascadeContract {
         // connector-side. Names sharing NO base token are different
         // axes (day grain over ship-date-hour is not a coarsening
         // of order-date-hour) — refused.
-        val sameAxis = {
-          val a = sgd.split('_').toList
-          val b = tgd.split('_').toList
-          val common = a.zip(b).takeWhile { case (x, y) => x == y }.map(_._1)
-          common.size == math.min(a.size, b.size) - 1 ||
-          common.size >= math.min(a.size, b.size) - 1 && a.size == b.size
-        }
+        // Same-axis rule (ibex F-HIGH fix): the canonical ADR-0031
+        // case is hourly `order_date_hour` → daily `order_date_day` —
+        // targets share ALL tokens with the source EXCEPT the last
+        // (the grain-suffix token). The old proxy's second disjunct
+        // false-accepted `order_date_day_carrier` (piggyback dim) and
+        // `ab_ef` vs `ab_cd` (different axis, same shape). Correct:
+        // sizes equal AND all-but-last tokens equal. The date_trunc
+        // relation itself is the author's declaration, verified
+        // dynamically connector-side.
+        val aTok = sgd.split('_').toList
+        val bTok = tgd.split('_').toList
+        val sameAxis = aTok.size == bTok.size && aTok.init == bTok.init
         if (grainOrdinal(tg) <= grainOrdinal(sg))
           Some(s"target grain '$tg' is NOT coarser than source grain '$sg'")
         else if (!sameAxis)

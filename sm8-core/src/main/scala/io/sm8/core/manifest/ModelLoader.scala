@@ -600,20 +600,30 @@ object ModelLoader {
    // A plain name-STRING at parse time; existence + eligibility +
    // cycle checks are ModelValidator.validateCascadeDag's job at
    // Model.of (deployment-time refusal, never refresh-time).
-   val cascadeSourceE: Either[ManifestError, Option[String]] =
-    Option(m.get("cascade_source")) match {
-    case None | Some(null) => Right(None)
-    case Some(raw: String) =>
-     val trimmed = raw.trim
-     if (trimmed.isEmpty)
+   val cascadeSourceE: Either[ManifestError, Option[String]] = {
+    // Dual-key convention (narwhal F2): same as time_grain/
+    // grain_dimension — accept snake_case (cascade_source) and
+    // camelCase (cascadeSource); BOTH SET refuses loud (never
+    // silently pick one).
+    val cKeys = List(Option(m.get("cascade_source")), Option(m.get("cascadeSource")))
+    if (cKeys.flatten.length > 1)
       Left(ManifestError.ParseFailure(
-       s"rollups[${name.getOrElse("?")}]: cascade_source is empty — " +
-       "declare a rollup name or drop the key"))
-     else Right(Some(trimmed))
-    case Some(other) =>
-     Left(ManifestError.ParseFailure(
-      s"rollups[${name.getOrElse("?")}].cascade_source must be a string " +
-      s"(got ${other.getClass.getSimpleName})"))
+       s"rollups[${name.getOrElse("?")}]: specify at most one of " +
+       "cascade_source / cascadeSource"))
+    else cKeys.flatten.headOption match {
+      case None => Right(None)
+      case Some(raw: String) =>
+        val trimmed = raw.trim
+        if (trimmed.isEmpty)
+          Left(ManifestError.ParseFailure(
+            s"rollups[${name.getOrElse("?")}]: cascade_source is empty — " +
+            "declare a rollup name or drop the key"))
+        else Right(Some(trimmed))
+      case Some(other) =>
+        Left(ManifestError.ParseFailure(
+          s"rollups[${name.getOrElse("?")}].cascade_source must be a string " +
+          s"(got ${other.getClass.getSimpleName})"))
+    }
    }
    val freshnessE: Either[ManifestError, Option[io.sm8.core.model.FreshnessPolicy]] =
     Option(m.get("freshness")) match {
