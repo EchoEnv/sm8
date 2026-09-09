@@ -117,10 +117,16 @@ object RollupWatermark {
     else {
       val rows = spark.table(qualified)
         .filter(col("model_name") === lit(model.name) &&
-                col("rollup_name") === lit(spec.name))
+                col("rollup_name") === lit(spec.name) &&
+                (if (queryBuckets.isEmpty) lit(false)
+                 else col("bucket_value").isin(queryBuckets.toSeq: _*)))
         .select("bucket_value", "is_final")
         .collect()
-      val finalOnes = rows.filter(_.getBoolean(1)).map(_.getString(0)).toSet
+      // L2 null-safety: a malformed row (null is_final) reads as
+      // non-final — fail-safe, never an NPE at the routing seam.
+      val finalOnes = rows
+        .filter(r => r.get(1) match { case b: java.lang.Boolean => b.booleanValue(); case _ => false })
+        .map(_.getString(0)).toSet
       queryBuckets -- finalOnes
     }
   }
@@ -205,10 +211,17 @@ object RollupWatermark {
     qualified
   }
 
-  /** The rollup table's current Iceberg snapshot id (0 when the
-    * table is too new to expose it — the column is diagnostic, not
-    * correctness-critical; D3's re-derivation treats mismatches as
-    * stale, and 0 never matches, which is the conservative read). */
+  /** The rollup table's current Iceberg snapshot id.
+    *
+    * Failure semantics (the 0L sentinel): any read failure or a
+    * table too new to expose history yields 0L. 0 is never a real
+    * Iceberg snapshot id, so it NEVER matches the rollup's current
+    * snapshot — D3's re-derivation treats the mismatch as stale and
+    * re-derives on the next refresh. Cost: one extra re-derivation
+    * cycle. The column is diagnostic-only; correctness never rests
+    * on it (ADR-0030 D3: staleness decisions read is_final, not
+    * this id). */
+
   private[spark] def currentSnapshotId(
     spark: SparkSession,
     qualifiedTable: String): Long =

@@ -50,10 +50,20 @@ import io.sm8.core.engine.EngineError
 import io.sm8.core.model.{Model, RollupSpec, SourceRef}
 import io.sm8.core.rel.RollupRewriter
 
-import org.apache.spark.sql.{DataFrame, SparkSession}
+import org.apache.spark.sql.{Column, DataFrame, SparkSession}
 import org.apache.spark.sql.functions.{col, lit}
 
 object RollupMergeRefresher {
+
+  // ==Concurrency contract (puma M3)==
+  // Iceberg MERGE is optimistic-concurrent: two concurrent
+  // mergeRefresh calls on the same rollup produce one winner and
+  // one typed failure (OptimisticConcurrencyException surfaces as
+  // UnsupportedCapability "merge"). v1 deliberately does NOT
+  // retry internally — the caller (cron/orchestrator) owns retry
+  // policy, matching the Tier 1 refresher's behavior. A bounded
+  // internal retry is a plausible follow-up once a real
+  // concurrent-refresh workload exists to tune it against.
 
   /** The Iceberg catalog the rollup tables live in (shared with
     * `RollupMaterializer.icebergCatalog`). */
@@ -62,11 +72,18 @@ object RollupMergeRefresher {
   /** Outcome of one Tier 2 merge refresh. */
   sealed trait MergeRefreshResult extends Product with Serializable
   object MergeRefreshResult {
+    /** Honest accounting (puma M2): `sourceRows` = the recomputed
+      * source's row count (rows CONSIDERED — matched-updated,
+      * matched-unchanged-guard-skipped, and inserted all included;
+      * Spark MERGE per-arm metrics are not exposed on the SQL path
+      * pre-3.5's explain-only surfaces). `netRowDelta` = after
+      * minus before (inserts minus any future deletes; floor 0 in
+      * v1 which has no delete arm). */
     final case class Merged(
       rollup: String,
       table: String,
-      rowsMerged: Long,
-      rowsInserted: Long) extends MergeRefreshResult
+      sourceRows: Long,
+      netRowDelta: Long) extends MergeRefreshResult
     final case class Failed(rollup: String, error: EngineError)
         extends MergeRefreshResult
   }
@@ -74,19 +91,40 @@ object RollupMergeRefresher {
   /** Scoped base rows (the scope IS the delta declaration in v1
     * Tier 2 — see the header's D5 note). String-canonical bucket
     * comparison, same discipline as decideStrategy's canon. */
+  /** Grain-vocabulary-aware scope filter (D2-2, puma H2): mirrors
+    * buildRollupDf's bucketing expression. For day-and-coarser
+    * grains over a TIMESTAMP column the bucket value is
+    * date_trunc(grain, col) — NOT the raw column — so the scope
+    * filter must compare the truncated column, else non-midnight
+    * timestamps match no scope and the refresh spurious-refuses.
+    * For DATE columns (day grain) trunc is a no-op and the raw
+    * equality pushes into the scan (PushedFilters — plan-checked).
+    * Hour grain keeps full timestamp equality (trunc to hour, the
+    * canonical yyyy-MM-dd HH form the scope carries). */
   private[spark] def scopedBase(
     base: DataFrame,
     grainDim: String,
-    scopeValues: List[String]): DataFrame = {
-    // Pushdown-preserving bucket filter (D2-2): cast the LITERAL to
-    // the column's type, never the column to string — a cast on the
-    // column side makes the predicate non-pushable (the plan check
-    // in RollupMergeTier2Spec pins this: the bucket predicate must
-    // reach PushedFilters, not linger as a post-scan Filter).
+    scopeValues: List[String],
+    grain: Option[String] = None): DataFrame = {
+    val normalized = RollupRewriter.normalizeGrain(grain)
+    val bucketCol: Column = normalized match {
+      case Some(g) if needsTrunc(base.schema(grainDim).dataType, g) =>
+        org.apache.spark.sql.functions.date_trunc(g, col(grainDim))
+      case _ => col(grainDim)
+    }
     val dt = base.schema(grainDim).dataType
-    val grainCol = col(grainDim)
-    val preds = scopeValues.map(v => grainCol === lit(v).cast(dt))
+    val preds = scopeValues.map(v => bucketCol === lit(v).cast(dt))
     base.filter(preds.reduceOption(_ || _).getOrElse(lit(false)))
+  }
+
+  /** date_trunc is required when the column carries sub-grain
+    * precision: any grain over a Timestamp column (a Timestamp at
+    * day grain stores 12:34:56s that must truncate to the bucket).
+    * Date columns are already day-precision — trunc is identity. */
+  private def needsTrunc(dt: org.apache.spark.sql.types.DataType,
+    grain: String): Boolean = dt match {
+    case _: org.apache.spark.sql.types.TimestampType => true
+    case _ => grain == "hour" // hour over Date is degenerate but trunc is harmless
   }
 
   /** Resolve the base DataFrame via the materializer's readBase
@@ -119,6 +157,30 @@ object RollupMergeRefresher {
     * @param scopeValues canonical bucket values (e.g. yyyy-MM-dd)
     * @return the merge outcome, or a typed EngineError
     */
+  /** SQL-identifier guard (puma H1): MERGE statements are built by
+    * string interpolation over model/rollup/dimension names. A
+    * backtick in any name closes the quoted identifier early
+    * (parse error or identifier hijack); a dot shifts a 3-part
+    * catalog name. Names are constrained to the conservative
+    * identifier charset [A-Za-z0-9_] here — the enforcement seam
+    * the model loader lacks today (Model.of only checks
+    * non-blank); fail-loud at the boundary, never mid-SQL. */
+  private[spark] def requireSafeIdentifiers(
+    model: Model, spec: RollupSpec): Either[EngineError, Unit] = {
+    val safe = "^[A-Za-z0-9_]+$".r
+    val names = (model.name :: spec.name :: spec.dimensions) ++
+      spec.dimensions // physical columns flow from the same list
+    val bad = names.filter(n => safe.findFirstIn(n).isEmpty)
+    if (bad.isEmpty) Right(())
+    else Left(EngineError.UnsupportedCapability(
+      engine = "spark-connector",
+      capability = "RollupMergeRefresher.identifiers",
+      message = s"rollups[${spec.name}]: name(s) [${bad.mkString(", ")}] " +
+        "contain characters outside [A-Za-z0-9_] — the Tier 2 MERGE " +
+        "builder quotes identifiers with backticks and cannot safely " +
+        "embed these (rename, or extend the builder with an escaping layer)"))
+  }
+
   def mergeRefresh(
     spark: SparkSession,
     model: Model,
@@ -129,6 +191,7 @@ object RollupMergeRefresher {
     val qualified = s"$IcebergCatalog.$rollupTable"
 
     for {
+      _ <- requireSafeIdentifiers(model, spec)
       // Preconditions (driver-side, fail before any Spark job).
       _ <- requireGrained(spec)
       _ <- requireIcebergTable(spark, qualified, rollupTable)
@@ -137,22 +200,22 @@ object RollupMergeRefresher {
       // D2-3/D2-4: duplicate-key probe on the RECOMPUTED source,
       // before the merge job (probe = distinct-count comparison,
       // cheaper than the merge it guards).
-      scopedDf <- Right(scopedBase(baseDf, grainDim, scopeValues))
+      scopedDf <- Right(scopedBase(baseDf, grainDim, scopeValues, spec.timeGrain))
       source <- RollupMaterializer.buildRollupDf(scopedDf, model, spec)
       // Empty-scope guard: the scoped recompute produced no rows —
       // the scope names no bucket present in the base. Refuse loud
       // (a silent zero-row "success" would read as refreshed);
       // legitimate empty-bucket deletion semantics are Tier 3's
       // delete-file territory, not v1's.
-      _ <- if (scopeValues.nonEmpty && source.isEmpty)
+      _ <- if (source.isEmpty)
              Left(EngineError.UnsupportedCapability(
                engine = "spark-connector",
-               capability = "RollupMergeRefresher.scopeCoverage",
+               capability = "RollupMergeRefresher.scopeEmpty",
                message = s"rollups[${spec.name}]: the declared scope " +
                  s"[${scopeValues.mkString(", ")}] matches no rows in the " +
                  "base — no bucket of the recomputed source is covered " +
-                 "(stale scope or base divergence; refusing silent " +
-                 "zero-row success)"))
+                 "(stale scope, empty declared scope, or base divergence; " +
+                 "refusing silent zero-row success)"))
            else Right(())
       _ <- verifySourceUnique(spark, source, spec, grainDim)
       _ <- verifyScopeCoverage(spark, source, grainDim, scopeValues, spec)
@@ -208,7 +271,7 @@ object RollupMergeRefresher {
     if (total == distinctKeys) Right(())
     else Left(EngineError.UnsupportedCapability(
       engine = "spark-connector",
-      capability = "RollupMaterializer.merge.duplicateKeys",
+      capability = "RollupMergeRefresher.duplicateKeys",
       message = s"rollups[${spec.name}]: recomputed merge source has " +
         s"$total rows but $distinctKeys distinct merge keys — the " +
         "aggregation shape diverged from the declaration; refusing " +
@@ -238,7 +301,7 @@ object RollupMergeRefresher {
     if (uncovered.isEmpty) Right(())
     else Left(EngineError.UnsupportedCapability(
       engine = "spark-connector",
-      capability = "RollupMergeRefresher.scopeCoverage",
+      capability = "RollupMergeRefresher.scopeUncovered",
       message = s"rollups[${spec.name}]: recomputed source contains " +
         s"bucket(s) [${uncovered.mkString(", ")}] outside the declared " +
         s"scope [${declared.mkString(", ")}] — widen the scope or narrow " +
@@ -282,8 +345,8 @@ object RollupMergeRefresher {
       Right(MergeRefreshResult.Merged(
         rollup = spec.name,
         table = qualified,
-        rowsMerged = source.count(),
-        rowsInserted = math.max(0L, after - before)))
+        sourceRows = source.count(),
+        netRowDelta = math.max(0L, after - before)))
     } catch {
       case scala.util.control.NonFatal(e) =>
         Left(EngineError.UnsupportedCapability(

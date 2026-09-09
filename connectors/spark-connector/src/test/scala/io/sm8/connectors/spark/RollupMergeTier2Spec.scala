@@ -102,7 +102,17 @@ class RollupMergeTier2Spec
     "by_day_region", List("event_date", "region"), List("total", "n"),
     timeGrain = Some("day"), grainDimension = Some("event_date"))
 
+  /** H5/L4 isolation: the shared catalog carries the watermark
+    * table across tests (materialize only overwrites the rollup
+    * table). Drop it per seed so every D3 test starts from a
+    * known-absent watermark state. */
+  private def dropWatermark(): Unit = {
+    val wm = s"iceberg_cat.${RollupWatermark.tableName(tier2Model, tier2Spec)}"
+    if (spark.catalog.tableExists(wm)) spark.sql(s"DROP TABLE $wm")
+  }
+
   private def seedRollup(): Unit = {
+    dropWatermark()
     // Tier 0 create (the CTAS path Tier 2 requires to pre-exist):
     // full materialization with Iceberg format.
     RollupMaterializer.materialize(spark, tier2Model, tier2Spec,
@@ -166,11 +176,12 @@ class RollupMergeTier2Spec
     // Content-identity, not path-identity: under COW MERGE, files
     // containing ON-matched rows are rewritten even when the changed-
     // row guard suppresses the UPDATE — so file PATHS legitimately
-    // differ across re-merges. Idempotency therefore asserts the
-    // honest content layer available on Iceberg 1.5.x (.entries has
-    // no content-hash column): the byte-size multiset is identical
-    // AND the row content is identical (see next test's readback).
-    post2.map(_._2).toSet shouldBe contentIdentity(qualifiedRollup).map(_._2).toSet
+    // differ across re-merges (the ADR's (path, content_hash) form
+    // is approximated: Iceberg 1.5.x .entries exposes NEITHER a
+    // content-hash NOR a stable path under re-write; the honest pin
+    // is the size MULTISET — sorted Seq, multiplicity kept, not Set
+    // — plus row-content identity below).
+    post1.map(_._2).toSeq.sorted shouldBe post2.map(_._2).toSeq.sorted
     // and the row content is unchanged by the re-merge
     val rows1 = spark.table(qualifiedRollup).orderBy("event_date", "region").collect().toSeq
     val rows2 = spark.table(qualifiedRollup).orderBy("event_date", "region").collect().toSeq
@@ -202,7 +213,7 @@ class RollupMergeTier2Spec
       tier2Spec, "event_date")
     probe match {
       case Left(io.sm8.core.engine.EngineError.UnsupportedCapability(
-        "spark-connector", "RollupMaterializer.merge.duplicateKeys", msg)) =>
+        "spark-connector", "RollupMergeRefresher.duplicateKeys", msg)) =>
         msg should include ("distinct merge keys")
       case other => fail(s"expected duplicateKeys refusal, got $other")
     }
@@ -219,13 +230,41 @@ class RollupMergeTier2Spec
     val scoped = RollupMergeRefresher.scopedBase(
       spark.table("tier2_events"), "event_date", List("2026-09-07"))
     val plan = scoped.queryExecution.executedPlan.toString
-    // The bucket predicate reached the scan: EqualTo lives INSIDE
-    // PushedFilters (not only in the post-scan Filter line above it).
+    // H3 guard: indexOf(-1) would make drop() return the WHOLE plan
+    // and the post-scan Filter line would satisfy the include — a
+    // pushdown regression would pass silently. Assert presence first.
+    withClue("PushedFilters absent — pushdown broken: ") {
+      plan should include ("PushedFilters:")
+    }
     val pushed = plan.drop(plan.indexOf("PushedFilters:"))
     pushed should include ("EqualTo(event_date,")
     // And the merge itself succeeds against the scoped plan.
     RollupMergeRefresher.mergeRefresh(spark, tier2Model, tier2Spec,
       List("2026-09-07")).isRight shouldBe true
+  }
+
+  test("H2: timestamp-grain scope filter buckets by date_trunc, not raw timestamp equality") {
+    // puma H2: a Timestamp grain column stores 12:34:56s; the scope
+    // filter must compare the date_trunc(grain, col) bucket — raw
+    // equality would match nothing and the refresh would
+    // spurious-refuse scopeEmpty. Unit-pins scopedBase's trunc arm.
+    val tsSchema = StructType(Seq(
+      StructField("event_ts", TimestampType),
+      StructField("region", StringType),
+      StructField("amount", DoubleType)))
+    val base = spark.createDataFrame(java.util.Arrays.asList(
+      Row(java.sql.Timestamp.valueOf("2026-09-07 12:34:56"), "emea", 10.0),
+      Row(java.sql.Timestamp.valueOf("2026-09-07 23:59:59"), "apac", 5.0),
+      Row(java.sql.Timestamp.valueOf("2026-09-08 00:00:01"), "emea", 7.0)),
+      tsSchema)
+    val scoped = RollupMergeRefresher.scopedBase(base, "event_ts",
+      List("2026-09-07"), grain = Some("day"))
+    scoped.count() shouldBe 2L // both 09-07 rows match their trunc bucket
+    // and the Date-column fast path still works unchanged
+    val dateScoped = RollupMergeRefresher.scopedBase(
+      spark.table("tier2_events"), "event_date", List("2026-09-07"),
+      grain = Some("day"))
+    dateScoped.queryExecution.executedPlan.toString should include ("PushedFilters:")
   }
 
   test("D2-6 fallback fidelity: ambiguous bucket re-aggregation equals from-base recompute") {
@@ -267,14 +306,14 @@ class RollupMergeTier2Spec
       tier2Spec, List("2026-09-09")) // names no bucket in base
     res match {
       case Left(io.sm8.core.engine.EngineError.UnsupportedCapability(
-        "spark-connector", "RollupMergeRefresher.scopeCoverage", _)) => succeed
+        "spark-connector", "RollupMergeRefresher.scopeEmpty", _)) => succeed
       case other => fail(s"expected scopeCoverage refusal, got $other")
     }
   }
 
   // -- watermark (D3) --
 
-  test("D3 monotonicity: is_final never regresses true -> false; advance is idempotent") {
+  test("D3 monotonicity: is_final never regresses true -> false") {
     writeBase(baseRows("2026-09-07")(("2026-09-07", "emea", 10.0)))
     seedRollup()
     val wm = RollupWatermark.advance(spark, tier2Model, tier2Spec,
@@ -316,11 +355,12 @@ class RollupMergeTier2Spec
   test("D3 absent row = non-final by absence (never assume freshness from silence)") {
     writeBase(baseRows("2026-09-07")(("2026-09-07", "emea", 10.0)))
     seedRollup()
-    // Query a bucket no earlier test ever advanced a watermark row
-    // for (the shared catalog carries their rows): 2026-09-30 has no
-    // row, so it must read non-final purely by absence.
+    // M4 isolation: a structurally-unique bucket (date far outside
+    // every fixture) — absence is guaranteed by construction, not by
+    // cross-test discipline.
+    val absent = "2099-12-31"
     RollupWatermark.nonFinalBuckets(spark, tier2Model, tier2Spec,
-      Set("2026-09-30")) shouldBe Set("2026-09-30")
+      Set(absent)) shouldBe Set(absent)
   }
 
   test("grain-less rollup refuses Tier 2 typed (buckets are the merge unit)") {
