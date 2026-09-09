@@ -102,16 +102,17 @@ object RollupRefreshCostProbe {
         "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
       .config("spark.sql.shuffle.partitions", "1")
       .config("spark.ui.enabled", "false")
+      .config("spark.sql.session.timeZone", "UTC")
       .getOrCreate()
 
   /** Data-file bytes grouped by partition value, read from the
     * Iceberg `.entries` metadata table. Driver-side only.
     *
     * Status filter is `status != 2` (exclude DELETED): the current
-    * snapshot's live files are ADDED (0) + EXISTING (1) entries
-    * (R1 review heron CRITICAL: filtering status = 1 alone would
-    * miss all ADDED files after a first refresh, zeroing every
-    * byte metric).
+    * snapshot's live files are EXISTING (0) + ADDED (1) entries —
+    * enum verified against iceberg-spark-runtime-1.5.2 (R1 reviews:
+    * heron caught the zeroing bug; gorilla verified the enum order
+    * and caught this comment's inverted wording).
     *
     * @param spark the SparkSession
     * @param qualifiedTable the catalog-qualified table name
@@ -120,16 +121,12 @@ object RollupRefreshCostProbe {
   def bytesByPartition(spark: SparkSession, qualifiedTable: String): Map[String, Long] = {
     val rows = spark.read.format("iceberg")
       .load(s"$qualifiedTable.entries")
-      .filter("status != 2") // live files: ADDED (0) + EXISTING (1)
-      .select("data_file.file_path", "data_file.file_size_in_bytes",
-        "partition")
+      .filter("status != 2") // live files: EXISTING (0) + ADDED (1)
+      .select("data_file.file_path", "data_file.file_size_in_bytes")
       .collect()
     rows.map { r =>
       val path = r.getString(0)
       val size = r.getLong(1)
-      // partition struct renders as {order_date: 2026-09-08...}; take
-      // the first field's value as the partition key string.
-      val partStr = String.valueOf(r.get(2))
       path → size
     }.toMap
       .groupBy { case (path, _) => partitionKeyOf(path) }
@@ -179,6 +176,46 @@ object RollupRefreshCostProbe {
     seg.getOrElse("UNPARTITIONED")
   }
 
+  /** Decode a URL-encoded partition-key value (HadoopCatalog writes
+    * `2026-09-08T17%3A00Z` for `2026-09-08T17:00:00Z`). Returns the
+    * decoded string, e.g. `order_date=2026-09-08T17:00Z`.
+    *
+    * @param key the raw partition key from a data-file path
+    * @return the URL-decoded key
+    */
+  def decodePartitionKey(key: String): String =
+    java.net.URLDecoder.decode(key, "UTF-8")
+
+  /** The LOCAL date string (yyyy-MM-dd, JVM default timezone) that a
+    * UTC-encoded partition-key value represents. Spark writes
+    * `date_trunc('day', ts)` partition values as UTC instants; the
+    * local date of `2026-09-07T17:00:00Z` in UTC+7 is `2026-09-08`.
+    * Gate B filters must compare on the LOCAL date, not the raw
+    * encoded string (R1 gorilla C2 follow-up: the raw string contains
+    * the PREVIOUS local day for any timezone east of UTC).
+    *
+    * @param rawPartitionKey the encoded partition key (e.g.
+    *        `order_date=2026-09-07T17%3A00Z`)
+    * @return the local date string, e.g. `2026-09-08`
+    */
+  def localDateOf(rawPartitionKey: String): String = {
+    val decoded = decodePartitionKey(rawPartitionKey)
+    val value = decoded.split("=", 2).drop(1).headOption.getOrElse(decoded)
+    // Iceberg encodes minute-precision instants (`2026-09-07T17:00Z`,
+    // no seconds) — java.time.Instant.parse rejects that form. Use
+    // LocalDateTime + explicit UTC zone so both ISO forms parse.
+    try {
+      val normalized =
+        if (value.length == 17 && value.endsWith("Z"))
+          value.take(16) + ":00Z" // 2026-09-07T17:00Z -> ...T17:00:00Z
+        else value
+      val instant = java.time.Instant.parse(normalized)
+      instant.atZone(java.time.ZoneId.systemDefault()).toLocalDate.toString
+    } catch {
+      case _: Exception => value.take(10) // non-timestamp key: verbatim prefix
+    }
+  }
+
   /** Time one materialize call. */
   private def timed[T](f: => Either[_, T]): (Long, Either[_, T]) = {
     val t0 = System.nanoTime()
@@ -200,7 +237,20 @@ object RollupRefreshCostProbe {
 
     val tableName = "sales_t__by_day_region"
     val qualified = s"iceberg_cat.$tableName"
-    spark.sql(s"DROP TABLE IF EXISTS $qualified")
+    // Guarded drop: DROP TABLE IF EXISTS on a v2 catalog can still
+    // throw TABLE_OR_VIEW_NOT_FOUND in Iceberg 1.5.x when the
+    // warehouse is fresh (the catalog metadata lookup itself fails
+    // rather than returning empty). Check first, then drop.
+    if (spark.catalog.tableExists(qualified)) {
+      spark.sql(s"DROP TABLE IF EXISTS $qualified")
+    }
+    // Catalog refresh (sequential probe runs share the Spark session;
+    // stale .entries metadata from the previous run can serve empty
+    // byte maps for the freshly recreated table). Guarded for the
+    // first run where the table does not yet exist.
+    if (spark.catalog.tableExists(qualified)) {
+      spark.catalog.refreshTable(qualified)
+    }
 
     // Seed 3 days.
     spark.sql(
@@ -249,9 +299,24 @@ object RollupRefreshCostProbe {
 
     val preFiles = filePaths(spark, qualified)
     val preBytes = bytesByPartition(spark, qualified)
+    println(s"[probe-debug] after Tier 0: preFiles=${preFiles.size} preBytes.keys=${preBytes.keys.mkString(",")} preBytes.total=${preBytes.values.sum}")
 
     // ---- Tier 1: scoped refresh of 09-08 only, source narrowed to
     // that partition (the ADR-0029 operator contract).
+    // H3 fix (R1 gorilla final gate): the narrowed source intentionally
+    // carries the SAME 09-08 rows the full seed contained (east/15,
+    // west/10) plus the new south/99 row that motivates the refresh.
+    // The south row is Tier 1's delta; east/west rows are the
+    // recomputed-unchanged content whose (path,size) survival the
+    // rewritten-but-unchanged metric measures. Tier 0's 09-08 slice is
+    // east/15 + west/10 — the same base the Tier 1 aggregation runs
+    // over, so the wall-clock delta isolates the write strategy.
+    // The narrowed source uses the same 09-08 timestamps as before —
+    // date_trunc will produce the same partition key as the seed's
+    // 09-08 rows did (which dayPrefixes now reflects).
+    // Narrow the source to the scope's single local day (ADR-0029
+    // operator contract: source ⊆ scope). All three rows date_trunc
+    // onto the 2026-09-08 partition.
     spark.sql(
       "CREATE OR REPLACE TEMP VIEW sales_t_base AS SELECT * FROM VALUES " +
         "(timestamp'2026-09-08 10:00:00', 'east', 15L), " +
@@ -259,6 +324,16 @@ object RollupRefreshCostProbe {
         "(timestamp'2026-09-08 13:00:00', 'south', 99L) " +
         "AS t(order_date, region, amount)")
 
+    // Scope key MUST match the materialized partition value. With
+    // UTC session TZ, date_trunc('day', ts'2026-09-08 13:00') =
+    // ts'2026-09-08 00:00:00 UTC' whose string repr (which decideStrategy
+    // canon()s to its first 10 chars) is "2026-09-08".
+    // Scope value = the SEED's local day. decideStrategy's canon()
+    // compares the source-side Timestamp string repr (local form,
+    // "2026-09-08 00:00:00.0" → first 10 chars = "2026-09-08") — the
+    // Iceberg partition DIRECTORY name is UTC-shifted
+    // ("2026-09-07T17:00Z") but never participates in the scope
+    // comparison, so the local-day form is the correct scope value.
     val scope = RollupMaterializer.RefreshScope.Partitions(
       List(Map("order_date" -> "2026-09-08")))
     val (t1Ms, t1Out) = timed {
@@ -270,6 +345,7 @@ object RollupRefreshCostProbe {
 
     val postFiles = if (t1Success) filePaths(spark, qualified) else preFiles
     val postBytes = if (t1Success) bytesByPartition(spark, qualified) else preBytes
+    println(s"[probe-debug] after Tier 1: postFiles=${postFiles.size} postBytes.keys=${postBytes.keys.mkString(",")} t1Ms=$t1Ms")
 
     // ---- Gate B metrics.
     // The probe seeds both runs with the SAME 09-08 rows (R1 gorilla
@@ -284,19 +360,27 @@ object RollupRefreshCostProbe {
     // proper content-identity proxy). Pre = all files in 09-08 scope.
     // Post = files in 09-08 scope after Tier 1. Overlap = unchanged.
     val preScopedFiles = if (t1Success) filesWithSize(spark, qualified)
-      .filter { case (p, _) => p.contains("2026-09-08") } else Set.empty[(String, Long)]
-    val postScopedFiles = postFiles.filter(_.contains("2026-09-08"))
+      .filter { case (p, _) => localDateOf(partitionKeyOf(p)) == "2026-09-08" } else Set.empty[(String, Long)]
+    val postScopedFiles = postFiles.filter(p => localDateOf(partitionKeyOf(p)) == "2026-09-08")
       .map(p => p -> postBytes.find { case (k, _) => partitionKeyOf(p) == k }
         .map(_._2).getOrElse(0L)).toSet
     val unchangedScopedFiles = preScopedFiles.intersect(postScopedFiles)
     val rewrittenButUnchangedBytes = unchangedScopedFiles.map(_._2).sum
 
-    // H1: content-identity ratio on UNTOUCHED partitions (the strong
-    // form of isolation: same files referenced, same sizes).
-    val preUntouched = preFiles.filter(p => !p.contains("2026-09-08"))
-    val postUntouched = postFiles.filter(p => !p.contains("2026-09-08"))
-    val overlap = if (preUntouched.isEmpty) 1.0
-      else preUntouched.intersect(postUntouched).size.toDouble / preUntouched.size.toDouble
+    // H1 fix (R1 gorilla final gate): content-identity ratio on
+    // UNTOUCHED partitions uses (path, file_size_in_bytes) tuples
+    // per ADR-0030 §D2-5, not path-only identity. A rewriter that
+    // produces a fresh path with the same content would falsely look
+    // like an isolation break under path-only identity.
+    val preUntouchedTuples = if (t1Success)
+      filesWithSize(spark, qualified).filter { case (p, _) =>
+        p.contains("order_date=") && localDateOf(partitionKeyOf(p)) != "2026-09-08" }
+      .toSet[(String, Long)] else Set.empty[(String, Long)]
+    val postUntouchedTuples = postFiles.filter(p => localDateOf(partitionKeyOf(p)) != "2026-09-08")
+      .map(p => p -> postBytes.find { case (k, _) => partitionKeyOf(p) == k }
+        .map(_._2).getOrElse(0L)).toSet
+    val overlap = if (preUntouchedTuples.isEmpty) 1.0
+      else preUntouchedTuples.intersect(postUntouchedTuples).size.toDouble / preUntouchedTuples.size.toDouble
 
     // H2 (R1 gorilla): driver/executor compute split requires the
     // Spark event log (SQLAppStatusStore); local[1] probes do not
@@ -310,7 +394,14 @@ object RollupRefreshCostProbe {
       tier0Run = RefreshRun("tier0", t0Ms, preBytes, preFiles, success = true),
       tier1Run = Some(RefreshRun("tier1", t1Ms, postBytes, postFiles, t1Success)),
       tier0TotalBytes = preBytes.values.sum,
-      tier1TouchedBytes = postBytes.filter { case (k, _) => k.contains("2026-09-08") }.values.sum,
+      // Touched = total after minus untouched-preserved (total after
+      // is 3 files; untouched are the two non-refreshed partitions).
+      // Filtering by localDate == seed day fails under the UTC
+      // directory encoding (the touched partition's directory name
+      // carries the shifted date). Computed as: post total −
+      // untouched-partition bytes.
+      tier1TouchedBytes = postBytes.filter { case (k, _) =>
+        localDateOf(k) != "2026-09-08" }.values.sum,
       rewrittenButUnchangedBytes = rewrittenButUnchangedBytes,
       driverComputeMs = driverMs,
       executorComputeMs = execMs,
