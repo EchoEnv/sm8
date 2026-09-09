@@ -684,16 +684,18 @@ class ModelLoaderSpec extends AnyFunSuite with Matchers {
         |  byName:
         |    table: events
         |dimensions:
-        |  - day
+        |  - name: order_date_day
+        |    expr: order_date_day
+        |    type: date
         |measures:
         |  - name: total
-|    expr: sum(amount)
+        |    expr: sum(amount)
         |rollups:
         |  - name: daily
-        |    dimensions: [day]
+        |    dimensions: [order_date_day]
         |    measures: [total]
         |    time_grain: day
-        |    grain_dimension: day
+        |    grain_dimension: order_date_day
         |    cascade_source: ""
         |""".stripMargin
     val res = ModelLoader.fromString(yaml)
