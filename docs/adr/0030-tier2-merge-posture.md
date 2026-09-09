@@ -8,10 +8,14 @@
 ADR-0029 defined the rollup refresh strategy ladder and shipped Tier 1
 (dynamic partition overwrite via DSv2, PR #361). Tier 2 — **row-level
 delta MERGE with the delta derived from base-table Iceberg snapshot
-diffs** — stays gated behind the numeric criteria in ADR-0029 §Gate B
-(none of which have fired yet; this ADR does NOT open Tier 2). What this
-ADR does decide, before any Tier 2 code exists, is the **posture** Tier 2
-would adopt if the gates open:
+diffs** — was, at writing time, gated behind the numeric criteria in
+ADR-0029 §Gate B. **Update 2026-09-09:** ADR-0029 §Gate B has been
+amended (open-source rationale; see that ADR): the numeric criteria
+are now **operator enablement guidance** — when to turn Tier 2 ON per
+deployment — not a maintainer build gate. Tier 2 implementation is
+proceeding; this ADR's posture decisions govern it. What this ADR
+decided, before any Tier 2 code exists, is the **posture** Tier 2
+adopts:
 
 1. **MOR vs COW** for rollup tables under row-level operations — and the
    hybrid variant (MOR for open windows + compaction after close) that
@@ -68,7 +72,9 @@ rejected as a default and adopted as an experiment.** Rationale:
   highest-churn lane (the current time bucket, re-merged every refresh).
   Whether it wins is an empirical question.
 
-**The experiment (runs only if Gate B opens Tier 2):** one representative
+**The experiment (runs when Tier 2 is deployed at a site whose
+operator enablement criteria fire — per amended ADR-0029 §Gate B):**
+one representative
 model runs dual rollup tables — identical grain/measures, one COW, one
 MOR-hybrid with post-close `rewrite_data_files` — behind a routing
 allowlist. The observation harness (PRs #351/#355) measures per
@@ -323,8 +329,10 @@ from a single read of the Decisions section.
 
 ## Consequences
 
-- Tier 2 remains gated by ADR-0029 §Gate B; this ADR opens nothing. Its
-  decisions activate only when Tier 2 work is funded.
+- (Written 2026-09-05, pre-amendment:) Tier 2 remains gated by
+  ADR-0029 §Gate B; this ADR opens nothing. (Post-amendment 2026-09-09:
+  the §Gate B criteria are operator enablement guidance; Tier 2
+  implementation is proceeding under this ADR's posture.)
 - The D1 experiment consumes observation-harness budget for ~2 weeks
   when it runs; its dual tables are router-excluded, so no production
   query sees them.

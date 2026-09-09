@@ -41,7 +41,8 @@ Tier 2 implementation:
    ADR-0031.
 
 This ADR pins that boundary. It changes zero code today; the
-implementation lands when (and only when) Gate B opens Tier 2.
+implementation lands per the Tier 2 roadmap (ADR-0029 §Gate B amended
+2026-09-09: enablement guidance, not a build gate).
 
 ## Decision
 

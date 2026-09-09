@@ -75,14 +75,17 @@ optimization (identical correctness contract, less I/O). Tiers 2–4 add
 a correctness surface (aggregate algebra under deltas) and each requires
 its own ADR before implementation.
 
-**v2 policy: ship Tier 1, stop there.** Tier 2 opens only against
-measured evidence (criteria below), not anticipation.
+**v2 policy (amended 2026-09-09): ship Tier 1, then Tier 2 per the
+funded roadmap.** Originally "stop at Tier 1"; amended for the
+open-source rationale in §Gate B below. The §Gate B numeric criteria
+now govern operator enablement (when to turn Tier 2 ON per
+deployment), not the build decision.
 
 | Tier | Strategy | Correctness surface | Est. size | Status |
 | --- | --- | --- | --- | --- |
 | 0 | Whole-table overwrite (`mode("overwrite")`) | none — full recompute | shipped (#358) | **current** |
 | 1 | Dynamic partition overwrite (DSv2 `overwritePartitions`) | none — only partitions present in the recomputed source are replaced | ~140 LOC + tests | **v2 target** |
-| 2 | Row-level delta MERGE, delta = Iceberg snapshot diff + measure algebra | aggregate algebra under deltas (per Decomposability class); MOR/COW choice; snapshot-diff → row-delta recovery | ~400 LOC | gated on criteria |
+| 2 | Row-level delta MERGE, delta = Iceberg snapshot diff + measure algebra | aggregate algebra under deltas (per Decomposability class); MOR/COW choice; snapshot-diff → row-delta recovery | ~400 LOC | **building** (per amended §Gate B; operator enablement criteria below) |
 | 3 | Cross-partition MERGE + delete-file compaction policy | + compaction concurrency, split-row updates | ~700 LOC | gated on criteria |
 | 4 | Continuous incremental (external CDC) | + freshness SLO, late-arrival recovery, ordering | 1k+ LOC | deliberately out of scope |
 
@@ -143,10 +146,12 @@ the Tier 2 *build decision* contingent on ≥ 2 weeks of maintainer-side
 production traces. That logic holds for a single-deployment company
 but breaks for an open-source engine: the workload diversity lives in
 future users' deployments, not in one maintainer measurement box, and
-a gate that cannot fire blocks the project indefinitely. Tier 2 is
-therefore **built and shipped**; the numeric thresholds below are
-**operator enablement guidance** — when to turn Tier 2 ON for your
-deployment — not a maintainer build gate.
+a gate that cannot fire blocks the project indefinitely. The build
+decision is therefore no longer gated on maintainer-side measurement
+(implementation proceeds per the funded roadmap); the numeric
+thresholds below are retained as **operator enablement guidance** —
+when to turn Tier 2 ON for your deployment — not a maintainer build
+gate.
 
 **Build prerequisites (all satisfied):**
 
@@ -156,8 +161,12 @@ deployment — not a maintainer build gate.
    delta-combination contract, partitioned by `Decomposability` —
    `Additive` (trivial), `Algebraic` (Welford pre-image + named
    partial state), `Holistic`/`Positional`/`Approximable`
-   (Tier 1 fallback; never participate in Tier 2). ✅ Shipped as
-   `DecomposabilityAudit` (PR #364).
+   (Tier 1 fallback; never participate in Tier 2).
+   ✅-partial: the engine-side audit shipped as
+   `DecomposabilityAudit` (PR #364) — the per-measure-class verdict
+   table. The per-live-rollup delta-combination **tests** land with
+   the Tier 2 implementation (ADR-0030 pre-specified contract
+   tests).
 3. **ADR-0030 signed off** (MOR vs COW posture, idempotency contract,
    watermark design, snapshot-diff fidelity limits). ✅ PR #362.
 
@@ -173,8 +182,12 @@ for a rollup when BOTH:
 
 Below either threshold, Tier 1's partition overwrite is efficient
 enough; Tier 2's row-level MERGE machinery is unnecessary complexity
-for that rollup. Above both, Tier 2's delta merge eliminates the
+for that rollup. Above both, enable Tier 2 for that rollup via its
+refresh-strategy configuration; Tier 2's delta merge eliminates the
 intra-partition rewrite waste (rows rewritten that didn't change).
+Measure at production refresh cadence (a distribution over many
+runs), not one sample per day — see
+`docs/runbooks/gate-b-trace-collection.md` §Evaluation.
 
 The instrumentation for this evaluation ships with the engine
 (`RollupRefreshCostProbe`, `DecomposabilityAudit`,

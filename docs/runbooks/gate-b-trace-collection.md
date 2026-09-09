@@ -1,8 +1,11 @@
-# Gate B trace collection — Tier 2 evidence procedure
+# Gate B trace collection — Tier 2 operator enablement evidence
 
-Operational procedure for ADR-0029 §Gate B item 3: collecting the ≥
-2 weeks of production traces that decide whether Tier 2
-(row-level delta MERGE) is justified to build.
+Operational procedure for ADR-0029 §Gate B (amended 2026-09-09):
+collecting the production traces that tell an **operator** whether to
+**enable** Tier 2 (row-level delta MERGE) for their deployment. The
+numeric criteria govern per-deployment enablement, not whether Tier 2
+is built (the build proceeds per the funded roadmap; see the amended
+ADR-0029 §Gate B for the open-source rationale).
 
 ## What ships
 
@@ -149,7 +152,9 @@ Each JSON file is self-describing:
 > **The Gate B decision metric is a DISTRIBUTION over many runs, not
 > a single daily-cron sample.** Schedule live-model traces at the
 > production refresh cadence (or denser) for the 2-week window;
-> one file per day is a minimum, not the target.
+> one file per day is a minimum, not the target. This cadence
+> requirement applies equally to enablement evaluation (amended
+> §Gate B): 14 daily single samples are NOT decision-grade.
 >
 > **Only LIVE-MODEL runs are Gate B decision-grade.** Synthetic-
 > fixture runs validate the procedure and the instrumentation; their
@@ -159,21 +164,26 @@ Each JSON file is self-describing:
 
 Apply the ADR-0029 §Gate B thresholds to the accumulated JSON files:
 
-| Metric | Gate B opens when |
+| Metric | Tier 2 enablement fires when |
 |---|---|
 | refresh wall-clock (Tier 1 run) | > 5 minutes |
 | rewritten-but-unchanged bytes | > 30% of table |
 
 Both must hold on the representative model. Below either threshold,
-Gate B stays closed — Tier 1 is sufficient, re-measure next quarter.
+keep Tier 1 for that rollup — Tier 1 is sufficient for that
+deployment; re-measure next quarter. Above both, enable Tier 2 for
+that rollup (the enablement path is the Tier 2 refresh strategy
+configuration; the D1 experiment below informs the MOR-vs-COW
+posture choice).
 
-Gate B item 3 thresholds above are the gate-opening criteria. The
-**ADR-0030 §D1 experiment metrics** (scan-latency p95 stratified by
-snapshots-since-compaction, ambiguity rate) are NOT collected by this
-probe — they require the dual-table scheduled experiment that runs
-only after Gate B opens. This trace collection is the prerequisite
-procedure exercise, not the D1 measurement itself.
+The thresholds above are the Tier 2 operator enablement criteria
+(amended §Gate B). The **ADR-0030 §D1 experiment metrics**
+(scan-latency p95 stratified by snapshots-since-compaction, ambiguity
+rate) are NOT collected by this probe — they require the dual-table
+scheduled experiment that runs when a site enables Tier 2. This trace
+collection is the enablement-evidence procedure, not the D1
+measurement itself.
 
 See `docs/adr/0029-rollup-refresh-strategy-ladder.md` §Gate B for the
 full criteria, and `docs/adr/0030-tier2-merge-posture.md` §D1 for the
-posture Tier 2 adopts if the gate opens.
+posture Tier 2 adopts once enabled.
