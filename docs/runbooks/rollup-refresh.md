@@ -330,9 +330,23 @@ deltas to cascade. The connector:
 The cascade inherits the source's staleness — a daily rollup built
 from a stale hourly rollup is stale by definition. The connector
 refuses (`CascadeSourceNotFinal`) rather than silently propagating.
-If you need the daily bucket NOW despite an open hourly window,
-build the daily from base instead (drop `cascade_source` for that
-refresh, or use `--tier 1` with the daily's own scope).
+If you need the daily bucket NOW despite an open hourly window, the
+honest options on the current surface are:
+
+1. **Drop `cascade_source` from the model YAML** (edit + redeploy)
+   and run the legacy eager rebuild: `sm8 rollup-refresh mymodel`.
+   This rebuilds daily from base (slower, but always available).
+2. **Wait for the source's window to close** (the hourly watermark
+   latches final on the next hourly refresh after the lateness
+   window), then re-run the cascade.
+3. **Programmatic**: call `RollupRefresher.mergeRefreshModel` from a
+   Spark job with the daily's own scope (no CLI/REST surface for
+   this yet — the Tier 2 v1 boundary note above applies).
+
+Note: `--tier 1 --scope <buckets>` is NOT a valid fallback on the
+current CLI — `--scope` without `--tier 2` is silently dropped (the
+legacy `{model}` shape has no scope field to carry it), and tier 1
+runs the whole-model eager rebuild, not a scoped refresh.
 
 ## Known limits (v1)
 
