@@ -68,7 +68,7 @@ echo "starting sm8-mcp subprocess (ingress=$INGRESS_URL) ..."
 # lived stdin pipe.
 OUTPUT=$(
   exec 0< <(printf "%s" "$REQUEST"; sleep 2)
-  java -jar "$JAR" --ingress-url "$INGRESS_URL" 2>"$LOG"
+  java --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED -jar "$JAR" --ingress-url "$INGRESS_URL" 2>"$LOG"
 )
 RC=$?
 [ "$RC" -eq 0 ] || { cat "$LOG"; fail "sm8-mcp exited with code $RC"; }
@@ -100,7 +100,7 @@ if [ -n "${SMOKE_MCP_RUN_TOOL_CALL:-}" ]; then
   TOOL_CALL=$'{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_engines","arguments":{}}}\n'
   TOOL_OUTPUT=$(
     exec 0< <(printf "%s%s%s%s" "$HANDSHAKE" "$INITIALIZED" "$TOOL_CALL"; sleep 5)
-    java -jar "$JAR" --ingress-url "$INGRESS_URL" 2>"$LOG"
+    java --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED -jar "$JAR" --ingress-url "$INGRESS_URL" 2>"$LOG"
   )
   echo "$TOOL_OUTPUT" | grep -q '"id":3' \
     || fail "MCP tools/call response missing id=3: $TOOL_OUTPUT"

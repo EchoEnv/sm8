@@ -352,6 +352,67 @@ current CLI — `--scope` without `--tier 2` is silently dropped (the
 legacy `{model}` shape has no scope field to carry it), and tier 1
 runs the whole-model eager rebuild, not a scoped refresh.
 
+### Cron wiring (cascade)
+
+Daily cascade alongside the existing refresh crons:
+
+```cron
+# Hourly refresh (Tier 0/1) — must complete BEFORE the daily cascade
+0 * * * * $HOME/bin/sm8 rollup-refresh mymodel --tier 1 --scope "..." >> $HOME/logs/hourly.log 2>&1
+
+# Daily cascade (Tier 2) — cascades the past day's hour buckets
+# from the hourly rollup's partial states. Runs at 01:00 (after
+# the hourly refresh window closes and the source watermark latches).
+0 1 * * * $HOME/bin/sm8 rollup-refresh mymodel --tier 2 \
+  --scope "$(date -d 'yesterday' +'%Y-%m-%d 00:00:00'),$(date -d 'yesterday' +'%Y-%m-%d 01:00:00'),..." \
+  >> $HOME/logs/cascade.log 2>&1
+```
+
+**Sequencing rule**: the hourly refresh must complete before the
+cascade runs. The cascade's staleness check (`CascadeSourceNotFinal`)
+refuses if the source's watermark isn't latched — which means the
+hourly cron must have finished and the source's lateness window must
+have closed for the target's past day-buckets.
+
+### Refusal debugging (cascade)
+
+| Refusal | Capability tag | What it means | Fix |
+|---|---|---|---|
+| `CascadeSourceNotFinal` | `...cascadeSourceNotFinal` | Source watermark has non-final buckets in the scope | Wait for the source's lateness window; re-run the cascade |
+| `CascadeSourceMissing` | `...cascadeSourceMissing` | Source rollup table doesn't exist | Run a Tier 1 refresh on the source first |
+| `CascadeSourceFailed` | `...cascadeSourceFailed` | Source's last refresh errored | Fix the source's refresh, then re-run |
+| `CascadeCoverageUncovered` | `...cascadeCoverageUncovered` | Scope doesn't cover all the source's buckets | Widen the scope or narrow the source |
+| `CascadePartiallyEligible` | `...cascadePartiallyEligible` | Target has non-cascading measures | Move those to a separate rollup or build from base |
+| `grain` | `...grain` | Target or source is grain-less | Add `time_grain` + `grain_dimension` to both |
+| `table` | `...table` | Target table doesn't exist | Run a Tier 1 refresh on the target first |
+| `identifiers` | `...identifiers` | Unsafe characters in model/rollup/dim names | Rename to `[A-Za-z0-9_]` only |
+| `duplicateKeys` | `...duplicateKeys` | Aggregation shape diverged | Fix the model declaration |
+| `scopeEmpty` | `...scopeEmpty` | Empty scope on a grained rollup | Pass at least one bucket value |
+| `scopeUncovered` | `...scopeUncovered` | Source has buckets outside the scope | Widen the scope or narrow the source |
+| `merge` | `...merge` | Iceberg optimistic-concurrency conflict | Retry (caller owns the retry policy) |
+
+### Un-cascade procedure
+
+To revert a rollup from cascade-source to base-build:
+
+1. Remove `cascade_source` from the model YAML (or the rollup's
+   `cascadeSource` if using the API).
+2. Redeploy the model (the validator re-walks the DAG — the cascade
+   refusals no longer fire because the declaration is gone).
+3. Run a legacy eager rebuild: `sm8 rollup-refresh <model>`.
+4. Optionally drop the orphaned cascade artifacts (the source's
+   watermark rows for the target's scope are harmless but no longer
+   advance).
+
+### Java 17+ JVM flags (Spark local[1])
+
+Any bare `java -cp` invocation that boots a Spark local[1] session on
+Java 17+ requires Spark's `--add-opens` JVM flags. Without them,
+Spark 3.5.8 throws `IllegalAccessError: cannot access class
+sun.nio.ch.DirectBuffer`. `spark-submit` passes them automatically;
+bare `java` does not. See `docs/runbooks/gate-b-trace-collection.md`
+for the full flag list.
+
 ## Known limits (v1)
 
 - **Refresh tiers** (ADR-0029/0030/0031): a rollup refreshed WITHOUT a
