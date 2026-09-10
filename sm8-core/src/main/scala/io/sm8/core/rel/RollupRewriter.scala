@@ -210,6 +210,15 @@ object RollupRewriter {
     final case class CascadeCoverageUncovered(reason: String)
         extends RollupRewriteRefusal
 
+    /** The cascade TARGET declares measures that cannot cascade
+      * (Positional/Holistic/Approximable) alongside cascade-eligible
+      * ones — the refresh refuses loud (fail over silent partial
+      * build per ADR-0031 D1; the connector emits, the rewriter
+      * never does). `measures` names the non-cascading subset so
+      * the operator can narrow the target declaration. */
+    final case class CascadePartiallyEligible(measures: Set[String])
+        extends RollupRewriteRefusal
+
     /** The bucket identity for a `RollupBucketStale` refusal: the
       * grain value of one partition (the canonical string form the
       * watermark table stores — `yyyy-MM-dd` for day grain, the
@@ -241,6 +250,7 @@ object RollupRewriter {
       case CascadeSourceMissing     => "cascadeSourceMissing"
       case CascadeSourceFailed      => "cascadeSourceFailed"
       case _: CascadeCoverageUncovered => "cascadeCoverageUncovered"
+      case _: CascadePartiallyEligible => "cascadePartiallyEligible"
     }
 
     /** Whether a refusal is permanent (the same query can never be

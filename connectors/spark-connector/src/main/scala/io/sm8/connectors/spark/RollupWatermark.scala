@@ -93,6 +93,12 @@ object RollupWatermark {
     qualified
   }
 
+  /** Canonical bucket-string form (the watermark's vocabulary):
+    * Timestamp→string casts emit a trailing '.0' nanos suffix in
+    * some paths and not others; normalize before comparing. */
+  private[spark] def canonicalBucket(v: String): String =
+    if (v.endsWith(".0")) v.dropRight(2) else v
+
   /** The buckets a query would touch that are NOT final.
     *
     * The resolution-layer read (D3): given the rollup and the
@@ -113,21 +119,31 @@ object RollupWatermark {
     spec: RollupSpec,
     queryBuckets: Set[String]): Set[String] = {
     val qualified = s"$IcebergCatalog.${tableName(model, spec)}"
-    if (!spark.catalog.tableExists(qualified)) queryBuckets // absent table = nothing proven final
+    // Canonical vocabulary on BOTH sides: Timestamp→string casts
+    // emit a trailing '.0' in some paths and not others; normalize
+    // before comparing (the BucketKey vocabulary is the trimmed form).
+    val canonicalQuery = queryBuckets.map(canonicalBucket)
+    if (!spark.catalog.tableExists(qualified)) canonicalQuery // absent table = nothing proven final
     else {
+      // Lenient match: include rows whose bucket_value matches
+      // the canonical form OR the raw (.0-suffix) form of any query
+      // bucket (the advance writes canonical; seedHourly writes raw;
+      // both must hit the lookup).
+      val queryBucketsRaw = queryBuckets.map(b => s"$b.0").toSet
+      val allKeys = canonicalQuery ++ queryBuckets ++ queryBucketsRaw
       val rows = spark.table(qualified)
         .filter(col("model_name") === lit(model.name) &&
                 col("rollup_name") === lit(spec.name) &&
-                (if (queryBuckets.isEmpty) lit(false)
-                 else col("bucket_value").isin(queryBuckets.toSeq: _*)))
+                (if (allKeys.isEmpty) lit(false)
+                 else col("bucket_value").isin(allKeys.toSeq: _*)))
         .select("bucket_value", "is_final")
         .collect()
       // L2 null-safety: a malformed row (null is_final) reads as
       // non-final — fail-safe, never an NPE at the routing seam.
       val finalOnes = rows
         .filter(r => r.get(1) match { case b: java.lang.Boolean => b.booleanValue(); case _ => false })
-        .map(_.getString(0)).toSet
-      queryBuckets -- finalOnes
+        .map(r => canonicalBucket(r.getString(0))).toSet
+      canonicalQuery -- finalOnes
     }
   }
 
@@ -173,6 +189,11 @@ object RollupWatermark {
     * @param spec       the rollup declaration
     * @param buckets    the bucket values this refresh covered
     * @param isFinal    whether the lateness window closed for them
+    * @param snapshotIdOverride cascade advances pass the PINNED
+    *        SOURCE snapshot id here (D3 rule 2: the cascaded
+    *        rollup's diagnostic id names the state it was derived
+    *        from); direct refreshes leave it None to auto-read the
+    *        rollup's own snapshot
     * @return the qualified watermark table name (written)
     */
   def advance(
@@ -180,11 +201,15 @@ object RollupWatermark {
     model: Model,
     spec: RollupSpec,
     buckets: Set[String],
-    isFinal: Boolean): String = {
+    isFinal: Boolean,
+    snapshotIdOverride: Option[Long] = None): String = {
     val qualified = ensureTable(spark, model, spec)
     val now = java.time.Instant.now()
-    val snapshotId = currentSnapshotId(spark,
-      s"$IcebergCatalog.${RollupRewriter.rollupTableName(model, spec)}")
+    // D3 rule 2 (cascade): the diagnostic id points at the PINNED
+    // SOURCE snapshot for cascade advances (override), at the
+    // rollup's own current snapshot for direct refreshes (auto).
+    val snapshotId = snapshotIdOverride.getOrElse(currentSnapshotId(spark,
+      s"$IcebergCatalog.${RollupRewriter.rollupTableName(model, spec)}"))
     import spark.implicits._
     val incoming = buckets.toSeq.map(b =>
       (model.name, spec.name, b, isFinal,
