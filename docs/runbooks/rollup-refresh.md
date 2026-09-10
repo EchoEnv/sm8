@@ -10,7 +10,7 @@ Ticket 6 of `docs/wayfinder/2026-09-06-pre-aggregation.md` · Design: `docs/adr/
 | `RollupRefreshService/refresh` | adapter (sm8-platform) | server-side trigger surface (Restate SERVICE+SHARED) |
 | `RollupRefresher.refreshModel` | connector (spark-connector) | eager re-materialization of every declared rollup |
 | `RollupMaterializer.persistCatalog` | connector (spark-connector) | durable `saveAsTable` write (job runs before return) |
-| Tier 2 merge refresh (`RollupRefresher.mergeRefreshModel`) | connector (spark-connector) | **programmatic-only** row-level MERGE refresh for scoped buckets + watermark advance (PR #370); no CLI/REST surface yet |
+| Tier 2 merge refresh (`RollupRefresher.mergeRefreshModel`) | connector (spark-connector) | row-level MERGE refresh for scoped buckets + watermark advance (PR #370); CLI/REST surface added in #376 (`--tier 2 --scope <hour-buckets>`) |
 | `query-frequency-observer` plugin | plugin | counts query shapes per model (PostExecute observer) |
 | `QueryShapeCounters.snapshot()` | plugin | programmatic counts read (hottest shapes first) |
 

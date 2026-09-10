@@ -1046,9 +1046,18 @@ object Main {
       else {
         val buckets = args(scopeIdx + 1).split(',').map(_.trim)
           .filter(_.nonEmpty).toList
+        // Flag-shape guard (shrimp HIGH-3): a value like '--tier' in
+        // the scope list is a caller mistake (the next flag was
+        // consumed as a bucket) — refuse rather than silently
+        // cascade against an unexpected bucket set.
+        val flagShaped = buckets.filter(_.startsWith("--"))
         if (buckets.isEmpty)
           Left("sm8 rollup-refresh: --scope is empty after parsing " +
             "(expected comma-separated bucket values)")
+        else if (flagShaped.nonEmpty)
+          Left(s"sm8 rollup-refresh: --scope contains flag-shaped " +
+            s"value(s) ${flagShaped.mkString(", ")} — did you forget " +
+            "a comma between buckets?")
         else Right(Some(buckets))
       }
     (tierParse, scopeParse) match {
