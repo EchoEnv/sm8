@@ -459,12 +459,15 @@ object RollupMergeRefresher {
         .stripMargin
     try {
       val before = spark.table(qualified).count()
+      val sourceRows = source.count()  // captured once: the duplicate
+      // source.count() call later in Merged construction was an extra
+      // Spark job per refresh (heron LOW). Pass-through.
       spark.sql(sql)
       val after = spark.table(qualified).count()
       Right(MergeRefreshResult.Merged(
         rollup = spec.name,
         table = qualified,
-        sourceRows = source.count(),
+        sourceRows = sourceRows,
         netRowDelta = math.max(0L, after - before)))
     } catch {
       case scala.util.control.NonFatal(e) =>

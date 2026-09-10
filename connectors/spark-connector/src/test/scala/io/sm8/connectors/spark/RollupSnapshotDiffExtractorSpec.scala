@@ -110,6 +110,34 @@ class RollupSnapshotDiffExtractorSpec
     r.toOption.get shouldBe SnapshotDelta.NoDataChange
   }
 
+  /** spec §6 narrowing prelude: when NoDataChange returns, the
+    * refresher feeds `spark.emptyDataFrame` into executeMerge. The
+    * MERGE source-view must be safe with zero rows in Spark 3.5 +
+    * Iceberg 1.5.2 (heron Q5: this was untested). The fixture tries an
+    * actual MERGE on a populated Iceberg target using an empty temp
+    * view; the target's row count is unchanged (Idempotency contract,
+    * spec §7 9b). */
+  test("empty-DataFrame MERGE target no-op on Iceberg 1.5.2 (heron Q5)") {
+    val q = freshTable("empty_merge")
+    appendMore("empty_merge", 25)
+    val rollupQualified = q
+    val before = spark.read.format("iceberg").load(rollupQualified).count()
+    // Build a temp view of the empty schema, then issue the MERGE.
+    val schema = spark.read.format("iceberg").load(rollupQualified).schema
+    val empty = spark.createDataFrame(
+      spark.sparkContext.emptyRDD[org.apache.spark.sql.Row], schema)
+    empty.createOrReplaceTempView("empty_merge_src")
+    val keyCol = schema.fields.head.name
+    spark.sql(
+      s"""MERGE INTO $rollupQualified t
+         |USING empty_merge_src s
+         |ON t.`$keyCol` = s.`$keyCol`
+         |WHEN NOT MATCHED THEN INSERT *""".stripMargin)
+    val after = spark.read.format("iceberg").load(rollupQualified).count()
+    spark.catalog.dropTempView("empty_merge_src")
+    after shouldBe before // no-op merge preserves row count
+  }
+
   /** Disabled-by-default flag check: with the flag off, the
     * refresher's narrowing is a no-op (the existing full recompute
     * path runs). This is the production safety guarantee: until a
