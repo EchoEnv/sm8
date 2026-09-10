@@ -189,6 +189,11 @@ object RollupWatermark {
     * @param spec       the rollup declaration
     * @param buckets    the bucket values this refresh covered
     * @param isFinal    whether the lateness window closed for them
+    * @param snapshotIdOverride cascade advances pass the PINNED
+    *        SOURCE snapshot id here (D3 rule 2: the cascaded
+    *        rollup's diagnostic id names the state it was derived
+    *        from); direct refreshes leave it None to auto-read the
+    *        rollup's own snapshot
     * @return the qualified watermark table name (written)
     */
   def advance(
