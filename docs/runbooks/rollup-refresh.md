@@ -265,7 +265,8 @@ rollups:
 
 Both rollups must be on the SAME model, the target must be grain-
 bucketed, and the target's grain must strictly coarsen the source's
-(hour → day, day → week, etc.). The validator refuses at deployment:
+(hour → day, day → week, etc. — the truncation semantics come from
+ADR-0024's date_trunc contract). The validator refuses at deployment:
 self-cycles, two-node cycles, longer cycles, unknown source names,
 dimension mismatches, and same-or-finer grain declarations.
 
@@ -299,8 +300,8 @@ deltas to cascade. The connector:
    Avg/Stddev/Variance use the Welford cross-group merge
    (`m2_ab = m2_a + m2_b + δ²·n_a·n_b/n_ab` — verified against the
    ADR-0023 1e8±1.0 cancellation fixture).
-4. MERGEs into the daily Iceberg table + advances the daily
-   watermark with the PINNED SOURCE snapshot id (not the daily's
+4. MERGEs into the weekly Iceberg table + advances the weekly
+   watermark with the PINNED SOURCE snapshot id (not the weekly's
    own — the diagnostic contract per D3 rule 2).
 
 ### Prerequisites
