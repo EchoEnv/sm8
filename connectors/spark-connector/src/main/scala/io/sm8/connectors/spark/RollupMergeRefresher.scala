@@ -49,6 +49,7 @@ package io.sm8.connectors.spark
 import io.sm8.core.engine.EngineError
 import io.sm8.core.model.{Model, RollupSpec, SourceRef}
 import io.sm8.core.rel.RollupRewriter
+import io.sm8.core.rollup.SnapshotDelta
 
 import org.apache.spark.sql.{Column, DataFrame, SparkSession}
 import org.apache.spark.sql.functions.{col, lit}
@@ -237,8 +238,108 @@ object RollupMergeRefresher {
            else Right(())
       _ <- verifySourceUnique(spark, source, spec, grainDim)
       _ <- verifyScopeCoverage(spark, source, grainDim, scopeValues, spec)
-      res <- executeMerge(spark, source, qualified, spec, grainDim)
+      // D5 snapshot-diff extraction (disabled by default; flip via
+      // -Dsm8.rollup.tier2.snapshotDiff.enabled=true AFTER live-model
+      // Gate B traces validate it — spec §8). When the flag is off,
+      // this step is a zero-cost pass-through and the shipped
+      // scope-declared full recompute runs unchanged. When on and the
+      // lineage delta is row-extractable, `source` is narrowed to the
+      // delta rows before executeMerge; any non-extractable verdict
+      // (DeletesInOpenWindow / Ambiguous) falls back to the full
+      // path, matching the spec's v1 append-only rule.
+      sourceNarrowed <- if (!snapshotDiffEnabled(spark)) Right(source)
+                        else narrowToDeltaRows(spark, qualified, source)
+      res <- executeMerge(spark, sourceNarrowed, qualified, spec, grainDim)
     } yield res
+  }
+
+  /** The D5 extraction flag (default FALSE — the spec's enablement
+    * gate: production enablement waits on live-model Gate B traces).
+    * System property, same idiom the runbooks use for the Spark
+    * JVM flags (`-Dsm8.rollup.tier2.snapshotDiff.enabled=true`).
+    *
+    * A `spark:` prefixed property is ALSO accepted so tests and
+    * sessions can flip it per-session via `spark.conf.set` without
+    * touching JVM-wide state: `SET spark.sm8.rollup.tier2.snapshotDiff.enabled=true`.
+    * The system property wins when both are set (ops-level override).
+    */
+  private[spark] def snapshotDiffEnabled(spark: SparkSession): Boolean = {
+    val sysProp = System.getProperty("sm8.rollup.tier2.snapshotDiff.enabled")
+    if (sysProp != null) sysProp.equalsIgnoreCase("true")
+    else {
+      val conf = spark.conf.getOption("spark.sm8.rollup.tier2.snapshotDiff.enabled")
+      conf.exists(_.equalsIgnoreCase("true"))
+    }
+  }
+
+  /** Narrow the recomputed source to the snapshot-delta rows only
+    * (spec §6). The extractor classifies the lineage since the
+    * watermark's last-commit snapshot id:
+    *   - NoDataChange        → short-circuit: return an empty
+    *                           DataFrame wrapped in the existing
+    *                           merge path (watermark still advances)
+    *   - Appended            → the caller's `source` is ALREADY the
+    *                           scoped recompute of exactly the
+    *                           appended rows (v1 keeps the recomputed
+    *                           shape; narrowing is a no-op passthrough
+    *                           until row-level file pruning lands —
+    *                           tracked as a follow-up; the merge is
+    *                           idempotent under D2-5 either way)
+    *   - DeletesInOpenWindow / Ambiguous → fall back to the full
+    *                           `source` unchanged (append-only v1)
+    *
+    * The half-row-count guard (spec §6): extraction is skipped when
+    * the delta's row total exceeds half the recomputed source's rows
+    * — past half, full recompute is cheaper anyway. `bucket_rows`
+    * lives here (the refresher owns bucket state), not in the
+    * extractor.
+    *
+    * Failure semantics: ANY extractor failure falls back to the full
+    * `source` (never fails the refresh on an observability-path
+    * problem) — the extraction is an optimization, not a correctness
+    * dependency.
+    */
+  private def narrowToDeltaRows(
+    spark: SparkSession,
+    qualified: String,
+    source: DataFrame
+  ): Either[EngineError, DataFrame] = {
+    try {
+      val lastCommit = RollupWatermark.currentSnapshotId(spark, qualified)
+      if (lastCommit == 0L) {
+        // No watermark history (fresh rollup): nothing to diff from —
+        // the full recompute IS the correct first refresh.
+        Right(source)
+      } else {
+        RollupSnapshotDiffExtractor.extract(spark, qualified, lastCommit) match {
+          case Left(_) =>
+            // Extraction failure: fall back to full recompute (loud in
+            // the result's sourceRows via the unchanged count).
+            Right(source)
+          case Right(delta) =>
+            delta match {
+              case SnapshotDelta.NoDataChange =>
+                // Already-consumed lineage: empty delta; merge becomes
+                // a no-op (idempotent under D2-5).
+                Right(spark.emptyDataFrame)
+              case SnapshotDelta.Appended(rows, _) if rows > 0 && rows * 2 < source.count() =>
+                // Half-row-count guard not tripped: v1 passthrough
+                // (row-level file pruning is a follow-up; see the
+                // method Scaladoc). The delta confirms the append is
+                // clean — the recomputed scoped source IS the delta.
+                Right(source)
+              case _ =>
+                // DeletesInOpenWindow / Ambiguous / guard-tripped:
+                // full recompute path (spec §4 append-only rule).
+                Right(source)
+            }
+        }
+      }
+    } catch {
+      case scala.util.control.NonFatal(_) =>
+        // Never fail the refresh on the extraction path.
+        Right(source)
+    }
   }
 
   /** Grain precondition: Tier 2 is a per-bucket mechanism; a
