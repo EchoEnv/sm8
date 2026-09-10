@@ -11,6 +11,7 @@ Ticket 6 of `docs/wayfinder/2026-09-06-pre-aggregation.md` · Design: `docs/adr/
 | `RollupRefresher.refreshModel` | connector (spark-connector) | eager re-materialization of every declared rollup |
 | `RollupMaterializer.persistCatalog` | connector (spark-connector) | durable `saveAsTable` write (job runs before return) |
 | Tier 2 merge refresh (`RollupRefresher.mergeRefreshModel`) | connector (spark-connector) | row-level MERGE refresh for scoped buckets + watermark advance (PR #370); CLI/REST surface added in #376 (`--tier 2 --scope <hour-buckets>`) |
+| Cascade rollups (`RollupCascadeRefresher.cascadeRefresh`) | connector (spark-connector) | build a coarser rollup from a FINER rollup's partial states (e.g. daily from hourly); ADR-0031; CLI: `--tier 2 --scope <hour-buckets>` when the target declares `cascade_source` |
 | `query-frequency-observer` plugin | plugin | counts query shapes per model (PostExecute observer) |
 | `QueryShapeCounters.snapshot()` | plugin | programmatic counts read (hottest shapes first) |
 
@@ -233,6 +234,105 @@ that late data could still change.
   watermark commit follows the data commit. A crash between them
   leaves the watermark stale-but-valid; it never claims more final
   than the data (ADR-0030 D3).
+
+## Cascade rollups (ADR-0031, Tier 2)
+
+A **cascade rollup** is built from another rollup's partial states
+(e.g. daily from hourly) instead of from base. When the finer rollup
+is Tier 1/Tier 2 (Iceberg), cascading the coarser rollup is much
+cheaper than a base re-scan — this is exactly where Tier 2's
+row-level MERGE pays off.
+
+### Declaring a cascade
+
+In the model YAML, the COARSER rollup declares which FINER rollup
+it builds from:
+
+```yaml
+rollups:
+  - name: hourly
+    dimensions: [order_ts_hour, region]
+    measures: [total, avg_price]
+    time_grain: hour
+    grain_dimension: order_ts_hour
+  - name: daily
+    dimensions: [order_ts_day, region]
+    measures: [total, avg_price]
+    time_grain: day
+    grain_dimension: order_ts_day
+    cascade_source: hourly    # the finer rollup's name
+```
+
+Both rollups must be on the SAME model, the target must be grain-
+bucketed, and the target's grain must strictly coarsen the source's
+(hour → day, day → week, etc.). The validator refuses at deployment:
+self-cycles, two-node cycles, longer cycles, unknown source names,
+dimension mismatches, and same-or-finer grain declarations.
+
+### Measure eligibility
+
+Only Additive (Sum, Count) and Algebraic (Avg, Stddev, Variance)
+measures cascade. Min/Max also cascade (binary re-application).
+Positional (First/Last), Holistic (Median/Percentile), and
+Approximable (CountDistinct, ApproxPercentile) NEVER cascade —
+declare those on a non-cascaded rollup (built from base) instead.
+
+### Triggering a cascade refresh
+
+```bash
+# Tier 2 cascade: daily from hourly's hour buckets
+sm8 rollup-refresh mymodel --tier 2 \
+  --scope '2026-09-07 10:00:00,2026-09-07 11:00:00'
+```
+
+The `--scope` values are the SOURCE rollup's hour buckets whose
+deltas to cascade. The connector:
+
+1. Verifies the source's watermark `is_final=true` for every
+   coarsened bucket (any non-final source bucket refuses with
+   `CascadeSourceNotFinal` — the daily rollup cannot be more final
+   than its source).
+2. Pins the source's snapshot at build start (concurrent source
+   refreshes don't contaminate the build).
+3. Aggregates the source's PARTIAL STATES (not raw base rows):
+   Sum/Count sum their partials; Min/Max re-apply the binary op;
+   Avg/Stddev/Variance use the Welford cross-group merge
+   (`m2_ab = m2_a + m2_b + δ²·n_a·n_b/n_ab` — verified against the
+   ADR-0023 1e8±1.0 cancellation fixture).
+4. MERGEs into the daily Iceberg table + advances the daily
+   watermark with the PINNED SOURCE snapshot id (not the daily's
+   own — the diagnostic contract per D3 rule 2).
+
+### Prerequisites
+
+- Both rollup tables must already exist as Iceberg (run a Tier 1
+  refresh on each first).
+- Both rollups must be grain-bucketed (`time_grain` +
+  `grain_dimension`).
+- The target must declare `cascade_source` pointing at the source.
+- The source's watermark must be `is_final=true` for the scope's
+  buckets (past day-grain buckets latch automatically after their
+  refresh; today's hour buckets stay open until the day closes).
+
+### When to cascade vs build from base
+
+- **Cascade**: the source rollup is already refreshed (its watermark
+  is final), the target's grain strictly coarsens the source's, and
+  the measures are Additive/Algebraic. The scan cost is the source
+  rollup's size (much smaller than base).
+- **Build from base** (drop `cascade_source`, run without
+  `--tier 2`): when the source isn't fresh enough, when you need
+  Positional/Holistic/Approximable measures, or when the base scan
+  is cheap enough that the cascade indirection isn't worth it.
+
+### Staleness propagation
+
+The cascade inherits the source's staleness — a daily rollup built
+from a stale hourly rollup is stale by definition. The connector
+refuses (`CascadeSourceNotFinal`) rather than silently propagating.
+If you need the daily bucket NOW despite an open hourly window,
+build the daily from base instead (drop `cascade_source` for that
+refresh, or use `--tier 1` with the daily's own scope).
 
 ## Known limits (v1)
 
