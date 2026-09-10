@@ -65,15 +65,21 @@
          Slice 1). Artifact name + version are profile-gated —
          iceberg-spark-runtime-3.5_2.13:1.5.x for Spark 3.5 (default),
          iceberg-spark-runtime-4.1_2.13:1.7.1 for -Pspark4 (Iceberg
-         1.5.x does not support Spark 4). Runtime scope: the materializer
-         invokes it by Spark format name ("iceberg"), so main-scope
-         compilation does not bind to Iceberg classes directly; the jar
-         must be on the runtime classpath for the format branch to work. -->
+         1.5.x does not support Spark 4). Compile scope AS OF the D5
+         snapshot-diff extractor (ADR-0030 D5 amendment,
+         docs/specs/adr-0030-d5-snapshot-diff.md): the extractor walks
+         snapshot lineage via Iceberg's Java API (Snapshot,
+         DataFile, DeleteFile) — main-scope compilation now binds to
+         Iceberg classes in RollupSnapshotDiffExtractor ONLY; every
+         other connector file keeps invoking Iceberg by Spark format
+         name. The pin is 1.5.2 (root pom); the 1.7.1 profile overrides
+         remain intact. RFC §3 note: Iceberg binding lives in the
+         connector layer, never in core. -->
     <dependency>
       <groupId>org.apache.iceberg</groupId>
       <artifactId>${iceberg.artifact}</artifactId>
       <version>${iceberg.version}</version>
-      <scope>runtime</scope>
+      <scope>compile</scope>
     </dependency>
 
     <!-- Contract-test base classes — pulled from sm8-core's test-jar
