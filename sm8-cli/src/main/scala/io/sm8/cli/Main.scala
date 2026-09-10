@@ -1016,11 +1016,94 @@ object Main {
   // which eagerly re-materializes every rollup the model declares
   // (saveAsTable — durable). Prints per-rollup outcomes; exit 1 if
   // any rollup failed, 2 on usage errors, 3 on transport errors.
-  private def cmdRollupRefresh(cfg: Config, args: List[String]): Int = args match {
+  // `sm8 rollup-refresh <model> [--tier 0|1|2] [--scope b1,b2,...]`
+  // Per ADR-0031: --tier 2 with --scope cascades from the rollup's
+  // declared cascade_source. Without --tier, the body is the legacy
+  // {model} shape — old scripts keep working (Tier 0/1 default).
+  private def cmdRollupRefresh(cfg: Config, args: List[String]): Int = {
+    // Parse flags + model positionally.
+    val tierIdx = args.indexOf("--tier")
+    val scopeIdx = args.indexOf("--scope")
+    // L1 (owl): toIntOption instead of toInt — a non-numeric tier must
+    // print a usage error, not throw. L2 (owl): --tier/--scope as the
+    // LAST arg (no value after) must error explicitly, not silently
+    // fall through to the legacy path.
+    val tierParse: Either[String, Option[Int]] =
+      if (tierIdx < 0) Right(None)
+      else if (tierIdx + 1 >= args.length)
+        Left("sm8 rollup-refresh: --tier requires a value (0, 1, or 2)")
+      else args(tierIdx + 1).trim.toIntOption match {
+        case Some(v) => Right(Some(v))
+        case None =>
+          Left(s"sm8 rollup-refresh: --tier '${args(tierIdx + 1)}' is " +
+            "not a valid integer (supported: 0, 1, 2)")
+      }
+    val scopeParse: Either[String, Option[List[String]]] =
+      if (scopeIdx < 0) Right(None)
+      else if (scopeIdx + 1 >= args.length)
+        Left("sm8 rollup-refresh: --scope requires a comma-separated " +
+          "bucket list (e.g. --scope '2026-09-07 10:00:00,2026-09-07 11:00:00')")
+      else {
+        val buckets = args(scopeIdx + 1).split(',').map(_.trim)
+          .filter(_.nonEmpty).toList
+        // Flag-shape guard (shrimp HIGH-3): a value like '--tier' in
+        // the scope list is a caller mistake (the next flag was
+        // consumed as a bucket) — refuse rather than silently
+        // cascade against an unexpected bucket set.
+        val flagShaped = buckets.filter(_.startsWith("--"))
+        if (buckets.isEmpty)
+          Left("sm8 rollup-refresh: --scope is empty after parsing " +
+            "(expected comma-separated bucket values)")
+        else if (flagShaped.nonEmpty)
+          Left(s"sm8 rollup-refresh: --scope contains flag-shaped " +
+            s"value(s) ${flagShaped.mkString(", ")} — did you forget " +
+            "a comma between buckets?")
+        else Right(Some(buckets))
+      }
+    (tierParse, scopeParse) match {
+      case (Left(err), _) => System.err.println(err); return 2
+      case (_, Left(err)) => System.err.println(err); return 2
+      case (Right(t), Right(s)) =>
+        cmdRollupRefreshBody(cfg,
+          args.filterNot(a => a == "--tier" || a == "--scope"),
+          t, s)
+    }
+  }
+
+  private def cmdRollupRefreshBody(
+      cfg: Config,
+      args: List[String],
+      tier: Option[Int],
+      scope: Option[List[String]]): Int = args match {
     case Nil =>
-      System.err.println("sm8 rollup-refresh: missing <model>. Usage: sm8 rollup-refresh <model>"); 2
+      System.err.println("sm8 rollup-refresh: missing <model>. " +
+        "Usage: sm8 rollup-refresh <model> [--tier 0|1|2] [--scope b1,b2,...]"); 2
     case model :: Nil =>
-      val body = "{\"model\":" + mapper.writeValueAsString(model) + "}"
+      val body = (tier, scope) match {
+        case (Some(2), Some(buckets)) =>
+          // Tier 2: cascade from the declared cascade_source with
+          // the bucket list as scope.
+          "{\"model\":" + mapper.writeValueAsString(model) +
+            ",\"tier\":2,\"scope\":" +
+            mapper.writeValueAsString(buckets) + "}"
+        case (Some(2), None) =>
+          System.err.println("sm8 rollup-refresh: --tier 2 requires " +
+            "--scope <hour-bucket-list> (the SOURCE rollup's buckets " +
+            "composing the target's day)"); return 2
+        case (Some(t), _) if t != 0 && t != 1 && t != 2 =>
+          System.err.println(s"sm8 rollup-refresh: unknown tier $t " +
+            "(supported: 0, 1, 2)"); return 2
+        case (Some(t), _) =>
+          // Tier 0/1 explicit
+          "{\"model\":" + mapper.writeValueAsString(model) +
+            ",\"tier\":" + t + "}"
+        case (None, _) =>
+          // Legacy shape: no tier = pre-Tier-2 default path.
+          // NOTE (owl R2): a --scope value passed WITHOUT --tier is
+          // silently dropped here — documented, not an error (the
+          // legacy {model} shape has no scope field to carry it).
+          "{\"model\":" + mapper.writeValueAsString(model) + "}"
+      }
       val resp = Client.postJson(cfg, "/RollupRefreshService/refresh", body)
       // Exit-code discipline (arch + DE review): cron must
       // distinguish server-unreachable (5xx -> 3, transport) from

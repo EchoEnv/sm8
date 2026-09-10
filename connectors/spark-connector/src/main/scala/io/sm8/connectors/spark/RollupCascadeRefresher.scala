@@ -85,6 +85,49 @@ object RollupCascadeRefresher {
       capability = s"RollupCascadeRefresher.${RollupRewriter.RollupRewriteRefusal.reasonName(r)}",
       message = s"rollups[$rollup]: ${RollupRewriter.RollupRewriteRefusal.reasonName(r)}")
 
+  /** JDK-typed adapter for REFLECTIVE callers (the sm8-server tier-2
+    * closure has no compile-time dependency on this module). Mirrors
+    * `RollupRefresher.refreshModelJ`'s contract: ok/error/results.
+    *
+    * @param spark        the session
+    * @param model        the host model
+    * @param targetSpec   the coarser rollup to build (cascade target)
+    * @param sourceSpec   the finer rollup to build from (cascade source)
+    * @param scopeValues  the SOURCE rollup's hour buckets composing
+    *                     the target's day
+    * @return the JDK result map (ok:Boolean, error:String|null,
+    *         results:List[Map[rollup, table, error]])
+    */
+  def cascadeRefreshModelJ(
+      spark: SparkSession,
+      model: Model,
+      targetSpec: RollupSpec,
+      sourceSpec: RollupSpec,
+      scopeValues: java.util.List[String]
+  ): java.util.Map[String, Object] = {
+    val out = new java.util.HashMap[String, Object]()
+    import scala.jdk.CollectionConverters._
+    cascadeRefresh(spark, model, targetSpec, sourceSpec,
+      scopeValues.asScala.toList) match {
+      case Left(e) =>
+        out.put("ok", java.lang.Boolean.FALSE)
+        out.put("error", e.message)
+      case Right(CascadeRefreshResult.Cascaded(rollup, table, _, _)) =>
+        out.put("ok", java.lang.Boolean.TRUE)
+        val list = new java.util.ArrayList[java.util.Map[String, String]]()
+        val m = new java.util.HashMap[String, String]()
+        m.put("rollup", rollup)
+        m.put("table", table)
+        m.put("error", "")
+        list.add(m)
+        out.put("results", list)
+      case Right(_) =>
+        out.put("ok", java.lang.Boolean.FALSE)
+        out.put("error", "unexpected cascade result shape")
+    }
+    out
+  }
+
   /** Cascade refresh: build `targetSpec` from `sourceSpec`'s rows.
     *
     * @param spark       the session (table IO + SQL; no closures)

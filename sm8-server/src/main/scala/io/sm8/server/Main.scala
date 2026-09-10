@@ -69,7 +69,7 @@
 package io.sm8.server
 
 import io.sm8.core.engine.{EngineError, EngineIdentity, EngineProvider, EngineRegistry, QueryRequest, PortableQueryResult}
-import io.sm8.core.model.Model
+import io.sm8.core.model.{Model, RollupSpec}
 
 import io.sm8.platform.query.{HttpTransport, MetricsHttpRoute, PlatformModelLoader, RollupRefreshService}
 
@@ -389,6 +389,80 @@ object Main {
     case Some(url)   => EngineLoader.discoverAndRealize(classLoader, engineName, Some(url))
   }
 
+  /** ADR-0031 Tier 2 cascade: reflectively bridges to
+    * `RollupCascadeRefresher.cascadeRefreshModelJ` (the JDK-map
+    * adapter). Requires the model to declare a `cascade_source`
+    * and the caller to pass the SOURCE rollup's hour buckets as
+    * the scope.
+    */
+  private def cascadeRefreshOutcome(
+      model: Model,
+      scope: Option[List[String]])
+  : Either[String, List[(String, String, Option[String])]] = {
+    val scopeValues = scope.getOrElse(List.empty)
+    if (scopeValues.isEmpty) {
+      Left("tier 2 requires a --scope bucket list (the SOURCE rollup's hour buckets composing the target's day)")
+    } else {
+      val cascadeTarget = model.rollups.find(_.cascadeSource.isDefined)
+      val cascadeSourceName = cascadeTarget.flatMap(_.cascadeSource)
+      val cascadeSourceSpec = cascadeSourceName.flatMap(n => model.rollups.find(_.name == n))
+      (cascadeTarget, cascadeSourceSpec) match {
+        case (Some(tgt), Some(src)) =>
+          try {
+            val refresherCls = Class.forName("io.sm8.connectors.spark.RollupCascadeRefresher")
+            val sparkCls = Class.forName("org.apache.spark.sql.SparkSession")
+            val getActive = sparkCls.getMethod("getActiveSession")
+            val sparkOpt = getActive.invoke(null)
+            val isEmpty = sparkOpt.getClass.getMethod("isEmpty").invoke(sparkOpt).toString
+            if (isEmpty == "true") {
+              Left("no active SparkSession in this server process — tier 2 cascade refresh requires the spark connector and a live session")
+            } else {
+              val spark = sparkOpt.getClass.getMethod("get").invoke(sparkOpt)
+              val method = refresherCls.getMethod(
+                "cascadeRefreshModelJ",
+                spark.getClass,
+                classOf[Model],
+                classOf[RollupSpec],
+                classOf[java.util.List[_]])
+              val raw = method.invoke(null, spark, model, tgt, src, scopeValues.asJava)
+              adaptCascadeResult(raw)
+            }
+          } catch {
+            case _: ClassNotFoundException =>
+              Left("spark-connector not on the classpath — tier 2 cascade refresh unavailable")
+            case e: java.lang.reflect.InvocationTargetException =>
+              Left(s"cascade refresh failed: ${String.valueOf(e.getCause)}")
+            case e: NoSuchMethodException =>
+              Left(s"connector RollupCascadeRefresher shape mismatch: ${e.getMessage}")
+            case e: ClassCastException =>
+              Left(s"connector RollupCascadeRefresher returned an unexpected shape: ${e.getMessage}")
+          }
+        case _ =>
+          Left("tier 2 requires the model to declare a cascade source (rollups[].cascade_source) — no rollup on " +
+            s"'${model.name}' declares one")
+      }
+    }
+  }
+
+  /** Adapt the cascade refresher's JDK result map into the
+    * RefreshFn's outcome list (mirrors the refreshModelJ adapter). */
+  private def adaptCascadeResult(raw: AnyRef)
+  : Either[String, List[(String, String, Option[String])]] = {
+    val ok = raw.getClass.getMethod("get", classOf[String]).invoke(raw, "ok").toString == "true"
+    if (!ok) {
+      val err = raw.getClass.getMethod("get", classOf[String]).invoke(raw, "error")
+      Left(if (err != null) err.toString else "cascade refresh failed")
+    } else {
+      val results = raw.getClass.getMethod("get", classOf[String])
+        .invoke(raw, "results").asInstanceOf[java.util.List[java.util.Map[String, String]]]
+      val outcomes = results.asScala.toList.map { m =>
+        val err = Option(m.get("error")).filter(_.nonEmpty)
+        (m.get("rollup"), m.get("table"), err): (String, String, Option[String])
+      }
+      Right(outcomes)
+    }
+  }
+
   /** ADR-0022 Ticket 6: build the refresh closure handed to
     * RollupRefreshService. Reflectively bridges to the
     * spark-connector's `RollupRefresher.refreshModel` when the
@@ -403,7 +477,24 @@ object Main {
   
   private def rollupRefreshClosure(
       model: Model
-  ): RollupRefreshService.RefreshFn = { modelName: String =>
+  ): RollupRefreshService.RefreshFn = {
+    (modelName: String, tier: Option[Int], scope: Option[List[String]]) =>
+      if (modelName != model.name) {
+        Left(s"model '$modelName' not loaded in this deployment")
+      } else if (tier.contains(2)) {
+        cascadeRefreshOutcome(model, scope)
+      } else {
+        legacyRefreshOutcome(model, modelName)
+      }
+  }
+
+  /** ADR-0022 Ticket 6: the legacy Tier 0/1 refresh closure. Byte-identical
+    * to the pre-cascade behavior — old clients posting {model} (no tier/scope)
+    * keep this path. */
+  private def legacyRefreshOutcome(
+      model: Model,
+      modelName: String)
+  : Either[String, List[(String, String, Option[String])]] = {
     if (modelName != model.name) {
       Left(s"model '$modelName' not loaded in this deployment")
     } else {
