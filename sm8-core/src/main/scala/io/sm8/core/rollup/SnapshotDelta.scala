@@ -111,7 +111,9 @@ object SnapshotDelta {
   /** Snapshot lineage with NO data file additions or removals and
     * NO delete files (metadata-only snapshot, e.g. expire/rewrite
     * decisions logged elsewhere). The refresher short-circuits to
-    * no-op: the watermark advances, no MERGE job runs. */
+    * a no-op MERGE (empty source view; the MERGE statement itself
+    * still runs and commits a snapshot, but touches no rows), and
+    * the watermark advances as usual. */
   final case object NoDataChange extends SnapshotDelta
 
   /** Whether a delta is row-extractable in v1 (spec §4).

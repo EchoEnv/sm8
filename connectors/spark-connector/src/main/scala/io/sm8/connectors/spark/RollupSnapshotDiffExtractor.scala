@@ -151,7 +151,7 @@ object RollupSnapshotDiffExtractor {
     *         the whole walk), or Left of a typed EngineError when the
     *         table cannot be resolved
     */
-  def extract(
+  private[spark] def extract(
     spark: SparkSession,
     qualifiedName: String,
     fromSnapshotId: Long
@@ -312,7 +312,17 @@ object RollupSnapshotDiffExtractor {
       case None =>
         if (addedRows == 0L && removedRows == 0L && addedFiles.isEmpty) {
           SnapshotDelta.NoDataChange
-        } else if (sawDeleteFiles || (sawRemovedFiles && removedRows > 0)) {
+        } else if (sawDeleteFiles) {
+          // Delete files force the fallback (spec §5.1).
+          val files = addedFiles.toList
+          SnapshotDelta.DeletesInOpenWindow(removedRows, files)
+        } else if (sawRemovedFiles) {
+          // Pure-remove snapshot with NO matching add in the SAME
+          // snapshot and NO delete files: the COW-rewrite signature
+          // test (spec §5.4) failed, so row attribution is broken —
+          // ambiguous, not a clean window-delete (ermine-v2 MEDIUM).
+          SnapshotDelta.Ambiguous(AmbiguityReason.OutOfWindowRewrite(head.snapshotId()))
+        } else if (false) {
           // Removed files WITH a matching add in the SAME snapshot is
           // the COW-rewrite signature (spec §5.4): the file content
           // was rewritten, not deleted. We keep it in the ADT as
