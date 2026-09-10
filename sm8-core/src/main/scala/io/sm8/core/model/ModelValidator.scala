@@ -156,6 +156,8 @@ object ModelValidator {
     // Cycle detection over the declaration graph (iterative walk,
     // bounded by rollup count). A cycle is A→B→A (2-node) or
     // longer; self-cycles were refused above.
+    /** The cascade source name for a rollup (None = builds from
+      * base). Local helper for the cycle walk. */
     def sourceOf(name: String): Option[String] =
       byName.get(name).flatMap(_.cascadeSource)
     rollups.foreach { r =>
