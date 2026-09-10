@@ -23,7 +23,9 @@ buildable now.
 ## 1. Where it lives (RFC §3 layering)
 
 - `core` (`sm8-core`): `SnapshotDelta` ADT + `SnapshotDeltaPolicy` — pure data + pure
-  functions, IO-free. No Iceberg imports, no `java.nio`, no Spark types.
+  functions, IO-free. No Iceberg imports, no `java.nio`, no Spark types. The ADT
+  carries Scaladoc per the `scala2-scaladoc` skill (every sealed trait and case
+  documents its contract; `NoDataChange` states its short-circuit semantics).
 - `connector` (`connectors/spark-connector`): `RollupSnapshotDiffExtractor` — the only place
   Iceberg's API is touched; produces `SnapshotDelta` values for core to consume; plus
   `RollupMergeRefresher` wiring (it already owns the Tier 2 MERGE path).
@@ -53,6 +55,13 @@ object AmbiguityReason {
 final case class DataFileRef(path: String, pos: Long, rowCount: Long)
 ```
 
+Translation notes (connector-side, building from Iceberg's `ContentFile`):
+`file_path()` arrives as `CharSequence` — convert via `String.valueOf`;
+`pos()` is a boxed `java.lang.Long` that may be null — a null `pos` maps
+to `0L` only when the file occurs once in the manifest, else the file is
+treated as ambiguous (§5.4 rewrite signature). The ADT stays
+primitive-typed and core-safe.
+
 Policy (same file): `SnapshotDeltaPolicy.isRowExtractable: SnapshotDelta => Boolean` —
 `Appended` and `DeletesInOpenWindow` are extractable; `Ambiguous` is not (fallback,
 §5); `NoDataChange` short-circuits to a no-op refresh.
@@ -81,17 +90,36 @@ this pin.
 
 ## 4. Delta → MERGE mapping per Decomposability class
 
-Input: `Seq[SnapshotDelta]` between watermarks, joined to each bucket by
-partition transform of the touched files. Per bucket, per
-`DecomposabilityAuditRow` class:
+Input: `Seq[SnapshotDelta]` between watermarks, joined to each bucket by the
+**model-declared bucket expression** — `date_trunc(timeGrain, grainDimension)`
+over the touched files' row ranges, exactly the derivation `scopedBase` and
+`buildRollupDf` use (`RollupMergeRefresher.scala` l.103–117,
+`RollupMaterializer.buildRollupDf`). NOT Iceberg's per-file partition
+transform: the two disagree when the base table carries a partition
+transform the model declaration does not mirror, and the model declaration
+is authoritative — it is what the rollup was materialized with. Per bucket,
+per `DecomposabilityAuditRow` class:
 
 | Class | `Appended` | `DeletesInOpenWindow` | `Ambiguous` / `NoDataChange` |
 |---|---|---|---|
-| **Additive** (sum/count/min/max) | delta MERGE: source = added files' rows projected to rollup schema; `whenMatched` aggregate-merge, `whenNotMatched` insert | same, with removed files' rows subtract-aggregated in the source CTE | fallback (§5) / no-op |
-| **Algebraic** (avg, stddev — fixed named partials) | delta MERGE on (sum, count) carriers, never on the mean itself | same, carriers subtract | fallback / no-op |
+| **Additive** (sum/count/min/max) | delta MERGE: source = added files' rows projected to rollup schema; `whenMatched` aggregate-merge, `whenNotMatched` insert | NOT extractable in v1 (see frame rule below) | fallback (§5) / no-op |
+| **Algebraic** (avg, stddev — fixed named partials) | delta MERGE on (sum, count) carriers, never on the mean itself | NOT extractable in v1 | fallback / no-op |
 | **Positional** (first/last — order-sensitive) | NOT extractable | NOT extractable | fallback / no-op |
 | **Holistic** (exact median/percentile) | NOT extractable | NOT extractable | fallback / no-op |
 | **Approximable** (count distinct via HLL, approx percentile) | NOT extractable in v1: would need explicit HLL sketch state carried in the rollup schema, which changes exact→approximate serving semantics (forbidden per ADR-0022 v1 routing) | NOT extractable | fallback / no-op — buckets containing any Approximable measure always take the scope-declared full path |
+
+**v1 extraction is APPEND-ONLY.** The `DeletesInOpenWindow` column of the
+first two rows is deliberately "not extractable": a subtract-merge would
+require the MERGE source to carry negative carrier rows ((key, −sum,
+−count)) that the merge ADDS — which is `+=` increment, forbidden by D2-3
+(`RollupMergeRefresher`'s own docstring: "UPDATE SET overwrite semantics,
+never `+=`"). The D2-compliant alternative — re-aggregating the touched
+bucket from (rollup state + added − removed) rows as a partial fallback —
+converges to the full-bucket recompute as soon as any deletions occur, so
+it buys nothing over the existing fallback. A subtract-carrier MERGE, if
+wanted later, is a D2 amendment in its own right (new merge semantics,
+new idempotency proof) — out of scope for this spec. Until then, any
+delta containing deletions takes the scope-declared full path.
 
 Frame rule: a bucket is row-extractable only if **every** measure in the
 rollup's measure list for that bucket is extractable for the observed
@@ -114,6 +142,12 @@ Fallback to the shipped scope-declared full-bucket re-aggregation when:
    spec change) — the diff is not row-comparable across it (extends
    ADR-0030 D5's existing unreliable-for list; the amendment formally
    encodes it as a refusal reason, not just prose).
+   Summary-map absence: a snapshot whose summary lacks the
+   `added-records`/`deleted-records` keys (metadata-only snapshots can
+   omit them) is `NoDataChange` only when
+   `addedDataFiles`/`removedDataFiles` are both empty; any file entries
+   present with missing summary keys → `Ambiguous(SchemaOrPartitionEvolution)`
+   (a missing key is not parsed as zero).
 4. **Delete-file-only snapshot** with no added files: cannot
    distinguish row-level delete from whole-file rewrite at ADT
    resolution; treated as `DeletesInOpenWindow` only if every removed
@@ -121,16 +155,23 @@ Fallback to the shipped scope-declared full-bucket re-aggregation when:
    snapshot (COW rewrite signature); else `Ambiguous`.
 5. **Lineage gap**: watermark snapshot id not found walking `parentSnapshotId`
    chain (expired snapshots) — `Ambiguous(OutOfWindowRewrite)`; never
-   guess across a gap. **D3 monotonicity under gap recovery (the HIGH
-   review finding)**: the watermark row is NOT rewritten in place. The
-   recovery is: emit the Ambiguous verdict for every bucket in the
-   affected lineage range, run the fallback full re-aggregation, and
-   write a NEW watermark row whose `last_commit_snapshot_id` = head and
-   whose `is_final` is RE-DERIVED from current data — never copied from
-   the stale row. This preserves D3's contract (`is_final` never
-   regresses true→false for a given (model, rollup, bucket): the
-   stale row is superseded, not mutated, and the new row's finality
-   claim is backed by the fresh re-aggregation that produced it).
+   guess across a gap. **D3 monotonicity under gap recovery (resolved
+   against the round-3 review)**: recovery does NOT invent a new
+   watermark-write path — it reuses the shipped `RollupWatermark.advance`
+   MERGE verbatim, whose shape itself enforces D3: on match it updates
+   `t.is_final = t.is_final OR s.is_final` (a demotion attempt is a no-op
+   on the finality column — the invariant is enforced by the merge shape,
+   not caller discipline, per the code's own comment). The re-derivation
+   may well COMPUTE `is_final = false` (bucket back in an open window
+   after the gap); the OR-merge clamps the stored value to the
+   monotone combination, so the visible `is_final` can never regress
+   true→false even though the recompute said false. `last_commit_snapshot_id`
+   and `last_refreshed_at` take the fresh values. The spec's earlier
+   "NEW watermark row / supersede-not-mutate" framing was factually
+   wrong about the shipped mechanism — this paragraph is the correction
+   (heron F2 + ermine ERMINE-1). Contract test 5 asserts the OR-clamp
+   directly: stale row `is_final = true`, recovery computes `false`,
+   post-advance row still reads `true`.
 
 Every fallback emits the existing Tier 2 refusal-vocabulary entry with
 the `AmbiguityReason` attached, feeding D2-5's ambiguity-rate metric.
@@ -141,7 +182,7 @@ the `AmbiguityReason` attached, feeding D2-5's ambiguity-rate metric.
 `RollupMergeRefresher.scala` l.212–241), insertion point after
 `verifyScopeCoverage` and before `executeMerge`:
 
-```
+```text
 requireSafeIdentifiers → requireGrained → requireIcebergTable
   → baseDataFrame → scopedBase → buildRollupDf → empty-scope guard
   → verifySourceUnique → verifyScopeCoverage
@@ -180,19 +221,30 @@ full re-agg is cheaper anyway).
     untouched buckets stay row-extractable (ermine Q4 gap)
 3. equality delete present → `Ambiguous(EqualityDeletes)`
 4. schema evolution mid-lineage → `Ambiguous(SchemaOrPartitionEvolution)`
-5. expired-watermark lineage gap → `Ambiguous` + NEW watermark row written
-   per §5.5 (stale row superseded, `is_final` re-derived — D3 monotonicity
-   preserved; test asserts no `is_final` true→false transition)
+5. expired-watermark lineage gap → `Ambiguous` + watermark advance via the
+   shipped `RollupWatermark.advance` OR-merge; test asserts the D3 clamp
+   directly (stale `is_final=true`, recovery computes `false`, stored
+   value stays `true` — no true→false transition)
 6. `NoDataChange` → no-op, watermark advances
 7. half-row-count guard: extraction skipped, full path taken
 8. core `SnapshotDeltaPolicy.isRowExtractable` truth table (core test, no Spark)
-9. idempotency: re-running extraction over an already-consumed lineage →
-   empty delta, content-identical table (the D2 idempotency contract, at diff level)
+9a. idempotency (extractor property): re-running the extractor over an
+    already-consumed lineage returns `NoDataChange` — no spurious
+    `Appended`/`DeletesInOpenWindow` deltas.
+9b. idempotency (MERGE content-identity, D2-5 shape): after running
+    extractor→MERGE twice over identical lineage, the rollup table's
+    manifest entries are content-identical per D2-5 — the assertion
+    compares sorted `(data_file.file_path, data_file.content_hash)`
+    pairs pre- vs post-run (manifest-level identity, NOT row counts;
+    row counts alone would pass a delta that rebuilt file manifests).
+    Resulting delta must also be `NoDataChange`.
 
 ## 8. What this spec deliberately does NOT decide
 
 - Whether extraction ships enabled-by-default (live-trace gate, per blocker
   ticket's closing comment — unchanged).
-- The `Tier2ScanProbe` and D6-D8 study-gate work — belongs to the graduated
-  ADR-0030 D1 amendment ticket, not this one.
+- The `Tier2ScanProbe` and D6-D8 study-gate work — charted separately on the
+  map (the D6–D8 amendment to ADR-0030 and the `tier2-scan-probe.md` runbook
+  are the D1-amendment deliverables; status tracked on the map's
+  Decisions-so-far and its follow-up ticket for that line of work).
 - Iceberg version bump decisions (1.5.2 pinned as-read).
