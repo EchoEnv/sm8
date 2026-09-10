@@ -8,13 +8,17 @@ against the verified wiring so it can ship without waiting on that data.
 
 ## Verdict (Question step 2)
 
-**Yes — the spec earns its place, scoped to partial-extraction only.** The Gate B run showed
-rewritten-but-unchanged bytes ≈ total bytes for every refresh mode (Tier 0/1, rewritten-unchanged
-paths all landed within 2 bytes of each other): the bucket-granularity rewrite writes the whole
-bucket even when a handful of rows changed. The scope-declared delta path (shipped, #370) can
-only skip whole buckets. Row-level snapshot-diff extraction attacks exactly the gap the probe
-measured. It stays behind the same production gate as the probe itself (live traces before
-enabling on a real deployment); the spec, like the probe, is buildable now.
+**Yes — the spec earns its place, scoped to partial-extraction only.** The Gate B
+synthetic-fixture run (blocker ticket's probe run, see the runbook's structured
+metrics output; exact numbers live in the run's report JSON emitted by
+`GateBTraceRunner`, linked from the blocker ticket's closing comment) showed
+rewritten-but-unchanged bytes ≈ total bytes for every refresh mode: the
+bucket-granularity rewrite writes the whole bucket even when a handful of rows
+changed. The scope-declared delta path (shipped, #370) can only skip whole
+buckets. Row-level snapshot-diff extraction attacks exactly the gap the probe
+measured. It stays behind the same production gate as the probe itself (live
+traces before enabling on a real deployment); the spec, like the probe, is
+buildable now.
 
 ## 1. Where it lives (RFC §3 layering)
 
@@ -64,14 +68,16 @@ delta-oriented — wrong shape for MERGE feeding):
 |---|---|
 | `Snapshot.snapshotId`, `parentSnapshotId` | lineage walk between last-refresh watermark and head |
 | `Snapshot.addedDataFiles()` / `removedDataFiles()` | `DataFileRef` construction (path, pos, rowCount) |
-| `Snapshot.addedRows()` / `removedRows()` | row totals for the ADT (post-filter summary) |
+| `Snapshot.summary().get("added-records")` / `("deleted-records")` | row totals for the ADT — in 1.5.2 these are summary-map STRING entries parsed as Long, NOT accessor methods (`Snapshot.addedRows()`/`removedRows()` accessors were added in later Iceberg; do not use on the 1.5.2 pin) |
 | `Snapshot.deleteFiles()` | presence of any delete file → `DeletesInOpenWindow` candidate |
 | `DataFile.pos`, `DataFile.recordCount` | file identity + row attribution |
 | `DeleteFile.referencedDataFiles()` | equality-delete containment test (§4 b2) |
 
 Checked against Iceberg **1.5.2** (root `pom.xml` `<iceberg.version>`; the
-1.7.1 override sits under an inactive profile). `addedRows()`/`removedRows()`
-are summary methods — correct for the ADT's totals, not for row attribution.
+1.7.1 override sits under an inactive profile). Row totals come from the
+snapshot summary map (`added-records` / `deleted-records`, string-typed,
+parsed Long); the `addedRows()`/`removedRows()` accessors do not exist at
+this pin.
 
 ## 4. Delta → MERGE mapping per Decomposability class
 
@@ -81,9 +87,11 @@ partition transform of the touched files. Per bucket, per
 
 | Class | `Appended` | `DeletesInOpenWindow` | `Ambiguous` / `NoDataChange` |
 |---|---|---|---|
-| **Distributive + decomposable** (count/sum/min/max) | delta MERGE: source = added files' rows projected to rollup schema; `whenMatched` aggregate-merge, `whenNotMatched` insert | same, with removed files' rows subtract-aggregated in the source CTE | fallback (§5) / no-op |
-| **Avg/mean-carrying** | delta MERGE on (sum, count) carriers, never on the mean itself | same, carriers subtract | fallback / no-op |
-| **Distinct-carrying** (count distinct, approx) | NOT extractable — distinct state is not mergeable from partials | NOT extractable | fallback / no-op — buckets containing any distinct measure always take the scope-declared full path |
+| **Additive** (sum/count/min/max) | delta MERGE: source = added files' rows projected to rollup schema; `whenMatched` aggregate-merge, `whenNotMatched` insert | same, with removed files' rows subtract-aggregated in the source CTE | fallback (§5) / no-op |
+| **Algebraic** (avg, stddev — fixed named partials) | delta MERGE on (sum, count) carriers, never on the mean itself | same, carriers subtract | fallback / no-op |
+| **Positional** (first/last — order-sensitive) | NOT extractable | NOT extractable | fallback / no-op |
+| **Holistic** (exact median/percentile) | NOT extractable | NOT extractable | fallback / no-op |
+| **Approximable** (count distinct via HLL, approx percentile) | NOT extractable in v1: would need explicit HLL sketch state carried in the rollup schema, which changes exact→approximate serving semantics (forbidden per ADR-0022 v1 routing) | NOT extractable | fallback / no-op — buckets containing any Approximable measure always take the scope-declared full path |
 
 Frame rule: a bucket is row-extractable only if **every** measure in the
 rollup's measure list for that bucket is extractable for the observed
@@ -98,7 +106,9 @@ Fallback to the shipped scope-declared full-bucket re-aggregation when:
    attribution for "which rows died" is not recoverable from file
    metadata.
 2. **OutOfWindowRewrite**: a `removedDataFiles` entry whose partition
-   transform lands outside the freshness policy's open window.
+   transform lands outside the freshness policy's open window. This is
+   a PER-BUCKET verdict: the affected bucket falls back, buckets whose
+   files are untouched stay row-extractable.
 3. **SchemaOrPartitionEvolution**: any snapshot in the lineage walk
    carries a schema/partition change (`Snapshot.schemaId` drift,
    spec change) — the diff is not row-comparable across it (extends
@@ -110,39 +120,69 @@ Fallback to the shipped scope-declared full-bucket re-aggregation when:
    file's replacement is present in `addedDataFiles` of the SAME
    snapshot (COW rewrite signature); else `Ambiguous`.
 5. **Lineage gap**: watermark snapshot id not found walking `parentSnapshotId`
-   chain (expired snapshots) — `Ambiguous(OutOfWindowRewrite)` + watermark
-   reset to head; never guess across a gap (matches D3's stale-watermark rule).
+   chain (expired snapshots) — `Ambiguous(OutOfWindowRewrite)`; never
+   guess across a gap. **D3 monotonicity under gap recovery (the HIGH
+   review finding)**: the watermark row is NOT rewritten in place. The
+   recovery is: emit the Ambiguous verdict for every bucket in the
+   affected lineage range, run the fallback full re-aggregation, and
+   write a NEW watermark row whose `last_commit_snapshot_id` = head and
+   whose `is_final` is RE-DERIVED from current data — never copied from
+   the stale row. This preserves D3's contract (`is_final` never
+   regresses true→false for a given (model, rollup, bucket): the
+   stale row is superseded, not mutated, and the new row's finality
+   claim is backed by the fresh re-aggregation that produced it).
 
 Every fallback emits the existing Tier 2 refusal-vocabulary entry with
 the `AmbiguityReason` attached, feeding D2-5's ambiguity-rate metric.
 
 ## 6. Fallback behavior (wiring into shipped code)
 
-`RollupMergeRefresher` refresh sequence, insertion point after eligibility
-(D5 step 1-2 of the existing 7-step sequence):
+`RollupMergeRefresher.mergeRefresh` refresh sequence (actual step names,
+`RollupMergeRefresher.scala` l.212–241), insertion point after
+`verifyScopeCoverage` and before `executeMerge`:
 
 ```
-eligibility → finality → [NEW: snapshot-diff extraction] → snapshot pin
-    → if all buckets row-extractable: partial-state aggregate over delta rows only
-    → else: existing scope-declared full re-aggregation (unchanged path)
-    → MERGE → watermark advance (unchanged)
+requireSafeIdentifiers → requireGrained → requireIcebergTable
+  → baseDataFrame → scopedBase → buildRollupDf → empty-scope guard
+  → verifySourceUnique → verifyScopeCoverage
+  → [NEW: snapshot-diff extraction over the lineage (head, last watermark]]
+      → if all buckets row-extractable: partial-state aggregate over delta rows only
+      → else: existing scope-declared full re-aggregation (buildRollupDf path, unchanged)
+  → executeMerge → watermark advance (post-write, unchanged)
 ```
+
+(The earlier "snapshot pin" step name in this spec's first draft was
+fictional — pinning is implicit: Iceberg's optimistic-concurrency commit
+in `executeMerge` plus the post-write watermark row ARE the pin, per
+D3. The extraction step reads lineage up to the CURRENT head snapshot
+and the MERGE commit itself is what advances the table.)
 
 The extraction step adds one Iceberg metadata walk (snapshot lineage +
 file lists; no data scan). Cost contract (matches the probe precedent):
-the walk must be cheaper than the aggregation it replaces — asserted by
-contract test, enforced by a row-count guard (skip extraction when
-`addedRows + removedRows > bucket_rows / 2`: past half, full re-agg is
-cheaper anyway).
+the walk must be cheaper than the aggregation it replaces. The
+**row-count guard lives in `RollupMergeRefresher`, one level above the
+extractor** (heron Q5): `bucket_rows` is known to the refresher from
+the rollup table's bucket state, not to the extractor — the extractor
+returns the `SnapshotDelta` + row totals, and the REFRESHER applies the
+skip rule (`addedRows + removedRows > bucket_rows / 2`: past half,
+full re-agg is cheaper anyway).
 
 ## 7. Contract tests (connector, `AnyFlatSpec with Matchers`)
 
 `RollupSnapshotDiffExtractorSpec`:
 1. append-only lineage → `Appended` with correct file count + row totals
 2. COW rewrite (remove+add same snapshot) → `DeletesInOpenWindow` per §5.4
+2b. MOR-only delete (delete-file added, NO removedDataFiles) →
+    `Ambiguous(EqualityDeletes)` — the COW-rewrite signature test of
+    §5.4 must NOT misclassify this as `DeletesInOpenWindow`
+2c. OutOfWindowRewrite, per-bucket granularity: one bucket's removal
+    outside the freshness window → `Ambiguous` for that bucket only;
+    untouched buckets stay row-extractable (ermine Q4 gap)
 3. equality delete present → `Ambiguous(EqualityDeletes)`
 4. schema evolution mid-lineage → `Ambiguous(SchemaOrPartitionEvolution)`
-5. expired-watermark lineage gap → `Ambiguous` + watermark reset
+5. expired-watermark lineage gap → `Ambiguous` + NEW watermark row written
+   per §5.5 (stale row superseded, `is_final` re-derived — D3 monotonicity
+   preserved; test asserts no `is_final` true→false transition)
 6. `NoDataChange` → no-op, watermark advances
 7. half-row-count guard: extraction skipped, full path taken
 8. core `SnapshotDeltaPolicy.isRowExtractable` truth table (core test, no Spark)
