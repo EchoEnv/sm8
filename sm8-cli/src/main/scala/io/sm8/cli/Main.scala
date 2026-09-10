@@ -1090,6 +1090,9 @@ object Main {
             ",\"tier\":" + t + "}"
         case (None, _) =>
           // Legacy shape: no tier = pre-Tier-2 default path.
+          // NOTE (owl R2): a --scope value passed WITHOUT --tier is
+          // silently dropped here — documented, not an error (the
+          // legacy {model} shape has no scope field to carry it).
           "{\"model\":" + mapper.writeValueAsString(model) + "}"
       }
       val resp = Client.postJson(cfg, "/RollupRefreshService/refresh", body)
