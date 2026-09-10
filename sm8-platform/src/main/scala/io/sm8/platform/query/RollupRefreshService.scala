@@ -46,7 +46,11 @@ import dev.restate.sdk.endpoint.definition.{
 import dev.restate.serde.jackson.JacksonSerdeFactory
 
 /** Request: which model to refresh. */
-final case class RollupRefreshRequest(model: String)
+final case class RollupRefreshRequest(
+    model: String,
+    tier: Option[Int] = None,
+    scope: Option[List[String]] = None
+)
 
 /** Per-rollup outcome. */
 final case class RollupRefreshOutcome(
@@ -70,7 +74,8 @@ object RollupRefreshService {
     * `RollupRefresher.refreshModel(spark, name, modelOf)` returns
     * its own richer result type; adapt it here). */
   type RefreshFn =
-    String => Either[String, List[(String, String, Option[String])]]
+    (String, Option[Int], Option[List[String]]) =>
+      Either[String, List[(String, String, Option[String])]]
 
   /** Build the Restate `ServiceDefinition` exposing `refresh`.
     *
@@ -94,7 +99,7 @@ object RollupRefreshService {
     val refreshRunner: HandlerRunner[RollupRefreshRequest, RollupRefreshResponse] =
       HandlerRunner.of(
         (_: dev.restate.sdk.Context, req: RollupRefreshRequest) => {
-          refreshFn(req.model) match {
+          refreshFn(req.model, req.tier, req.scope) match {
             case Right(results) =>
               val outcomes = results.map { case (rollup, table, err) =>
                 RollupRefreshOutcome(

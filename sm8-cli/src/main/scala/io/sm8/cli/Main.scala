@@ -1016,11 +1016,57 @@ object Main {
   // which eagerly re-materializes every rollup the model declares
   // (saveAsTable — durable). Prints per-rollup outcomes; exit 1 if
   // any rollup failed, 2 on usage errors, 3 on transport errors.
-  private def cmdRollupRefresh(cfg: Config, args: List[String]): Int = args match {
+  // `sm8 rollup-refresh <model> [--tier 0|1|2] [--scope b1,b2,...]`
+  // Per ADR-0031: --tier 2 with --scope cascades from the rollup's
+  // declared cascade_source. Without --tier, the body is the legacy
+  // {model} shape — old scripts keep working (Tier 0/1 default).
+  private def cmdRollupRefresh(cfg: Config, args: List[String]): Int = {
+    // Parse flags + model positionally.
+    val tierIdx = args.indexOf("--tier")
+    val scopeIdx = args.indexOf("--scope")
+    val tier = if (tierIdx >= 0 && tierIdx + 1 < args.length)
+      Some(args(tierIdx + 1).trim.toInt) else None
+    val scope = if (scopeIdx >= 0 && scopeIdx + 1 < args.length)
+      Some(args(scopeIdx + 1).split(',').map(_.trim).filter(_.nonEmpty).toList)
+      else None
+    val rest = args.zipWithIndex.collect {
+      case (a, i) if i != tierIdx && i != tierIdx + 1 &&
+                    i != scopeIdx && i != scopeIdx + 1 => a
+    }.toList
+    cmdRollupRefreshBody(cfg, rest, tier, scope)
+  }
+
+  private def cmdRollupRefreshBody(
+      cfg: Config,
+      args: List[String],
+      tier: Option[Int],
+      scope: Option[List[String]]): Int = args match {
     case Nil =>
-      System.err.println("sm8 rollup-refresh: missing <model>. Usage: sm8 rollup-refresh <model>"); 2
+      System.err.println("sm8 rollup-refresh: missing <model>. " +
+        "Usage: sm8 rollup-refresh <model> [--tier 0|1|2] [--scope b1,b2,...]"); 2
     case model :: Nil =>
-      val body = "{\"model\":" + mapper.writeValueAsString(model) + "}"
+      val body = (tier, scope) match {
+        case (Some(2), Some(buckets)) =>
+          // Tier 2: cascade from the declared cascade_source with
+          // the bucket list as scope.
+          "{\"model\":" + mapper.writeValueAsString(model) +
+            ",\"tier\":2,\"scope\":" +
+            mapper.writeValueAsString(buckets) + "}"
+        case (Some(2), None) =>
+          System.err.println("sm8 rollup-refresh: --tier 2 requires " +
+            "--scope <hour-bucket-list> (the SOURCE rollup's buckets " +
+            "composing the target's day)"); return 2
+        case (Some(t), _) if t != 0 && t != 1 && t != 2 =>
+          System.err.println(s"sm8 rollup-refresh: unknown tier $t " +
+            "(supported: 0, 1, 2)"); return 2
+        case (Some(t), _) =>
+          // Tier 0/1 explicit
+          "{\"model\":" + mapper.writeValueAsString(model) +
+            ",\"tier\":" + t + "}"
+        case (None, _) =>
+          // Legacy shape: no tier = pre-Tier-2 default path.
+          "{\"model\":" + mapper.writeValueAsString(model) + "}"
+      }
       val resp = Client.postJson(cfg, "/RollupRefreshService/refresh", body)
       // Exit-code discipline (arch + DE review): cron must
       // distinguish server-unreachable (5xx -> 3, transport) from

@@ -154,16 +154,11 @@ MB. Latency regression is measurable with the observation harness
 
 ## Tier 2 merge refresh (row-level MERGE, PR #370)
 
-> **NO CLI/REST ENTRY POINT YET.** Tier 2 is **programmatic-only in
-> v1**: it is invoked by calling
-> `RollupRefresher.mergeRefreshModel(spark, model, spec, scopeValues)`
-> from a Spark job (connector API). The `sm8 rollup-refresh` CLI and
-> the `RollupRefreshService/refresh` endpoint drive Tier 0/1 ONLY —
-> running them never triggers a merge refresh (they route to
-> `RollupMaterializer.materialize`). Wiring a `--tier 2 --scope
-> <buckets>` selector through CLI + REST is future work; until it
-> ships, operators adopt Tier 2 by scheduling their own job against
-> the connector API (or waiting for the wrapper ticket).
+> **CLI/REST surface (shipped):** \`sm8 rollup-refresh <model>
+> --tier 2 --scope <hour-bucket-1>,<hour-bucket-2>,...\` triggers the
+> cascade refresh via \`RollupRefreshService\`. Without \`--tier\`, the
+> legacy \`{model}\` shape drives Tier 0/1 (pre-cascade behavior,
+> unchanged).
 
 Tier 2 refreshes a rollup by **merging only the recomputed rows for
 the declared scope's buckets** into the existing Iceberg rollup table
