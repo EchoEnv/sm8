@@ -307,6 +307,56 @@ bucket falls back to full-bucket re-aggregation (D2-6). This is a
 sibling decision (not buried in D2-6 prose) so it is discoverable
 from a single read of the Decisions section.
 
+### D6 — The Tier 2 vs Tier 1 comparison study: design and gates
+
+The MOR-hybrid decision is an empirical one, so the experiment that
+decides it is specified here, not left to the implementer. The study
+runs the same workload against paired COW and MOR tables
+(`RollupObservationHarness` gains a dual-table mode; measurement gap:
+the `Tier2ScanProbe` — a direct, non-routed scan latency probe, see
+`docs/runbooks/tier2-scan-probe.md` — because the production routed
+surface can never produce a base-table scan number).
+
+Metrics, with collection points:
+
+| Metric | Source | Gate threshold |
+|---|---|---|
+| Scan-latency p95 | routed-surface scan time, stratified by `snapshots_since_last_compaction` (NOT a single mean) | MOR p95 ≤ 1.5× COW p95, sustained over ≥ 2 compaction cycles |
+| Refresh wall time | `RollupRefreshCostProbe.RefreshRun` (existing) | MOR mean < COW mean, p ≤ 0.05 over ≥ 30 refreshes |
+| Rewrite amplification | unchanged-bytes ratio from the Gate B probe (ADR-0029 §Gate B) | MOR unchanged-bytes ≥ 50% lower than COW at equal refresh cadence |
+| Ambiguity rate | new per-bucket counter on the Tier 2 MERGE path (D8) | ≤ 30% of buckets; above this, Tier 2's expected value collapses (D2-5) |
+
+**Decision rule**: MOR-hybrid becomes the default write posture for
+open-window buckets only if ALL FOUR gates hold. Any gate failing
+closes the experiment with COW confirmed; the closure comment records
+which gate and the numbers. The study runs on the live model at
+production scale; the synthetic-fixture Gate B run (2026-08 session)
+validated the wiring but produces no gate numbers.
+
+### D7 — Compaction cadence contract
+
+MOR's delete-file accumulation is bounded only by compaction. Without
+a cadence contract, the D6 scan-latency p95 gate is unmeasurable
+(stratification by compaction age is meaningless if compaction is
+ad-hoc). Contract: compaction runs on a schedule expressed as a
+max-delete-file-count per table, enforced by the same cron entry that
+drives Tier 2 refresh (see runbook, cascade-cron section); the
+watermark table's `last_commit_snapshot_id` (D3) is the join key for
+stratifying D6's scan-latency rows by compaction age. Compaction is a
+connector-layer concern (Spark I/O); core sees nothing.
+
+### D8 — Ambiguity-rate instrumentation (Tier 2's real metric, formalized)
+
+D2-5 named ambiguity rate as the metric that bounds Tier 2's value;
+this decision places it. The Tier 2 MERGE materializer emits, per
+refresh, a per-bucket classification: `delta_applied` | `full_reagg`
+| `skipped_unchanged`. The counter lives on `RefreshRun` (connector,
+`RollupRefreshCostProbe.scala` sibling), not in core (IO-free, RFC §3);
+`DecomposabilityAudit` (core) stays a static per-measure verdict and
+gains no runtime counter. The D6 gate consumes the aggregate rate;
+the per-bucket classes land in the refresh log for refusal debugging
+(the runbook's table gains a `delta_applied=0%` row when this ships).
+
 ## Alternatives considered
 
 1. **MOR everywhere from day one of Tier 2** (the external reference's
