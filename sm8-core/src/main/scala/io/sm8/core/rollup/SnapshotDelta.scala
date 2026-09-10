@@ -119,14 +119,17 @@ object SnapshotDelta {
   /** Whether a delta is row-extractable in v1 (spec §4).
     *
     * Truth table:
-    *   - `Appended`           → true (all measures Additive or
-    *                             Algebraic; Positional/Holistic/
-    *                             Approximable are filtered out
-    *                             upstream by `DecomposabilityAudit`)
+    *   - `Appended`           → true (caller filters out buckets whose
+    *                             measures are Positional / Holistic /
+    *                             Approximable via `DecomposabilityAudit`;
+    *                             v1 extracts ADDS only — append-only
+    *                             rule below)
     *   - `DeletesInOpenWindow`→ false (v1 append-only; D2-3
-    *                             overwrite-only rule)
+    *                             overwrite-only rule forbids
+    *                             subtract-carrier MERGEs)
     *   - `Ambiguous`          → false (always)
-    *   - `NoDataChange`       → true (trivially: no rows to apply)
+    *   - `NoDataChange`       → true (trivially: no rows to apply;
+    *                             the refresher issues a no-op MERGE)
     *
     * @param delta the snapshot delta to classify
     * @return true iff the Tier 2 MERGE materializer may attempt a
