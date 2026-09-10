@@ -11,6 +11,7 @@ Ticket 6 of `docs/wayfinder/2026-09-06-pre-aggregation.md` · Design: `docs/adr/
 | `RollupRefresher.refreshModel` | connector (spark-connector) | eager re-materialization of every declared rollup |
 | `RollupMaterializer.persistCatalog` | connector (spark-connector) | durable `saveAsTable` write (job runs before return) |
 | Tier 2 merge refresh (`RollupRefresher.mergeRefreshModel`) | connector (spark-connector) | row-level MERGE refresh for scoped buckets + watermark advance (PR #370); CLI/REST surface added in #376 (`--tier 2 --scope <hour-buckets>`) |
+| Cascade rollups (`RollupCascadeRefresher.cascadeRefresh`) | connector (spark-connector) | build a coarser rollup from a FINER rollup's partial states (e.g. weekly from daily); ADR-0031; CLI: `--tier 2 --scope <day-buckets>` when the target declares `cascade_source` |
 | `query-frequency-observer` plugin | plugin | counts query shapes per model (PostExecute observer) |
 | `QueryShapeCounters.snapshot()` | plugin | programmatic counts read (hottest shapes first) |
 
@@ -234,6 +235,123 @@ that late data could still change.
   leaves the watermark stale-but-valid; it never claims more final
   than the data (ADR-0030 D3).
 
+## Cascade rollups (ADR-0031, Tier 2)
+
+A **cascade rollup** is built from another rollup's partial states
+(e.g. weekly from daily) instead of from base. When the finer rollup
+is Tier 1/Tier 2 (Iceberg), cascading the coarser rollup is much
+cheaper than a base re-scan — this is exactly where Tier 2's
+row-level MERGE pays off.
+
+### Declaring a cascade
+
+In the model YAML, the COARSER rollup declares which FINER rollup
+it builds from:
+
+```yaml
+rollups:
+  - name: daily
+    dimensions: [order_date_day, region]
+    measures: [total, avg_price]
+    time_grain: day
+    grain_dimension: order_date_day
+  - name: weekly
+    dimensions: [order_date_week, region]
+    measures: [total, avg_price]
+    time_grain: week
+    grain_dimension: order_date_week
+    cascade_source: daily    # the finer rollup's name
+```
+
+Both rollups must be on the SAME model, the target must be grain-
+bucketed, and the target's grain must strictly coarsen the source's
+(hour → day, day → week, etc. — the truncation semantics come from
+ADR-0024's date_trunc contract). The validator refuses at deployment:
+self-cycles, two-node cycles, longer cycles, unknown source names,
+dimension mismatches, and same-or-finer grain declarations.
+
+### Measure eligibility
+
+Only Additive (Sum, Count) and Algebraic (Avg, Stddev, Variance)
+measures cascade. Min/Max also cascade (binary re-application).
+Positional (First/Last), Holistic (Median/Percentile), and
+Approximable (CountDistinct, ApproxPercentile) NEVER cascade —
+declare those on a non-cascaded rollup (built from base) instead.
+
+### Triggering a cascade refresh
+
+```bash
+# Tier 2 cascade: weekly from daily's day buckets
+sm8 rollup-refresh mymodel --tier 2 \
+  --scope '2026-09-07,2026-09-08,2026-09-09,2026-09-10,2026-09-11,2026-09-12,2026-09-13'
+```
+
+The `--scope` values are the SOURCE rollup's day buckets whose
+deltas to cascade. The connector:
+
+1. Verifies the source's watermark `is_final=true` for every
+   coarsened bucket (any non-final source bucket refuses with
+   `CascadeSourceNotFinal` — the daily rollup cannot be more final
+   than its source).
+2. Pins the source's snapshot at build start (concurrent source
+   refreshes don't contaminate the build).
+3. Aggregates the source's PARTIAL STATES (not raw base rows):
+   Sum/Count sum their partials; Min/Max re-apply the binary op;
+   Avg/Stddev/Variance use the Welford cross-group merge
+   (`m2_ab = m2_a + m2_b + δ²·n_a·n_b/n_ab` — verified against the
+   ADR-0023 1e8±1.0 cancellation fixture).
+4. MERGEs into the weekly Iceberg table + advances the weekly
+   watermark with the PINNED SOURCE snapshot id (not the weekly's
+   own — the diagnostic contract per D3 rule 2).
+
+### Prerequisites
+
+- Both rollup tables must already exist as Iceberg (run a Tier 1
+  refresh on each first).
+- Both rollups must be grain-bucketed (`time_grain` +
+  `grain_dimension`).
+- The target must declare `cascade_source` pointing at the source.
+- The source's watermark must be `is_final=true` for the scope's
+  buckets (past day-grain buckets latch automatically after their
+  refresh; today's bucket stays open until the day closes). NB: the
+  finality heuristic only latches DAY-grain sources — cascading from
+  a sub-day source requires the operator to explicitly advance the
+  source's watermark per bucket (a documented v1 boundary).
+
+### When to cascade vs build from base
+
+- **Cascade**: the source rollup is already refreshed (its watermark
+  is final), the target's grain strictly coarsens the source's, and
+  the measures are Additive/Algebraic. The scan cost is the source
+  rollup's size (much smaller than base).
+- **Build from base** (drop `cascade_source`, run without
+  `--tier 2`): when the source isn't fresh enough, when you need
+  Positional/Holistic/Approximable measures, or when the base scan
+  is cheap enough that the cascade indirection isn't worth it.
+
+### Staleness propagation
+
+The cascade inherits the source's staleness — a weekly rollup built
+from a stale daily rollup is stale by definition. The connector
+refuses (`CascadeSourceNotFinal`) rather than silently propagating.
+If you need the weekly bucket NOW despite a non-final source day,
+the honest options on the current surface are:
+
+1. **Drop `cascade_source` from the model YAML** (edit + redeploy)
+   and run the legacy eager rebuild: `sm8 rollup-refresh mymodel`.
+   This rebuilds daily from base (slower, but always available).
+2. **Wait for the source's window to close** (the daily watermark
+   latches final on the next daily refresh after the lateness
+   window), then re-run the cascade.
+3. **Programmatic**: call `RollupRefresher.mergeRefreshModel` from a
+   Spark job with the daily's own scope (no CLI/REST surface for
+   this yet — the Tier 2 v1 boundary note above applies).
+
+Note: `--tier 1 --scope <buckets>` is NOT a valid fallback on the
+current CLI — `--scope` without `--tier 2` is silently dropped (the
+legacy `{model}` shape has no scope field to carry it), and tier 1
+runs the whole-model eager rebuild, not a scoped refresh.
+
 ## Known limits (v1)
 
 - **Refresh tiers** (ADR-0029/0030/0031): a rollup refreshed WITHOUT a
@@ -252,7 +370,7 @@ that late data could still change.
   routing lane resolves the Iceberg table (it wins by ADR-0028's
   format-standard resolution).
 - Time-grain rollups (`time_grain:` + `grain_dimension:`) materialize and route: the grain dimension must be `Date`/`Timestamp` (declared or resolved), and a query at a coarser grain re-buckets a finer rollup for Additive measures and Avg. Truncation is session-timezone. Week-bucket boundaries are whatever the engine's `date_trunc('week')` emits (pinned by test in `RollupMaterializerSpec`); re-verify the pin on a Spark upgrade.
-- Dispersion measures (Stddev/Variance) are refused on the coarsening arm — declare the rollup at the coarser grain instead.
+- Dispersion measures (Stddev/Variance) are refused on the coarsening arm at QUERY time (the rewriter cannot re-bucket a finer dispersion rollup to a coarser grain). Cascade CONSTRUCTION of dispersion measures is supported (the Welford merge is the correct cross-group reduction); the refusal applies to serving a query at a coarser grain than the rollup's own grain — declare the rollup at the coarser grain instead.
 - The refresh surface is session-catalog scoped in tests; point `saveAsTable` at your production catalog via the server's Spark session configuration.
 - **Tier 2 v1 boundaries** (ADR-0030 D2-6; D5 governs the FUTURE
   snapshot-diff path, disclosed): the delta is scope-declared, not
