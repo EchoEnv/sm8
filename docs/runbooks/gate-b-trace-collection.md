@@ -76,12 +76,28 @@ confuse the two.
 
 ## Invocation
 
+**Java 17+ requires Spark's `--add-opens` JVM flags** — without them,
+Spark 3.5.8 throws `IllegalAccessError: cannot access class
+sun.nio.ch.DirectBuffer`. Spark's `spark-submit` passes them
+automatically; bare `java -cp` does not.
+
 ```bash
 # The connector jar does NOT bundle Spark/Iceberg classes — run via
-# spark-submit, or reuse the classpath scripts/rollup-observe.sh
-# builds (it is the classpath-authoritative reference):
+# spark-submit (passes --add-opens automatically), or via bare java
+# with the flags added manually (see the ADD_OPENS variable below),
+# or reuse the classpath scripts/rollup-observe.sh builds (it is the
+# classpath-authoritative reference):
+
+# Via spark-submit (Java 17+ flags handled automatically):
 spark-submit --class io.sm8.connectors.spark.GateBTraceRunner \
   <connector-jar> \
+  --model <model-name> \
+  --out-path /var/lib/sm8/gate-b/traces/$(date +%Y-%m-%d).json
+
+# Via bare java (add the flags explicitly):
+ADD_OPENS="--add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED"
+java $ADD_OPENS -cp <connector-jar>:<scala-library>:<dep-classpath> \
+  io.sm8.connectors.spark.GateBTraceRunner \
   --model <model-name> \
   --out-path /var/lib/sm8/gate-b/traces/$(date +%Y-%m-%d).json
 ```
