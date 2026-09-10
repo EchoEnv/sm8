@@ -35,6 +35,8 @@ class RollupCascadeSpec
   private val warehouseDir: String =
     Files.createTempDirectory("cascade-spec").toString
 
+  /** Boot the Spark session with the embedded HadoopCatalog
+    * (ADR-0028 minimum viable catalog) before the first test. */
   override def beforeAll(): Unit = {
     spark = SparkSession.builder()
       .appName("RollupCascadeSpec")
@@ -58,6 +60,8 @@ class RollupCascadeSpec
     wh.mkdirs()
   }
 
+  /** Tear down the Spark session and clean the per-suite
+    * warehouse so the temp filesystem doesn't accumulate. */
   override def afterAll(): Unit = {
     if (spark != null) spark.stop()
     val wh = new java.io.File(warehouseDir)
