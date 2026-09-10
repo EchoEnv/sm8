@@ -159,19 +159,6 @@ object RollupSnapshotDiffExtractor {
     try {
       val table: Table = Spark3Util.loadIcebergTable(spark, qualifiedName)
       val head = table.currentSnapshot()
-      // PROBE-DEBUG (remove once classification is verified):
-      if (head != null) {
-        val allSnaps = scala.collection.mutable.ListBuffer.empty[String]
-        var walk: org.apache.iceberg.Snapshot = head
-        var g = 0
-        while (walk != null && g < 50) {
-          allSnaps += s"${walk.snapshotId()}(op=${walk.operation()},files=${walk.summary().get("added-records")}/${walk.summary().get("deleted-records")})"
-          val p: java.lang.Long = walk.parentId()
-          walk = if (p == null) null else table.snapshot(p.longValue())
-          g += 1
-        }
-        println(s"D5-PROBE-DEBUG: head=${head.snapshotId()} from=$fromSnapshotId lineage=${allSnaps.mkString(" -> ")}")
-      }
       if (head == null) {
         // Fresh table: no snapshots at all — nothing to extract.
         Right(SnapshotDelta.NoDataChange)
