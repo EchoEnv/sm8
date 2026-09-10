@@ -154,10 +154,10 @@ MB. Latency regression is measurable with the observation harness
 
 ## Tier 2 merge refresh (row-level MERGE, PR #370)
 
-> **CLI/REST surface (shipped):** \`sm8 rollup-refresh <model>
-> --tier 2 --scope <hour-bucket-1>,<hour-bucket-2>,...\` triggers the
-> cascade refresh via \`RollupRefreshService\`. Without \`--tier\`, the
-> legacy \`{model}\` shape drives Tier 0/1 (pre-cascade behavior,
+> **CLI/REST surface (shipped):** `sm8 rollup-refresh <model>
+> --tier 2 --scope <hour-bucket-1>,<hour-bucket-2>,...` triggers the
+> cascade refresh via `RollupRefreshService`. Without `--tier`, the
+> legacy `{model}` shape drives Tier 0/1 (pre-cascade behavior,
 > unchanged).
 
 Tier 2 refreshes a rollup by **merging only the recomputed rows for
