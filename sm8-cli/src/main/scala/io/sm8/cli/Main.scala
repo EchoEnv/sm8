@@ -1024,16 +1024,41 @@ object Main {
     // Parse flags + model positionally.
     val tierIdx = args.indexOf("--tier")
     val scopeIdx = args.indexOf("--scope")
-    val tier = if (tierIdx >= 0 && tierIdx + 1 < args.length)
-      Some(args(tierIdx + 1).trim.toInt) else None
-    val scope = if (scopeIdx >= 0 && scopeIdx + 1 < args.length)
-      Some(args(scopeIdx + 1).split(',').map(_.trim).filter(_.nonEmpty).toList)
-      else None
-    val rest = args.zipWithIndex.collect {
-      case (a, i) if i != tierIdx && i != tierIdx + 1 &&
-                    i != scopeIdx && i != scopeIdx + 1 => a
-    }.toList
-    cmdRollupRefreshBody(cfg, rest, tier, scope)
+    // L1 (owl): toIntOption instead of toInt — a non-numeric tier must
+    // print a usage error, not throw. L2 (owl): --tier/--scope as the
+    // LAST arg (no value after) must error explicitly, not silently
+    // fall through to the legacy path.
+    val tierParse: Either[String, Option[Int]] =
+      if (tierIdx < 0) Right(None)
+      else if (tierIdx + 1 >= args.length)
+        Left("sm8 rollup-refresh: --tier requires a value (0, 1, or 2)")
+      else args(tierIdx + 1).trim.toIntOption match {
+        case Some(v) => Right(Some(v))
+        case None =>
+          Left(s"sm8 rollup-refresh: --tier '${args(tierIdx + 1)}' is " +
+            "not a valid integer (supported: 0, 1, 2)")
+      }
+    val scopeParse: Either[String, Option[List[String]]] =
+      if (scopeIdx < 0) Right(None)
+      else if (scopeIdx + 1 >= args.length)
+        Left("sm8 rollup-refresh: --scope requires a comma-separated " +
+          "bucket list (e.g. --scope '2026-09-07 10:00:00,2026-09-07 11:00:00')")
+      else {
+        val buckets = args(scopeIdx + 1).split(',').map(_.trim)
+          .filter(_.nonEmpty).toList
+        if (buckets.isEmpty)
+          Left("sm8 rollup-refresh: --scope is empty after parsing " +
+            "(expected comma-separated bucket values)")
+        else Right(Some(buckets))
+      }
+    (tierParse, scopeParse) match {
+      case (Left(err), _) => System.err.println(err); return 2
+      case (_, Left(err)) => System.err.println(err); return 2
+      case (Right(t), Right(s)) =>
+        cmdRollupRefreshBody(cfg,
+          args.filterNot(a => a == "--tier" || a == "--scope"),
+          t, s)
+    }
   }
 
   private def cmdRollupRefreshBody(

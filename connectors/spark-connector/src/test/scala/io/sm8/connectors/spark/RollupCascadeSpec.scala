@@ -384,6 +384,41 @@ class RollupCascadeSpec
     }
   }
 
+  test("Welford cross-group merge: region-dropped target collapses 2 regions into 1 bucket (cross-term EXERCISED)") {
+    // ermine R1 MEDIUM fix: the prior fixtures preserved region, so
+    // each target row's cross-group term was structurally 0. This
+    // fixture DROPS region from the target: 4 source rows from 2
+    // regions collapse into ONE daily bucket. The cross-group term
+    // Σ_i<j δ²·n_i·n_j/n is now non-zero (emea mean=11, apac
+    // mean=100, δ²=7921 — the merged m2 must include it).
+    val amounts = List(
+      (ts("2026-09-07 10:00:00"), "emea", 10.0),
+      (ts("2026-09-07 10:30:00"), "emea", 12.0),
+      (ts("2026-09-07 11:00:00"), "apac", 100.0),
+      (ts("2026-09-07 11:30:00"), "apac", 200.0))
+    writeBase(amounts: _*)
+    seedHourly()
+    val tgtNoRegion = tgtSpec.copy(dimensions = List("ts"))
+    RollupMaterializer.materialize(spark, cascadeModel, tgtNoRegion,
+      eager = true, tableFormat = RollupMaterializer.Iceberg,
+      refreshScope = RollupMaterializer.RefreshScope.NoScope)
+      .left.foreach(e => fail(s"no-region tgt materialize failed: $e"))
+    runCascade(tgtNoRegion, srcSpec,
+      List("2026-09-07 10:00:00", "2026-09-07 10:30:00",
+           "2026-09-07 11:00:00", "2026-09-07 11:30:00"))
+    val daily = spark.table(q(RollupRewriter.rollupTableName(cascadeModel, tgtNoRegion)))
+    // n=4, sum=322, mean=80.5. m2 = Σ(x−80.5)² =
+    //   (10−80.5)² + (12−80.5)² + (100−80.5)² + (200−80.5)²
+    // = 4970.25 + 4692.25 + 380.25 + 14280.25 = 24323.0
+    // A naive SUM(m2) over per-hour partials (m2_hour=2 each for
+    // emea, m2_hour=0 for the single-row apac slots) yields ~2 — a
+    // regression that zeroes the cross-group term fails this.
+    val row = daily.collect().head
+    row.getLong(daily.columns.indexOf("count__weight")) shouldBe 4L
+    row.getDouble(daily.columns.indexOf("sum__weight")) shouldBe 32.2 +- 1e-6
+    row.getDouble(daily.columns.indexOf("m2__weight")) shouldBe 243.23 +- 0.5
+  }
+
   test("D4 sequencing: the target's watermark reflects post-merge finality (past buckets latch)") {
     writeBase((ts("2026-09-07 10:00:00"), "emea", 10.0))
     seedHourly()
