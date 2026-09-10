@@ -35,7 +35,10 @@ check-spark-connect   # or: nc -z localhost 15002
 
 ```bash
 # --tables: which tables to probe
-# --query:  parameterized scan (LIMIT probe keeps it cheap; delta-scan shape per D5)
+# --query:  parameterized scan. NOTE: the template filters on a DATA column
+#           (event_ts) only — Spark SQL on this Iceberg pin cannot filter by
+#           snapshot time inline. Snapshot context is captured by the probe
+#           itself (see Stratification below), not by this query.
 # --rounds: repetitions per table (default 3)
 mvn -q test -pl connectors/spark-connector \
   -Dtest=Tier2ScanProbeMain \
@@ -43,6 +46,26 @@ mvn -q test -pl connectors/spark-connector \
   -Dprobe.query="SELECT count(*) FROM {table} WHERE event_ts >= date_sub(current_date(), 30)" \
   -Dprobe.rounds=3
 ```
+
+## Stratification (where `snapshots_since_last_compaction` comes from)
+
+The query above measures scan latency **of the table's current snapshot**;
+it cannot and does not select snapshots. The probe reads the Iceberg
+metadata at probe time — current snapshot id, parent lineage depth since
+the last compaction commit — and records `snapshots_since_last_compaction`
+per round alongside `latency_ms`. D6's per-cycle stratification groups
+rounds by that captured value; it is never derived from the SQL text.
+
+To replay latency against a HISTORICAL snapshot (delete-file accumulation
+without compaction replay), use the VERSION AS OF variant — the probe must
+first resolve the target snapshot id from the metadata table:
+
+```sql
+SELECT count(*) FROM {table} VERSION AS OF {snapshot_id}
+```
+
+Use this variant only for the D6 appendix measurements; the primary study
+rows use live snapshots so latency reflects what production scans see.
 
 ## Output fields (per table, per round)
 

@@ -321,9 +321,9 @@ Metrics, with collection points:
 
 | Metric | Source | Gate threshold |
 |---|---|---|
-| Scan-latency p95 | routed-surface scan time, stratified by `snapshots_since_last_compaction` (NOT a single mean) | MOR p95 ≤ 1.5× COW p95, sustained over ≥ 2 compaction cycles |
+| Scan-latency p95 | routed-surface scan time, stratified by `snapshots_since_last_compaction` (NOT a single mean) | MOR per-cycle p95 ≤ 1.5× COW per-cycle p95 in **at least N−1 of every N consecutive compaction cycles** (median-of-cycles for N < 4); a single outlier cycle does not fail the gate. Gate windows for metrics 1–3 must overlap in wall-clock time so the compaction/refresh cadence knob is pinned to one setting across all three. |
 | Refresh wall time | `RollupRefreshCostProbe.RefreshRun` (existing) | MOR mean < COW mean, p ≤ 0.05 over ≥ 30 refreshes |
-| Rewrite amplification | unchanged-bytes ratio from the Gate B probe (ADR-0029 §Gate B) | MOR unchanged-bytes ≥ 50% lower than COW at equal refresh cadence |
+| Rewrite amplification | unchanged-bytes ratio from the Gate B probe (ADR-0029 §Gate B) | MOR unchanged-bytes ≥ 50% lower than COW at equal refresh cadence **and equal compaction cadence** (both held fixed per D7; otherwise gate 3's anti-correlation with gate 1 — lazy compaction lowers rewrite but inflates delete-file scan cost — makes the pair unfalsifiable) |
 | Ambiguity rate | new per-bucket counter on the Tier 2 MERGE path (D8) | ≤ 30% of buckets; above this, Tier 2's expected value collapses (D2-5) |
 
 **Decision rule**: MOR-hybrid becomes the default write posture for
