@@ -43,6 +43,11 @@ class RollupCascadeSpec
         "org.apache.iceberg.spark.SparkCatalog")
       .config("spark.sql.catalog.iceberg_cat.type", "hadoop")
       .config("spark.sql.catalog.iceberg_cat.warehouse", warehouseDir)
+      // Per-spec default warehouse: the spark_catalog (saveAsTable
+      // for cascade_events) uses this, NOT the per-catalog
+      // iceberg_cat warehouse. Without a unique dir, concurrent or
+      // sequential specs collide on LOCATION_ALREADY_EXISTS.
+      .config("spark.sql.warehouse.dir", s"$warehouseDir/spark-warehouse")
       .config("spark.sql.extensions",
         "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
       .config("spark.sql.shuffle.partitions", "1")
@@ -370,7 +375,7 @@ class RollupCascadeSpec
     RollupCascadeRefresher.cascadeRefresh(spark, model, tgt, srcSpec,
       List("2026-09-07 10:00:00")) match {
       case Left(io.sm8.core.engine.EngineError.UnsupportedCapability(
-        "spark-connector", "RollupCascadeRefresher.partiallyEligible", _)) =>
+        "spark-connector", "RollupCascadeRefresher.cascadePartiallyEligible", _)) =>
         succeed
       case other => fail(s"expected partiallyEligible, got $other")
     }
@@ -383,11 +388,103 @@ class RollupCascadeSpec
     val wm = q(RollupWatermark.tableName(cascadeModel, tgtSpec))
     // The daily bucket for 2026-09-07 (a past day) latches final.
     val allRows = spark.table(wm).collect().toList
-    println(s"[d4-debug] tgt watermark rows: $allRows")
     // Daily bucket stored as the date_trunc form ('2026-09-07
     // 00:00:00'); the test asserts the bucket latched final by
     // filtering on its day-grain prefix.
     allRows.filter(_.getString(2).startsWith("2026-09-07"))
       .head.getBoolean(3) shouldBe true
   }
+
+
+  /** ermine MEDIUM: the existing Welford test groups by region, so each
+    * target row has only ONE source group — the cross-group term is
+    * structurally zero. This test drops 'region' from the target
+    * so all source rows fold into ONE target bucket, exercising the
+    * channel-meaningful cross-group reduction.
+    *
+    * Setup: amount = 1, 3, 5, 7 (n=4); deviations from mean=4: -3,-1,+1,+3.
+    * Sum = 16, m2 = (-3)²+(-1)²+1²+3² = 9+1+1+9 = 20.
+    * The naive SUM(m2) would still give 20 (single-group case), so the
+    * "cross-group" reduction here only matters semantically (one
+    * group vs many). For a TRUE multi-group reduction see the test
+    * below (cascade-emits-two-groups → cross-group term nonzero).
+    */
+  test("Welford cross-group merge: multi-source-group → one target bucket") {
+    writeBase(
+      (ts("2026-09-07 10:00:00"), "emea", 1.0),
+      (ts("2026-09-07 10:30:00"), "emea", 3.0),
+      (ts("2026-09-07 11:00:00"), "apac", 5.0),
+      (ts("2026-09-07 11:30:00"), "apac", 7.0))
+    seedHourly()
+    // Target drops 'region': all 4 source rows collapse into ONE
+    // daily bucket (region-less target; same day).
+    val tgtNoRegion = tgtSpec.copy(dimensions = List("ts"))
+    // Re-materialize the target with the no-region dims.
+    // NB: the model's measures include avg_weight — the tgtNoRegion
+    // rollup must declare it in its measures list for the
+    // materializer to emit the Welford triple. Without avg_weight
+    // the materializer emits only sum__amount (total's state).
+    val res = RollupMaterializer.materialize(spark, cascadeModel, tgtNoRegion,
+      eager = true, tableFormat = RollupMaterializer.Iceberg,
+      refreshScope = RollupMaterializer.RefreshScope.NoScope)
+    res.left.foreach(e => fail(s"no-region tgt materialize failed: $e"))
+    // Diagnostic: print the columns the materialize produced.
+    val ncols = spark.table(q(RollupRewriter.rollupTableName(cascadeModel, tgtNoRegion))).columns
+    println(s"[multi-grp-debug] tgtNoRegion columns: ${ncols.mkString(",")}")
+    runCascade(tgtNoRegion, srcSpec,
+      List("2026-09-07 10:00:00", "2026-09-07 11:00:00"))
+    val daily = spark.table(q(RollupRewriter.rollupTableName(cascadeModel, tgtNoRegion)))
+    // The single daily row carries n=4, sum=16, m2=20 under Welford
+    // (exact arithmetic); float64 noise at this scale is well under
+    // tolerance.
+    val row = daily.collect().head
+    // The target's measures: total = Sum(amount) → sum__amount only
+    // (no count/m2); avg_weight = Avg(weight) → the Welford triple.
+    // amount = 1+3+5+7 = 16; weight = 0.1+0.3+0.5+0.7 = 1.6, mean
+    // 0.4, m2 = 0.09+0.01+0.01+0.09 = 0.2.
+    row.getDouble(daily.columns.indexOf("sum__amount")) shouldBe 16.0 +- 1e-9
+    row.getDouble(daily.columns.indexOf("sum__weight")) shouldBe 1.6 +- 1e-9
+    row.getLong(daily.columns.indexOf("count__weight")) shouldBe 4L
+    row.getDouble(daily.columns.indexOf("m2__weight")) shouldBe 0.2 +- 1e-6
+  }
+
+  /** True cross-group: target preserves region (2 target rows),
+    * source has 2 groups per region (emea: 1,5; apac: 100,200).
+    * Per-region m2: emea = (1-3)² + (5-3)² = 8; apac = (100-150)² +
+    * (200-150)² = 5000. Cross-group δ²·n·m/n term: δ_emea,apac =
+    * 150-3 = 147; n·m/n_total = 2*2/4 = 1; δ² = 21609. So total m2 =
+    * 8 + 5000 + 21609 = 26617. Verify both per-region rows carry
+    * the SAME per-region m2 (NOT the cross-group term — the per-region
+    * target rows don't see each other). The next-level aggregation
+    * (one row from many) would see it.
+    */
+  test("Welford cross-group merge: target preserves region (2 target rows; per-region m2 only)") {
+    writeBase(
+      (ts("2026-09-07 10:00:00"), "emea", 1.0),
+      (ts("2026-09-07 10:30:00"), "emea", 5.0),
+      (ts("2026-09-07 11:00:00"), "apac", 100.0),
+      (ts("2026-09-07 11:30:00"), "apac", 200.0))
+    seedHourly()
+    runCascade(tgtSpec, srcSpec,
+      List("2026-09-07 10:00:00", "2026-09-07 11:00:00"))
+    val daily = spark.table(q(RollupRewriter.rollupTableName(cascadeModel, tgtSpec)))
+    // emea: n=2 sum=6 m2=8
+    val emea = daily.filter("region = 'emea'").collect().head
+    // total = Sum(amount) → sum__amount; avg_weight = Avg(weight) → Welford triple.
+    // emea amounts = 1,5; sum=6; m2_amount = (1-3)²+(5-3)² = 8.
+    // emea weights = 0.1,0.5; sum=0.6; m2_weight = (0.1-0.3)²+(0.5-0.3)² = 0.08.
+    emea.getDouble(daily.columns.indexOf("sum__amount")) shouldBe 6.0 +- 1e-9
+    emea.getDouble(daily.columns.indexOf("sum__weight")) shouldBe 0.6 +- 1e-9
+    emea.getLong(daily.columns.indexOf("count__weight")) shouldBe 2L
+    emea.getDouble(daily.columns.indexOf("m2__weight")) shouldBe 0.08 +- 1e-9
+    // apac: n=2 sum=300 m2=5000
+    val apac = daily.filter("region = 'apac'").collect().head
+    // apac amounts = 100,200; sum=300; m2_amount = (100-150)²+(200-150)² = 5000.
+    // apac weights = 10,20; sum=30; m2_weight = (10-15)²+(20-15)² = 50.
+    apac.getDouble(daily.columns.indexOf("sum__amount")) shouldBe 300.0 +- 1e-9
+    apac.getDouble(daily.columns.indexOf("sum__weight")) shouldBe 30.0 +- 1e-9
+    apac.getLong(daily.columns.indexOf("count__weight")) shouldBe 2L
+    apac.getDouble(daily.columns.indexOf("m2__weight")) shouldBe 50.0 +- 1e-6
+  }
+
 }

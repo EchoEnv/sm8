@@ -1001,7 +1001,9 @@ class ReconciledRollupSchemaSpec extends AnyFunSuite with Matchers {
     RollupRewriter.RollupRewriteRefusal.CascadeSourceMissing,
     RollupRewriter.RollupRewriteRefusal.CascadeSourceFailed,
     RollupRewriter.RollupRewriteRefusal.CascadeCoverageUncovered(
-      "2026-09-08 uncovered (source has 23/24 hours)")
+      "2026-09-08 uncovered (source has 23/24 hours)"),
+    RollupRewriter.RollupRewriteRefusal.CascadePartiallyEligible(
+      Set("med"))
   )
 
   test("reasonName labels are unique across the whole refusal ADT") {

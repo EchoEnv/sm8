@@ -137,14 +137,11 @@ object RollupCascadeRefresher {
                // now a partially-eligible DECLARATION cascades only
                // if the operator narrowed the target measures, so
                // refuse with the subset named (fail-loud over
-               // silent partial build).
-               Left(EngineError.UnsupportedCapability(
-                 engine = "spark-connector",
-                 capability = "RollupCascadeRefresher.partiallyEligible",
-                 message = s"rollups[${targetSpec.name}]: measures " +
-                   s"${non.mkString(", ")} cannot cascade from " +
-                   s"'${sourceSpec.name}' — narrow the target measures or " +
-                   "build those from base (ADR-0031 D1)"))
+               // silent partial build). Routed through refusalError
+               // (heron R1: the inline capability string bypassed
+               // the taxonomy — observers couldn't key counters).
+               Left(refusalError(targetSpec.name,
+                 RollupRewriter.RollupRewriteRefusal.CascadePartiallyEligible(non)))
              case other =>
                Left(refusalError(targetSpec.name,
                  RollupRewriter.RollupRewriteRefusal.CascadeCoverageUncovered(
