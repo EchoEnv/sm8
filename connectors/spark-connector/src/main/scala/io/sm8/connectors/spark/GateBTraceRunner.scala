@@ -35,6 +35,8 @@ import java.nio.file.{Files, Path, Paths}
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.databind.SerializationFeature
+import com.fasterxml.jackson.module.scala.DefaultScalaModule
+import com.fasterxml.jackson.databind.SerializationFeature
 
 import scala.collection.JavaConverters._
 
@@ -62,7 +64,7 @@ object GateBTraceRunner {
     * @param args the CLI arguments (see [[parseArgs]])
     * @return the process exit code
     */
-  def main(args: Array[String]): Int = {
+  def run(args: Array[String]): Int = {
     val parsed = parseArgs(args) match {
       case Right(c) => c
       case Left(usage) =>
@@ -151,6 +153,7 @@ object GateBTraceRunner {
           (rep, "RollupRefreshCostProbe synthetic fixture (single partition, scoped Tier 0 + Tier 1)")
       }
       val mapper = new ObjectMapper()
+        .registerModule(DefaultScalaModule)
         .enable(SerializationFeature.INDENT_OUTPUT)
       val outPath = Paths.get(parsed.outPath)
       if (outPath.getParent != null) Files.createDirectories(outPath.getParent)
@@ -171,7 +174,12 @@ object GateBTraceRunner {
       // Structured mode flag (R1 dragon #10): downstream tooling
       // needs a grep-friendly boolean, not a banner-string parse.
       wrapper.put("isLiveModel", java.lang.Boolean.valueOf(parsed.modelPath.isDefined))
-      wrapper.put("report", report)
+      // Serialize the structured case-class report as a flat JSON
+      // object (not a {"class": "...", "...": ...} discriminator map).
+      // Casts are safe: every field is primitive/Option-primitive.
+      @SuppressWarnings(Array("unchecked"))
+      val reportMap = mapper.convertValue(report, classOf[java.util.Map[String, Any]])
+      wrapper.put("report", reportMap)
       // Banner prefix (R1 zebra LOW + live-model distinction): log-greps
       // on `rendered` must surface WHICH mode ran, not just the metrics.
       val banner = if (parsed.modelPath.isDefined) "[LIVE MODEL]" else
@@ -197,12 +205,12 @@ object GateBTraceRunner {
     }
   }
 
-  /** Scala-main entry — JVM exits AFTER main returns so Spark
-    * lifecycle completes cleanly.
-    *
-    * @param args the CLI arguments (see [[parseArgs]])
+  /** JVM entry point: must return Unit (JVM requirement).
+    * Calls [[run]] (which returns the exit code) and propagates it
+    * via [[sys.exit]]. The runbook's spark-submit/java invocations
+    * target this name.
     */
-  def mainEntry(args: Array[String]): Unit = sys.exit(main(args))
+  def main(args: Array[String]): Unit = sys.exit(run(args))
 
   /** CLI argument parsing — minimal two-flag parser (no deps on
     * scopt/case-app). Returns an error message with usage on any
