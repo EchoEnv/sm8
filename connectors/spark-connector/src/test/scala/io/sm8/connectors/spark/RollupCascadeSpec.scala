@@ -326,7 +326,6 @@ class RollupCascadeSpec
       rollups = List(srcWithMinMax, tgtWithMinMax))
     // Debug: dump cascade_events + the min/max source table contents.
     val evRows2 = spark.table("cascade_events").select("ts","region").collect()
-    println(s"[minmax-debug] cascade_events: ${evRows2.mkString(",")}")
     // Re-materialize BOTH with the min/max measures (Tier 0 create
     // first — the cascade refreshes an existing table; the tgt table
     // needs the min/max schema).
@@ -432,9 +431,6 @@ class RollupCascadeSpec
       eager = true, tableFormat = RollupMaterializer.Iceberg,
       refreshScope = RollupMaterializer.RefreshScope.NoScope)
     res.left.foreach(e => fail(s"no-region tgt materialize failed: $e"))
-    // Diagnostic: print the columns the materialize produced.
-    val ncols = spark.table(q(RollupRewriter.rollupTableName(cascadeModel, tgtNoRegion))).columns
-    println(s"[multi-grp-debug] tgtNoRegion columns: ${ncols.mkString(",")}")
     runCascade(tgtNoRegion, srcSpec,
       List("2026-09-07 10:00:00", "2026-09-07 11:00:00"))
     val daily = spark.table(q(RollupRewriter.rollupTableName(cascadeModel, tgtNoRegion)))

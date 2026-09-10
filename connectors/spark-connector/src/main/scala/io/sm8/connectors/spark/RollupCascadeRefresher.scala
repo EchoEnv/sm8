@@ -9,6 +9,10 @@
  *
  * ==Build sequence (ADR-0031 D5, "The semantics")==
  *
+ * Ordering and monotonicity rationale: ADR-0030 §D3 (the watermark
+ * OR-latch and "never claim more final than the data" contract
+ * apply to cascades identically).
+ *
  *   1. Validate cascade-eligibility (D1 predicate; pure — core's
  *      CascadeContract.eligibility, called with the source's LIVE
  *      manifest columns so the partial-state-presence clause is
@@ -378,6 +382,9 @@ object RollupCascadeRefresher {
         rowsMerged = rowsMerged))
     } catch {
       case scala.util.control.NonFatal(e) =>
+        // MERGE failure: the data commit rolled back (Iceberg atomic);
+        // the watermark was not advanced (advance happens after). The
+        // D3 monotonicity contract holds — the next refresh re-derives.
         Left(EngineError.UnsupportedCapability(
           engine = "spark-connector",
           capability = "RollupCascadeRefresher.merge",
