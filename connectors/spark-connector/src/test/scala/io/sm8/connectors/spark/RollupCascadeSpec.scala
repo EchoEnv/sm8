@@ -403,9 +403,12 @@ class RollupCascadeSpec
       eager = true, tableFormat = RollupMaterializer.Iceberg,
       refreshScope = RollupMaterializer.RefreshScope.NoScope)
       .left.foreach(e => fail(s"no-region tgt materialize failed: $e"))
+    // The scope is the SOURCE's actual hour buckets (post
+    // date_trunc('hour')): 10:00 and 11:00. The raw ts values
+    // 10:30/11:30 collapse into those hour buckets per the D2
+    // truncation contract.
     runCascade(tgtNoRegion, srcSpec,
-      List("2026-09-07 10:00:00", "2026-09-07 10:30:00",
-           "2026-09-07 11:00:00", "2026-09-07 11:30:00"))
+      List("2026-09-07 10:00:00", "2026-09-07 11:00:00"))
     val daily = spark.table(q(RollupRewriter.rollupTableName(cascadeModel, tgtNoRegion)))
     // n=4, sum=322, mean=80.5. m2 = Σ(x−80.5)² =
     //   (10−80.5)² + (12−80.5)² + (100−80.5)² + (200−80.5)²
