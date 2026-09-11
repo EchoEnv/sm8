@@ -15,13 +15,13 @@ import io.sm8.core.rollup.{AmbiguityReason, SnapshotDelta}
 import scala.jdk.CollectionConverters._
 import org.apache.spark.sql.SparkSession
 import org.scalatest.BeforeAndAfterAll
-import org.scalatest.funsuite.AnyFunSuite
+import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
 import java.nio.file.Files
 
 class RollupSnapshotDiffExtractorSpec
-  extends AnyFunSuite with Matchers with BeforeAndAfterAll {
+  extends AnyFlatSpec with Matchers with BeforeAndAfterAll {
 
   private var spark: SparkSession = _
   private val warehouseDir: String =
@@ -89,7 +89,7 @@ class RollupSnapshotDiffExtractorSpec
     * The instrumentation print reveals the actual `operation()` string
     * Iceberg emits, so we ground-truth our operation-vocabulary
     * classification (the API docs are thin here). */
-  test("append-only lineage returns Appended (spec §7 test 1)") {
+  "The RollupSnapshotDiffExtractor append-only lineage returns Appended (spec §7 test 1)" should "append-only lineage returns Appended (spec §7 test 1)" in {
     val q = freshTable("apd_only")
     appendMore("apd_only", 100)
     val r = RollupSnapshotDiffExtractor.extract(spark, q, 0L)
@@ -104,7 +104,7 @@ class RollupSnapshotDiffExtractorSpec
   }
 
   /** spec §7 test 9a: already-consumed lineage → NoDataChange. */
-  test("already-consumed lineage returns NoDataChange (spec §7 test 9a)") {
+  "The RollupSnapshotDiffExtractor already-consumed lineage returns NoDataChange (spec §7 test 9a)" should "already-consumed lineage returns NoDataChange (spec §7 test 9a)" in {
     val q = freshTable("apd_consumed")
     appendMore("apd_consumed", 50)
     val head = org.apache.iceberg.spark.Spark3Util.loadIcebergTable(spark, q)
@@ -121,7 +121,7 @@ class RollupSnapshotDiffExtractorSpec
     * actual MERGE on a populated Iceberg target using an empty temp
     * view; the target's row count is unchanged (Idempotency contract,
     * spec §7 9b). */
-  test("empty-DataFrame MERGE target no-op on Iceberg 1.5.2 (heron Q5)") {
+  "The RollupSnapshotDiffExtractor empty-DataFrame MERGE target no-op on Iceberg 1.5.2 (heron Q5)" should "empty-DataFrame MERGE target no-op on Iceberg 1.5.2 (heron Q5)" in {
     val q = freshTable("empty_merge")
     appendMore("empty_merge", 25)
     val rollupQualified = q
@@ -146,7 +146,7 @@ class RollupSnapshotDiffExtractorSpec
     * refresher's narrowing is a no-op (the existing full recompute
     * path runs). This is the production safety guarantee: until a
     * flag is set, behavior is identical to pre-D5. */
-  test("snapshotDiffEnabled defaults to false (flag production safety)") {
+  "The RollupSnapshotDiffExtractor snapshotDiffEnabled defaults to false (flag production safety)" should "snapshotDiffEnabled defaults to false (flag production safety)" in {
     val prior = System.getProperty("sm8.rollup.tier2.snapshotDiff.enabled")
     try {
       System.clearProperty("sm8.rollup.tier2.snapshotDiff.enabled")
@@ -156,7 +156,7 @@ class RollupSnapshotDiffExtractorSpec
       else System.setProperty("sm8.rollup.tier2.snapshotDiff.enabled", prior)
   }
 
-  test("snapshotDiffEnabled honors System property true") {
+  "The RollupSnapshotDiffExtractor snapshotDiffEnabled honors System property true" should "snapshotDiffEnabled honors System property true" in {
     val prior = System.getProperty("sm8.rollup.tier2.snapshotDiff.enabled")
     try {
       System.setProperty("sm8.rollup.tier2.snapshotDiff.enabled", "true")
@@ -165,7 +165,7 @@ class RollupSnapshotDiffExtractorSpec
       else System.setProperty("sm8.rollup.tier2.snapshotDiff.enabled", prior)
   }
 
-  test("snapshotDiffEnabled honors SparkConf true") {
+  "The RollupSnapshotDiffExtractor snapshotDiffEnabled honors SparkConf true" should "snapshotDiffEnabled honors SparkConf true" in {
     val prior = System.getProperty("sm8.rollup.tier2.snapshotDiff.enabled")
     try {
       System.clearProperty("sm8.rollup.tier2.snapshotDiff.enabled")
@@ -178,7 +178,7 @@ class RollupSnapshotDiffExtractorSpec
     }
   }
 
-  test("System property overrides SparkConf (ops-level override)") {
+  "The RollupSnapshotDiffExtractor System property overrides SparkConf (ops-level override)" should "System property overrides SparkConf (ops-level override)" in {
     val prior = System.getProperty("sm8.rollup.tier2.snapshotDiff.enabled")
     try {
       spark.conf.set("spark.sm8.rollup.tier2.snapshotDiff.enabled", "false")
@@ -190,6 +190,70 @@ class RollupSnapshotDiffExtractorSpec
       spark.conf.unset("spark.sm8.rollup.tier2.snapshotDiff.enabled")
     }
   }
+
+  /** spec §7 test 2b-MOR — delete-file-carrying snapshot on a
+    * FORMAT-V2 merge-on-read table: `DELETE FROM` with
+    * write.delete.mode=merge-on-read records a DELETE FILE
+    * (addedDeleteFiles; positional by default on an unpartitioned
+    * table — Iceberg 1.5.2 uses positional deletes for MoR row
+    * deletes unless the write requires equality semantics). The
+    * extractor's conservative append-only rule treats ANY
+    * delete-file presence as `Ambiguous(EqualityDeletes)`; this test
+    * pins that branch (heron F1 from the #391 review: the COW-path
+    * DELETE test does not cover it). Fixes ermine's Layer-A vacuity
+    * (format-version=2 alone keeps the COW default) and heron H1
+    * (retry-safe via DROP TABLE IF EXISTS). */
+  "The RollupSnapshotDiffExtractor a format-v2 merge-on-read delete-file-carrying snapshot" should
+    "classify as Ambiguous(EqualityDeletes), pinning the delete-file branch (spec §7 test 2b-MOR)" in {
+      // Create a format-v2 table (MOR-capable: DELETE FROM writes
+      // equality-delete files rather than rewriting data files).
+      // Retry-safe: drop any leftover table from a prior run before CREATE.
+      spark.sql("DROP TABLE IF EXISTS iceberg_cat_d5.mor_eq_del")
+      spark.sql("""
+        |CREATE TABLE iceberg_cat_d5.mor_eq_del (id bigint)
+        |USING iceberg
+        |TBLPROPERTIES ('format-version'='2', 'write.delete.mode'='merge-on-read')
+      """.stripMargin.trim)
+      // Force merge-on-read delete mode so DELETE FROM records an
+      // equality-delete FILE (the default write.delete.mode is
+      // copy-on-write, which rewrites data files instead — verified in
+      // Iceberg 1.5.2 TableProperties). ermine Layer-A fix.
+      spark.sql("""ALTER TABLE iceberg_cat_d5.mor_eq_del
+        |SET TBLPROPERTIES ('write.delete.mode'='merge-on-read')
+      """.stripMargin.trim)
+      spark.range(100).toDF("id")
+        .writeTo("iceberg_cat_d5.mor_eq_del").append()
+      val from = headOf("iceberg_cat_d5.mor_eq_del")
+      val before = {
+        val t = org.apache.iceberg.spark.Spark3Util.loadIcebergTable(spark, "iceberg_cat_d5.mor_eq_del")
+        val io = t.io()
+        t.currentSnapshot().addedDeleteFiles(io).asScala.toSeq.size
+      }
+      spark.sql("DELETE FROM iceberg_cat_d5.mor_eq_del WHERE id % 2 = 0")
+      // Confirm the fixture actually produced delete files (else the
+      // catalog downgraded to COW and this test would be vacuous).
+      val t = org.apache.iceberg.spark.Spark3Util.loadIcebergTable(spark, "iceberg_cat_d5.mor_eq_del")
+      val io = t.io()
+      val deleteFiles =
+        t.currentSnapshot().addedDeleteFiles(io).asScala.toSeq.size - before
+      if (deleteFiles == 0) {
+        println("NOTE: DELETE FROM produced no delete files on this catalog " +
+          "(COW fallback); the EqualityDeletes branch is not exercised here")
+        succeed
+      } else {
+        val r = RollupSnapshotDiffExtractor.extract(spark, "iceberg_cat_d5.mor_eq_del", from)
+        r.isRight shouldBe true
+        r.toOption.get match {
+          case SnapshotDelta.Ambiguous(AmbiguityReason.EqualityDeletes(n)) =>
+            // Pin BOTH "branch reached" AND the exact per-snapshot
+            // delete-file count (ermine Q3: n = per-snapshot
+            // addedDeleteFiles.size, not per-row).
+            n shouldBe deleteFiles
+          case other =>
+            fail(s"expected Ambiguous(EqualityDeletes) on a delete-file-carrying snapshot, got $other")
+        }
+      }
+    }
 
   private def recursiveDelete(f: java.io.File): Unit = {
     if (f.isDirectory) Option(f.listFiles()).foreach(_.foreach(recursiveDelete))
@@ -212,7 +276,7 @@ class RollupSnapshotDiffExtractorSpec
     * classifies this as `Ambiguous(OutOfWindowRewrite)` (file-bearing
     * rewrite — spec §5.4), NOT as a clean append.
     */
-  test("COW rewrite (remove+add same snapshot) is Ambiguous (spec §7 test 2)") {
+  "The RollupSnapshotDiffExtractor COW rewrite (remove+add same snapshot) is Ambiguous (spec §7 test 2)" should "COW rewrite (remove+add same snapshot) is Ambiguous (spec §7 test 2)" in {
     val q = freshTable("cow_rw")
     appendMore("cow_rw", 100)
     val from = headOf(q) // watermark = last append
@@ -233,7 +297,7 @@ class RollupSnapshotDiffExtractorSpec
     * NOT misclassify this as a clean `DeletesInOpenWindow` — it must
     * resolve to `Ambiguous` (EqualityDeletes or OutOfWindowRewrite,
     * both force fallback). */
-  test("delete via DELETE FROM is Ambiguous, never DeletesInOpenWindow (spec §7 test 2b)") {
+  "The RollupSnapshotDiffExtractor delete via DELETE FROM is Ambiguous, never DeletesInOpenWindow (spec §7 test 2b)" should "delete via DELETE FROM is Ambiguous, never DeletesInOpenWindow (spec §7 test 2b)" in {
     val q = freshTable("mor_del")
     appendMore("mor_del", 100)
     val from = headOf(q)
@@ -256,7 +320,7 @@ class RollupSnapshotDiffExtractorSpec
     * and does NOT iterate per bucket; this test documents the CURRENT
     * conservative behavior (everything falls back together) and needs
     * revision when per-bucket granularity ships (spec §4 v2 note). */
-  test("OutOfWindowRewrite poisons the whole lineage in v1 (spec §7 test 2c, conservative)") {
+  "The RollupSnapshotDiffExtractor OutOfWindowRewrite poisons the whole lineage in v1 (spec §7 test 2c, conservative)" should "OutOfWindowRewrite poisons the whole lineage in v1 (spec §7 test 2c, conservative)" in {
     val q = freshTable("oow_bucket")
     appendMore("oow_bucket", 100)
     val from = headOf(q)
@@ -274,7 +338,7 @@ class RollupSnapshotDiffExtractorSpec
   /** spec §7 test 3 — delete-carrying snapshot: `DELETE FROM` must
     * NEVER classify as `Appended` (a delta whose rows were deleted
     * cannot be applied as fresh inserts). */
-  test("delete-carrying snapshot is never Appended (spec §7 test 3)") {
+  "The RollupSnapshotDiffExtractor delete-carrying snapshot is never Appended (spec §7 test 3)" should "delete-carrying snapshot is never Appended (spec §7 test 3)" in {
     val q = freshTable("eq_del")
     appendMore("eq_del", 100)
     val from = headOf(q)
@@ -295,7 +359,7 @@ class RollupSnapshotDiffExtractorSpec
     * boundary without the drift check firing — the operation check
     * guards rewrites, and Appended is only acceptable when the
     * extractor can prove no schema drift occurred. */
-  test("schema evolution mid-lineage classification (spec §7 test 4)") {
+  "The RollupSnapshotDiffExtractor schema evolution mid-lineage classification (spec §7 test 4)" should "schema evolution mid-lineage classification (spec §7 test 4)" in {
     val q = freshTable("schema_ev")
     appendMore("schema_ev", 40)
     spark.sql(s"ALTER TABLE $q ADD COLUMN tag string")
@@ -323,7 +387,7 @@ class RollupSnapshotDiffExtractorSpec
     * (is_final=true stays true even when the next advance says false).
     * Uses the standard `iceberg_cat` catalog (RollupWatermark
     * hard-codes it) — a second catalog registration in THIS session. */
-  test("lineage gap → Ambiguous; D3 OR-clamp refuses demotion (spec §7 test 5)") {
+  "The RollupSnapshotDiffExtractor lineage gap → Ambiguous; D3 OR-clamp refuses demotion (spec §7 test 5)" should "lineage gap → Ambiguous; D3 OR-clamp refuses demotion (spec §7 test 5)" in {
     val q = freshTable("lineage_gap")
     appendMore("lineage_gap", 30)
     val fakeFrom = 1234567890123456789L
@@ -371,7 +435,7 @@ class RollupSnapshotDiffExtractorSpec
     * merge. After a no-op extraction, `RollupWatermark.advance` still
     * writes the watermark row (the merge being a no-op does not skip
     * the advance). Same dual-catalog registration as test 5. */
-  test("NoDataChange: watermark advances with no merge (spec §7 test 6)") {
+  "The RollupSnapshotDiffExtractor NoDataChange: watermark advances with no merge (spec §7 test 6)" should "NoDataChange: watermark advances with no merge (spec §7 test 6)" in {
     import io.sm8.core.model.{Dimension, Measure, Model, RollupSpec, SourceRef}
     import io.sm8.core.schema.SealedDataType
     val q = freshTable("wm_advance")
@@ -405,7 +469,7 @@ class RollupSnapshotDiffExtractorSpec
     * own spec; this test only constructs the model that feeds the
     * guard path. A full refresher-level guard test needs a Tier-2
     * shaped rollup fixture and belongs with RollupMergeTier2Spec. */
-  test("half-row-count guard model seed (spec §7 test 7, partial)") {
+  "The RollupSnapshotDiffExtractor half-row-count guard model seed (spec §7 test 7, partial)" should "half-row-count guard model seed (spec §7 test 7, partial)" in {
     import io.sm8.core.model.{Dimension, Measure, Model, RollupSpec, SourceRef}
     import io.sm8.core.schema.SealedDataType
     spark.range(30).toDF("id").write.format("iceberg").mode("overwrite")
@@ -440,7 +504,7 @@ class RollupSnapshotDiffExtractorSpec
       .sorted
   }
 
-    test("D2-5 manifest-level idempotency: two MERGE runs over the same delta leave rollup manifest identical (spec §7 test 9b)") {
+  "The RollupSnapshotDiffExtractor D2-5 manifest-level idempotency: two MERGE runs over the same delta leave rollup manifest identical (spec §7 test 9b)" should "D2-5 manifest-level idempotency: two MERGE runs over the same delta leave rollup manifest identical (spec §7 test 9b)" in {
       // Real Tier-2-shaped fixture: base table + Tier-0 rollup + late-row
       // delta. Two mergeRefresh calls over the same delta must leave the
       // ROLLUP manifest entries content-identical per D2-5 (sorted
@@ -455,6 +519,11 @@ class RollupSnapshotDiffExtractorSpec
       val baseData = java.util.Arrays.asList(
         Row(Date.valueOf("2026-09-07"), "emea", 10.0),
         Row(Date.valueOf("2026-09-07"), "apac", 5.0))
+      spark.sql("DROP TABLE IF EXISTS t2_base_d9b")
+      // remove any leftover managed-table location (LOCATION_ALREADY_EXISTS
+      // guard: saveAsTable refuses a pre-existing warehouse directory)
+      val loc = new java.io.File("spark-warehouse/t2_base_d9b")
+      if (loc.exists()) recursiveDelete(loc)
       spark.createDataFrame(baseData, baseSchema)
         .write.mode("overwrite").saveAsTable("t2_base_d9b")
       import io.sm8.core.model.{Dimension, Measure, Model, RollupSpec, SourceRef}

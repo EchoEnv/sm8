@@ -270,39 +270,45 @@ object RollupSnapshotDiffExtractor {
     val it = steps.iterator
     while (it.hasNext && ambiguity.isEmpty) {
       val snap = it.next()
-      // (a) operation-level check: overwrite/replace/delete are the
-      // rewrite-or-delete signatures (spec §5.4) — clean extraction
-      // only trusts "append".
-      ambiguity = operationAmbiguity(snap).orElse {
-        // (b) summary-row-totals presence + parse check (missing keys
-        // are legal for metadata-only snapshots — verified via io)
-        summaryRowTotals(io, snap) match {
-          case Left(reason) => Some(reason)
-          case Right((a, d)) =>
-            addedRows += a
-            removedRows += d
-            // (c) file-level classification via FileIO. The IO is
-            // table.io() — metadata manifests only, no data scans
-            // (cost contract, spec §6).
-            val adds = snap.addedDataFiles(io).asScala.toSeq
-            val removes = snap.removedDataFiles(io).asScala.toSeq
-            val delAdds = snap.addedDeleteFiles(io).asScala.toSeq
-            if (delAdds.nonEmpty) {
-              sawDeleteFiles = true
-              // Delete files make row attribution impossible in v1
-              // (spec §5.1). Equality vs positional is not
-              // distinguished here: both force the fallback under the
-              // append-only rule.
-              ambiguity = Some(AmbiguityReason.EqualityDeletes(delAdds.size))
-            }
-            if (removes.nonEmpty) {
-              sawRemovedFiles = true
-              addedFiles ++= removes.map(toRef)
-            }
-            if (adds.nonEmpty) {
-              addedFiles ++= adds.map(toRef)
-            }
-            None
+      // (a) FILE-LEVEL check (ermine v2 round on the MOR fixture; option (ii)):
+      // a snapshot whose added-delete-files carry the row-attribution
+      // loss (spec §5.1) is EqualityDeletes SPECIFICALLY — BUT only when
+      // no added-data-files coexist. A COW rewrite that incidentally
+      // emits delete files (e.g. partition evolution touching the path)
+      // stays classified as OutOfWindowRewrite — the operation-level
+      // signature wins. This preserves spec §5.1's "delete-file-dominant"
+      // intent.
+      val io = table.io()
+      val adds = snap.addedDataFiles(io).asScala.toSeq
+      val delAdds = snap.addedDeleteFiles(io).asScala.toSeq
+      if (delAdds.nonEmpty && adds.isEmpty) {
+        sawDeleteFiles = true
+        ambiguity = Some(AmbiguityReason.EqualityDeletes(delAdds.size))
+      } else {
+        // (b) operation-level check: overwrite/replace with FILE
+        // ACTIVITY are rewrite signatures (spec §5.4); file-less
+        // overwrite/replace (the empty-table create) is harmless.
+        ambiguity = operationAmbiguity(snap).orElse {
+          // (c) summary-row-totals presence + parse check (missing keys
+          // are legal for metadata-only snapshots — verified via io)
+          summaryRowTotals(io, snap) match {
+            case Left(reason) => Some(reason)
+            case Right((a, d)) =>
+              addedRows += a
+              removedRows += d
+              // (d) data-file classification via FileIO. The IO is
+              // table.io() — metadata manifests only, no data scans
+              // (cost contract, spec §6).
+              val removes = snap.removedDataFiles(io).asScala.toSeq
+              if (removes.nonEmpty) {
+                sawRemovedFiles = true
+                addedFiles ++= removes.map(toRef)
+              }
+              if (adds.nonEmpty) {
+                addedFiles ++= adds.map(toRef)
+              }
+              None
+          }
         }
       }
     }
