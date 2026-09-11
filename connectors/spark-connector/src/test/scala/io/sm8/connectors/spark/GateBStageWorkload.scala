@@ -62,7 +62,22 @@ object GateBStageWorkload {
       //     the probe reports "table not found" against spark_catalog.
       base.write.format("iceberg").mode("overwrite")
         .saveAsTable("iceberg_cat.rep_events")
-      base.write.mode("overwrite").saveAsTable("default.rep_events")
+      // The unqualified spark_catalog registration is a CONVENIENCE for
+      // the probe's spark.table("rep_events") pre-count (best-effort,
+      // failure tolerated) — the model yaml now uses the qualified
+      // iceberg_cat.rep_events name, so the probe's real path is the
+      // iceberg table above. Try/catch: a leftover spark-warehouse dir
+      // from a prior run makes the managed-table registration fail
+      // (LOCATION_ALREADY_EXISTS); the iceberg table is what matters.
+      try {
+        base.write.mode("overwrite").saveAsTable("default.rep_events")
+      } catch {
+        case e: Throwable if e.getMessage != null &&
+            e.getMessage.contains("LOCATION_ALREADY_EXISTS") =>
+          println("GATEB-STAGE: default.rep_events registration skipped " +
+            "(leftover spark-warehouse location; probe pre-count degraded, " +
+            "probe path unaffected — model uses the qualified name)")
+      }
       val n = spark.table("iceberg_cat.rep_events").count()
       println(s"GATEB-STAGE: rep_events written, rows=$n, days=$Days, regions=${Regions.size}")
       require(n == RowsPerDay.toLong * Days, s"row count mismatch: $n")
