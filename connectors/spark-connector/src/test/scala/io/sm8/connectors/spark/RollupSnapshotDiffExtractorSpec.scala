@@ -191,21 +191,33 @@ class RollupSnapshotDiffExtractorSpec
     }
   }
 
-  /** spec §7 test 2b-MOR — equality deletes on a FORMAT-V2 (MOR-capable)
-    * table: `DELETE FROM` with format-version=2 records an
-    * equality-delete file (addedDeleteFiles) instead of rewriting data
-    * files (COW). The extractor's delete-file branch must classify this
-    * as `Ambiguous(EqualityDeletes)` SPECIFICALLY — heron F1 from the
-    * #391 review: the COW-path DELETE test does not cover this branch.
-    * Uses a dedicated format-v2 table created via TBLPROPERTIES. */
-  "The RollupSnapshotDiffExtractor a format-v2 (MOR-capable) equality-delete snapshot" should
+  /** spec §7 test 2b-MOR — delete-file-carrying snapshot on a
+    * FORMAT-V2 merge-on-read table: `DELETE FROM` with
+    * write.delete.mode=merge-on-read records a DELETE FILE
+    * (addedDeleteFiles; positional by default on an unpartitioned
+    * table — Iceberg 1.5.2 uses positional deletes for MoR row
+    * deletes unless the write requires equality semantics). The
+    * extractor's conservative append-only rule treats ANY
+    * delete-file presence as `Ambiguous(EqualityDeletes)`; this test
+    * pins that branch (heron F1 from the #391 review: the COW-path
+    * DELETE test does not cover it). Fixes ermine's Layer-A vacuity
+    * (format-version=2 alone keeps the COW default) and heron H1
+    * (retry-safe via DROP TABLE IF EXISTS). */
+  "The RollupSnapshotDiffExtractor a format-v2 merge-on-read delete-file-carrying snapshot" should
     "classify as Ambiguous(EqualityDeletes), pinning the delete-file branch (spec §7 test 2b-MOR)" in {
       // Create a format-v2 table (MOR-capable: DELETE FROM writes
       // equality-delete files rather than rewriting data files).
       spark.sql("""
         |CREATE TABLE iceberg_cat_d5.mor_eq_del (id bigint)
         |USING iceberg
-        |TBLPROPERTIES ('format-version'='2')
+        |TBLPROPERTIES ('format-version'='2', 'write.delete.mode'='merge-on-read')
+      """.stripMargin.trim)
+      // Force merge-on-read delete mode so DELETE FROM records an
+      // equality-delete FILE (the default write.delete.mode is
+      // copy-on-write, which rewrites data files instead — verified in
+      // Iceberg 1.5.2 TableProperties). ermine Layer-A fix.
+      spark.sql("""ALTER TABLE iceberg_cat_d5.mor_eq_del
+        |SET TBLPROPERTIES ('write.delete.mode'='merge-on-read')
       """.stripMargin.trim)
       spark.range(100).toDF("id")
         .writeTo("iceberg_cat_d5.mor_eq_del").append()
@@ -231,7 +243,10 @@ class RollupSnapshotDiffExtractorSpec
         r.isRight shouldBe true
         r.toOption.get match {
           case SnapshotDelta.Ambiguous(AmbiguityReason.EqualityDeletes(n)) =>
-            n should be > 0
+            // Pin BOTH "branch reached" AND the exact per-snapshot
+            // delete-file count (ermine Q3: n = per-snapshot
+            // addedDeleteFiles.size, not per-row).
+            n shouldBe deleteFiles
           case other =>
             fail(s"expected Ambiguous(EqualityDeletes) on a delete-file-carrying snapshot, got $other")
         }
@@ -502,6 +517,11 @@ class RollupSnapshotDiffExtractorSpec
       val baseData = java.util.Arrays.asList(
         Row(Date.valueOf("2026-09-07"), "emea", 10.0),
         Row(Date.valueOf("2026-09-07"), "apac", 5.0))
+      spark.sql("DROP TABLE IF EXISTS t2_base_d9b")
+      // remove any leftover managed-table location (LOCATION_ALREADY_EXISTS
+      // guard: saveAsTable refuses a pre-existing warehouse directory)
+      val loc = new java.io.File("spark-warehouse/t2_base_d9b")
+      if (loc.exists()) recursiveDelete(loc)
       spark.createDataFrame(baseData, baseSchema)
         .write.mode("overwrite").saveAsTable("t2_base_d9b")
       import io.sm8.core.model.{Dimension, Measure, Model, RollupSpec, SourceRef}
