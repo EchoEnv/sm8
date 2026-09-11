@@ -90,6 +90,12 @@ import scala.jdk.OptionConverters._
 object CronUtilsNextFireTime extends NextFireTimeCalculator with Serializable {
   private val Parser = new CronParser(CronDefinitionBuilder.instanceDefinitionFor(CronType.UNIX))
 
+  /** Computes the next fire time via cron-utils (UNIX 5-field, UTC).
+    *
+    * @param expression the cron expression to evaluate
+    * @param afterMillis the exclusive lower bound
+    * @return the next fire epoch millis, or a parse error
+    */
   override def nextFire(expression: String, afterMillis: Long): Either[String, Long] =
     try {
       val cron = Parser.parse(expression)
@@ -135,9 +141,13 @@ object CronJobManagerService {
       .registerModule(com.fasterxml.jackson.module.scala.DefaultScalaModule)
   private val serdeFactory = new JacksonSerdeFactory(scalaMapper)
 
-  /** Build the ServiceDefinition. `calculator` is injected (tests pass
-    * a fixed-clock implementation; production passes
-    * [[CronUtilsNextFireTime]]).
+  /** Build the `CronJobManager` ServiceDefinition (create/cancel/
+    * describe handlers).
+    *
+    * @param calculator next-fire computation (tests pass a
+    *        fixed-clock implementation; production passes
+    *        [[CronUtilsNextFireTime]])
+    * @return the ServiceDefinition to register on the Restate endpoint
     */
   def serviceDefinition(calculator: NextFireTimeCalculator): ServiceDefinition = {
     val createSerde = serdeFactory.create(classOf[CreateJobRequest])
@@ -233,6 +243,14 @@ object CronJobObject {
       .registerModule(com.fasterxml.jackson.module.scala.DefaultScalaModule)
   private val serdeFactory = new JacksonSerdeFactory(scalaMapper)
 
+  /** Build the `CronJob` virtual-object ServiceDefinition (init/tick
+    * handlers).
+    *
+    * @param calculator next-fire computation (tests pass a
+    *        fixed-clock implementation; production passes
+    *        [[CronUtilsNextFireTime]])
+    * @return the ServiceDefinition to register on the Restate endpoint
+    */
   def serviceDefinition(calculator: NextFireTimeCalculator): ServiceDefinition = {
     val tickReqSerde = serdeFactory.create(classOf[TickRequest])
     val tickResSerde = serdeFactory.create(classOf[TickResult])

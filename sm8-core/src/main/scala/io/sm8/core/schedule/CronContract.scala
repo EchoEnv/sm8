@@ -60,7 +60,9 @@ final case class JobDescriptor(
   */
 trait NextFireTimeCalculator extends Serializable {
 
-  /** @param expression the cron expression
+  /** Computes the next fire time for the expression.
+    *
+    * @param expression the cron expression
     * @param afterMillis exclusive lower bound (epoch millis); the
     *           returned time is strictly after this instant
     * @return the next fire time in epoch millis, or Left with a
