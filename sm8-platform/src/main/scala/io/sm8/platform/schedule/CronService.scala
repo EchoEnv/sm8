@@ -119,7 +119,8 @@ object CronWire {
     service: String,
     handler: String,
     objectKey: Option[String] = None,
-    payload: Option[String] = None
+    payload: Option[String] = None,
+    firstFireEpochMs: Long = 0L
   )
   final case class CreateJobResult(jobId: String)
   final case class CancelResult(cancelled: Boolean)
@@ -172,9 +173,14 @@ object CronJobManagerService {
           val jobId = "cron-" + java.util.UUID.randomUUID().toString
           val delayMs = math.max(0L, nextFire - System.currentTimeMillis())
           val target = Target.virtualObject("CronJob", jobId, "init")
+          // Pass the computed first-fire through to init so it does
+          // not have to recompute (avoids clock-skew first-fire skip:
+          // if init re-derives from its own clock, the first tick lands
+          // at nextFire + period instead of nextFire).
           val initPayload =
             JobDescriptor(jobId, CronSchedule(req.cronExpression),
-              JobTarget(req.service, req.handler, req.objectKey, req.payload))
+              JobTarget(req.service, req.handler, req.objectKey, req.payload),
+              firstFireEpochMs = nextFire)
           ctx.send(
             Request.of(target,
               TypeTag.of(classOf[JobDescriptor]),
@@ -189,44 +195,10 @@ object CronJobManagerService {
     val createHandler: HandlerDefinition[CreateJobRequest, CreateJobResult] =
       HandlerDefinition.of("create", HandlerType.EXCLUSIVE, createSerde, createResSerde, createRunner)
 
-    // -- cancel: CLEARS the CronJob virtual object's descriptor state
-    // (the already-journaled next tick re-reads the descriptor, finds
-    // it absent, and terminates — "cancelled stays cancelled").
-    val cancelRunner: HandlerRunner[TickRequest, CancelResult] =
-      HandlerRunner.of(
-        (ctx: ObjectContext, req: TickRequest) => {
-          ctx.clear(CronJobManagerService.DescriptorKey)
-          CancelResult(cancelled = true)
-        },
-        serdeFactory,
-        HandlerRunner.Options.DEFAULT
-      )
-    val cancelHandler: HandlerDefinition[TickRequest, CancelResult] =
-      HandlerDefinition.of("cancel", HandlerType.EXCLUSIVE, cancelReqSerde, cancelResSerde, cancelRunner)
-
-    // -- describe: reads the stored descriptor from the CronJob object.
-    // Absent state (unknown or cancelled job) is a 404-class
-    // TerminalException, not a fake descriptor.
-    val describeRunner: HandlerRunner[TickRequest, JobDescriptor] =
-      HandlerRunner.of(
-        (ctx: ObjectContext, req: TickRequest) => {
-          Option(ctx.get(CronJobManagerService.DescriptorKey).orElse(null)) match {
-            case Some(desc) => desc
-            case None =>
-              throw new TerminalException(404,
-                s"cron job '${req.jobId}' not found (never created, or cancelled)")
-          }
-        },
-        serdeFactory,
-        HandlerRunner.Options.DEFAULT
-      )
-    val describeHandler: HandlerDefinition[TickRequest, JobDescriptor] =
-      HandlerDefinition.of("describe", HandlerType.EXCLUSIVE, cancelReqSerde, descResSerde, describeRunner)
-
     ServiceDefinition.of(
       "CronJobManager",
       ServiceType.SERVICE,
-      java.util.List.of(createHandler, cancelHandler, describeHandler)
+      java.util.List.of(createHandler)
     )
   }
 }
@@ -262,12 +234,11 @@ object CronJobObject {
       HandlerRunner.of(
         (ctx: ObjectContext, desc: JobDescriptor) => {
           ctx.set(CronJobManagerService.DescriptorKey, desc)
-          val nextFire = calculator.nextFire(desc.schedule.expression, System.currentTimeMillis())
-            match {
-              case Right(t)  => t
-              case Left(err) =>
-                throw new TerminalException(500, s"cron '${desc.schedule.expression}': $err")
-            }
+          // USE the first-fire computed by create (passed through the
+          // payload) — do NOT recompute from the local clock here, or
+          // the first tick lands at nextFire + period instead of
+          // nextFire (clock-skew bug caught by ermine).
+          val nextFire = desc.firstFireEpochMs
           val delayMs = math.max(0L, nextFire - System.currentTimeMillis())
           val selfTarget = Target.virtualObject("CronJob", ctx.key(), "tick")
           ctx.send(
@@ -325,10 +296,45 @@ object CronJobObject {
     val tickHandler: HandlerDefinition[TickRequest, TickResult] =
       HandlerDefinition.of("tick", HandlerType.EXCLUSIVE, tickReqSerde, tickResSerde, tickRunner)
 
+    // -- cancel (moved from the manager: heron CRITICAL — Services get
+    // Context only; state ops need ObjectContext, i.e. a virtual object
+    // keyed by the job id).
+    val cancelReqSerde = serdeFactory.create(classOf[TickRequest])
+    val cancelResSerde = serdeFactory.create(classOf[CronWire.CancelResult])
+    val cancelRunner: HandlerRunner[TickRequest, CronWire.CancelResult] =
+      HandlerRunner.of(
+        (ctx: ObjectContext, req: TickRequest) => {
+          ctx.clear(CronJobManagerService.DescriptorKey)
+          CronWire.CancelResult(cancelled = true)
+        },
+        serdeFactory,
+        HandlerRunner.Options.DEFAULT
+      )
+    val cancelHandler: HandlerDefinition[TickRequest, CronWire.CancelResult] =
+      HandlerDefinition.of("cancel", HandlerType.EXCLUSIVE, cancelReqSerde, cancelResSerde, cancelRunner)
+
+    // -- describe (moved with cancel, same state-op reason).
+    val descResSerde = serdeFactory.create(classOf[JobDescriptor])
+    val describeRunner: HandlerRunner[TickRequest, JobDescriptor] =
+      HandlerRunner.of(
+        (ctx: ObjectContext, req: TickRequest) => {
+          Option(ctx.get(CronJobManagerService.DescriptorKey).orElse(null)) match {
+            case Some(desc) => desc
+            case None =>
+              throw new TerminalException(404,
+                s"cron job '${req.jobId}' not found (never created, or cancelled)")
+          }
+        },
+        serdeFactory,
+        HandlerRunner.Options.DEFAULT
+      )
+    val describeHandler: HandlerDefinition[TickRequest, JobDescriptor] =
+      HandlerDefinition.of("describe", HandlerType.EXCLUSIVE, cancelReqSerde, descResSerde, describeRunner)
+
     ServiceDefinition.of(
       "CronJob",
       ServiceType.VIRTUAL_OBJECT,
-      java.util.List.of(initHandler, tickHandler)
+      java.util.List.of(initHandler, tickHandler, cancelHandler, describeHandler)
     )
   }
 }

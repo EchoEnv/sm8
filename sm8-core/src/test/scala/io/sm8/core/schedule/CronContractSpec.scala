@@ -40,7 +40,8 @@ class CronContractSpec extends AnyFlatSpec with Matchers {
 
   it should "carry schedule + target as pure data" in {
     val d = JobDescriptor("j1", CronSchedule("0 0 * * *"),
-      JobTarget("Svc", "collect", Some("key1"), Some("""{"a":1}""")))
+      JobTarget("Svc", "collect", Some("key1"), Some("""{"a":1}""")),
+      firstFireEpochMs = 1757500000000L)
     d.jobId shouldBe "j1"
     d.schedule.expression shouldBe "0 0 * * *"
     d.target.objectKey shouldBe Some("key1")

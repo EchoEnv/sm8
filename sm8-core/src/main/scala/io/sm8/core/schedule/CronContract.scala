@@ -39,16 +39,22 @@ final case class JobTarget(
   payload: Option[String]
 )
 
-/** A registered cron job: what fires, where, and when it was created.
+/** A registered cron job: what fires, where, and when it first fires.
   *
   * @param jobId unique identifier (platform-assigned, opaque)
   * @param schedule the cron expression
   * @param target what to invoke on fire
+  * @param firstFireEpochMs the epoch-millis timestamp of the FIRST
+  *           fire (computed once by create; init and tick consume it
+  *           without recomputing — prevents the clock-skew first-fire
+  *           skip where init's re-derivation lands the first tick at
+  *           nextFire + period instead of nextFire)
   */
 final case class JobDescriptor(
   jobId: String,
   schedule: CronSchedule,
-  target: JobTarget
+  target: JobTarget,
+  firstFireEpochMs: Long
 )
 
 /** Computes the next fire time for a cron expression. Implemented by

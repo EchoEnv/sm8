@@ -218,8 +218,8 @@ class CronServiceSpec extends AnyFlatSpec with Matchers {
   // -- CronJob.init --
   "CronJobObject.init" should "store the descriptor and self-schedule the first tick" in {
     val desc = JobDescriptor("job-init", CronSchedule("*/5 * * * *"),
-      JobTarget("Svc", "handler", None, None))
-    val (res, ctx) = invoke(jobSvc, "init", "job-init", desc,
+      JobTarget("Svc", "handler", None, None), firstFireEpochMs = FixedFire)
+    val (res: CronWire.TickResult, ctx: Ctx) = invoke(jobSvc, "init", "job-init", desc,
       classOf[JobDescriptor], classOf[CronWire.TickResult])
     res.nextFireEpochMs shouldBe FixedFire
     // The descriptor round-trips through the wire-level state as JSON.
@@ -233,7 +233,7 @@ class CronServiceSpec extends AnyFlatSpec with Matchers {
   // -- CronJob.tick --
   "CronJobObject.tick" should "fire the target AND self-reschedule via delayed self-send" in {
     val desc = JobDescriptor("job-tick", CronSchedule("0 0 * * *"),
-      JobTarget("GateBTraceService", "collect", None, Some("""{"x":1}""")))
+      JobTarget("GateBTraceService", "collect", None, Some("""{"x":1}""")), firstFireEpochMs = FixedFire)
     // Seed state via a real init invocation (same wire path as prod),
     // then run tick on the SAME stub so the stored state carries over.
     val (_, seeded) = invoke(jobSvc, "init", "job-tick", desc,
@@ -268,15 +268,15 @@ class CronServiceSpec extends AnyFlatSpec with Matchers {
   }
 
   // -- manager.cancel --
-  "CronJobManagerService.cancel" should "clear the descriptor so the next tick terminates" in {
+  "CronJobObject.cancel" should "clear the descriptor so the next tick terminates" in {
     val desc = JobDescriptor("job-c", CronSchedule("0 0 * * *"),
-      JobTarget("S", "h", None, None))
+      JobTarget("S", "h", None, None), firstFireEpochMs = FixedFire)
     val (_, seeded) = invoke(jobSvc, "init", "job-c", desc,
       classOf[JobDescriptor], classOf[CronWire.TickResult])
     val bodyJson = mapper.writeValueAsBytes(CronWire.TickRequest("job-c"))
     val cancelCtx = new Ctx("job-c", bodyJson)
     seeded.state.foreach { case (k, v) => cancelCtx.state(k) = v }
-    val (cancel, _) = invoke(managerSvc, "cancel", "job-c",
+    val (cancel, _) = invoke(jobSvc, "cancel", "job-c",
       CronWire.TickRequest("job-c"),
       classOf[CronWire.TickRequest], classOf[CronWire.CancelResult])
     // The cancel handler ran against the managerSvc session's own ctx
@@ -291,25 +291,25 @@ class CronServiceSpec extends AnyFlatSpec with Matchers {
     tickCn.sent shouldBe empty
   }
 
-  // -- manager.describe --
-  "CronJobManagerService.describe" should "return the stored descriptor" in {
+  // -- CronJobObject.describe --
+  "CronJobObject.describe" should "return the stored descriptor" in {
     val desc = JobDescriptor("job-d", CronSchedule("*/10 * * * *"),
-      JobTarget("Svc", "h", Some("k"), Some("""{"a":2}""")))
+      JobTarget("Svc", "h", Some("k"), Some("""{"a":2}""")), firstFireEpochMs = FixedFire)
     val (_, seeded) = invoke(jobSvc, "init", "job-d", desc,
       classOf[JobDescriptor], classOf[CronWire.TickResult])
     val bodyJson = mapper.writeValueAsBytes(CronWire.TickRequest("job-d"))
     val descCtx = new Ctx("job-d", bodyJson)
     seeded.state.foreach { case (k, v) => descCtx.state(k) = v }
-    // describe reads the CronJob object's state through the MANAGER's
-    // ctx — a fresh stub has absent state → the handler throws 404
-    // (wrapped by the runner). The stored-descriptor path is covered
-    // by init's state round-trip assertion above.
+    // The 404 path: describe against a CronJob key whose state is
+    // ABSENT (never created) → TerminalException(404), wrapped by the
+    // runner in ExecutionException (same as the bad-cron create test).
     val ex = intercept[Exception] {
-      invoke(managerSvc, "describe", "job-d",
-        CronWire.TickRequest("job-d"),
+      invoke(jobSvc, "describe", "never-created",
+        CronWire.TickRequest("never-created"),
         classOf[CronWire.TickRequest], classOf[JobDescriptor])
     }
     val cause = Option(ex.getCause).getOrElse(ex)
     cause shouldBe a[TerminalException]
+    cause.asInstanceOf[TerminalException].getCode shouldBe 404
   }
 }
