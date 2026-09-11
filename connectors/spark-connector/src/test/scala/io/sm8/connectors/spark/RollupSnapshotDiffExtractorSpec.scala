@@ -207,6 +207,8 @@ class RollupSnapshotDiffExtractorSpec
     "classify as Ambiguous(EqualityDeletes), pinning the delete-file branch (spec §7 test 2b-MOR)" in {
       // Create a format-v2 table (MOR-capable: DELETE FROM writes
       // equality-delete files rather than rewriting data files).
+      // Retry-safe: drop any leftover table from a prior run before CREATE.
+      spark.sql("DROP TABLE IF EXISTS iceberg_cat_d5.mor_eq_del")
       spark.sql("""
         |CREATE TABLE iceberg_cat_d5.mor_eq_del (id bigint)
         |USING iceberg
