@@ -10,6 +10,7 @@
  */
 package io.sm8.connectors.spark
 
+import io.sm8.core.rel.RollupRewriter
 import io.sm8.core.rollup.{AmbiguityReason, SnapshotDelta}
 import scala.jdk.CollectionConverters._
 import org.apache.spark.sql.SparkSession
@@ -439,29 +440,68 @@ class RollupSnapshotDiffExtractorSpec
       .sorted
   }
 
-    test("manifest-level idempotency: same merge twice is content-identical (spec §7 test 9b)") {
-    // D2-5: run extractor→MERGE twice over the same lineage; the rollup
-    // manifest entries (sorted (path, recordCount) — D2-5's identity
-    // shape at diff level) must be identical after the second run.
-    val q = freshTable("idem9b")
-    appendMore("idem9b", 60)
-    /** One extractor→(conditional)MERGE pass, production-shaped. */
-    def runExtractMerge(): Unit = {
-      val from = RollupWatermark.currentSnapshotId(spark, q)
-      val delta = RollupSnapshotDiffExtractor.extract(spark, q, from)
-      delta.toOption.get match {
-        case SnapshotDelta.NoDataChange => () // no-op merge
-        case SnapshotDelta.Appended(rows, _) if rows > 0 =>
-          // production-shaped merge: re-insert the same scoped rows
-          spark.range(rows).toDF("id").writeTo(q).append()
-        case _ => ()
+    test("D2-5 manifest-level idempotency: two MERGE runs over the same delta leave rollup manifest identical (spec §7 test 9b)") {
+      // Real Tier-2-shaped fixture: base table + Tier-0 rollup + late-row
+      // delta. Two mergeRefresh calls over the same delta must leave the
+      // ROLLUP manifest entries content-identical per D2-5 (sorted
+      // (path, recordCount) pairs on the rollup — not the source).
+      import java.sql.Date
+      import org.apache.spark.sql.Row
+      import org.apache.spark.sql.types._
+      val baseSchema = StructType(Seq(
+        StructField("event_date", DateType),
+        StructField("region", StringType),
+        StructField("amount", DoubleType)))
+      val baseData = java.util.Arrays.asList(
+        Row(Date.valueOf("2026-09-07"), "emea", 10.0),
+        Row(Date.valueOf("2026-09-07"), "apac", 5.0))
+      spark.createDataFrame(baseData, baseSchema)
+        .write.mode("overwrite").saveAsTable("t2_base_d9b")
+      import io.sm8.core.model.{Dimension, Measure, Model, RollupSpec, SourceRef}
+      val m = Model.of(
+        name = "d5t9b", version = 1,
+        source = SourceRef.ByName(table = "t2_base_d9b"),
+        dimensions = List(Dimension.field("event_date", "event_date",
+          io.sm8.core.schema.SealedDataType.Date),
+          Dimension.field("region", "region")),
+        measures = List(Measure("total", io.sm8.core.rel.AggregateCall(
+          io.sm8.core.rel.AggregateFn.Sum,
+          Some(io.sm8.core.expr.Expr.FieldRef("amount")), "total"))),
+        rollups = List(RollupSpec("by_day_region",
+          List("event_date", "region"), List("total"),
+          timeGrain = Some("day"),
+          grainDimension = Some("event_date")))
+      ).toOption.get
+      RollupMaterializer.materialize(spark, m, m.rollups.head,
+        eager = true, tableFormat = RollupMaterializer.Iceberg,
+        refreshScope = RollupMaterializer.RefreshScope.NoScope)
+      val rollupQ = s"iceberg_cat_d5.${RollupRewriter.rollupTableName(m, m.rollups.head)}"
+      val lateData = java.util.Arrays.asList(
+        Row(Date.valueOf("2026-09-07"), "emea", 4.0),
+        Row(Date.valueOf("2026-09-07"), "nama", 2.0))
+      spark.createDataFrame(lateData, baseSchema)
+        .write.mode("append").saveAsTable("t2_base_d9b")
+      /** Sorted (path, recordCount) tuples of the ROLLUP table's
+        * current snapshot's added data files (D2-5 identity shape at
+        * diff level).
+        *
+        * @return the sorted manifest-entry tuples
+        */
+      def rollupEntries(): Seq[(String, Long)] = {
+        val t = org.apache.iceberg.spark.Spark3Util.loadIcebergTable(spark, rollupQ)
+        val io = t.io()
+        t.currentSnapshot().addedDataFiles(io).asScala.toSeq
+          .map(f => (String.valueOf(f.path()), f.recordCount()))
+          .sorted
       }
-    }
-    runExtractMerge()
-    val entriesAfterFirst = manifestEntries(q)
-    runExtractMerge()
-    val entriesAfterSecond = manifestEntries(q)
-    entriesAfterSecond shouldBe entriesAfterFirst
+      RollupMergeRefresher.mergeRefresh(spark, m, m.rollups.head,
+        List("2026-09-07")).isRight shouldBe true
+      val afterFirst = rollupEntries()
+      RollupMergeRefresher.mergeRefresh(spark, m, m.rollups.head,
+        List("2026-09-07")).isRight shouldBe true
+      val afterSecond = rollupEntries()
+      afterSecond shouldBe afterFirst
+      afterFirst should not be empty
   }
 
 }
