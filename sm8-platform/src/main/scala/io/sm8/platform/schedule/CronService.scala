@@ -153,10 +153,6 @@ object CronJobManagerService {
   def serviceDefinition(calculator: NextFireTimeCalculator): ServiceDefinition = {
     val createSerde = serdeFactory.create(classOf[CreateJobRequest])
     val createResSerde = serdeFactory.create(classOf[CreateJobResult])
-    val cancelReqSerde = serdeFactory.create(classOf[TickRequest])
-    val cancelResSerde = serdeFactory.create(classOf[CancelResult])
-    val descResSerde = serdeFactory.create(classOf[JobDescriptor])
-
     // -- create: validates the expression (fail-fast 400 on parse
     // error), generates the job id, and schedules a delayed INIT send
     // to the keyed CronJob object (delay = now → first fire). The init
