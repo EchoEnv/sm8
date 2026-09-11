@@ -201,6 +201,10 @@ object Main {
       |  --skip-ingress-probe    Skip the startup ingress reachability probe
       |                            (--mcp-transport stdio only). Faster cold-
       |                            start, no startup misconfig warning.
+      |  --cron-scheduler      Bind the Restate cron services
+      |                            (CronJobManager + CronJob) so recurring
+      |                            jobs are durable via the Restate ingress
+      |                            (off by default).
       |  --engine <name>     default engine (default: first discovered
       |                      EngineProvider on the classpath)
       |  --connector-url <u> optional connector URL (e.g.
@@ -318,6 +322,10 @@ object Main {
         case "--request-timeout" :: Nil => Left(CliError.MissingValue("--request-timeout"))
         case "--skip-ingress-probe" :: Nil =>
           loop(Nil, acc.copy(skipIngressProbe = true))
+        case "--cron-scheduler" :: Nil =>
+          loop(Nil, acc.copy(cronScheduler = true))
+        case "--cron-scheduler" :: _ =>
+          Left(CliError.UnknownFlag("--cron-scheduler (takes no value)"))
         case "--skip-ingress-probe" :: _ =>
           Left(CliError.UnknownFlag("--skip-ingress-probe (takes no value)"))
         case other :: _ => Left(CliError.UnknownFlag(other))
