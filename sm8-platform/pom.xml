@@ -195,6 +195,14 @@
             <groupId>com.fasterxml.jackson.module</groupId>
             <artifactId>jackson-module-scala_2.13</artifactId>
         </dependency>
+        <!-- Cron parsing for the Restate cron service (user-requested
+             scheduler; RFC §3: external lib lives in platform, core's
+             schedule package is dependency-free). -->
+        <dependency>
+            <groupId>com.cronutils</groupId>
+            <artifactId>cron-utils</artifactId>
+            <version>9.2.1</version>
+        </dependency>
         <!-- vertx-core: same artifact as `sdk-http-vertx`'s
              `runtime` transitive; promoted to compile here so
              `RestateBootstrap.bind(...)` can return the
