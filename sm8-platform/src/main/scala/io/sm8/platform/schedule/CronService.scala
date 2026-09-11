@@ -88,7 +88,10 @@ import scala.jdk.OptionConverters._
   * unparseable expression is a Left, not a throw.
   */
 object CronUtilsNextFireTime extends NextFireTimeCalculator with Serializable {
-  private val Parser = new CronParser(CronDefinitionBuilder.instanceDefinitionFor(CronType.UNIX))
+  // Lazy: a bad classpath (missing cron-utils) must fail on FIRST USE
+  // with a clear message, not ExceptionInInitializerError at boot
+  // (ermine M1).
+  private lazy val Parser = new CronParser(CronDefinitionBuilder.instanceDefinitionFor(CronType.UNIX))
 
   /** Computes the next fire time via cron-utils (UNIX 5-field, UTC).
     *

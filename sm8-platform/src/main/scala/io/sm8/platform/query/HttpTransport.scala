@@ -122,7 +122,20 @@ final class HttpTransport(
     // Default `None` preserves the previous endpoint for existing
     // callers (the service is simply not bound; the CLI route 404s
     // which the CLI reports as a failure — honest, not silent).
-    val rollupRefreshFn: Option[RollupRefreshService.RefreshFn] = None
+    val rollupRefreshFn: Option[RollupRefreshService.RefreshFn] = None,
+    // ADDITIVE (Restate cron scheduler, #394 follow-up): when true,
+    // binds the CronJobManager + CronJob services so recurring jobs
+    // (Gate B trace cadence first) are durable + cancelable via the
+    // Restate ingress. Default `false` preserves the previous endpoint
+    // for existing callers (the cron routes simply don't exist, which
+    // an absent scheduler consumer treats as expected).
+    val cronSchedulerEnabled: Boolean = false,
+    // The next-fire calculator injection (tests pass a fixed-clock
+    // implementation; production passes cron-utils-backed
+    // CronUtilsNextFireTime). Only consulted when
+    // `cronSchedulerEnabled` is true.
+    val cronNextFireCalc: io.sm8.core.schedule.NextFireTimeCalculator =
+      io.sm8.platform.schedule.CronUtilsNextFireTime
 ) {
 
   // The bound Vert.x HttpServer handle. Per scala-jvm-safemindset:
@@ -193,7 +206,15 @@ final class HttpTransport(
         withMeta.bind(RollupRefreshService.definition(refreshFn))
       case None => withMeta
     }
-    withRefresh.build()
+    // ADDITIVE (Restate cron scheduler): bind the CronJobManager
+    // (Service) + CronJob (VirtualObject) when the deployment opts in.
+    val withCron: Endpoint.Builder =
+      if (cronSchedulerEnabled)
+        withRefresh
+          .bind(io.sm8.platform.schedule.CronJobManagerService.serviceDefinition(cronNextFireCalc))
+          .bind(io.sm8.platform.schedule.CronJobObject.serviceDefinition(cronNextFireCalc))
+      else withRefresh
+    withCron.build()
   }
 
   /**
@@ -269,7 +290,10 @@ object HttpTransport {
       engineFn: Option[() => io.sm8.sdk.Engine] = None,
       // Ticket 6: forwards the rollup refresh closure to the
       // constructor (same companion-overload rationale as engineFn).
-      rollupRefreshFn: Option[RollupRefreshService.RefreshFn] = None
+      rollupRefreshFn: Option[RollupRefreshService.RefreshFn] = None,
+      cronSchedulerEnabled: Boolean = false,
+      cronNextFireCalc: io.sm8.core.schedule.NextFireTimeCalculator =
+        io.sm8.platform.schedule.CronUtilsNextFireTime
   ): HttpTransport =
-    new HttpTransport(model, registry, cache, plugins, metaInspectorEngineFn, registryInspectorFn, engineFn, rollupRefreshFn)
+    new HttpTransport(model, registry, cache, plugins, metaInspectorEngineFn, registryInspectorFn, engineFn, rollupRefreshFn, cronSchedulerEnabled, cronNextFireCalc)
 }

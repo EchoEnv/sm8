@@ -140,7 +140,11 @@ object Main {
       // (probe runs) so operators get the diagnostic at boot;
       // operators prioritizing fast cold-start over misconfiguration
       // detection can pass --skip-ingress-probe.
-      skipIngressProbe: Boolean            = false
+      skipIngressProbe: Boolean            = false,
+      // Restate cron scheduler opt-in (#394 follow-up): binds
+      // CronJobManager + CronJob so recurring jobs are durable via
+      // the Restate ingress. Default false = previous endpoint.
+      cronScheduler: Boolean               = false
   )
 
   /** Typed CLI parse failure — `reason` goes to stderr. */
@@ -197,6 +201,10 @@ object Main {
       |  --skip-ingress-probe    Skip the startup ingress reachability probe
       |                            (--mcp-transport stdio only). Faster cold-
       |                            start, no startup misconfig warning.
+      |  --cron-scheduler      Bind the Restate cron services
+      |                            (CronJobManager + CronJob) so recurring
+      |                            jobs are durable via the Restate ingress
+      |                            (off by default).
       |  --engine <name>     default engine (default: first discovered
       |                      EngineProvider on the classpath)
       |  --connector-url <u> optional connector URL (e.g.
@@ -314,6 +322,10 @@ object Main {
         case "--request-timeout" :: Nil => Left(CliError.MissingValue("--request-timeout"))
         case "--skip-ingress-probe" :: Nil =>
           loop(Nil, acc.copy(skipIngressProbe = true))
+        case "--cron-scheduler" :: Nil =>
+          loop(Nil, acc.copy(cronScheduler = true))
+        case "--cron-scheduler" :: _ =>
+          Left(CliError.UnknownFlag("--cron-scheduler (takes no value)"))
         case "--skip-ingress-probe" :: _ =>
           Left(CliError.UnknownFlag("--skip-ingress-probe (takes no value)"))
         case other :: _ => Left(CliError.UnknownFlag(other))
@@ -574,6 +586,10 @@ object Main {
       // with a clear CLI error). The deployment wires
       // RollupRefresher.refreshModel + its model resolver here.
       rollupRefreshFn: Option[RollupRefreshService.RefreshFn] = None,
+      // Restate cron scheduler opt-in (#394 follow-up): when true,
+      // binds CronJobManager + CronJob so recurring jobs are durable
+      // via the Restate ingress. Default false = previous endpoint.
+      cronSchedulerEnabled: Boolean = false,
   ): Either[String, (EngineRegistry, HttpTransport, List[EngineProvider])] = {
     // Per the audit (2026-08-27 [C1]): use the TYPED 5-arg realize so
     // engine-realization failures surface as `EngineError.ConnectionFailed`
@@ -623,7 +639,8 @@ object Main {
             metaInspectorEngineFn,
             registryInspectorFn,
             engineFn,
-            rollupRefreshFn
+            rollupRefreshFn,
+            cronSchedulerEnabled
           ), realized))
         } catch {
           case e: IllegalArgumentException => Left(e.getMessage)
@@ -816,7 +833,8 @@ object Main {
               // This closure adapts the connector's RollupRefresher
               // when the spark-connector JAR is on the classpath; the
               // name->Model resolver reads THIS deployment's model.
-              rollupRefreshFn = Some(rollupRefreshClosure(model))
+              rollupRefreshFn = Some(rollupRefreshClosure(model)),
+              cronSchedulerEnabled = cli.cronScheduler
             ) match {
               case Left(bootErr) =>
                 System.err.println(bootErr); 3
