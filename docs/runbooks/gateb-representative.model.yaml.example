@@ -1,0 +1,27 @@
+name: gateb_representative
+version: 1
+description: >-
+  Locally-representative workload for Gate B trace collection on the
+  7.5 GiB dev host. NOT production-scale; traces carry
+  isLiveModel=true but the deployment context is local-representative
+  (see ADR-0030 D6 study design for why production-scale traces are
+  still required for enablement decisions).
+source:
+  byName:
+    table: iceberg_cat.rep_events
+status: published
+dimensions:
+  - name: event_date
+    expr: event_date
+    dataType: Date
+  - name: region
+    expr: region
+measures:
+  - name: total
+    expr: sum(amount)
+rollups:
+  - name: by_day_region
+    dimensions: [event_date, region]
+    measures: [total]
+    time_grain: day
+    grain_dimension: event_date
