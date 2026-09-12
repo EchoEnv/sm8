@@ -84,6 +84,8 @@ Revised LOC estimate: **~600 LOC + ~260 LOC tests**. (Bonehound F4: 2-3× the or
 - **Test isolation (bonehound F10)**: unconditional hook invocation in `ModelLoader` means every fixture-loading test fires the hook. The `ModelLoadHook` registry defaults to EMPTY (no-op); tests that exercise the recorder register an in-memory hook explicitly; connector integration tests use a temp-file metastore. No global state.
 - **Backup (sabertooth NEW-F4)**: v1 backup story = the SQLite file is a single artifact; document `sqlite3 metastore.db '.backup ...'` in the runbook; no automated backup in v1.
 - **Schema versioning of the metastore itself**: one `schema_version` row; a `_metastore_migrations` table for future ALTER TABLE scripts (no v1 migrations needed; reserved for v2).
+- **Backup / restore (sabertooth NEW-F4)**: the metastore is a single SQLite file (default `<runtime>/metastore.db`). Operator contract is `cp metastore.db metastore.db.bak` before any operator action that mutates lineage. Documented in the runbook; no automated backup in v1.
+- **Drift-report shape (bonehound F11)**: drift is reported via a WARN-level log line AND a `metastore_drift` view/table (`model_name, expected_sha, actual_sha, first_detected_at`). If it degrades to DEBUG-only, operators never see it — the WARN line is the contract.
 
 ## Validator-first asymmetry treatment (F4)
 
@@ -113,11 +115,13 @@ sm8 already ships Iceberg; one more table is zero new deps. BUT: requires a Spar
 
 - Dual review + PR + RULE 9 stop on any implementation that follows.
 - Layer discipline per RFC §3: `ModelLoadHook` interface in core (zero IO coupling); `LineageRecorder` plugin + `SqlMetastoreModelRegistry` in connector.
+  - §3 footnote (sabertooth NEW-F1): connector-side SQLite is justified by data-flow purity — the core-side `ModelLoadHook` interface is pure data (`(yaml: String, parsed: Model) => Unit`), and all SQL lives in connector-side `MetastoreStorage`. The hook surface in core has zero IO coupling, so §3's "core stays IO-free" rule is preserved by construction, not by convention.
 - Validator-first asymmetry documented for the new persistence entry point (mirror PR #400 / #402).
 - Manifest changes go through `ModelLoader`, not around it (seam discipline from ADR-0032).
 
 ## Notes
 
+- **Sunset clause (sabertooth NEW-F2)**: this ticket is a decision ticket filed ahead-of-trigger. The ticket owner commits to a calendar review 6 months from open. If no tripwire from Q5 (lineage-history query, second production deployment, governance/access-control requirement) has fired by then, the ticket is closed as not-needed rather than left to drift. The build is gated on a real trigger; this ticket does NOT authorize the build.
 - This ticket is a **decision** ticket, not a build ticket. Resolving Q1–Q6 produces the spec; the build is a separate ticket (or series) once the v1 trigger fires.
 - Cross-reference: ADR-0032, ADR-008-L GAP 3, wayfinder map #378.
 - Grilled twice (round 1: bonehound + sabertooth — 4+5 BLOCKINGs, all resolved; round 2: same pair — READY-TO-OPEN with inline additions, applied in r3).
