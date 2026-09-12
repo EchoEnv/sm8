@@ -181,6 +181,12 @@ final class HttpTransport(
       // as MetaInspectorService (state lives in sm8-platform, not
       // in a Restate journal).
       .bind(MetricsService.definition())
+      // Per decision ticket #407 / PR #409 (QueryValidationService):
+      // bind the execute-free validate surface. Stateless reader
+      // over the captured `model`; same SERVICE+SHARED rationale
+      // as MetaInspectorService. Additive — no change to
+      // QueryService's wire contract.
+      .bind(QueryValidationService.definition(model))
       // Per ADR-013 (PR-259): bind EngineService so MCP/LLM agents can
       // discover available engines for the `query.engine` field. No new
       // state, no new wire DTOs beyond the existing `EngineRegistry` —

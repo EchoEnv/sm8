@@ -243,8 +243,8 @@ TestHandlerStubs.newHandlerContext(stubRequest)
       // Restate SDK's `Endpoint.getServiceDefinitions` (alphabetical
       // in 2.x); we assert by Set-equality below and check length,
       // not order, to stay robust against SDK iteration-order changes.
-      withoutNames.toSet shouldBe Set("QueryService", "ModelService", "MetricsService", "EngineService")
-      withoutNames.size shouldBe 4
+      withoutNames.toSet shouldBe Set("QueryService", "ModelService", "MetricsService", "EngineService", "QueryValidationService")
+      withoutNames.size shouldBe 5
     } finally {
       withInspector.stop()
       withoutInspector.stop()
