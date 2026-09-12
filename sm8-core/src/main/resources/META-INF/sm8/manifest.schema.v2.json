@@ -29,13 +29,9 @@
     },
     "status": {
       "type": "string",
-      "enum": [
-        "draft",
-        "published",
-        "deprecated"
-      ],
+      "pattern": "(?i)^(draft|published|deprecated)$",
       "default": "draft",
-      "description": "Model lifecycle status."
+      "description": "Model lifecycle status (case-insensitive)."
     },
     "source": {
       "description": "Engine-portable source identity. Exactly one of `byName`, `byPath`, `byProvider`.",
@@ -132,6 +128,20 @@
           },
           "expr": {
             "type": "string"
+          },
+          "type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional sealed data type label; loader accepts date, timestamp (case-insensitive)."
+          },
+          "dataType": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Alias of `type` (loader accepts at most one of the two)."
           }
         }
       }
@@ -196,14 +206,7 @@
           },
           "kind": {
             "type": "string",
-            "enum": [
-              "inner",
-              "left",
-              "right",
-              "full",
-              "outer",
-              "cross"
-            ]
+            "pattern": "(?i)^(inner|left|right|full|outer|cross)$"
           },
           "keys": {
             "type": "array",

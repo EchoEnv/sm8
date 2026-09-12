@@ -246,6 +246,7 @@ class PlatformModelLoaderSpec extends AnyFunSuite with Matchers {
         |dimensions:
         |  - name: event_date
         |    expr: event_date
+        |    type: date
         |  - name: region
         |    expr: region
         |measures:
@@ -262,6 +263,36 @@ class PlatformModelLoaderSpec extends AnyFunSuite with Matchers {
     out.isRight shouldBe true
     out.right.get.rollups should have size 1
     out.right.get.rollups.head.name shouldBe "by_day_region"
+  }
+
+  test("PlatformModelLoader.fromString: rollup fields accept camelCase aliases (timeGrain/grainDimension)") {
+    // F7 follow-up: the loader accepts both snake_case and camelCase
+    // for grain fields (ModelLoader.scala lists both spellings); the
+    // schema must accept both too or the camelCase form fails the
+    // validator-first gate.
+    val yaml =
+      """name: alias_model
+        |version: 1
+        |source:
+        |  byName:
+        |    table: t
+        |dimensions:
+        |  - name: d
+        |    expr: d
+        |measures:
+        |  - name: m
+        |    expr: sum(x)
+        |rollups:
+        |  - name: r
+        |    dimensions: [d]
+        |    measures: [m]
+        |    timeGrain: day
+        |    grainDimension: d
+        |""".stripMargin
+    val out = PlatformModelLoader.fromString(yaml)
+    out.isRight shouldBe true
+    out.right.get.rollups.head.timeGrain shouldBe Some("day")
+    out.right.get.rollups.head.grainDimension shouldBe Some("d")
   }
 
   test("PlatformModelLoader.fromString: manifest with joins + calculated_measures blocks loads Right") {
@@ -302,5 +333,49 @@ class PlatformModelLoaderSpec extends AnyFunSuite with Matchers {
         |""".stripMargin
     val out = PlatformModelLoader.fromString(yaml)
     out.left.get shouldBe a[PlatformModelError.SchemaValidation]
+  }
+
+  test("PlatformModelLoader.fromString: typed dimensions (type/dataType) + uppercase status load Right (round-2 schema coverage)") {
+    // Reviewer-A round-2 finding: the loader parses `type`/`dataType`
+    // on dimensions and matches `status` case-insensitively, but the
+    // schema originally listed neither. A manifest using them failed
+    // the validator-first gate despite being loader-valid.
+    val yaml =
+      """name: typed_model
+        |version: 1
+        |status: PUBLISHED
+        |source:
+        |  byName:
+        |    table: t
+        |dimensions:
+        |  - name: d
+        |    expr: d
+        |    type: date
+        |  - name: e
+        |    expr: e
+        |    dataType: timestamp
+        |""".stripMargin
+    val out = PlatformModelLoader.fromString(yaml)
+    out.isRight shouldBe true
+    out.right.get.dimensions.head.dataType.get shouldBe io.sm8.core.schema.SealedDataType.Date
+  }
+
+  test("PlatformModelLoader.fromString: dimension with an unsupported type still fails (loader-side domain check)") {
+    // The schema deliberately treats `type` as a free string (shape
+    // gate only); the loader owns the domain enum (date, timestamp).
+    // varchar must fail — at the loader, not the schema.
+    val yaml =
+      """name: bad_type
+        |version: 1
+        |source:
+        |  byName:
+        |    table: t
+        |dimensions:
+        |  - name: d
+        |    expr: d
+        |    type: varchar
+        |""".stripMargin
+    val out = PlatformModelLoader.fromString(yaml)
+    out.isRight shouldBe false
   }
 }
