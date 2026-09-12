@@ -14,6 +14,7 @@
  */
 package io.sm8.platform.query
 
+import io.sm8.core.cache.MetricsSink
 import io.sm8.core.engine.{EngineIdentity, QueryRequest}
 import io.sm8.core.model.{Dimension, Measure, Model}
 
@@ -55,7 +56,18 @@ class QueryValidationServiceSpec extends AnyFunSuite with Matchers {
       ))
     ).right.get
 
-}
+  /** Counting spy: bumps a counter at every sink call site that
+    * implies a WRITE or cache interaction. Validate must leave ALL
+    * of them at zero (the by-construction write-safety pin). */
+  private final class SpySink extends MetricsSink {
+    val cacheHits   = new AtomicLong(0)
+    val cacheMisses = new AtomicLong(0)
+    val invocations = new AtomicLong(0)
+
+    override def recordCacheHit(): Unit   = cacheHits.incrementAndGet()
+    override def recordCacheMiss(): Unit  = cacheMisses.incrementAndGet()
+    override def recordInvocation(): Unit = invocations.incrementAndGet()
+  }
 
   private def request(modelName: String): QueryRequest =
     QueryRequest(
@@ -68,7 +80,7 @@ class QueryValidationServiceSpec extends AnyFunSuite with Matchers {
   // -- tests --
 
   test("well-formed query against rollup-covered model → Right(ValidationOutcome) with Rewritten") {
-    val outcome = QueryValidationService.runValidation(coveredModel(), request("spec_events"), QueryMetrics)
+    val outcome = QueryValidationService.runValidation(coveredModel(), request("spec_events"))
     outcome.isRight shouldBe true
     val o = outcome.right.get
     o.modelVersion shouldBe 1
@@ -86,7 +98,7 @@ class QueryValidationServiceSpec extends AnyFunSuite with Matchers {
     // should flip to isLeft.
     val m = coveredModel()
     val bad = request("spec_events").copy(dimensions = Seq("event_date", "reigon")) // typo
-    val outcome = QueryValidationService.runValidation(m, bad, QueryMetrics)
+    val outcome = QueryValidationService.runValidation(m, bad)
     outcome.isRight shouldBe true // v1 scope: permissive on request dims
   }
 
@@ -108,7 +120,7 @@ class QueryValidationServiceSpec extends AnyFunSuite with Matchers {
 
   test("write-safety pin: validate never fires cache/invocation sinks (by-construction guarantee)") {
     val spy = new SpySink
-    val _ = QueryValidationService.runValidation(coveredModel(), request("spec_events"), QueryMetrics)
+    val _ = QueryValidationService.runValidation(coveredModel(), request("spec_events"))
     spy.cacheHits.get shouldBe 0L
     spy.cacheMisses.get shouldBe 0L
     spy.invocations.get shouldBe 0L

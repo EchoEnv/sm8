@@ -65,16 +65,12 @@ object QueryMetrics extends MetricsSink {
   private val rollupRewritesTotal       = new AtomicLong(0)
   private val rollupRefusalsTotal       = new AtomicLong(0)
   private val rollupRefusalsPermanent   = new AtomicLong(0)
-  // QueryValidation counters (issue #407)
-  private val validationsTotal      = new AtomicLong(0)
-  private val validationsSucceeded  = new AtomicLong(0)
-  private val validationsFailed     = new AtomicLong(0)
   // QueryValidation counters (issue #407): bumped by
   // QueryValidationService.runValidation via the sink passed at
   // definition time.
-  private val validationsTotal          = new AtomicLong(0)
-  private val validationsSucceeded      = new AtomicLong(0)
-  private val validationsFailed         = new AtomicLong(0)
+  private val validationsTotal      = new AtomicLong(0)
+  private val validationsSucceeded  = new AtomicLong(0)
+  private val validationsFailed     = new AtomicLong(0)
   // Per-reason counters: one key per RollupRewriteRefusal case,
   // keyed by RollupRewriteRefusal.reasonName. The map is bounded by
   // the sealed trait (8 cases in v1).
@@ -173,11 +169,6 @@ object QueryMetrics extends MetricsSink {
                             .sortBy { case (k, _) => k })
 
   // -- QueryValidation record methods (issue #407) --
-  def recordValidation(): Unit = validationsTotal.incrementAndGet()
-  def recordValidationSuccess(): Unit = validationsSucceeded.incrementAndGet()
-  def recordValidationFailure(): Unit = validationsFailed.incrementAndGet()
-  def validationSnapshot(): (Long, Long, Long) =
-    (validationsTotal.get, validationsSucceeded.get, validationsFailed.get)
 
   // -- Snapshot reader (called by MetricsService.snapshotRunner) --
 
