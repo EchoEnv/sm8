@@ -143,6 +143,40 @@ class GateBTraceRunnerSpec extends AnyFunSuite with Matchers {
     c.scopeDate shouldBe None
   }
 
+  test("live-model load: ModelLoader.fromStream SKIPS the ManifestValidator schema gate (pinned asymmetry vs PlatformModelLoader)") {
+    // Issue #401 (option 2): the runner calls ModelLoader.fromStream
+    // directly, NOT ManifestValidator → loader. This test pins that
+    // asymmetry: a manifest the JSON-Schema gate would REJECT
+    // (unknown top-level block 'rollup' — a typo of 'rollups') still
+    // loads fine via fromStream because the loader is lenient about
+    // unknown top-level fields. The production server path
+    // (PlatformModelLoader.validateAndLoad) rejects the SAME bytes.
+    // If this test ever fails, someone has wired the validator in
+    // front of the loader here — update the Scaladoc boundary note
+    // in GateBTraceRunner accordingly.
+    val schemaInvalidButLoaderValid =
+      """name: bypass_probe
+        |version: 1
+        |source:
+        |  byName:
+        |    table: t
+        |rollup:
+        |  - name: oops
+        |""".stripMargin
+
+    // Loader alone (what the runner calls): Right — no schema gate.
+    val loaderOut = io.sm8.core.manifest.ModelLoader.fromString(schemaInvalidButLoaderValid)
+    loaderOut.isRight shouldBe true
+
+    // Document the other half of the asymmetry for the reader: the
+    // SAME bytes through the validator are rejected (schema gate).
+    // (Not asserted via PlatformModelLoader — that would add an
+    // sm8-platform dependency to this connector spec; the validator
+    // call below is the same gate PlatformModelLoader runs first.)
+    val validatorOut = io.sm8.core.manifest.ManifestValidator.validate(schemaInvalidButLoaderValid)
+    validatorOut.isLeft shouldBe true
+  }
+
   test("JSON wrapper round-trips through Jackson write→read") {
     val mapper = new ObjectMapper()
     val wrapper = new java.util.LinkedHashMap[String, Object]()
