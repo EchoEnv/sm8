@@ -1,13 +1,13 @@
 # Wayfinder decision ticket — `QueryService/validate` (execute-free query compilation)
 
-**Ticket status**: DRAFT r4 (post grilling round 3: clover READY-TO-OPEN, sunflower NEEDS-REVISION with β-internal-contradiction BLOCKING; β' resolution applied — drop both QueryBuilder.build and rollupDecision from v1)
+**Ticket status**: DRAFT r6 (post grilling round 4: maple + seedling both READY-TO-OPEN; their fixes applied — resolveModel policy pinned, drift-backstop claim corrected, wording fixes)
 **Date**: 2026-09-12
 **Wayfinder map**: #378 (Tier 2+ refinements — user-facing query tooling axis)
 **Related**: ADR-0012-a (additive-service precedent), ADR-0026 (rollup routing invocation), `io.sm8.core.Pipeline`, `io.sm8.core.rel.RollupRewriter`
 
 ## Destination
 
-A spec for a **`QueryValidationService/validate`** handler in sm8-platform: an execute-free query pass that answers "is this query well-formed against this Model?" — running **field-existence + cross-reference + calc-DAG + status checks** with **no execute, no format, no plan, no DataFrame, no Spark IO, no cache effects, no hooks** — returning a `ValidationOutcome { modelVersion, errors: List[EngineError] }`. This matches the competitive baseline: dbt compile / MetricFlow --explain do not show routing either — routing is a runtime concern. v1 answers "would this be refused at execute time for a *well-formedness* reason?" Routing preview, plan-tree enumeration, and physical-table-touch list are deferred to v2 (they all require a `RelOp`, whose only producer needs a `SourceResolver` that only Spark implements today).
+A spec for a **`QueryValidationService/validate`** handler in sm8-platform: an execute-free query pass that answers "would this run cleanly against this Model, and what would it touch?" — running **field-existence + cross-reference + calc-DAG + status + routing decision** with **no execute, no format, no DataFrame, no Spark IO, no cache effects, no hooks** — returning a `ValidationOutcome` with rollup decision + tables touched + errors (Path 1 / fork 1a: routing preview IS in v1, via `DeclaredSchemaResolver`).
 
 ## Context — why now, why sm8-specific
 
@@ -26,29 +26,36 @@ dbt and MetricFlow both ship it; Cube does not (its model is compile-time valida
 
 ## Decision to resolve (revised per grilling round 1)
 
-**D1 — Validate implementation path (the load-bearing decision).**
+**D1 — Validate implementation path.**
 
-The in-tree `Pipeline` foldLeft is DORMANT in production; adding a Plan stage would be a breaking SDK change (`PipelineStage` is frozen per `Context.scala`). The correct v1 shape is **a direct-call composition in the platform handler**:
+The in-tree `Pipeline` foldLeft is DORMANT in production; production orchestration is `EngineService.runQueryWithHooks → EngineHookDispatcher → engineExecutor → SparkEngineProvider.query` (fused for-comprehension). The correct v1 shape — now that the RelOp fork is committed — is **a direct-call composition**:
 
 ```
 QueryValidationService/validate:
-  1. ModelValidator.validate(model)                — cross-refs, duplicate names, calc-DAG
-  2. resolve dimension/measure refs                — against the Model's declared fields
-     (NO SourceResolver; NO RollupRewriter.rewrite; see R3-1 resolution below)
-  3. STOP. No execute. No format. No hooks. No cache. No Spark. No SourceResolver.
+  1. ModelValidator.validate(model)                                     — cross-refs, duplicate names, calc-DAG
+  2. QueryBuilder.build(model, new DeclaredSchemaResolver(model), id)    — pure relop build; resolver
+                                                                       synthesises Field(name, dataType,
+                                                                       nullable=true) from the Model's
+                                                                       declared dimensions (dims carry
+                                                                       SealedDataType; measures default
+                                                                       to Varchar — verified seedling r5 #1:
+                                                                       RollupRewriter.scala:1095 falls back
+                                                                       to Varchar for untyped measure refs)
+  3. RollupRewriter.rewrite(plan, model.rollups)                       — core function; the rewrite may
+                                                                       collapse to Unchanged when the
+                                                                       query's dimension set is not fully
+                                                                       covered by rollups (verified:
+                                                                       RollupRewriter.scala:534, 396) —
+                                                                       this is a VALID outcome, not a
+                                                                       failure
+  4. STOP. No execute. No format. No hooks. No cache. No Spark. No warehouse reads.
 ```
 
-**R2-1 resolution (clover B5 + sunflower R2-1, both BLOCKING): option β — drop `QueryBuilder.build` from v1.**
+Layer-map: **zero core change.** The new `DeclaredSchemaResolver` lives in `sm8-platform` (deployment wiring); the `SourceResolver` trait and `ResolvedSource` ADT already exist in `sm8-core/.../engine/SourceResolver.scala`. The handler lives in `sm8-platform` and binds additively in `HttpTransport` per the ADR-0012-a pattern.
 
-Both grillers flagged the same contradiction: `QueryBuilder.build(model, resolver, identity)` requires a `SourceResolver`; the only impl is `SparkSourceResolver` (Spark IO + DataFrame); the docstring-referenced `NoopSourceResolver` does not exist; and option α would need a second core change (`Model.declaredSchema` doesn't exist either).
+**R2-1 / R3-1 / Path-1 resolutions**: see the Grilling log. Key insight from rounds 2–3: `QueryBuilder.build` requires a `SourceResolver`; the only existing impl is `SparkSourceResolver` (Spark IO); both β (drop `QueryBuilder.build`) and β' (drop it AND `rollupDecision`) weakened the user story. Path 1 / 1a restores the full r1 motivation by adding `DeclaredSchemaResolver` to the platform — a zero-core-change, zero-Spark solution that unblocks `QueryBuilder.build` + `RollupRewriter.rewrite` inside validate.
 
-**R3-1 resolution (sunflower R3-1, BLOCKING): option β' — also drop `rollupDecision` from v1's response.**
-
-Sunflower caught what r2/r3 missed: `RollupRewriter.rewrite` requires a `RelOp`; the ONLY `(Model, QueryRequest) → RelOp` producer is `QueryBuilder.build`, which still needs the SourceResolver. So β had an internal contradiction — D1 says "no QueryBuilder.build" but D2 says "include rollupDecision."
-
-β' resolves cleanly: v1 is **well-formedness only**. The service answers "is this query well-formed against this Model?" — not "what would it touch." That matches the competitive baseline (dbt compile and MetricFlow --explain don't show routing either — routing is a runtime concern). Routing preview moves to v2 via a named deferred core change: a no-resolver `QueryRequest → RelOp` builder in sm8-core, OR a new `NoopSourceResolver`, OR a schema-only resolver wired at definition-time. The v2 fork is documented; not picked now.
-
-Errors surfaced in v1: unknown dimension, unknown measure, unparsable filter, calc-measure cycle, duplicate names, missing model. NOT surfaced in v1: rollup routing decision, join-key type mismatch against source schema (needs resolver), source-column existence (needs resolver), what would be executed. (needs resolver).
+**Drift caveat, stated honestly (seedling r5 #2)**: validate does NOT catch warehouse-side schema drift (dropped column, widened type) — and neither does today's execute path in a typed way. `EngineError.SourceSchemaChanged` exists (EngineError.scala:109) and `ModelValidator.validateAgainstSchema` exists (ModelValidator.scala:323) but has ZERO production callers — a warehouse-side column drop currently surfaces as an untyped Spark `AnalysisException` at execute. This is the pre-existing DocumentedButNotWired pattern, not something validate introduces or fixes. A separate follow-up should wire `validateAgainstSchema` into the connector's execute path (tracked as Q8 in the build-ticket questions).
 
 **D2 — Response shape.**
 
@@ -56,17 +63,17 @@ Reuse existing typed ADTs (per clover S1 — do not invent a "plan summary"):
 
 ```
 ValidationOutcome {
-  modelVersion: Int                            // the version that was validated
-  errors: List[EngineError]                    // per-stage failures, empty on success
-  // tablesTouched, rollupDecision, decisionHints, engineSelection:
-  //   deferred to v2 (per β' resolution — all require a RelOp, which
-  //   requires SourceResolver, which would force Spark IO into v1).
+  modelVersion: Int                             // the Model version that was validated
+  rollupDecision: RollupRewriteResult           // sealed: Rewritten(plan, rollupName) | Unchanged(refusal)
+  decisionHints: Option[DecisionHints]         // broadcast/skew if plugins installed (None by default)
+  engineSelection: String                      // the engine that WOULD serve
+  errors: List[EngineError]                    // per-stage failures (empty on success)
+  tablesTouched: List[String]                  // physical tables the execute WOULD read
+                                               // (= model.source + model.joins.map(_.rightModel))
 }
 ```
 
-The "tables touched" claim from the r1 motivation is **deferred to v2** as well — without `RollupRewriter.rewrite`, we cannot enumerate the physical tables the execute WOULD read. v1 is honest: well-formedness-against-Model-only.
-
-Serde: Jackson + `DefaultScalaModule` (per the QueryService.scala:174 pattern) covers `ValidationOutcome` — plain fields + `List[EngineError]` (a sealed trait with existing serde wiring).
+Serde: Jackson + `DefaultScalaModule` (per QueryService.scala:174) covers the sealed `RollupRewriteResult` + `RollupRewriteRefusal` hierarchies, plus plain fields.
 
 Metrics: new additive counters on the existing `MetricsSink` seam (clover S10): `recordValidationSuccess(outcome)` + `recordValidationFailure(stage)`, observed by the rollup-refusal-observer pattern (MetricsSink.scala:46-51).
 
@@ -88,10 +95,14 @@ The v1 contract is structural, not runtime: **validate never invokes Execute, ne
 
 ## Open questions for the build ticket
 
-- [ ] **Q1**: Exact response JSON wire shape for `ValidationOutcome{modelVersion: Int, errors: List[EngineError]}` — trivial (`Int` + `List[EngineError]`, the latter sealed-trait serde already wired in QueryService.scala:174). No `RollupRewriteResult` or other sealed hierarchy is needed in v1 (deferred to v2 with the routing preview).
-- [ ] **Q2**: (Was CompiledSQLPreview in r3.) Now moot — the v2 RelOp fork governs whether SQL preview is reachable at all. Tracked under v2 promotion path in the r4 R3-1 resolution paragraph.
+- [ ] **Q1**: Exact response JSON wire shape for `ValidationOutcome{modelVersion, rollupDecision: RollupRewriteResult, decisionHints: Option[DecisionHints], engineSelection: String, errors: List[EngineError], tablesTouched: List[String]}` — sealed-trait serde for `RollupRewriteResult`/`RollupRewriteRefusal` via Jackson + `DefaultScalaModule` (QueryService.scala:174 pattern), per clover S9.
+- [ ] **Q2**: DeclaredSchemaResolver details — does it synthesize `ResolvedSource.Scan(source, schema)` from `Model.dimensions`/`measures` field names alone, or does it also need data types? (Dimensions carry `SealedDataType`; measures don't. Proposal: synthesize from dimensions + whatever the relop needs.) Also: `EngineIdentity` parameter — validate has no real identity; pass a synthetic constant?
 - [ ] **Q3**: Metrics counters — confirmed (clover S10): `recordValidationSuccess(outcome)` + `recordValidationFailure(stage)` on the existing `MetricsSink` seam (MetricsSink.scala:46-51).
-- [ ] **Q4**: Test fixture: `AuditStub` + `AuditStubNoOpContractSpec` pattern. Validate runs no hooks, so the safety pin is structural: a test that registers the stub plugin at every Pre/Post hook slot and asserts each `fires.get` is zero after validate. No temp-file write-side hook is needed (validate doesn't reach those points).
+- [ ] **Q4**: Test fixture: `AuditStub` + `AuditStubNoOpContractSpec` pattern. Validate runs no hooks, so the safety pin is structural: a test that registers the stub plugin at every Pre/Post hook slot and asserts each `fires.get` is zero after validate. Plus: QueryBuilder-build-integration-trap guard — the fixture model must declare only rollup-covered dimensions, AND the spec must assert the Unchanged-collapse case explicitly (rollupDecision collapses to `Unchanged`, never silently returns zero rows — verified RollupRewriter.scala:534, 396).
+- [ ] **Q5 (new)**: DeclaredSchemaResolver placement — `sm8-platform/.../query/` beside the service, or `connectors/spark-connector/`? (Argument for platform: it's deployment wiring independent of Spark; argument for connector: SourceResolver impls have historically lived connector-side. Recommend platform per the zero-Spark property.)
+- [ ] **Q6 (new, seedling r5 #4)**: `EngineIdentity` synthetic constant for validate — pin a value (proposal: `("validate", "0.0", "sm8-validate/0.1.0")`) so validate invocations are identifiable in production logs and any future `describe_model` output.
+- [ ] **Q7 (new, maple r5 #4)**: `DeclaredSchemaResolver.resolveModel` policy — v1 must choose: (a) override with `Right(SourceRef.ByName(name))` to support multi-model joins in validate, or (b) document the default `UnsupportedCapability` refusal as v1 scope (single-model validate only). Either is recoverable; the ticket must pick before implementation.
+- [ ] **Q8 (new, seedling r5 #2)**: the drift-backstop gap — `validateAgainstSchema` has zero production callers. NOT validate's job to fix, but the build ticket must NOT claim drift coverage; a separate follow-up issue should wire `validateAgainstSchema` into the connector execute path.
 
 ## Skills every session should consult
 
@@ -110,9 +121,9 @@ The v1 contract is structural, not runtime: **validate never invokes Execute, ne
 **~350–450 LOC, consolidated into 3 files** (single-handler service ≈ MetaInspectorService at 240 LOC for 2 handlers):
 - `QueryValidationService.scala` — service + handler + `ValidationOutcome` response ADT (~150 LOC; the response type lives inside the service object, matching the MetaInspectorService pattern)
 - `HttpTransport.scala` — additive `.bind(...)` (~5 LOC)
-- `QueryValidationServiceSpec.scala` — write-safety pin (AuditStub pattern, stub plugins at every Pre/Post slot asserted zero) + well-formedness/error-aggregation tests (~200 LOC)
+- `QueryValidationServiceSpec.scala` — write-safety pin (AuditStub pattern, stub plugins at every Pre/Post slot asserted zero) + rollup-routing tests (Rewritten AND Unchanged-collapse cases — the latter is a valid outcome, not a failure; per seedling r5 #3) + error-aggregation tests (~200 LOC)
 
-(v1 carries no serde for `RollupRewriteResult`/`ResolveStageOutcome` — both deferred to v2 with the routing preview, per the β' resolution.)
+(v1 carries serde for `RollupRewriteResult` + `DecisionHints` + `EngineError` — Jackson + `DefaultScalaModule` per QueryService.scala:174, restored per Path 1/1a; routing-preview fields ARE in the v1 response again.)
 
 ## Grilling log
 
@@ -123,7 +134,7 @@ The v1 contract is structural, not runtime: **validate never invokes Execute, ne
 - **Round 2** (same pair): clover NEEDS-REVISION (B5: QueryBuilder.build requires SourceResolver whose only impl is SparkSourceResolver — Spark IO breaks the by-construction guarantee; NoopSourceResolver referenced but absent; option α needs a second core change) + 5 SHOULD-FIX (Option[DecisionHints], engineSelection type, LOC 350-450/3 files, call-chain naming, serde pattern, MetricsSink counters). sunflower NEEDS-REVISION (R2-1: same fork, independently verified NoopSourceResolver absent + Model.declaredSchema absent; R2-3: ADR-0032 gloss too thin).
   - All addressed in r3 (option β: drop QueryBuilder.build, keep rollupDecision).
 - **Round 3** (same pair): clover READY-TO-OPEN (13/13 verifications, 2 nits: LOC body inconsistency + wrong spec name). sunflower NEEDS-REVISION (R3-1 BLOCKING: β has an internal contradiction — RollupRewriter.rewrite requires a RelOp; the only (Model, QueryRequest) → RelOp producer is QueryBuilder.build; so dropping QueryBuilder but keeping rollupDecision was incoherent). R3-2 NICE: dbt-metricflow path unverifiable from that session.
-- **Round 4 resolution**: β' applied — QueryBuilder.build AND rollupDecision both dropped from v1. v1 = well-formedness only (ModelValidator.validate + field-existence vs declared fields). tablesTouched/rollupDecision/decisionHints/engineSelection/CompiledSQLPreview all deferred to v2 with the three-way RelOp fork documented (NoopSourceResolver / new QueryRequest→RelOp builder / schema-only resolver — fork unpicked). Matches competitive baseline: dbt compile and mf --explain do not show routing either. Consistency sweep applied (Destination, standing prefs, Q1-Q4 rewritten for β').
+- **Round 4 resolution (out-of-band, user)**: user closed the loop with two strategic questions from clover r4 — "is v1 well-formedness-only acceptable, or does r1 motivation require committing to one of the v2 RelOp-fork candidates now?" + "is the new endpoint distinct enough from existing `ManifestValidator`?". User picked **Path 1: commit the RelOp fork now; routing preview ships in v1**. Among the three forks (1a/1b/1c), user picked **1a (`DeclaredSchemaResolver`)**: new platform-side class implementing the existing core `SourceResolver` trait, returning the Model's own declared field set as the resolved schema. Zero core change, zero Spark. Drift detection stays at execute time. Grilling log + standing prefs + D2 + Q-list all rewritten for the 1a resolution (r5).
 
 ## Notes
 
