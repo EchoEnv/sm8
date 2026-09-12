@@ -135,7 +135,13 @@ object QueryValidationService {
     )
 
   /** The core pipeline prefix validate runs (documented contract;
-    * see class Scaladoc for what it deliberately excludes). */
+    * see class Scaladoc for what it deliberately excludes).
+    *
+    * @param sink the platform `QueryMetrics` singleton — receives
+    *             validate counters (recordValidation/Success/Failure)
+    *             and rollup counters. Cache + invocation counters are
+    *             NEVER touched (by-construction write-safety guarantee).
+    */
   private[query] def runValidation(
       model: Model,
       request: QueryRequest,
