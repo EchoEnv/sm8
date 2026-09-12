@@ -150,7 +150,7 @@ class PlatformModelLoaderSpec extends AnyFunSuite with Matchers {
         |""".stripMargin
     val out = PlatformModelLoader.fromString(yaml)
     out.isLeft shouldBe true
-    out.left.get shouldBe a [PlatformModelError.SchemaValidation]  // PR #49: caught by schema enum
+    out.left.get shouldBe a [PlatformModelError.SchemaValidation]  // caught by the schema pattern
   }
 
   test("PlatformModelLoader.fromString: unknown SourceRef variant returns Left(PlatformModelError.UnknownSourceRef)") {

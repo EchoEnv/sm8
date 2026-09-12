@@ -134,14 +134,16 @@
               "string",
               "null"
             ],
-            "description": "Optional sealed data type label; loader accepts date, timestamp (case-insensitive)."
+            "pattern": "(?i)^(date|timestamp)$",
+            "description": "Optional sealed data type (case-insensitive: date, timestamp). Loader rejects other labels with a typed ParseFailure."
           },
           "dataType": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Alias of `type` (loader accepts at most one of the two)."
+            "pattern": "(?i)^(date|timestamp)$",
+            "description": "Alias of `type`; specify at most one of the two."
           }
         }
       }
