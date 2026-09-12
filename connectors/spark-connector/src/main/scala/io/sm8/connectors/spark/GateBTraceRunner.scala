@@ -32,11 +32,13 @@
  * ==Manifest validation boundary (deliberate bypass)==
  *
  * Live-model mode loads the YAML via
- * `io.sm8.core.manifest.ModelLoader.fromStream` DIRECTLY — it does
- * NOT go through `io.sm8.core.manifest.ManifestValidator`, and
- * therefore skips the JSON-Schema gate that the production server
- * path enforces (`sm8-platform` `PlatformModelLoader.validateAndLoad`
- * runs validator-first, then the loader).
+ * `io.sm8.core.manifest.ModelLoader.fromStream` DIRECTLY (see the
+ * `case Some(yamlPath)` branch of the run dispatch — the only
+ * loader call site in this file) — it does NOT go through
+ * `io.sm8.core.manifest.ManifestValidator`, and therefore skips the
+ * JSON-Schema gate that the production server path enforces
+ * (`sm8-platform` `PlatformModelLoader.validateAndLoad` runs
+ * validator-first, then the loader).
  *
  * This is deliberate, for a standalone-CLI research tool:
  *   - The runner is an operator-driven one-shot CLI (cron-attestable
