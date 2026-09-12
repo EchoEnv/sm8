@@ -28,6 +28,35 @@
  *
  * Closure safety: same contract as RollupRefreshCostProbe — driver-side
  * only, no user-code ships to executors.
+ *
+ * ==Manifest validation boundary (deliberate bypass)==
+ *
+ * Live-model mode loads the YAML via
+ * `io.sm8.core.manifest.ModelLoader.fromStream` DIRECTLY (see the
+ * `case Some(yamlPath)` branch of the run dispatch — the only
+ * loader call site in this file) — it does NOT go through
+ * `io.sm8.core.manifest.ManifestValidator`, and therefore skips the
+ * JSON-Schema gate that the production server path enforces
+ * (`sm8-platform` `PlatformModelLoader.validateAndLoad` runs
+ * validator-first, then the loader).
+ *
+ * This is deliberate, for a standalone-CLI research tool:
+ *   - The runner is an operator-driven one-shot CLI (cron-attestable
+ *     trace collection), not a long-lived service. The manifest is
+ *     the operator's own input file; a malformed one fails loudly at
+ *     the loader's typed `ManifestError` (parse/shape errors still
+ *     surface — the schema gate is what is skipped).
+ *   - The schema evolves independently (it is a classpath resource
+ *     amended in place — see the v2 schema description); pinning this
+ *     CLI to schema-validity would break older staged manifests
+ *     mid-experiment.
+ *
+ * Consequence: a manifest that the schema would REJECT (unknown
+ * top-level block, unknown dimension `type` label, bad join `kind`
+ * casing) can still load here if the loader accepts it. The
+ * production server (sm8-server Main → PlatformModelLoader) WILL
+ * reject the same file. `GateBTraceRunnerSpec` pins this asymmetry
+ * with a schema-invalid-but-loader-valid manifest.
  */
 package io.sm8.connectors.spark
 
@@ -209,6 +238,8 @@ object GateBTraceRunner {
     * Calls [[run]] (which returns the exit code) and propagates it
     * via [[sys.exit]]. The runbook's spark-submit/java invocations
     * target this name.
+    *
+    * @param args CLI flags; see [[parseArgs]] for the accepted set
     */
   def main(args: Array[String]): Unit = sys.exit(run(args))
 
