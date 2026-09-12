@@ -6,8 +6,9 @@
  *
  * behavior in adapters"): the loader is a typed factory in core.
  * It does NOT know which database / cache / auth system is in use
- * (RFC §3 Core Boundary). Spark coupling happens in the connector
- * layer; the YAML layer is engine-portable.
+ * (core-boundary rule: no engine or storage coupling). Spark
+ * coupling happens in the connector layer; the YAML layer is
+ * engine-portable.
  *
  * ==Why a separate manifest layer (vs. reading directly into Model)==
  *
@@ -21,9 +22,8 @@
  * legacy's `PortableModel` carries 8 sub-types
  * (`PortableJoin`, `PortableRollup`, `PortableCalculatedMeasure`,
  * `PortableFilter`, etc.). At the time of that port, `Model` did
- * NOT carry those fields (PR-M1 added joins + calculated_measures).
- * Ticket 3 of docs/wayfinder/2026-09-06-pre-aggregation.md
- * (2026-09-06) added `rollups` (parsed from the
+ * NOT carry those fields (later tickets added joins + calculated_measures).
+ * A later rollups ticket added `rollups` (parsed from the
  * `rollups:` block above); the remaining legacy portables have no
  * Model-field counterpart yet. So we port ONLY the subset
  * that maps to existing `Model` fields: name, version, description,
@@ -186,8 +186,8 @@ object ModelLoader {
  source.flatMap { src =>
   val dimsE = seqOrFail("dimensions", root.get("dimensions")).flatMap(parseDimensionsE)
   val measE = seqOrFail("measures", root.get("measures")).flatMap(parseMeasuresE)
-  // PR-M1 (ADR-008-L Appendix GAP 4): parse joins + calculated
-  // measures + filters. All three can fail (unknown join kind,
+  // Parses joins + calculated measures + filters in addition to
+  // the base blocks. All three can fail (unknown join kind,
   // unparsable calc expr, bad filter predicate, scalar at the
   // per-block site) — surface as typed ManifestError, never silent.
   val joinsE = seqOrFail("joins", root.get("joins")).flatMap(seq => parseJoins(seq))
@@ -209,7 +209,7 @@ object ModelLoader {
   calcs   <- calcsE
   rollups <- rollupsE
   // Use ModelBuilder so the validation + return-type contract
-  // matches the programmatic path (PR #44). The description
+  // matches the programmatic path. The description
   // is set only when present in the YAML (avoids the wart of
   // `Some("")` when the field is absent).
   model <- {
@@ -484,10 +484,10 @@ object ModelLoader {
    } yield acc :+ join
   }
  }
- /** PR-M1 (ADR-008-L Appendix GAP 4): parse the
+ /** Parse the
  * `calculated_measures:` block. Each entry: { name, expr }. The
- * expr string goes through ExprParser (now CASE WHEN / AS alias /
- * all() / measure() aware per GAP 1). Parse failure -> typed
+ * expr string goes through ExprParser (CASE WHEN / AS alias /
+ * all() / measure() aware). Parse failure -> typed
  * ManifestError.ParseFailure (never silent). */
   private def parseCalculatedMeasures(
  seq: Seq[Any]): Either[ManifestError, List[io.sm8.core.model.CalculatedMeasure]] = {
@@ -584,7 +584,7 @@ object ModelLoader {
      Left(ManifestError.ParseFailure(
      s"rollups[${name.getOrElse("?")}].$key must be a list (got ${other.getClass.getSimpleName})"))
     }
-   // freshness (ADR-0030 D3, Tier 2): optional `freshness:`
+   // freshness: optional `freshness:`
    // policy on a rollup. Accepted spellings: `final_required`,
    // `finalRequired`, `final-required`, `FinalRequired` (case-
    // insensitive; snake/camel/kegel author convenience). Any other
@@ -595,7 +595,7 @@ object ModelLoader {
    // ModelValidator's job (policy requires grain; the parser
    // accepts the field, the validator rejects the grain-less
    // policy state).
-   // cascadeSource (ADR-0031 D4, Tier 2 cascade): optional name of
+   // cascadeSource: optional name of
    // the finer-grained rollup (same model) this rollup builds from.
    // A plain name-STRING at parse time; existence + eligibility +
    // cycle checks are ModelValidator.validateCascadeDag's job at
@@ -716,8 +716,8 @@ object ModelLoader {
 
  /** Parse the `filters:` block. Each entry: { name, predicate }.
  * `predicate` is a raw SQL-like expression (delegated to
- * ExprParser.parseExpr per ADR-008-P filter-language contract).
- * Strict by design (Ticket 3 follow-up: same discipline as
+ * ExprParser.parseExpr per the filter-language contract).
+ * Strict by design (same discipline as
  * parseRollups): a non-map entry, missing name, missing
  * predicate, or unparsable expr fails loud as typed
  * ManifestError.ParseFailure -- never silent (silent drops let a

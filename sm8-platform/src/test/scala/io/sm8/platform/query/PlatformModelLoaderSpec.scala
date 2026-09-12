@@ -228,4 +228,79 @@ class PlatformModelLoaderSpec extends AnyFunSuite with Matchers {
       Files.deleteIfExists(tmp)
     }
   }
+
+  test("PlatformModelLoader.fromString: manifest with rollups block loads Right (schema covers every loader-parsed block)") {
+    // Regression: the v2 schema originally pre-dated the loader's
+    // joins/calculated_measures/rollups blocks, and because the
+    // validator runs FIRST in validateAndLoad (with
+    // additionalProperties: false), any manifest carrying a rollups
+    // block failed production load with "property 'rollups' is not
+    // defined" even though ModelLoader parses it fine. The schema
+    // must accept every block the loader parses.
+    val yaml =
+      """name: gateb_representative
+        |version: 1
+        |source:
+        |  byName:
+        |    table: iceberg_cat.rep_events
+        |dimensions:
+        |  - name: event_date
+        |    expr: event_date
+        |  - name: region
+        |    expr: region
+        |measures:
+        |  - name: total
+        |    expr: sum(amount)
+        |rollups:
+        |  - name: by_day_region
+        |    dimensions: [event_date, region]
+        |    measures: [total]
+        |    time_grain: day
+        |    grain_dimension: event_date
+        |""".stripMargin
+    val out = PlatformModelLoader.fromString(yaml)
+    out.isRight shouldBe true
+    out.right.get.rollups should have size 1
+    out.right.get.rollups.head.name shouldBe "by_day_region"
+  }
+
+  test("PlatformModelLoader.fromString: manifest with joins + calculated_measures blocks loads Right") {
+    val yaml =
+      """name: joined_model
+        |version: 1
+        |source:
+        |  byName:
+        |    table: orders
+        |joins:
+        |  - name: j
+        |    kind: inner
+        |    rightModel: customers
+        |    keys: [["customer_id", "id"]]
+        |calculated_measures:
+        |  - name: net
+        |    expr: total - discount
+        |""".stripMargin
+    val out = PlatformModelLoader.fromString(yaml)
+    out.isRight shouldBe true
+    out.right.get.joins should have size 1
+    out.right.get.calculatedMeasures should have size 1
+  }
+
+  test("PlatformModelLoader.fromString: typo'd top-level block still fails schema validation (typo-gate intact)") {
+    // The loader is lenient about unknown top-level fields; the
+    // schema's additionalProperties:false is the typo-gate. Amending
+    // the schema must not lose that gate for fields the loader does
+    // NOT parse.
+    val yaml =
+      """name: typo_model
+        |version: 1
+        |source:
+        |  byName:
+        |    table: t
+        |rollup:
+        |  - name: oops
+        |""".stripMargin
+    val out = PlatformModelLoader.fromString(yaml)
+    out.left.get shouldBe a[PlatformModelError.SchemaValidation]
+  }
 }
