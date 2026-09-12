@@ -1,10 +1,13 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  
   "title": "SM8 manifest",
-  "description": "JSON Schema for an SM8 model manifest (v2). The shape is the wire-compatible subset of the legacy semanticdf manifest, scoped to what SM8-core's ModelLoader accepts.",
+  "description": "JSON Schema for an SM8 model manifest (v2). Amended in place to include joins, calculated_measures, and rollups blocks \u2014 previously the schema pre-dated these fields in the loader, which silently accepted manifests the validator then rejected (PlatformModelLoader.validateAndLoad is validator-first). Adding the missing blocks keeps the schema honest with what ModelLoader already parses; v2 stays as the version label because the file is a classpath resource, not a wire format.",
   "type": "object",
-  "required": ["name", "version", "source"],
+  "required": [
+    "name",
+    "version",
+    "source"
+  ],
   "additionalProperties": false,
   "properties": {
     "name": {
@@ -18,46 +21,67 @@
       "description": "Model version. Non-negative."
     },
     "description": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "description": "Optional human-readable description."
     },
     "status": {
       "type": "string",
-      "enum": ["draft", "published", "deprecated"],
+      "pattern": "(?i)^(draft|published|deprecated)$",
       "default": "draft",
-      "description": "Model lifecycle status."
+      "description": "Model lifecycle status (case-insensitive)."
     },
     "source": {
       "description": "Engine-portable source identity. Exactly one of `byName`, `byPath`, `byProvider`.",
       "oneOf": [
         {
           "type": "object",
-          "required": ["byName"],
+          "required": [
+            "byName"
+          ],
           "additionalProperties": false,
           "properties": {
             "byName": {
               "type": "object",
-              "required": ["table"],
+              "required": [
+                "table"
+              ],
               "additionalProperties": false,
               "properties": {
-                "name":  { "type": "string" },
-                "table": { "type": "string", "minLength": 1 }
+                "name": {
+                  "type": "string"
+                },
+                "table": {
+                  "type": "string",
+                  "minLength": 1
+                }
               }
             }
           }
         },
         {
           "type": "object",
-          "required": ["byPath"],
+          "required": [
+            "byPath"
+          ],
           "additionalProperties": false,
           "properties": {
             "byPath": {
               "type": "object",
-              "required": ["format", "path"],
+              "required": [
+                "format",
+                "path"
+              ],
               "additionalProperties": false,
               "properties": {
-                "format": { "type": "string" },
-                "path":   { "type": "string" },
+                "format": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
                 "options": {
                   "type": "object",
                   "additionalProperties": true
@@ -68,15 +92,21 @@
         },
         {
           "type": "object",
-          "required": ["byProvider"],
+          "required": [
+            "byProvider"
+          ],
           "additionalProperties": false,
           "properties": {
             "byProvider": {
               "type": "object",
-              "required": ["providerRefName"],
+              "required": [
+                "providerRefName"
+              ],
               "additionalProperties": false,
               "properties": {
-                "providerRefName": { "type": "string" }
+                "providerRefName": {
+                  "type": "string"
+                }
               }
             }
           }
@@ -88,11 +118,33 @@
       "default": [],
       "items": {
         "type": "object",
-        "required": ["name"],
+        "required": [
+          "name"
+        ],
         "additionalProperties": false,
         "properties": {
-          "name": { "type": "string" },
-          "expr": { "type": "string" }
+          "name": {
+            "type": "string"
+          },
+          "expr": {
+            "type": "string"
+          },
+          "type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "(?i)^(date|timestamp)$",
+            "description": "Optional sealed data type (case-insensitive: date, timestamp). Loader rejects other labels with a typed ParseFailure."
+          },
+          "dataType": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "(?i)^(date|timestamp)$",
+            "description": "Alias of `type`; specify at most one of the two."
+          }
         }
       }
     },
@@ -101,11 +153,17 @@
       "default": [],
       "items": {
         "type": "object",
-        "required": ["name"],
+        "required": [
+          "name"
+        ],
         "additionalProperties": false,
         "properties": {
-          "name": { "type": "string" },
-          "expr": { "type": "string" }
+          "name": {
+            "type": "string"
+          },
+          "expr": {
+            "type": "string"
+          }
         }
       }
     },
@@ -114,11 +172,157 @@
       "default": [],
       "items": {
         "type": "object",
-        "required": ["name", "predicate"],
+        "required": [
+          "name",
+          "predicate"
+        ],
         "additionalProperties": false,
         "properties": {
-          "name":       { "type": "string" },
-          "predicate":  { "type": "string" }
+          "name": {
+            "type": "string"
+          },
+          "predicate": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "joins": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "rightModel": {
+            "type": "string"
+          },
+          "right_model": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "pattern": "(?i)^(inner|left|right|full|outer|cross)$"
+          },
+          "keys": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "estimatedRows": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "estimated_rows": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "calculated_measures": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "expr"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "expr": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "rollups": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "dimensions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "measures": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "time_grain": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "timeGrain": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "grain_dimension": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "grainDimension": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "freshness": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cascade_source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cascadeSource": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
         }
       }
     }

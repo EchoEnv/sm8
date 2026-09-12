@@ -30,7 +30,14 @@ package io.sm8.core.manifest
 
 /** Typed error from YAML manifest parsing. */
 sealed trait ManifestError extends Product with Serializable {
- def message: String
+ /** Human-readable summary safe to surface in logs or operator-facing
+  * errors. Concrete case classes compose the message from their own
+  * fields; callers should pattern-match on the case class for typed
+  * dispatch, not on this string.
+   *
+   * @return the composed summary string (never null)
+   */
+  def message: String
 }
 
 object ManifestError {
