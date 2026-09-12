@@ -65,6 +65,12 @@ object QueryMetrics extends MetricsSink {
   private val rollupRewritesTotal       = new AtomicLong(0)
   private val rollupRefusalsTotal       = new AtomicLong(0)
   private val rollupRefusalsPermanent   = new AtomicLong(0)
+  // QueryValidation counters (issue #407): bumped by
+  // QueryValidationService.runValidation via the sink passed at
+  // definition time.
+  private val validationsTotal          = new AtomicLong(0)
+  private val validationsSucceeded      = new AtomicLong(0)
+  private val validationsFailed         = new AtomicLong(0)
   // Per-reason counters: one key per RollupRewriteRefusal case,
   // keyed by RollupRewriteRefusal.reasonName. The map is bounded by
   // the sealed trait (8 cases in v1).
@@ -123,6 +129,30 @@ object QueryMetrics extends MetricsSink {
       .computeIfAbsent(key, _ => new AtomicLong(0))
       .incrementAndGet()
   }
+
+  // -- QueryValidation record methods (issue #407) --
+
+  /** Increment the validations counter. Called from
+    * `QueryValidationService.runValidation` on entry.
+    */
+  def recordValidation(): Unit = validationsTotal.incrementAndGet()
+
+  /** Increment the validation-success counter. Called when all
+    * stages (model / build / rewrite) complete without failure.
+    */
+  def recordValidationSuccess(): Unit = validationsSucceeded.incrementAndGet()
+
+  /** Increment the validation-failure counter. Called when any
+    * stage fails.
+    */
+  def recordValidationFailure(): Unit = validationsFailed.incrementAndGet()
+
+  /** Validation counters snapshot (for MetricsService exposure).
+    *
+    * @return (total, succeeded, failed)
+    */
+  def validationSnapshot(): (Long, Long, Long) =
+    (validationsTotal.get, validationsSucceeded.get, validationsFailed.get)
 
   /** Read the rollup-rewrite counters as an immutable snapshot
     * (observer-plugin read surface).

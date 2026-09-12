@@ -138,12 +138,15 @@ object QueryValidationService {
     * see class Scaladoc for what it deliberately excludes). */
   private[query] def runValidation(
       model: Model,
-      request: QueryRequest
+      request: QueryRequest,
+      sink: QueryMetrics
   ): Either[ValidationFailure, ValidationOutcome] = {
+    sink.recordValidation()
     // Stage 1: model-level integrity (cross-refs, duplicate names,
     // calc-measure DAG, rollup-ref existence). Aggregates ALL errors.
     ModelValidator.validate(model) match {
       case Left(err: ModelValidationError) =>
+        sink.recordValidationFailure()
         Left(ValidationFailure(
           stage = "model",
           errors = List(EngineError.UnsupportedCapability(
@@ -160,9 +163,11 @@ object QueryValidationService {
         val resolver = new DeclaredSchemaResolver(model)
         QueryBuilder.build(model, resolver, ValidateEngineIdentity) match {
           case Left(buildErr) =>
+            sink.recordValidationFailure()
             Left(ValidationFailure(stage = "build", errors = List(buildErr)))
           case Right(plan) =>
             val decision = RollupRewriter.rewrite(plan, model, request.timeGrain)
+            sink.recordValidationSuccess()
             Right(ValidationOutcome(
               modelVersion = model.version,
               rollupDecision = decision,
@@ -241,7 +246,7 @@ object QueryValidationService {
     * @param model the deployment's captured Model
     * @return      the `ServiceDefinition` exposing `validate`
     */
-  def definition(model: Model): ServiceDefinition = {
+  def definition(model: Model, sink: QueryMetrics): ServiceDefinition = {
     val scalaMapper: ObjectMapper =
       new ObjectMapper().registerModule(DefaultScalaModule)
     val jacksonSerdeFactory = new JacksonSerdeFactory(scalaMapper)
@@ -252,7 +257,8 @@ object QueryValidationService {
     val validateRunner: HandlerRunner[QueryRequest, ValidationOutcome] =
       HandlerRunner.of(
         (_: dev.restate.sdk.Context, req: QueryRequest) =>
-          runValidation(model, req) match {
+          sink.recordValidation()
+          runValidation(model, req, sink) match {
             case Right(outcome) => outcome
             case Left(failure) =>
               // Typed validation failure → the wire error. Restate
