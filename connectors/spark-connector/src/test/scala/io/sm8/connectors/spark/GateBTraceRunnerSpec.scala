@@ -170,9 +170,12 @@ class GateBTraceRunnerSpec extends AnyFunSuite with Matchers {
 
     // Document the other half of the asymmetry for the reader: the
     // SAME bytes through the validator are rejected (schema gate).
-    // (Not asserted via PlatformModelLoader — that would add an
-    // sm8-platform dependency to this connector spec; the validator
-    // call below is the same gate PlatformModelLoader runs first.)
+    // Asserted via ManifestValidator directly rather than
+    // PlatformModelLoader (which IS on the test classpath at test
+    // scope): the pin belongs to THIS module's boundary, and
+    // ManifestValidator.validate is the identical first gate
+    // PlatformModelLoader.validateAndLoad runs — proxy-equivalent,
+    // without coupling this spec to the platform adapter.
     val validatorOut = io.sm8.core.manifest.ManifestValidator.validate(schemaInvalidButLoaderValid)
     validatorOut.isLeft shouldBe true
   }
