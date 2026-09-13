@@ -236,7 +236,12 @@ object QueryValidationService {
       model: Model
   ): List[(String, String)] = {
     val declaredDims = model.dimensions.map(_.name).toSet
-    val declaredMeas = model.measures.map(_.name).toSet
+    // CalculatedMeasures are also resolvable request-level measures
+    // (mirrors DeclaredSchemaResolver's field synthesis, which includes
+    // calc-measures to prevent false-positive "unknown measure" errors
+    // for names the model legitimately serves).
+    val declaredMeas =
+      (model.measures.map(_.name) ++ model.calculatedMeasures.map(_.name)).toSet
     request.dimensions.filterNot(declaredDims).map("dimension" -> _).toList ++
     request.measures.filterNot(declaredMeas).map("measure" -> _).toList
   }
