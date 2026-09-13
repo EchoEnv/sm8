@@ -1,19 +1,19 @@
 /*
- * SM8 Platform — QueryValidationService.
+ * SM8 Platform — QueryValidationService (v2 D1: request-dim checking).
  *
  * Execute-free query validation: answers "would this run cleanly
- * against this Model, and what would it touch?" without invoking
- * the engine, without firing pipeline hooks, and without touching
- * the result cache.
+ * against this Model?" without invoking the engine, without firing
+ * pipeline hooks, and without touching the result cache.
  *
  * == Why a standalone service (not a handler on QueryService) ==
  *
  * Per the codebase's existing precedent (one ServiceDefinition per
- * verb-class, e.g. the parallel services for Model / Metrics / Engine):
- * `QueryService` is a stateful executor (cache + rollup rewrite +
- * engine dispatch); validate is an idempotent read-only projection.
- * Mixing them in one service conflates two contracts. The service is
- * bound additively in `HttpTransport` using the same pattern.
+ * verb-class — QueryService, ModelService, MetricsService,
+ * EngineService, MetaInspectorService): `QueryService` is a stateful
+ * executor (cache + rollup rewrite + engine dispatch); validate is
+ * an idempotent read-only projection. Mixing them in one service
+ * conflates two contracts. The service is bound additively in
+ * `HttpTransport` using the same pattern.
  *
  * == Write safety: by construction, not by gating ==
  *
@@ -40,12 +40,25 @@
  * untyped measure refs, verified RollupRewriter.scala:1095). This is
  * "trust the manifest's declaration" semantics: validate checks the
  * query against the model's CONTRACT, not against the warehouse's
- * current state. Warehouse-side schema drift (dropped column, widened
- * type) is an execute-time concern and is NOT surfaced here — the
- * typed drift backstop (`ModelValidator.validateAgainstSchema`)
- * currently has zero production callers (verified 2026-09-12); wiring
- * it into the connector execute path is tracked as a follow-up (Q8 on
- * decision ticket #407).
+ * current state.
+ *
+ * == D1: request-dim / request-measure cross-check ==
+ *
+ * v1 (merged #410) passed unknown request dimensions silently —
+ * `QueryBuilder.build` doesn't consume `request.dimensions` and
+ * there's no core check. This v2 addition catches operator typos
+ * (e.g. "reigon") and stale refs BEFORE the build. Pure data
+ * diff against the Model's declared names — no IO. Unknown
+ * dims/measures surface as `ValidationFailure(stage = "request")`
+ * with one `EngineError.UnsupportedCapability` per unknown name.
+ *
+ * == Drift detection is OUT of scope ==
+ *
+ * Warehouse-side schema drift (dropped column, widened type) is NOT
+ * surfaced here. The typed backstop `ModelValidator.validateAgainstSchema`
+ * exists in core but has zero production callers (verified 2026-09-12,
+ * seedling r5 #2) — wiring it into the connector execute path is a
+ * named follow-up (tracked as Q8 on #407).
  *
  * == Spark concerns ==
  *
@@ -85,7 +98,8 @@ import dev.restate.serde.jackson.JacksonSerdeFactory
   * @param decisionHints  broadcast/skew hints; always `None` under
   *                       validate (hints are populated from
   *                       `context.meta` by PreExecute hooks, which
-  *                       validate does not run)
+  *                       validate does not run). Kept as `Option` for
+  *                       v2 shape-stability.
   * @param engineSelection the engine that WOULD serve the query
   * @param tablesTouched  physical tables the execute WOULD read (model
   *                       source + join right-sides)
@@ -100,7 +114,8 @@ final case class ValidationOutcome(
 
 /** Typed validation failure: which stage failed and why.
   *
-  * @param stage  "model" (model-level integrity) or "build" (query
+  * @param stage  "request" (D1: unknown request dims/measures),
+  *               "model" (model-level integrity), or "build" (query
   *               well-formedness / resolution)
   * @param errors all collected errors for that stage (aggregated,
   *               not first-only)
@@ -118,8 +133,7 @@ final case class ValidationFailure(
 }
 
 /** The service. Construct with the deployment's captured `Model`.
-  * Stateless: all state is the immutable captured `Model` (metrics go
-  * through the platform `QueryMetrics` singleton).
+  * Stateless: all state is the immutable captured `Model`.
   */
 object QueryValidationService {
 
@@ -135,11 +149,32 @@ object QueryValidationService {
     )
 
   /** The core pipeline prefix validate runs (documented contract;
-    * see class Scaladoc for what it deliberately excludes). */
+    * see class Scaladoc for what it deliberately excludes).
+    *
+    * @param model   the deployment's captured Model
+    * @param request the incoming query request
+    */
   private[query] def runValidation(
       model: Model,
       request: QueryRequest
   ): Either[ValidationFailure, ValidationOutcome] = {
+    // Stage 0 (D1): request-vs-model cross-check. Catches operator
+    // typos and stale refs BEFORE the relop build. Pure data diff
+    // against the Model's declared names; no engine, no hooks, no IO.
+    // Aggregates ALL unknown refs into one typed ValidationFailure.
+    val unknown = unknownRefs(request, model)
+    if (unknown.nonEmpty) {
+      return Left(ValidationFailure(
+        stage = "request",
+        errors = unknown.map { case (kind, name) =>
+          EngineError.UnsupportedCapability(
+            engine = "validate",
+            capability = s"unknown-$kind",
+            message = s"unknown $kind in request: '$name' (not declared on model '${model.name}' v${model.version})"
+          )
+        }
+      ))
+    }
     // Stage 1: model-level integrity (cross-refs, duplicate names,
     // calc-measure DAG, rollup-ref existence). Aggregates ALL errors.
     ModelValidator.validate(model) match {
@@ -188,6 +223,24 @@ object QueryValidationService {
     primary ++ model.joins.map(_.rightModel)
   }
 
+  /** Stage-0 request-vs-model cross-check: returns every (kind, name)
+    * pair in the request that the Model does not declare. Pure data
+    * diff; no IO. Kinds: "dimension", "measure".
+    *
+    * @param request the incoming query request
+    * @param model   the deployment's captured Model
+    * @return        the unknown (kind, name) pairs, in request order
+    */
+  private[query] def unknownRefs(
+      request: QueryRequest,
+      model: Model
+  ): List[(String, String)] = {
+    val declaredDims = model.dimensions.map(_.name).toSet
+    val declaredMeas = model.measures.map(_.name).toSet
+    request.dimensions.filterNot(declaredDims).map("dimension" -> _).toList ++
+    request.measures.filterNot(declaredMeas).map("measure" -> _).toList
+  }
+
   /** Synthesize the declared field set from the Model itself.
     * Dimensions carry `SealedDataType` (default `Varchar` when the
     * manifest omitted it); measures are untyped by contract and
@@ -221,11 +274,11 @@ object QueryValidationService {
       * field set regardless of what the warehouse currently has.
       * Drift is an execute-time concern (see class Scaladoc).
       *
-      * @param source   the model's primary source ref (unused —
-      *                 value is consumed via `model`'s declared fields)
-      * @param identity the engine identity (unused — validate has no
-      *                 real identity; see `ValidateEngineIdentity`)
-      * @return         `Right(ResolvedSource.Scan(model.source,
+      * @param source   the model's primary source ref (consumed into
+      *                 the `Scan` for provenance)
+      * @param identity the engine identity (validate passes the
+      *                 pinned `ValidateEngineIdentity`)
+      * @return         `Right(ResolvedSource.Scan(source,
       *                 declaredFields))` always
       */
     override def resolve(

@@ -15,7 +15,7 @@
 package io.sm8.platform.query
 
 import io.sm8.core.cache.MetricsSink
-import io.sm8.core.engine.{EngineIdentity, QueryRequest}
+import io.sm8.core.engine.{EngineError, EngineIdentity, QueryRequest}
 import io.sm8.core.model.{Dimension, Measure, Model}
 
 import org.scalatest.funsuite.AnyFunSuite
@@ -89,17 +89,18 @@ class QueryValidationServiceSpec extends AnyFunSuite with Matchers {
     o.decisionHints shouldBe None // no PreExecute hooks under validate
   }
 
-  test("unknown request dimension passes v1 validate (core has no request-dim check — v1 scope is well-formedness only)") {
-    // Documented v1 scope: validate catches MODEL-level integrity
-    // issues. An unknown request dimension is a RUNTIME concern —
-    // core's QueryBuilder.build does not validate request dims
-    // against the model today, so neither does validate. If a
-    // future change adds request-dim checking to core, this test
-    // should flip to isLeft.
+  test("unknown request dimension → Left(ValidationFailure) at the request stage (D1)") {
+    // D1 v2: validate catches unknown request dims/measures against
+    // the Model's declared field set BEFORE the relop build. This
+    // replaces the v1 permissive behavior (verified during the v1
+    // spec — core's QueryBuilder.build has no request-dim check).
     val m = coveredModel()
     val bad = request("spec_events").copy(dimensions = Seq("event_date", "reigon")) // typo
     val outcome = QueryValidationService.runValidation(m, bad)
-    outcome.isRight shouldBe true // v1 scope: permissive on request dims
+    outcome.isLeft shouldBe true
+    outcome.left.get.stage shouldBe "request"
+    outcome.left.get.errors should have size 1
+    outcome.left.get.errors.head shouldBe a[EngineError.UnsupportedCapability]
   }
 
   test("duplicate dimension names are caught at Model.of (fixture sanity)") {
