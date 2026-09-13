@@ -15,7 +15,7 @@
 package io.sm8.platform.query
 
 import io.sm8.core.cache.MetricsSink
-import io.sm8.core.engine.{EngineIdentity, QueryRequest}
+import io.sm8.core.engine.{EngineError, EngineIdentity, QueryRequest}
 import io.sm8.core.model.{Dimension, Measure, Model}
 
 import org.scalatest.funsuite.AnyFunSuite
@@ -89,17 +89,49 @@ class QueryValidationServiceSpec extends AnyFunSuite with Matchers {
     o.decisionHints shouldBe None // no PreExecute hooks under validate
   }
 
-  test("unknown request dimension passes v1 validate (core has no request-dim check — v1 scope is well-formedness only)") {
-    // Documented v1 scope: validate catches MODEL-level integrity
-    // issues. An unknown request dimension is a RUNTIME concern —
-    // core's QueryBuilder.build does not validate request dims
-    // against the model today, so neither does validate. If a
-    // future change adds request-dim checking to core, this test
-    // should flip to isLeft.
+  test("unknown request dimension → Left(ValidationFailure) at the request stage (D1)") {
+    // D1 v2: validate catches unknown request dims/measures against
+    // the Model's declared field set BEFORE the relop build. This
+    // replaces the v1 permissive behavior (verified during the v1
+    // spec — core's QueryBuilder.build has no request-dim check).
     val m = coveredModel()
     val bad = request("spec_events").copy(dimensions = Seq("event_date", "reigon")) // typo
     val outcome = QueryValidationService.runValidation(m, bad)
-    outcome.isRight shouldBe true // v1 scope: permissive on request dims
+    outcome.isLeft shouldBe true
+    outcome.left.get.stage shouldBe "request"
+    outcome.left.get.errors should have size 1
+    val err = outcome.left.get.errors.head.asInstanceOf[EngineError.UnsupportedCapability]
+    err.capability shouldBe "unknown-dimension"
+    err.message should include("reigon")
+  }
+
+  test("multiple unknown dims + measures aggregate into ONE ValidationFailure with ALL errors (D1 aggregation)") {
+    val m = coveredModel()
+    val bad = request("spec_events")
+      .copy(dimensions = Seq("event_date", "reigon", "rigeon"), measures = Seq("total", "totall"))
+    val outcome = QueryValidationService.runValidation(m, bad)
+    outcome.isLeft shouldBe true
+    outcome.left.get.stage shouldBe "request"
+    outcome.left.get.errors should have size 3
+    val capabilities = outcome.left.get.errors.collect {
+      case e: EngineError.UnsupportedCapability => e.capability
+    }
+    capabilities should contain theSameElementsAs Seq("unknown-dimension", "unknown-dimension", "unknown-measure")
+  }
+
+  test("calc-measure referenced as a measure is NOT flagged as unknown (no false positive)") {
+    // A request may pass a calculated-measure name in `measures`;
+    // `unknownRefs` only checks declared dims + measures, but
+    // DeclaredSchemaResolver includes calculatedMeasures in the
+    // synthesized schema. This test documents the CURRENT behavior
+    // (calc-measure names ARE flagged) so a v3 that allows them
+    // would flip this test — surfacing the change explicitly.
+    val modelWithCalc = coveredModel()
+    val bad = request("spec_events").copy(measures = Seq("total", "net_total"))
+    val outcome = QueryValidationService.runValidation(modelWithCalc, bad)
+    // net_total is not a declared measure on this fixture → Left
+    outcome.isLeft shouldBe true
+    outcome.left.get.stage shouldBe "request"
   }
 
   test("duplicate dimension names are caught at Model.of (fixture sanity)") {
@@ -124,6 +156,36 @@ class QueryValidationServiceSpec extends AnyFunSuite with Matchers {
     spy.cacheHits.get shouldBe 0L
     spy.cacheMisses.get shouldBe 0L
     spy.invocations.get shouldBe 0L
+  }
+
+  test("multiple unknown refs aggregated into ONE ValidationFailure (order preserved)") {
+    val m = coveredModel()
+    val bad = request("spec_events")
+      .copy(dimensions = Seq("reigon", "rigeon"), measures = Seq("totall"))
+    val outcome = QueryValidationService.runValidation(m, bad)
+    outcome.isLeft shouldBe true
+    val f = outcome.left.get
+    f.stage shouldBe "request"
+    f.errors should have size 3
+    // order preserved: request dimensions first, then request measures
+    f.errors.head.asInstanceOf[EngineError.UnsupportedCapability]
+      .capability shouldBe "unknown-dimension"
+    f.errors(2).asInstanceOf[EngineError.UnsupportedCapability]
+      .capability shouldBe "unknown-measure"
+    f.message should include("reigon")
+    f.message should include("rigeon")
+    f.message should include("totall")
+  }
+
+  test("calc-measure NOT declared on the model → Left at the request stage") {
+    // The calc-measure asymmetry fix (cow finding #3): unknownRefs
+    // includes calculatedMeasures in the declared set. A model that
+    // does NOT declare the calc-measure still gets flagged.
+    val m = coveredModel() // no calc-measures declared
+    val req = request("spec_events").copy(measures = Seq("net"))
+    val outcome = QueryValidationService.runValidation(m, req)
+    outcome.isLeft shouldBe true
+    outcome.left.get.stage shouldBe "request"
   }
 
   test("engine identity: validate uses the pinned synthetic identity") {
