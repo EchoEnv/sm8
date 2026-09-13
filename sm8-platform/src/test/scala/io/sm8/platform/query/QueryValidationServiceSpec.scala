@@ -177,12 +177,12 @@ class QueryValidationServiceSpec extends AnyFunSuite with Matchers {
     f.message should include("totall")
   }
 
-  test("calculated measure name in request passes validate (not flagged as unknown)") {
-    val m = coveredModel()
-    val req = request("spec_events").copy(measures = Seq("total_cm"))
-    // The model doesn't declare total_cm directly, but the D1 check
-    // uses declared MEASURES only (not calc-measures), so this DOES
-    // fail — pinning the correct D1 contract.
+  test("calc-measure NOT declared on the model → Left at the request stage") {
+    // The calc-measure asymmetry fix (cow finding #3): unknownRefs
+    // includes calculatedMeasures in the declared set. A model that
+    // does NOT declare the calc-measure still gets flagged.
+    val m = coveredModel() // no calc-measures declared
+    val req = request("spec_events").copy(measures = Seq("net"))
     val outcome = QueryValidationService.runValidation(m, req)
     outcome.isLeft shouldBe true
     outcome.left.get.stage shouldBe "request"
