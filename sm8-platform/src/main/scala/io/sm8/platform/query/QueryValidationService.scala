@@ -9,12 +9,11 @@
  * == Why a standalone service (not a handler on QueryService) ==
  *
  * Per the codebase's existing precedent (one ServiceDefinition per
- * verb-class — QueryService, ModelService, MetricsService,
- * EngineService, MetaInspectorService): `QueryService` is a stateful
- * executor (cache + rollup rewrite + engine dispatch); validate is
- * an idempotent read-only projection. Mixing them in one service
- * conflates two contracts. The service is bound additively in
- * `HttpTransport` using the same pattern.
+ * verb-class, e.g. the parallel services for Model / Metrics / Engine):
+ * `QueryService` is a stateful executor (cache + rollup rewrite +
+ * engine dispatch); validate is an idempotent read-only projection.
+ * Mixing them in one service conflates two contracts. The service is
+ * bound additively in `HttpTransport` using the same pattern.
  *
  * == Write safety: by construction, not by gating ==
  *
@@ -41,15 +40,12 @@
  * untyped measure refs, verified RollupRewriter.scala:1095). This is
  * "trust the manifest's declaration" semantics: validate checks the
  * query against the model's CONTRACT, not against the warehouse's
- * current state.
- *
- * == Drift detection is OUT of scope ==
- *
- * Warehouse-side schema drift (dropped column, widened type) is NOT
- * surfaced here. The typed backstop `ModelValidator.validateAgainstSchema`
- * exists in core but has zero production callers (verified 2026-09-12,
- * seedling r5 #2) — wiring it into the connector execute path is a
- * named follow-up (tracked as Q8 on #407).
+ * current state. Warehouse-side schema drift (dropped column, widened
+ * type) is an execute-time concern and is NOT surfaced here — the
+ * typed drift backstop (`ModelValidator.validateAgainstSchema`)
+ * currently has zero production callers (verified 2026-09-12); wiring
+ * it into the connector execute path is tracked as a follow-up (Q8 on
+ * decision ticket #407).
  *
  * == Spark concerns ==
  *
@@ -89,8 +85,7 @@ import dev.restate.serde.jackson.JacksonSerdeFactory
   * @param decisionHints  broadcast/skew hints; always `None` under
   *                       validate (hints are populated from
   *                       `context.meta` by PreExecute hooks, which
-  *                       validate does not run). Kept as `Option` for
-  *                       v2 shape-stability.
+  *                       validate does not run)
   * @param engineSelection the engine that WOULD serve the query
   * @param tablesTouched  physical tables the execute WOULD read (model
   *                       source + join right-sides)
@@ -123,7 +118,8 @@ final case class ValidationFailure(
 }
 
 /** The service. Construct with the deployment's captured `Model`.
-  * Stateless: all state is the immutable captured `Model`.
+  * Stateless: all state is the immutable captured `Model` (metrics go
+  * through the platform `QueryMetrics` singleton).
   */
 object QueryValidationService {
 
@@ -139,11 +135,7 @@ object QueryValidationService {
     )
 
   /** The core pipeline prefix validate runs (documented contract;
-    * see class Scaladoc for what it deliberately excludes).
-    *
-    * @param model   the deployment's captured Model
-    * @param request the incoming query request
-    */
+    * see class Scaladoc for what it deliberately excludes). */
   private[query] def runValidation(
       model: Model,
       request: QueryRequest
@@ -229,11 +221,11 @@ object QueryValidationService {
       * field set regardless of what the warehouse currently has.
       * Drift is an execute-time concern (see class Scaladoc).
       *
-      * @param source   the model's primary source ref (consumed into
-      *                 the `Scan` for provenance)
-      * @param identity the engine identity (validate passes the
-      *                 pinned `ValidateEngineIdentity`)
-      * @return         `Right(ResolvedSource.Scan(source,
+      * @param source   the model's primary source ref (unused —
+      *                 value is consumed via `model`'s declared fields)
+      * @param identity the engine identity (unused — validate has no
+      *                 real identity; see `ValidateEngineIdentity`)
+      * @return         `Right(ResolvedSource.Scan(model.source,
       *                 declaredFields))` always
       */
     override def resolve(
