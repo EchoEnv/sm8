@@ -156,7 +156,8 @@ object QueryValidationService {
     */
   private[query] def runValidation(
       model: Model,
-      request: QueryRequest
+      request: QueryRequest,
+      declaredFields: List[Field] = Nil
   ): Either[ValidationFailure, ValidationOutcome] = {
     // Stage 0 (D1): request-vs-model cross-check. Catches operator
     // typos and stale refs BEFORE the relop build. Pure data diff
@@ -198,6 +199,34 @@ object QueryValidationService {
             Left(ValidationFailure(stage = "build", errors = List(buildErr)))
           case Right(plan) =>
             val decision = RollupRewriter.rewrite(plan, model, request.timeGrain)
+
+            // Stage 3b (D2): warehouse schema-drift detection. When the
+            // deployment supplies a live schema (captured at definition
+            // time from the connector's actual warehouse state), run
+            // `validateAgainstSchema` to surface dropped/widened columns
+            // as typed ValidationFailure(stage = "drift") errors. When
+            // no live schema is provided, drift detection is skipped
+            // (v1 semantics preserved — validate still reports the
+            // DeclaredSchemaResolver's synthesized fields).
+            if (declaredFields.nonEmpty) {
+              val liveSchema = ResolvedSource.Scan(
+                source = model.source,
+                schema = declaredFields
+              )
+              ModelValidator.validateAgainstSchema(model, liveSchema) match {
+                case Left(err: ModelValidationError) =>
+                  return Left(ValidationFailure(
+                    stage = "drift",
+                    errors = List(EngineError.UnsupportedCapability(
+                      engine = "validate",
+                      capability = "schema-drift",
+                      message = err.toString
+                    ))
+                  ))
+                case Right(_) => () // drift check passed; fall through to outcome
+              }
+            }
+
             Right(ValidationOutcome(
               modelVersion = model.version,
               rollupDecision = decision,
@@ -299,7 +328,10 @@ object QueryValidationService {
     * @param model the deployment's captured Model
     * @return      the `ServiceDefinition` exposing `validate`
     */
-  def definition(model: Model): ServiceDefinition = {
+  def definition(
+      model: Model,
+      declaredFields: List[Field] = Nil
+  ): ServiceDefinition = {
     val scalaMapper: ObjectMapper =
       new ObjectMapper().registerModule(DefaultScalaModule)
     val jacksonSerdeFactory = new JacksonSerdeFactory(scalaMapper)
@@ -310,7 +342,7 @@ object QueryValidationService {
     val validateRunner: HandlerRunner[QueryRequest, ValidationOutcome] =
       HandlerRunner.of(
         (_: dev.restate.sdk.Context, req: QueryRequest) =>
-          runValidation(model, req) match {
+          runValidation(model, req, declaredFields) match {
             case Right(outcome) => outcome
             case Left(failure) =>
               // Typed validation failure → the wire error. Restate
