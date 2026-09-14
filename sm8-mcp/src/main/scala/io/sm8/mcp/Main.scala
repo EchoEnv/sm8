@@ -99,12 +99,13 @@ object Main {
       |Reads JSON-RPC on stdin, writes on stdout (stdio MCP transport).
       |Tool calls become HTTP POSTs to --ingress-url.
       |
-      |Exposed tools (per ADR-013 + C10-PR-C):
+      |Exposed tools (per ADR-013 + C10-PR-C + #407 D4):
       |  query            -> POST /QueryService/runQuery
       |  list_models      -> POST /ModelService/listModels
       |  describe_model   -> POST /ModelService/describe
       |  list_engines     -> POST /EngineService/listEngines
       |  get_metrics      -> POST /MetricsService/snapshot
+      |  validate_query   -> POST /QueryValidationService/validate
       |  list_plugins     -> POST /RegistryInspectorService/listPlugins
       |  list_hooks       -> POST /RegistryInspectorService/listHooks""".stripMargin
 

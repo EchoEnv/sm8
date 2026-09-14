@@ -215,8 +215,8 @@ echo "smoke-mcp-stdio: initialize response carries serverInfo.name=sm8 + protoco
 TOOLS_RESP=$(echo "$OUTPUT" | grep -F '"id":2' | head -1)
 [ -n "$TOOLS_RESP" ] || fail "tools/list response not found: $OUTPUT"
 TOOL_COUNT=$(echo "$TOOLS_RESP" | python3 -c 'import json,sys; d=json.loads(sys.stdin.read()); print(len(d["result"]["tools"]))')
-[ "$TOOL_COUNT" -eq 7 ] || fail "expected 7 tools, got $TOOL_COUNT (tools/list response: $TOOLS_RESP)"
-echo "smoke-mcp-stdio: tools/list response has all 7 tools (count=$TOOL_COUNT)"
+[ "$TOOL_COUNT" -eq 8 ] || fail "expected 8 tools, got $TOOL_COUNT (tools/list response: $TOOLS_RESP)"
+echo "smoke-mcp-stdio: tools/list response has all 8 tools (count=$TOOL_COUNT)"
 
 # Verify: stderr DOES contain the expected startup banners.
 [ -f "$STDERR_LOG" ] || fail "stderr log not captured"

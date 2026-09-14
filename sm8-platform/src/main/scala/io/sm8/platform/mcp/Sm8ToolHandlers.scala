@@ -66,6 +66,8 @@ object Sm8ToolHandlers {
  buildDescribeModelTool(client, mapper),
  buildListEnginesTool(client, mapper),
  buildGetMetricsTool(client, mapper),
+ // Issue #407 / D4 (v2): execute-free query validation.
+ buildValidateTool(client, mapper),
  // C10-PR-C: registry inspector surfaces (PR-B handlers).
  buildListPluginsTool(client, mapper),
  buildListHooksTool(client, mapper)
@@ -396,4 +398,71 @@ object Sm8ToolHandlers {
  ()
  }
  }
+ // ----- validate (issue #407 / D4) -----
+
+ /** Execute-free query validation. Forwards to
+   * POST /QueryValidationService/validate on the Restate ingress.
+   * Returns a ValidationOutcome (well-formed + routing preview) or
+   * a typed ValidationFailure (per-stage errors) — without
+   * executing the query. */
+ private def buildValidateTool(
+ client: HttpIngressClient.Impl,
+ mapper: ObjectMapper
+): McpServerFeatures.SyncToolSpecification = {
+ val tool = McpSchema.Tool.builder()
+ .name("validate_query")
+ .title("Validate an sm8 query without executing it")
+ .description(
+ "Check whether a query would run cleanly against a loaded model. " +
+ "Returns a ValidationOutcome (rollup decision + tables touched + " +
+ "engine selection) or a typed ValidationFailure with per-stage " +
+ "errors — without executing the query. " +
+ "Forwards to POST /QueryValidationService/validate on the Restate ingress. " +
+ "Requires `modelName`; accepts `dimensions` and `measures` arrays " +
+ "and an optional `timeGrain` string."
+)
+ .inputSchema(McpSchema.JsonSchema.builder()
+ .`type`("object")
+ .properties(java.util.Map.of(
+ "modelName", McpSchema.JsonSchema.builder().`type`("string").build(),
+ // Per C5-arch-M3 (same raw-LinkedHashMap pattern as buildQueryTool):
+ // JsonSchema.Builder does NOT expose .items(...) — array types
+ // must be expressed as raw maps.
+ "dimensions", new java.util.LinkedHashMap[String, Object]() {{
+ put("type", "array");
+ put("items", new java.util.LinkedHashMap[String, Object]() {{ put("type", "string"); }});
+ }},
+ "measures", new java.util.LinkedHashMap[String, Object]() {{
+ put("type", "array");
+ put("items", new java.util.LinkedHashMap[String, Object]() {{ put("type", "string"); }});
+ }},
+ "timeGrain", McpSchema.JsonSchema.builder().`type`("string").build()
+))
+ .required(java.util.List.of("modelName"))
+ .build())
+ .build()
+ McpServerFeatures.SyncToolSpecification.builder()
+ .tool(tool)
+ .callHandler(new java.util.function.BiFunction[
+ McpSyncServerExchange, McpSchema.CallToolRequest, McpSchema.CallToolResult] {
+ def apply(
+ exch: McpSyncServerExchange,
+ req: McpSchema.CallToolRequest
+): McpSchema.CallToolResult = {
+ // Build the request body from the MCP tool arguments,
+ // mirroring the QueryRequest wire shape (model, dimensions,
+ // measures, timeGrain).
+ val body = new java.util.LinkedHashMap[String, Object]()
+ val args = if (req.arguments() != null) req.arguments()
+ else new java.util.LinkedHashMap[String, Object]()
+ body.put("model", Option(args.get("modelName")).map(_.toString).getOrElse(""))
+ copyList(args, "dimensions", body)
+ copyList(args, "measures", body)
+ if (args.get("timeGrain") != null) body.put("timeGrain", args.get("timeGrain"))
+ callAndWrap(client, mapper, "/QueryValidationService/validate", body)
+ }
+ })
+ .build()
+ }
+
 }
