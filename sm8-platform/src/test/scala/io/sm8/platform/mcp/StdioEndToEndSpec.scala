@@ -271,7 +271,7 @@ class StdioEndToEndSpec extends AnyFunSuite with Matchers {
         // would pass even for an empty `"tools":[]` array. Parse the
         // JSON (via jackson, the same mapper the MCP wire uses) and
         // assert the actual count matches the smoke script's
-        // expectation of 7 tools.
+        // expectation of 8 tools.
         val mapper = new com.fasterxml.jackson.databind.ObjectMapper()
         val toolCount = try {
           val parsed = mapper.readTree(toolsResp)
@@ -286,8 +286,8 @@ class StdioEndToEndSpec extends AnyFunSuite with Matchers {
         // 7 tools since PR #313 (C10 PR-C): the original 5 (query,
         // list_models, describe_model, list_engines, get_metrics) +
         // list_plugins + list_hooks (registry inspector surfaces).
-        withClue(s"tools/list response should have 7 tools, got $toolCount: $toolsResp") {
-          toolCount shouldBe 7
+        withClue(s"tools/list response should have 8 tools, got $toolCount: $toolsResp") {
+          toolCount shouldBe 8
         }
       }
 
