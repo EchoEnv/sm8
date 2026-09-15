@@ -33,8 +33,10 @@ final case class FreshnessEntry(
   /** Aggregate finality: true iff EVERY bucket row is is_final=true.
     * A rollup with zero rows reports false (nothing proven final). */
   allFinal:        Boolean,
-  /** Number of bucket rows in the watermark table. */
-  bucketCount:     Int
+  /** Number of bucket rows in the watermark table. `Long` to
+    * accommodate multi-year retention (Int.MaxValue ≈ 24-day
+    * hourly buckets; few-years daily buckets easily exceed Int). */
+  bucketCount:     Long
 )
 
 object RollupFreshnessReader {
@@ -85,7 +87,7 @@ object RollupFreshnessReader {
               case b: java.lang.Boolean => b.booleanValue()
               case _ => false
             },
-            bucketCount     = bucketCount.toInt
+            bucketCount     = bucketCount
           )
         }
         attempted.toEither match {

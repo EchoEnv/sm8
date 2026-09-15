@@ -698,16 +698,29 @@ object Main {
           rollupName = name, lastRefreshedAt = ts, allFinal = fin, bucketCount = cnt.toLong)
       }
       io.sm8.platform.query.QueryMetrics.installRollupFreshnessReader { () =>
-        activeSparkSession() match {
-          case Right(spark) =>
-            method.invoke(readerMod, spark, model) match {
-              case list: java.util.List[?] =>
-                import scala.jdk.CollectionConverters._
-                Right(list.asScala.toList.map(adaptEntry))
-              case other =>
-                Left(s"freshness reader returned an unexpected shape: ${String.valueOf(other)}")
-            }
-          case Left(reason) => Left(reason)
+        try {
+          activeSparkSession() match {
+            case Right(spark) =>
+              method.invoke(readerMod, spark, model) match {
+                case list: java.util.List[?] =>
+                  import scala.jdk.CollectionConverters._
+                  Right(list.asScala.toList.map(adaptEntry))
+                case other =>
+                  Left(s"freshness reader returned an unexpected shape: ${String.valueOf(other)}")
+              }
+            case Left(reason) => Left(reason)
+          }
+        } catch {
+          // Per-scrape NonFatal: the install-time catch only covers
+          // boot wiring. If a connector upgrade renames/removes a
+          // reflective target (NoSuchMethodException from
+          // adaptEntry, InvocationTargetException from readAll),
+          // THIS catch is the one that runs — without it the throw
+          // escapes into the Vert.x handler thread and 500s /metrics
+          // for every verb. Degrade to a typed Left instead; the
+          // platform's probe_failed gauge is the signal.
+          case scala.util.control.NonFatal(e) =>
+            Left(s"freshness reader failed at scrape: ${e.getClass.getSimpleName}: ${e.getMessage}")
         }
       }
       true
