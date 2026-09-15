@@ -156,10 +156,17 @@ START_EPOCH=$(date +%s)
 # Pattern matches StdioEndToEndSpec.scala's mock-ingress setup (same
 # JDK server class, same response shapes) — proven fast + hermetic.
 
-INGRESS_DIR="$(mktemp -d)"
+INGRESS_DIR="$(mktemp -d -t sm8-smoke-mcp-stdio-ingress.XXXXXX)"
 INGRESS_PORT_FILE="${JCODE_SCRATCH_DIR}/sm8-smoke-mcp-stdio-ingress-port"
 INGRESS_STDERR="${JCODE_SCRATCH_DIR}/sm8-smoke-mcp-stdio-ingress.stderr"
 : > "$INGRESS_PORT_FILE"; : > "$INGRESS_STDERR"
+# Install cleanup immediately after mktemp so a `set -e` abort (e.g.
+# javac failure) before the main trap is installed still removes the
+# temp dir. The trap re-installs itself with the full kill logic once
+# the mock java is spawned (below); until then it only knows how to
+# rm -rf INGRESS_DIR. INGRESS_PID is unset / set -u would trip the
+# trap; guard the kill block so it skips gracefully.
+trap '[ -n "${INGRESS_DIR:-}" ] && rm -rf "$INGRESS_DIR"' EXIT
 
 cat > "$INGRESS_DIR/MockIngress.java" <<'JAVA'
 import com.sun.net.httpserver.*;
@@ -188,13 +195,24 @@ public class MockIngress {
       String path = ex.getRequestURI().getPath();
       byte[] out;
       if ("/QueryValidationService/validate".equals(path)) {
-        // Extract the modelName out of the request body so the canned
-        // ValidationOutcome names the model in its error message —
-        // proves the request body was forwarded end-to-end (not
-        // stubbed out by the mock).
+        // extractField does positional indexOf parsing: it assumes
+        // the wire body has `"model":"<name>"` with no whitespace
+        // between the key and the value and no escaped quotes inside
+        // the value. HttpIngressClient serializes via Jackson with
+        // default (no-pretty-print) settings, which matches that
+        // shape. If the field is missing or the JSON is malformed,
+        // extractField returns "" and we bail to 400 rather than
+        // silently satisfying the request with an empty model name —
+        // a malformed body is a real wire-shape regression the smoke
+        // should surface, not paper over.
         String body = new String(in, StandardCharsets.UTF_8);
         String modelName = extractField(body, "model");
-        if (modelName.contains("no-such-model")) {
+        if (modelName.isEmpty()) {
+          String msg = "mock ingress: request body missing 'model' field: " + body;
+          out = msg.getBytes(StandardCharsets.UTF_8);
+          ex.getResponseHeaders().add("Content-Type", "application/json");
+          ex.sendResponseHeaders(400, out.length);
+        } else if (modelName.contains("no-such-model")) {
           // Map the request-side handler's typed failure onto the
           // wire shape: a Restate service would throw a
           // TerminalException(400, message); the MCP wrapper maps
@@ -260,11 +278,16 @@ INGRESS_PORT=$(cat "$INGRESS_PORT_FILE")
 echo "smoke-mcp-stdio: mock ingress holder up on ephemeral port $INGRESS_PORT (pid $INGRESS_PID)"
 
 # Cleanup: kill both the stdio MCP java (via JAR basename pattern) and
-# the mock ingress holder; remove the temp dir. The earlier
-# pkill-fallback handles orphans if the trap is bypassed by a signal.
+# the mock ingress holder; remove the temp dir. The pkill fallback
+# handles orphans if the trap is bypassed by a signal.
 cleanup() {
   local rc=$?
-  pkill -f "java .*${JAR##*/}" 2>/dev/null || true
+  # Escape regex metachars in the JAR basename so pkill's ERE matches
+  # the literal name only (dots in "0.1.0-SNAPSHOT.jar" would
+  # otherwise match any character and could hit an unrelated JVM).
+  local jar_ere
+  jar_ere=$(printf '%s' "${JAR##*/}" | sed 's/[][\\.*^$()+?{|]/\\&/g')
+  pkill -f "java .*${jar_ere}" 2>/dev/null || true
   if [ -n "${INGRESS_PID:-}" ] && kill -0 "$INGRESS_PID" 2>/dev/null; then
     kill "$INGRESS_PID" 2>/dev/null || true
     for _ in $(seq 1 20); do kill -0 "$INGRESS_PID" 2>/dev/null || break; sleep 0.5; done
