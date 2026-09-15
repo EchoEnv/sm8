@@ -808,4 +808,110 @@ class CliIntegrationSpec
       out should include("\"present\":true")
     }
   }
+
+  // -------------------------------------------------------------------------
+  // validate (execute-free validation + plan preview)
+  // -------------------------------------------------------------------------
+
+  describe("validate") {
+    val validOutcome =
+      """{
+        |  "status": "ok",
+        |  "data": {
+        |    "modelVersion": 1,
+        |    "rollupDecision": {"rewriteApplied": true, "reason": "covered"},
+        |    "decisionHints": null,
+        |    "engineSelection": "in-memory",
+        |    "tablesTouched": ["events_rollup_day"],
+        |    "compiledSql": "Project [region, sum(amount) AS total]"
+        |  },
+        |  "warnings": []
+        |}""".stripMargin
+
+    it("VALID outcome: exit 0, summary block on stdout") {
+      respondWith("/QueryValidationService/validate", 200, validOutcome)
+      val (exit, out, err) = runCli(args("validate", "flights", "-d", "day", "-m", "cnt"))
+      exit shouldBe 0
+      err shouldBe ""
+      out should include("VALID: flights (v1)")
+      out should include("engine:   in-memory")
+      out should include("Rewritten")
+      out should include("events_rollup_day")
+      // Plan hidden without --plan
+      out should not include ("== compiled plan preview ==")
+    }
+
+    it("--plan shows the compiled preview") {
+      respondWith("/QueryValidationService/validate", 200, validOutcome)
+      val (exit, out, _) = runCli(args("validate", "flights", "--plan"))
+      exit shouldBe 0
+      out should include("== compiled plan preview ==")
+      out should include("Project [region, sum(amount) AS total]")
+    }
+
+    it("sends the same body shape as query (model + dimensions + measures)") {
+      respondWith("/QueryValidationService/validate", 200, validOutcome)
+      runCli(args("validate", "flights", "-d", "day", "-m", "cnt"))
+      val sent = received("/QueryValidationService/validate")
+      sent should include("\"model\":\"flights\"")
+      sent should include("\"dimensions\":[\"day\"]")
+      sent should include("\"measures\":[\"cnt\"]")
+    }
+
+    it("error envelope (typed ValidationFailure via TerminalException): exit 1") {
+      respondWith("/QueryValidationService/validate", 400,
+        """{"status":"error","error":{"code":"TERMINAL","message":"[request] unknown dimension: 'dy'"}}""")
+      val (exit, _, err) = runCli(args("validate", "flights", "-d", "dy"))
+      exit shouldBe 1
+      err should include("unknown dimension")
+    }
+
+    it("--json passthrough prints the raw envelope, exits 1 on 4xx") {
+      respondWith("/QueryValidationService/validate", 400,
+        """{"status":"error","error":{"code":"TERMINAL","message":"boom"}}""")
+      val (exit, out, _) = runCli(args("validate", "flights", "--json"))
+      exit shouldBe 1
+      out should include("\"status\":\"error\"")
+    }
+
+    it("--json passthrough exits 0 on a valid outcome") {
+      respondWith("/QueryValidationService/validate", 200, validOutcome)
+      val (exit, out, _) = runCli(args("validate", "flights", "--json"))
+      exit shouldBe 0
+      out should include("ok")
+      out should include("modelVersion")
+    }
+
+    it("flag-shaped value after -d is a parse error (not a silent dim)") {
+      val (exit, _, err) = runCli(args("validate", "flights", "-d", "-m", "cnt"))
+      exit shouldBe 2
+      err should include("--dim requires a value")
+    }
+
+    it("missing model: exit 2 with usage") {
+      val (exit, _, err) = runCli(args("validate"))
+      exit shouldBe 2
+      err should include("missing <model>")
+    }
+
+    it("unknown flag: exit 2") {
+      val (exit, _, err) = runCli(args("validate", "flights", "--bogus"))
+      exit shouldBe 2
+      err should include("unknown flag: --bogus")
+    }
+
+    it("missing flag value: exit 2") {
+      val (exit, _, err) = runCli(args("validate", "flights", "-d"))
+      exit shouldBe 2
+      err should include("--dim requires a value")
+    }
+
+    it("--plan with compiledSql null: prints the honest v1-semantics message") {
+      respondWith("/QueryValidationService/validate", 200,
+        """{"status":"ok","data":{"modelVersion":1,"rollupDecision":{"rewriteApplied":false,"reason":"none"},"engineSelection":"x","tablesTouched":["t"],"compiledSql":null},"warnings":[]}""")
+      val (exit, out, _) = runCli(args("validate", "flights", "--plan"))
+      exit shouldBe 0
+      out should include ("no compiled plan: deployment did not supply a compiledSqlFn")
+    }
+  }
 }
