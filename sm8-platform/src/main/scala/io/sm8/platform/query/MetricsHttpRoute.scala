@@ -205,11 +205,10 @@ object MetricsHttpRoute {
     * @return the Prometheus text block, "" when no reader is installed
     */
   private[query] def freshnessGauges(nowMs: Long = System.currentTimeMillis): String = {
-    QueryMetrics.rollupFreshnessReaderFn match {
-      case None => ""
-      case Some(reader) =>
-        reader() match {
-          case Right(entries) =>
+    try {
+      QueryMetrics.freshnessSnapshot() match {
+        case None => ""
+        case Some(Right(entries)) =>
             entries.map { e =>
               val fresh = if (e.allFinal) "1" else "0"
               val age  = if (e.lastRefreshedAt.isEmpty) "NaN"
@@ -229,18 +228,19 @@ object MetricsHttpRoute {
                   |# TYPE sm8_rollup_freshness_buckets gauge
                   |sm8_rollup_freshness_buckets{rollup="${e.rollupName}"} ${e.bucketCount}""".stripMargin
             }.mkString("\n")
-          case Left(reason) =>
-            s"""|# HELP sm8_rollup_freshness_probe_failed The freshness reader returned an error (see logs)
-                |# TYPE sm8_rollup_freshness_probe_failed counter
-                |sm8_rollup_freshness_probe_failed 1
-                |# HELP sm8_rollup_freshness_probe_failed_reason Last freshness reader error message
-                |# TYPE sm8_rollup_freshness_probe_failed_reason gauge
-                |sm8_rollup_freshness_probe_failed_reason 1""".stripMargin +
-              // The reason itself goes to stderr (not the metrics wire
-              // surface) so the gauge family stays schema-stable.
-              (try System.err.println(s"sm8: freshness reader failed: $reason")
-               catch { case _: Throwable => () })
-        }
+          case Some(Left(reason)) =>
+            try System.err.println(s"sm8: freshness reader failed: $reason")
+            catch { case _: Throwable => () }
+            s"""|# HELP sm8_rollup_freshness_probe_failed 1 if the last freshness probe failed, 0 if it succeeded
+                |# TYPE sm8_rollup_freshness_probe_failed gauge
+                |sm8_rollup_freshness_probe_failed 1""".stripMargin
+      }
+    } catch {
+      // Per-scrape NonFatal: a mid-render failure (malformed Entry from
+      // a connector upgrade, anything from the cache lookup) degrades
+      // to an empty freshness block rather than killing the Vert.x
+      // handler thread (which would 500 /metrics for every verb).
+      case scala.util.control.NonFatal(_) => ""
     }
   }
 }

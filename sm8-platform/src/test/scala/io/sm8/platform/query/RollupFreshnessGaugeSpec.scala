@@ -74,7 +74,23 @@ class RollupFreshnessGaugeSpec extends AnyFunSuite with Matchers {
     withReader(Left("watermark table unreadable")) {
       val body = render()
       body should include ("sm8_rollup_freshness_probe_failed 1")
+      body should include ("# TYPE sm8_rollup_freshness_probe_failed gauge")
     }
+  }
+
+  test("TTL cache: consecutive renders within the TTL reuse one reader invocation") {
+    var invocations = 0
+    QueryMetrics.installRollupFreshnessReader { () =>
+      invocations += 1
+      Right(List(RollupFreshnessSnapshot.Entry("cached", "2026-09-15T11:59:00Z", allFinal = true, bucketCount = 1L)))
+    }
+    try {
+      render()
+      render()
+      render()
+      // 3 renders, 1 reader invocation (the TTL coalesces the burst).
+      invocations shouldBe 1
+    } finally QueryMetrics.installRollupFreshnessReader(null)
   }
 
   test("multiple rollups render as separate labeled rows") {
@@ -85,6 +101,30 @@ class RollupFreshnessGaugeSpec extends AnyFunSuite with Matchers {
       val body = render()
       body should include ("""{rollup="a"}""")
       body should include ("""{rollup="b"}""")
+    }
+  }
+
+  test("TTL cache: reader called once across N scrapes within the window") {
+    // Review finding: per-scrape Spark-job cost. Verify the cache
+    // coalesces by counting reader invocations on a render burst.
+    var calls = 0
+    QueryMetrics.installRollupFreshnessReader(() => {
+      calls += 1
+      Right(List(RollupFreshnessSnapshot.Entry("a", "2026-09-15T11:59:00Z", allFinal = true, bucketCount = 1L)))
+    })
+    try {
+      // Reset the install-clears-cache path: re-install once more so
+      // we start from a clean slate (the try/finally of withReader
+      // already cleared it).
+      QueryMetrics.installRollupFreshnessReader(() => {
+        calls += 1
+        Right(List(RollupFreshnessSnapshot.Entry("a", "2026-09-15T11:59:00Z", allFinal = true, bucketCount = 1L)))
+      })
+      calls = 0
+      (1 to 5).foreach { _ => render() }
+      calls shouldBe 1
+    } finally {
+      QueryMetrics.installRollupFreshnessReader(null)
     }
   }
 }

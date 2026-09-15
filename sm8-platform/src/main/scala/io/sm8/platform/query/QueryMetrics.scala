@@ -77,6 +77,68 @@ object QueryMetrics extends MetricsSink {
 
   // -- Rollup freshness gauges --
   //
+  // Pull-on-scrape model: the deployment installs a reader fn at
+  // boot that knows how to read the ADR-0030 watermark (the platform
+  // itself can't — no Spark). MetricsHttpRoute calls it per /metrics
+  // scrape. A short TTL coalesces overlapping scrapes into one
+  // probe instead of N Spark-job bursts.
+
+  /** Deployment-supplied freshness reader: returns one entry per
+    * rollup, or a typed error when the probe cannot run. `None` =
+    * the gauge family is absent from /metrics. */
+  @volatile private var rollupFreshnessReader
+      : Option[() => Either[String, List[RollupFreshnessSnapshot.Entry]]] = None
+
+  /** TTL for the freshness cache (millis). 10s: fresher than any
+    * operator dashboard needs, short enough to coalesce the
+    * default Prometheus 15s scrape to one reader invocation per
+    * ~1.5 scrapes. */
+  val RollupFreshnessTtlMillis: Long = 10000L
+
+  private val freshnessLock = new Object
+  @volatile private var freshnessCache
+      : Option[(Long, Either[String, List[RollupFreshnessSnapshot.Entry]])] = None
+
+  /** Install the deployment's freshness reader (called once at
+    * boot from sm8-server's reflective bridge). Idempotent — the
+    * last install wins; an existing cache is dropped on install so
+    * a NEW reader isn't masked by a stale value. Passing `null`
+    * uninstalls (used by tests and by callers holding an Option
+    * they flatten). */
+  def installRollupFreshnessReader(
+      reader: () => Either[String, List[RollupFreshnessSnapshot.Entry]]
+  ): Unit = {
+    rollupFreshnessReader = Option(reader)
+    freshnessLock.synchronized { freshnessCache = None }
+  }
+
+  /** Read freshness through the TTL cache. Concurrent scrapes
+    * within the TTL window share one reader invocation — the lock
+    * holder computes, the others wait then read the cache (worst
+    * case: one scrape waiting ~reader duration, never N parallel
+    * Spark jobs). */
+  def freshnessSnapshot()
+      : Option[Either[String, List[RollupFreshnessSnapshot.Entry]]] =
+    rollupFreshnessReader match {
+      case None => None
+      case Some(reader) =>
+        freshnessLock.synchronized {
+          freshnessCache match {
+            case Some((ts, cached))
+              if System.currentTimeMillis - ts < RollupFreshnessTtlMillis =>
+              Some(cached)
+            case _ =>
+              val fresh = reader()
+              freshnessCache = Some((System.currentTimeMillis, fresh))
+              Some(fresh)
+          }
+        }
+    }
+
+
+
+  // -- Rollup freshness gauges --
+  //
   // Freshness is PULLED, not pushed: the deployment supplies a reader
   // function at boot (the connector reads the ADR-0030 watermark
   // table; the platform cannot — no Spark). MetricsHttpRoute calls
@@ -84,27 +146,6 @@ object QueryMetrics extends MetricsSink {
   // gauges. A missing reader (no connector, or null-spark) renders
   // nothing — the gauge family is simply absent, which is honest:
   // "no freshness data" and "all fresh" are different answers.
-
-  /** Deployment-supplied freshness reader: returns one entry per
-    * rollup (rollupName / lastRefreshedAt ISO string / allFinal /
-    * bucketCount), or a typed error when the probe cannot run.
-    * Set once at boot via [[installRollupFreshnessReader]]; `None`
-    * = the gauge family is absent from /metrics. */
-  @volatile private var rollupFreshnessReader
-      : Option[() => Either[String, List[RollupFreshnessSnapshot.Entry]]] = None
-
-  /** Install the deployment's freshness reader (called once at boot
-    * from sm8-server's reflective bridge). Idempotent — the last
-    * install wins. Passing `null` uninstalls (used by tests and by
-    * callers holding an Option they flatten). */
-  def installRollupFreshnessReader(
-      reader: () => Either[String, List[RollupFreshnessSnapshot.Entry]]
-  ): Unit = { rollupFreshnessReader = Option(reader) }
-
-  /** The installed reader, for the Prometheus exporter. */
-  def rollupFreshnessReaderFn
-      : Option[() => Either[String, List[RollupFreshnessSnapshot.Entry]]] =
-    rollupFreshnessReader
 
   // -- Per-invocation record methods (called from QueryService.runQuery) --
 
