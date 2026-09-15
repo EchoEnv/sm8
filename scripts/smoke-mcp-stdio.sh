@@ -262,24 +262,14 @@ JAVA
 # the bind banner arrives. Wait up to 15s for the port file to be
 # non-empty — fail loud if the mock never binds.
 javac -d "$INGRESS_DIR" "$INGRESS_DIR/MockIngress.java" || fail "mock ingress compile failed"
-java -cp "$INGRESS_DIR" MockIngress 0 >"$INGRESS_PORT_FILE" 2>"$INGRESS_STDERR" &
-INGRESS_PID=$!
-for _ in $(seq 1 30); do
-  [ -s "$INGRESS_PORT_FILE" ] && break
-  if ! kill -0 "$INGRESS_PID" 2>/dev/null; then
-    echo "smoke-mcp-stdio: mock ingress died during boot:" >&2
-    cat "$INGRESS_STDERR" >&2
-    fail "mock ingress process exited before binding a port"
-  fi
-  sleep 0.5
-done
-INGRESS_PORT=$(cat "$INGRESS_PORT_FILE")
-[ -n "$INGRESS_PORT" ] || fail "mock ingress never printed a port (15s); stderr: $(cat "$INGRESS_STDERR")"
-echo "smoke-mcp-stdio: mock ingress holder up on ephemeral port $INGRESS_PORT (pid $INGRESS_PID)"
-
-# Cleanup: kill both the stdio MCP java (via JAR basename pattern) and
-# the mock ingress holder; remove the temp dir. The pkill fallback
-# handles orphans if the trap is bypassed by a signal.
+# Install the FULL cleanup trap (kill the mock java + remove the
+# temp dir + pkill the stdio java) BEFORE backgrounding the mock.
+# Without this, a `set -e` abort in the few lines between
+# INGRESS_PID=$! and the trap-install below would leak the mock
+# java (the rm-only trap can clean the dir but has no INGRESS_PID
+# to kill). Bash replaces same-signal traps on re-install rather
+# than stacking them, so the later full trap cleanly supersedes
+# this one.
 cleanup() {
   local rc=$?
   # Escape regex metachars in the JAR basename so pkill's ERE matches
@@ -298,6 +288,23 @@ cleanup() {
   exit $rc
 }
 trap cleanup EXIT INT TERM
+java -cp "$INGRESS_DIR" MockIngress 0 >"$INGRESS_PORT_FILE" 2>"$INGRESS_STDERR" &
+INGRESS_PID=$!
+for _ in $(seq 1 30); do
+  [ -s "$INGRESS_PORT_FILE" ] && break
+  if ! kill -0 "$INGRESS_PID" 2>/dev/null; then
+    echo "smoke-mcp-stdio: mock ingress died during boot:" >&2
+    cat "$INGRESS_STDERR" >&2
+    fail "mock ingress process exited before binding a port"
+  fi
+  sleep 0.5
+done
+INGRESS_PORT=$(cat "$INGRESS_PORT_FILE")
+[ -n "$INGRESS_PORT" ] || fail "mock ingress never printed a port (15s); stderr: $(cat "$INGRESS_STDERR")"
+echo "smoke-mcp-stdio: mock ingress holder up on ephemeral port $INGRESS_PORT (pid $INGRESS_PID)"
+
+# (The full cleanup trap is already installed — see the block right
+# before the mock java is backgrounded. No re-install needed here.)
 
 # Flat form per sibling smoke-mcp.sh (de-L3): keep stdin open for the
 # server's read loop via a single subshell with a process substitution,
