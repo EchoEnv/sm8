@@ -109,7 +109,11 @@ final case class ValidationOutcome(
   rollupDecision: RollupRewriter.RollupRewriteResult,
   decisionHints: Option[io.sm8.core.engine.DecisionHints],
   engineSelection: String,
-  tablesTouched: List[String]
+  tablesTouched: List[String],
+  /** D3: the SQL the execute WOULD issue. Populated when the
+    * deployment supplies a compiledSqlFn; `None` when absent
+    * (v1 semantics preserved). */
+  compiledSql: Option[String] = None
 )
 
 /** Typed validation failure: which stage failed and why.
@@ -157,7 +161,8 @@ object QueryValidationService {
   private[query] def runValidation(
       model: Model,
       request: QueryRequest,
-      declaredFields: List[Field] = Nil
+      declaredFields: List[Field] = Nil,
+      compiledSqlFn: Option[Model => Either[EngineError, String]] = None
   ): Either[ValidationFailure, ValidationOutcome] = {
     // Stage 0 (D1): request-vs-model cross-check. Catches operator
     // typos and stale refs BEFORE the relop build. Pure data diff
@@ -208,32 +213,49 @@ object QueryValidationService {
             // no live schema is provided, drift detection is skipped
             // (v1 semantics preserved — validate still reports the
             // DeclaredSchemaResolver's synthesized fields).
-            if (declaredFields.nonEmpty) {
-              val liveSchema = ResolvedSource.Scan(
-                source = model.source,
-                schema = declaredFields
-              )
-              ModelValidator.validateAgainstSchema(model, liveSchema) match {
-                case Left(err: ModelValidationError) =>
-                  return Left(ValidationFailure(
+            // D2: schema-drift detection (when a live schema is provided).
+            val driftCheck: Either[ValidationFailure, Unit] =
+              if (declaredFields.isEmpty) Right(())
+              else {
+                val liveSchema = ResolvedSource.Scan(
+                  source = model.source,
+                  schema = declaredFields
+                )
+                ModelValidator.validateAgainstSchema(model, liveSchema).left.map { err =>
+                  ValidationFailure(
                     stage = "drift",
                     errors = List(EngineError.UnsupportedCapability(
                       engine = "validate",
                       capability = "schema-drift",
                       message = err.toString
                     ))
-                  ))
-                case Right(_) => () // drift check passed; fall through to outcome
+                  )
+                }
               }
+
+            // D3: compile SQL via the deployment-supplied callback.
+            // None callback → compiledSql stays None (v1 semantics).
+            // Either → Option conversion: SQL compile failure is not
+            // a validation failure (silently dropped from the outcome).
+            val compiledSql: Option[String] = compiledSqlFn match {
+              case Some(fn) =>
+                fn(model) match {
+                  case Right(sql) => Some(sql)
+                  case Left(_)    => None
+                }
+              case None => None
             }
 
-            Right(ValidationOutcome(
-              modelVersion = model.version,
-              rollupDecision = decision,
-              decisionHints = None, // hints come from PreExecute hooks; validate runs none
-              engineSelection = "default",
-              tablesTouched = tablesTouched(model)
-            ))
+            driftCheck.flatMap { _ =>
+              Right(ValidationOutcome(
+                modelVersion = model.version,
+                rollupDecision = decision,
+                decisionHints = None, // hints come from PreExecute hooks; validate runs none
+                engineSelection = "default",
+                tablesTouched = tablesTouched(model),
+                compiledSql = compiledSql
+              ))
+            }
         }
     }
   }
@@ -325,12 +347,19 @@ object QueryValidationService {
   /** Build the Restate `ServiceDefinition` for the `validate`
     * handler.
     *
-    * @param model the deployment's captured Model
-    * @return      the `ServiceDefinition` exposing `validate`
+    * @param model           the deployment's captured Model
+    * @param declaredFields  the live warehouse schema (D2 drift
+    *                        detection); `Nil` = skip the drift check
+    *                        (v1 semantics preserved)
+    * @param compiledSqlFn   deployment-supplied SQL compiler (D3
+    *                        preview); `None` = `compiledSql` stays
+    *                        `None` in the outcome
+    * @return                the `ServiceDefinition` exposing `validate`
     */
   def definition(
       model: Model,
-      declaredFields: List[Field] = Nil
+      declaredFields: List[Field] = Nil,
+      compiledSqlFn: Option[Model => Either[EngineError, String]] = None
   ): ServiceDefinition = {
     val scalaMapper: ObjectMapper =
       new ObjectMapper().registerModule(DefaultScalaModule)
