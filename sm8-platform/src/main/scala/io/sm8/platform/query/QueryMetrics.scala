@@ -78,10 +78,10 @@ object QueryMetrics extends MetricsSink {
   // -- Rollup freshness gauges --
   //
   // Pull-on-scrape model: the deployment installs a reader fn at
-  // boot that knows how to read the ADR-0030 watermark (the platform
-  // itself can't — no Spark). MetricsHttpRoute calls it per /metrics
-  // scrape. A short TTL coalesces overlapping scrapes into one
-  // probe instead of N Spark-job bursts.
+  // boot that knows how to read the [[ADR-0030]] watermark (the
+  // platform itself can't — no Spark). MetricsHttpRoute calls it per
+  // /metrics scrape. A short TTL coalesces overlapping scrapes into
+  // one probe instead of N Spark-job bursts.
 
   /** Deployment-supplied freshness reader: returns one entry per
     * rollup, or a typed error when the probe cannot run. `None` =
