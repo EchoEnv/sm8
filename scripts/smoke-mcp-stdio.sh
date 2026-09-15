@@ -7,7 +7,9 @@
 # and assert:
 # - The handshake completes (initialize response + tools/list
 #   response, both valid JSON-RPC on stdout)
-# - tools/list returns all 7 tools
+# - tools/list returns all 8 tools (incl. validate_query, D4)
+# - validate_query tools/call (good + bad model) returns a
+#   ValidationOutcome and a typed ValidationFailure respectively
 # - The JVM exits cleanly on EOF (within 15s CI tolerance)
 # - java's exit code is 0 (C5-de-H2 — previously not verified)
 # - Every stdout line PARSES as valid JSON (not just prefix check;
@@ -60,12 +62,9 @@ CP_FILE="${JCODE_SCRATCH_DIR}/sm8-smoke-cp.txt"
 # in this script, and the JAR basename is the build version
 # (sm8-server_2.13-0.1.0-SNAPSHOT.jar) — collisions with unrelated
 # JVMs are extremely unlikely in CI.
-cleanup() {
-  local rc=$?
-  pkill -f "java .*${JAR##*/}" 2>/dev/null || true
-  exit $rc
-}
-trap cleanup EXIT INT TERM
+# NOTE: the cleanup definition lives after the ingress-holder boot
+# below — it needs INGRESS_PID, which only exists once the holder is
+# spawned.
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -134,6 +133,149 @@ YAML
 # Exit sentinel truncated at startup; see init block above.
 START_EPOCH=$(date +%s)
 
+# ---- ingress holder process ---------------------------------------------
+#
+# The validate_query tools/call assertions need a backing HTTP server
+# to forward to. In stdio mode Main skips the HTTP bind (per C5-de-M2:
+# stdio MCP forwards tool calls to a separate ingress via
+# HttpIngressClient; the canonical deployment is a colocated process
+# pair). Rather than spawn a second sm8-server AND a real Restate
+# container (the smoke-e2e.sh shape — minutes, not milliseconds), this
+# smoke runs a small Java program that uses the JDK's
+# `com.sun.net.httpserver.HttpServer` to mock the Restate ingress: it
+# replies 200 to POST /QueryValidationService/validate with a canned
+# ValidationOutcome, 400 with a failure message when the forwarded
+# model name is unknown (matching the TerminalException(400) wire
+# shape the real handler throws), a benign 200 on any other POST, and
+# 204 on GET/HEAD so the startup probe does not warn.
+#
+# The stdio MCP process reuses the same Sm8ToolHandlers factory as
+# the HTTP transport — the tools available to a client are the same
+# 8 whether invoked via stdio or HTTP MCP.
+#
+# Pattern matches StdioEndToEndSpec.scala's mock-ingress setup (same
+# JDK server class, same response shapes) — proven fast + hermetic.
+
+INGRESS_DIR="$(mktemp -d)"
+INGRESS_PORT_FILE="${JCODE_SCRATCH_DIR}/sm8-smoke-mcp-stdio-ingress-port"
+INGRESS_STDERR="${JCODE_SCRATCH_DIR}/sm8-smoke-mcp-stdio-ingress.stderr"
+: > "$INGRESS_PORT_FILE"; : > "$INGRESS_STDERR"
+
+cat > "$INGRESS_DIR/MockIngress.java" <<'JAVA'
+import com.sun.net.httpserver.*;
+import java.io.*;
+import java.net.*;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.*;
+import java.util.concurrent.*;
+
+public class MockIngress {
+  public static void main(String[] args) throws Exception {
+    int port = Integer.parseInt(args[0]);
+    HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
+    server.createContext("/", ex -> {
+      String method = ex.getRequestMethod();
+      // Match the StdioEndToEndSpec mock: HEAD/GET -> 204 no-op
+      // (the probeIngressOrWarn HEAD at startup needs a non-error
+      // response so it doesn't print a WARNING banner on stderr).
+      if ("HEAD".equals(method) || "GET".equals(method)) {
+        ex.sendResponseHeaders(204, -1);
+        ex.getResponseBody().close();
+        return;
+      }
+      // Drain the request body so the client doesn't see a broken pipe.
+      byte[] in = ex.getRequestBody().readAllBytes();
+      String path = ex.getRequestURI().getPath();
+      byte[] out;
+      if ("/QueryValidationService/validate".equals(path)) {
+        // Extract the modelName out of the request body so the canned
+        // ValidationOutcome names the model in its error message —
+        // proves the request body was forwarded end-to-end (not
+        // stubbed out by the mock).
+        String body = new String(in, StandardCharsets.UTF_8);
+        String modelName = extractField(body, "model");
+        if (modelName.contains("no-such-model")) {
+          // Map the request-side handler's typed failure onto the
+          // wire shape: a Restate service would throw a
+          // TerminalException(400, message); the MCP wrapper maps
+          // statusCode>=400 to isError=true. Mock the failure shape.
+          String msg = "[\"request\"] unknown model: " + modelName;
+          out = msg.getBytes(StandardCharsets.UTF_8);
+          ex.getResponseHeaders().add("Content-Type", "application/json");
+          ex.sendResponseHeaders(400, out.length);
+        } else {
+          // The canned ValidationOutcome: tablesTouched + engineSelection
+          // + compiledSql set to null (deployment didn't supply a
+          // compiledSqlFn — matches the stdio smoke shape).
+          String outcome = "{\"modelVersion\":1," +
+            "\"rollupDecision\":{\"rewriteApplied\":false,\"reason\":\"none\"}," +
+            "\"decisionHints\":null," +
+            "\"engineSelection\":\"in-memory\"," +
+            "\"tablesTouched\":[\"smoke_stdio_table\"]," +
+            "\"compiledSql\":null}";
+          out = outcome.getBytes(StandardCharsets.UTF_8);
+          ex.getResponseHeaders().add("Content-Type", "application/json");
+          ex.sendResponseHeaders(200, out.length);
+        }
+      } else {
+        // For any other path, return a benign 200 with empty body.
+        out = new byte[0];
+        ex.sendResponseHeaders(200, -1);
+      }
+      if (out.length > 0) ex.getResponseBody().write(out);
+      ex.getResponseBody().close();
+    });
+    server.setExecutor(Executors.newSingleThreadExecutor());
+    server.start();
+    // Print the bound port on stdout; the shell script parses it.
+    System.out.println(server.getAddress().getPort());
+  }
+  private static String extractField(String json, String field) {
+    int i = json.indexOf("\"" + field + "\"");
+    if (i < 0) return "";
+    int q1 = json.indexOf('"', i + field.length() + 2);
+    int q2 = json.indexOf('"', q1 + 1);
+    return json.substring(q1 + 1, q2);
+  }
+}
+JAVA
+# Compile + run in the background; the java process prints the
+# ephemeral port to stdout, which the script reads from a file once
+# the bind banner arrives. Wait up to 15s for the port file to be
+# non-empty — fail loud if the mock never binds.
+javac -d "$INGRESS_DIR" "$INGRESS_DIR/MockIngress.java" || fail "mock ingress compile failed"
+java -cp "$INGRESS_DIR" MockIngress 0 >"$INGRESS_PORT_FILE" 2>"$INGRESS_STDERR" &
+INGRESS_PID=$!
+for _ in $(seq 1 30); do
+  [ -s "$INGRESS_PORT_FILE" ] && break
+  if ! kill -0 "$INGRESS_PID" 2>/dev/null; then
+    echo "smoke-mcp-stdio: mock ingress died during boot:" >&2
+    cat "$INGRESS_STDERR" >&2
+    fail "mock ingress process exited before binding a port"
+  fi
+  sleep 0.5
+done
+INGRESS_PORT=$(cat "$INGRESS_PORT_FILE")
+[ -n "$INGRESS_PORT" ] || fail "mock ingress never printed a port (15s); stderr: $(cat "$INGRESS_STDERR")"
+echo "smoke-mcp-stdio: mock ingress holder up on ephemeral port $INGRESS_PORT (pid $INGRESS_PID)"
+
+# Cleanup: kill both the stdio MCP java (via JAR basename pattern) and
+# the mock ingress holder; remove the temp dir. The earlier
+# pkill-fallback handles orphans if the trap is bypassed by a signal.
+cleanup() {
+  local rc=$?
+  pkill -f "java .*${JAR##*/}" 2>/dev/null || true
+  if [ -n "${INGRESS_PID:-}" ] && kill -0 "$INGRESS_PID" 2>/dev/null; then
+    kill "$INGRESS_PID" 2>/dev/null || true
+    for _ in $(seq 1 20); do kill -0 "$INGRESS_PID" 2>/dev/null || break; sleep 0.5; done
+    kill -9 "$INGRESS_PID" 2>/dev/null || true
+    wait "$INGRESS_PID" 2>/dev/null || true
+  fi
+  [ -n "${INGRESS_DIR:-}" ] && rm -rf "$INGRESS_DIR" 2>/dev/null || true
+  exit $rc
+}
+trap cleanup EXIT INT TERM
+
 # Flat form per sibling smoke-mcp.sh (de-L3): keep stdin open for the
 # server's read loop via a single subshell with a process substitution,
 # then run java with stderr redirected to the log file.
@@ -149,7 +291,9 @@ OUTPUT=$(
     printf '%s\n' \
       '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke-mcp-stdio","version":"0"}}}' \
       '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
-      '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
+      '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+      '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"validate_query","arguments":{"modelName":"smoke-mcp-stdio-model","dimensions":["day"],"measures":["cnt"]}}}' \
+      '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"validate_query","arguments":{"modelName":"no-such-model","dimensions":[],"measures":[]}}}' \
     # Per C5-de-L1: reduce sleep from 2s to 0.5s. BufferedReader.readLine
     # blocks until newline OR EOF; the 3 messages arrive in <50ms
     # locally. 0.5s gives ample margin (10x) without slowing the smoke.
@@ -160,7 +304,7 @@ OUTPUT=$(
     --port 0 \
     --metrics-port 0 \
     --mcp-transport stdio \
-    --ingress-url http://127.0.0.1:8080 \
+    --ingress-url "http://127.0.0.1:$INGRESS_PORT" \
     2>"$STDERR_LOG"
   # Capture java's exit code INSIDE the substitution so $? survives
   # the subshell. We use a sentinel file because bash's $? across
@@ -227,4 +371,40 @@ if ! grep -q 'sm8:.*listening on port' "$STDERR_LOG"; then
 fi
 echo "smoke-mcp-stdio: 'sm8:.*listening on port' banner correctly on stderr"
 
-echo "SMOKE-MCP-STDIO PASS (in-process stdio MCP: handshake + tools/list + EOF-exit + stdout-clean)"
+# ---- validate_query tools/call (E2E of the shipped validate tool) ----
+#
+# The known-good call validates the model this script wrote above
+# (smoke-mcp-stdio-model). Expected: isError=false and the text
+# content carries the serialized ValidationOutcome (tablesTouched
+# names the model's physical source table). The known-bad call uses a
+# model name that was never loaded; the service answers 400
+# (TerminalException from the validate handler) and the MCP wrapper
+# maps statusCode>=400 to isError=true with the failure message.
+
+GOOD_RESP=$(echo "$OUTPUT" | grep -F '"id":3' | head -1)
+[ -n "$GOOD_RESP" ] || fail "validate_query (good) response not found: $OUTPUT"
+echo "$GOOD_RESP" | python3 -c '
+import json, sys
+d = json.loads(sys.stdin.read())
+r = d["result"]
+assert r.get("isError") is False, "expected isError=false, got: %r" % (r,)
+text = r["content"][0]["text"]
+assert "tablesTouched" in text, "no tablesTouched in ValidationOutcome: %s" % text
+assert "smoke_stdio_table" in text, "tablesTouched missing the model source table: %s" % text
+assert "engineSelection" in text, "no engineSelection in ValidationOutcome: %s" % text
+' || fail "validate_query (good) did not return a ValidationOutcome: $GOOD_RESP"
+echo "smoke-mcp-stdio: validate_query (good) returned a ValidationOutcome (tablesTouched + engineSelection)"
+
+BAD_RESP=$(echo "$OUTPUT" | grep -F '"id":4' | head -1)
+[ -n "$BAD_RESP" ] || fail "validate_query (bad) response not found: $OUTPUT"
+echo "$BAD_RESP" | python3 -c '
+import json, sys
+d = json.loads(sys.stdin.read())
+r = d["result"]
+assert r.get("isError") is True, "expected isError=true for unknown model, got: %r" % (r,)
+text = r["content"][0]["text"]
+assert "no-such-model" in text, "failure text missing the unknown model name: %s" % text
+' || fail "validate_query (bad) did not return a typed failure: $BAD_RESP"
+echo "smoke-mcp-stdio: validate_query (bad) returned a typed failure naming the unknown model"
+
+echo "SMOKE-MCP-STDIO PASS (in-process stdio MCP: handshake + tools/list + validate_query E2E + EOF-exit + stdout-clean)"
