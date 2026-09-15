@@ -135,7 +135,25 @@ final class HttpTransport(
     // CronUtilsNextFireTime). Only consulted when
     // `cronSchedulerEnabled` is true.
     val cronNextFireCalc: io.sm8.core.schedule.NextFireTimeCalculator =
-      io.sm8.platform.schedule.CronUtilsNextFireTime
+      io.sm8.platform.schedule.CronUtilsNextFireTime,
+    // D2 (schema-drift detection): when defined, supplies the LIVE
+    // warehouse schema (the connector's catalog view of the model's
+    // source table) to QueryValidationService so the drift stage can
+    // compare declared vs actual. The closure is deployment-built
+    // (spark-connector `DeclaredSchemaProbe.listFieldsJ` adapted to
+    // the platform shape) — the platform stays connector-agnostic.
+    // Default `None` keeps the previous no-drift-check behavior
+    // (validate compares the request against the MODEL's declared
+    // fields only — v1 semantics).
+    val declaredSchemaFn: Option[() => Either[io.sm8.core.engine.EngineError, List[io.sm8.core.schema.Field]]] = None,
+    // D3 (compiled SQL preview): when defined, supplies the SQL (or
+    // engine-equivalent plan string) the execute WOULD issue, so
+    // ValidationOutcome.compiledSql is populated. The closure is
+    // deployment-built (spark-connector `CompiledSqlProbe.compileJ`
+    // adapted). Compile failure maps to `compiledSql = None` inside
+    // the service (a preview gap is not a validation failure).
+    // Default `None` keeps `compiledSql` absent (v1 semantics).
+    val compiledSqlFn: Option[io.sm8.core.model.Model => Either[io.sm8.core.engine.EngineError, String]] = None
 ) {
 
   // The bound Vert.x HttpServer handle. Per scala-jvm-safemindset:
@@ -156,6 +174,21 @@ final class HttpTransport(
     * is bound on the same endpoint so `sm8 inspect <key>` is
     * served instead of a 404. */
   private[query] lazy val endpoint: Endpoint = {
+    // D2+D3 wiring: the deployment's live-schema probe is called
+    // once at boot (the captured schema is frozen on the validate
+    // service for its lifetime). A probe failure is degraded to Nil
+    // — the service treats an empty declared set as no-drift-data,
+    // matching the v1 path — so boot never fails because the catalog
+    // probe failed; the deploy-time stderr warning is the signal.
+    val liveSchema: List[io.sm8.core.schema.Field] =
+      declaredSchemaFn match {
+        case None => Nil
+        case Some(probe) =>
+          probe() match {
+            case Right(fs) => fs
+            case Left(_)   => Nil
+          }
+      }
     val baseEndpoint = Endpoint.builder()
       .bind(QueryService.definition(
         model    = model,
@@ -186,7 +219,15 @@ final class HttpTransport(
       // over the captured `model`; same SERVICE+SHARED rationale
       // as MetaInspectorService. Additive — no change to
       // QueryService's wire contract.
-      .bind(QueryValidationService.definition(model))
+      // D2+D3 wiring: thread the boot-frozen live schema (D2) and
+      // the deployment's SQL compiler closure (D3) into the
+      // validate service. `None` on either keeps the corresponding
+      // v1 behavior (no drift check / no compiledSql).
+      .bind(QueryValidationService.definition(
+        model          = model,
+        declaredFields = liveSchema,
+        compiledSqlFn  = compiledSqlFn
+      ))
       // Per ADR-013 (PR-259): bind EngineService so MCP/LLM agents can
       // discover available engines for the `query.engine` field. No new
       // state, no new wire DTOs beyond the existing `EngineRegistry` —
@@ -280,7 +321,12 @@ object HttpTransport {
     * `registryInspectorFn` (RegistrySources) to the constructor.
     * Without this overload, the constructor's 6-arg signature
     * would only be reachable via `new HttpTransport(...)` —
-    * callers expecting the companion-factory pattern would break. */
+    * callers expecting the companion-factory pattern would break.
+    *
+    * @param declaredSchemaFn D2 live-schema probe (None = no drift
+    *                         stage; probe called once at bind time)
+    * @param compiledSqlFn    D3 compiled-plan preview closure
+    *                         (None = `compiledSql` stays absent) */
   def apply(
       model:    Model,
       registry: EngineRegistry,
@@ -299,7 +345,13 @@ object HttpTransport {
       rollupRefreshFn: Option[RollupRefreshService.RefreshFn] = None,
       cronSchedulerEnabled: Boolean = false,
       cronNextFireCalc: io.sm8.core.schedule.NextFireTimeCalculator =
-        io.sm8.platform.schedule.CronUtilsNextFireTime
+        io.sm8.platform.schedule.CronUtilsNextFireTime,
+      // D2+D3 wiring: forwarded to the class constructor (same
+      // companion-overload rationale as engineFn / rollupRefreshFn —
+      // callers using the companion-factory pattern get the new
+      // bindings without dropping to `new HttpTransport`).
+      declaredSchemaFn: Option[() => Either[io.sm8.core.engine.EngineError, List[io.sm8.core.schema.Field]]] = None,
+      compiledSqlFn: Option[io.sm8.core.model.Model => Either[io.sm8.core.engine.EngineError, String]] = None
   ): HttpTransport =
-    new HttpTransport(model, registry, cache, plugins, metaInspectorEngineFn, registryInspectorFn, engineFn, rollupRefreshFn, cronSchedulerEnabled, cronNextFireCalc)
+    new HttpTransport(model, registry, cache, plugins, metaInspectorEngineFn, registryInspectorFn, engineFn, rollupRefreshFn, cronSchedulerEnabled, cronNextFireCalc, declaredSchemaFn, compiledSqlFn)
 }

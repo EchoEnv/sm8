@@ -500,6 +500,153 @@ object Main {
       }
   }
 
+  /** The active SparkSession via reflection (JDK-only). Shared by
+    * both validation-probe closures — same lookup discipline as
+    * `legacyRefreshOutcome`: `SparkSession.getActiveSession` + the
+    * `isEmpty`/`get` dance, so the server needs no compile-time
+    * Spark dep.
+    *
+    * @return `Right(spark)` when a live session exists; `Left` a
+    *         human-readable reason otherwise (missing spark-connector
+    *         JAR class, or no active session). */
+  private def activeSparkSession()
+      : Either[String, Object] = {
+    try {
+      val sparkCls  = Class.forName("org.apache.spark.sql.SparkSession")
+      val getActive = sparkCls.getMethod("getActiveSession")
+      val sparkOpt  = getActive.invoke(null)
+      val isEmpty   = sparkOpt.getClass.getMethod("isEmpty").invoke(sparkOpt).toString
+      if (isEmpty == "true") {
+        Left("no active SparkSession in this server process — " +
+          "validation probes require the spark connector and a live session")
+      } else {
+        Right(sparkOpt.getClass.getMethod("get").invoke(sparkOpt))
+      }
+    } catch {
+      case _: ClassNotFoundException =>
+        Left("spark-connector classes not on the classpath — " +
+          "validation probes unavailable")
+      case NonFatal(e) =>
+        Left(s"SparkSession lookup failed: ${e.getClass.getSimpleName}: ${e.getMessage}")
+    }
+  }
+
+  /** D2 wiring: build the declared-schema closure handed to
+    * HttpTransport. Reflectively bridges to the spark-connector's
+    * `DeclaredSchemaProbe.listFields` (a `SparkSession` + `Model`
+    * entry point returning `Either[EngineError, List[Field]]` —
+    * engine-portable types on both sides, so the reflective invoke
+    * needs no Scala-collection projection).
+    *
+    * When the spark-connector JAR is absent, returns `None` (the
+    * validate service keeps the v1 no-drift behavior; the boot
+    * stderr line records the degradation honestly). When present,
+    * the closure resolves the active session PER CALL — validate
+    * freezes the first successful result, so a session that comes
+    * up late still gets probed. */
+  private def declaredSchemaProbeClosure(
+      model: Model
+  ): Option[() => Either[io.sm8.core.engine.EngineError, List[io.sm8.core.schema.Field]]] = {
+    try {
+      val probeCls   = Class.forName("io.sm8.connectors.spark.DeclaredSchemaProbe$")
+      val probeMod   = probeCls.getField("MODULE$").get(null)
+      val sparkCls   = Class.forName("org.apache.spark.sql.SparkSession")
+      val method     = probeCls.getMethod("listFields", sparkCls, classOf[Model])
+      Some { () =>
+        activeSparkSession() match {
+          case Right(spark) =>
+            method.invoke(probeMod, spark, model) match {
+              case r: Either[io.sm8.core.engine.EngineError, List[io.sm8.core.schema.Field] @unchecked] => r
+              case other =>
+                Left(io.sm8.core.engine.EngineError.UnsupportedCapability(
+                  engine = "spark", capability = "declared-schema-probe",
+                  message = s"probe returned an unexpected shape: ${String.valueOf(other)}"))
+            }
+          case Left(reason) =>
+            Left(io.sm8.core.engine.EngineError.UnsupportedCapability(
+              engine = "spark", capability = "declared-schema-probe", message = reason))
+        }
+      }
+    } catch {
+      case _: ClassNotFoundException | _: NoSuchMethodException =>
+        // Connector not on the classpath (or an older connector
+        // without the probe). Honest degradation: no drift check.
+        System.err.println("sm8: declared-schema probe unavailable " +
+          "(spark-connector JAR not found) — validate skips drift detection")
+        None
+      case NonFatal(e) =>
+        System.err.println(s"sm8: declared-schema probe wiring failed: " +
+          s"${e.getClass.getSimpleName}: ${e.getMessage} — validate skips drift detection")
+        None
+    }
+  }
+
+  /** D3 wiring: build the compiled-SQL-preview closure handed to
+    * HttpTransport. Reflectively bridges to the spark-connector's
+    * `CompiledSqlProbe.compile` (a provider + model + request + ctx
+    * entry point). The provider argument is THIS deployment's
+    * realized spark provider (captured from `providers` at the wire
+    * call site), so the preview compiles through the same path an
+    * execute would.
+    *
+    * Returns `None` (no preview bound) when the connector JAR is
+    * absent or no spark provider was realized — same honest
+    * degradation as the schema probe. */
+  private def compiledSqlClosure(
+      providers: List[EngineProvider]
+  ): Option[io.sm8.core.model.Model => Either[io.sm8.core.engine.EngineError, String]] = {
+    val sparkProvider = providers.collectFirst {
+      case p: EngineProvider if p.identity.name == "spark" => p
+    }
+    sparkProvider match {
+      case None =>
+        System.err.println("sm8: compiled-SQL preview unavailable " +
+          "(no spark engine realized) — validate returns no compiledSql")
+        None
+      case Some(provider) =>
+        try {
+          val probeCls = Class.forName("io.sm8.connectors.spark.CompiledSqlProbe$")
+          val probeMod = probeCls.getField("MODULE$").get(null)
+          val provCls  = Class.forName("io.sm8.connectors.spark.SparkEngineProvider")
+          val modelCls = classOf[io.sm8.core.model.Model]
+          val reqCls   = classOf[io.sm8.core.engine.QueryRequest]
+          val ctxCls   = classOf[io.sm8.core.engine.EngineContext]
+          val method   = probeCls.getMethod("compile", provCls, modelCls, reqCls, ctxCls)
+          Some { (model: io.sm8.core.model.Model) =>
+            // The validate-time request drives the plan shape. A
+            // minimal request (the model's own dims/measures, no
+            // where/having) previews the model's default projection;
+            // per-request previews would need the request threaded
+            // into the closure, which the platform's compiledSqlFn
+            // shape (Model => _) does not carry — the D3 contract
+            // previews the model, not each request.
+            val previewRequest = io.sm8.core.engine.QueryRequest(
+              model      = model.name,
+              dimensions = model.dimensions.map(_.name),
+              measures   = model.measures.map(_.name)
+            )
+            val previewCtx = io.sm8.core.engine.EngineContext.defaultContext
+            method.invoke(probeMod, provider, model, previewRequest, previewCtx) match {
+              case r: Either[io.sm8.core.engine.EngineError, String @unchecked] => r
+              case other =>
+                Left(io.sm8.core.engine.EngineError.UnsupportedCapability(
+                  engine = "spark", capability = "compiled-sql-preview",
+                  message = s"probe returned an unexpected shape: ${String.valueOf(other)}"))
+            }
+          }
+        } catch {
+          case _: ClassNotFoundException | _: NoSuchMethodException =>
+            System.err.println("sm8: compiled-SQL preview unavailable " +
+              "(spark-connector JAR not found) — validate returns no compiledSql")
+            None
+          case NonFatal(e) =>
+            System.err.println(s"sm8: compiled-SQL preview wiring failed: " +
+              s"${e.getClass.getSimpleName}: ${e.getMessage} — validate returns no compiledSql")
+            None
+        }
+    }
+  }
+
   /** ADR-0022 Ticket 6: the legacy Tier 0/1 refresh closure. Byte-identical
     * to the pre-cascade behavior — old clients posting {model} (no tier/scope)
     * keep this path. */
@@ -590,6 +737,19 @@ object Main {
       // binds CronJobManager + CronJob so recurring jobs are durable
       // via the Restate ingress. Default false = previous endpoint.
       cronSchedulerEnabled: Boolean = false,
+      // D2 (declared-schema probe): when defined, HttpTransport
+      // calls the closure once at boot and freezes the returned
+      // list on the validate service for drift detection. The
+      // deployment builds this from the connector's
+      // DeclaredSchemaProbe via the same reflective bridge as
+      // rollupRefreshFn (see helper `declaredSchemaProbeClosure`
+      // below). `None` keeps the previous no-drift behavior.
+      declaredSchemaFn: Option[() => Either[io.sm8.core.engine.EngineError, List[io.sm8.core.schema.Field]]] = None,
+      // D3 (compiled-SQL preview): when defined, the validate
+      // service populates `compiledSql` from this closure. Built
+      // from the connector's CompiledSqlProbe via the helper
+      // `compiledSqlClosure`. `None` keeps `compiledSql` absent.
+      compiledSqlFn: Option[io.sm8.core.model.Model => Either[io.sm8.core.engine.EngineError, String]] = None,
   ): Either[String, (EngineRegistry, HttpTransport, List[EngineProvider])] = {
     // Per the audit (2026-08-27 [C1]): use the TYPED 5-arg realize so
     // engine-realization failures surface as `EngineError.ConnectionFailed`
@@ -631,6 +791,10 @@ object Main {
       else
         try {
           val registry = EngineRegistry(engines, default)
+          // D2+D3: the two trailing params are NAMED because the
+          // positional slot between cronSchedulerEnabled and them
+          // (cronNextFireCalc) keeps its default — a positional call
+          // would misalign the closures onto the calculator slot.
           Right((registry, HttpTransport(
             model,
             registry,
@@ -640,7 +804,9 @@ object Main {
             registryInspectorFn,
             engineFn,
             rollupRefreshFn,
-            cronSchedulerEnabled
+            cronSchedulerEnabled,
+            declaredSchemaFn = declaredSchemaFn,
+            compiledSqlFn    = compiledSqlFn
           ), realized))
         } catch {
           case e: IllegalArgumentException => Left(e.getMessage)
@@ -834,7 +1000,17 @@ object Main {
               // when the spark-connector JAR is on the classpath; the
               // name->Model resolver reads THIS deployment's model.
               rollupRefreshFn = Some(rollupRefreshClosure(model)),
-              cronSchedulerEnabled = cli.cronScheduler
+              cronSchedulerEnabled = cli.cronScheduler,
+              // D2+D3: validation probes built from the connector
+              // (reflective; honest stderr degradation when the
+              // connector is absent). `realized` is only fully
+              // populated INSIDE wire(), so the compiled-SQL closure
+              // is built from the discover list here and wire's own
+              // realized list is what the transport sees.
+              declaredSchemaFn = declaredSchemaProbeClosure(model),
+              compiledSqlFn    = compiledSqlClosure(
+                discoverProviders(Thread.currentThread().getContextClassLoader)
+              )
             ) match {
               case Left(bootErr) =>
                 System.err.println(bootErr); 3
