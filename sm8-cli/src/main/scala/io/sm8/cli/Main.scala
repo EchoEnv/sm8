@@ -118,6 +118,15 @@ object Main {
     final case class MissingFlagValue(flag: String) extends CliParseError {
       val message: String = s"$flag requires a value"
     }
+    /** A flag's value looked like another flag (`-d -m cnt`). Almost
+      * certainly a dropped value — reject instead of silently
+      * consuming the next flag as the value (validate verb got this
+      * guard first; this closes the same hole for query/explain).
+      * Grouped with [[MissingFlagValue]]: same user-error family
+      * (a value is missing, it just doesn't look like it). */
+    final case class FlagValueLooksLikeFlag(flag: String, value: String) extends CliParseError {
+      val message: String = s"$flag requires a value: got '$value' (looks like a flag)"
+    }
     final case class MissingModel(usage: String) extends CliParseError {
       val message: String = s"missing <model>. $usage"
     }
@@ -706,11 +715,20 @@ object Main {
                 usage = "Usage: sm8 query <model> -d <dim> -m <measure>"
               ))
           }
-        case ("-d" | "--dim") :: v :: rest => loop(rest, model, v :: dims, measures, order, limit, engine)
+        // Flag-value guards (mirrors ValidateArgs.parse, issue #422):
+        // a value starting with '-' is almost certainly the NEXT flag,
+        // not this flag's value — `sm8 query flights -d -m cnt` used
+        // to silently set dim="-m". Reject with a specific message.
+        // Parse-level only: a dim genuinely named "-m" is not
+        // expressible (same as the validate verb) — dims/measures are
+        // model-declared identifiers, not arbitrary strings.
+        case ("-d" | "--dim") :: v :: rest if !v.startsWith("-") => loop(rest, model, v :: dims, measures, order, limit, engine)
+        case ("-d" | "--dim") :: v :: _ => Left(CliParseError.FlagValueLooksLikeFlag(flag = "--dim", value = v))
         case ("-d" | "--dim") :: Nil => Left(CliParseError.MissingFlagValue(flag = "--dim"))
-        case ("-m" | "--measure") :: v :: rest => loop(rest, model, dims, v :: measures, order, limit, engine)
+        case ("-m" | "--measure") :: v :: rest if !v.startsWith("-") => loop(rest, model, dims, v :: measures, order, limit, engine)
+        case ("-m" | "--measure") :: v :: _ => Left(CliParseError.FlagValueLooksLikeFlag(flag = "--measure", value = v))
         case ("-m" | "--measure") :: Nil => Left(CliParseError.MissingFlagValue(flag = "--measure"))
-        case ("-o" | "--order") :: v :: rest =>
+        case ("-o" | "--order") :: v :: rest if !v.startsWith("-") =>
           v.split(":", 2) match {
             case Array(f, d) if d == "asc" || d == "desc" =>
               loop(rest, model, dims, measures, (f, d) :: order, limit, engine)
@@ -718,18 +736,23 @@ object Main {
               loop(rest, model, dims, measures, (f, "asc") :: order, limit, engine)
             case _ => Left(CliParseError.InvalidOrderFormat(value = v))
           }
+        case ("-o" | "--order") :: v :: _ => Left(CliParseError.FlagValueLooksLikeFlag(flag = "--order", value = v))
         case ("-o" | "--order") :: Nil => Left(CliParseError.MissingFlagValue(flag = "--order"))
-        case "--limit" :: v :: rest =>
-          v.toIntOption match {
-            case Some(n) if n >= 0 => loop(rest, model, dims, measures, order, Some(n), engine)
-            case _ => Left(CliParseError.InvalidLimit(value = v))
-          }
+        case "--limit" :: v :: rest if v.toIntOption.exists(_ >= 0) =>
+          loop(rest, model, dims, measures, order, Some(v.toInt), engine)
+        case "--limit" :: v :: _ if v.toIntOption.isDefined =>
+          // A well-formed integer that failed the >= 0 check: the
+          // specific InvalidLimit message beats the generic
+          // looks-like-a-flag one ("-5" IS a value, just invalid).
+          Left(CliParseError.InvalidLimit(value = v))
+        case "--limit" :: v :: _ => Left(CliParseError.FlagValueLooksLikeFlag(flag = "--limit", value = v))
         case "--limit" :: Nil => Left(CliParseError.MissingFlagValue(flag = "--limit"))
         // PR #432 (v0.3.1 Step 2): expose the MCP server's engine-routing
         // field on the CLI. Omitted by default (server decides routing per
         // PR #431); when present, server routes through EngineRegistry
         // if configured.
-        case ("--engine") :: v :: rest => loop(rest, model, dims, measures, order, limit, engine = v)
+        case ("--engine") :: v :: rest if !v.startsWith("-") => loop(rest, model, dims, measures, order, limit, engine = v)
+        case ("--engine") :: v :: _ => Left(CliParseError.FlagValueLooksLikeFlag(flag = "--engine", value = v))
         case ("--engine") :: Nil => Left(CliParseError.MissingFlagValue(flag = "--engine"))
         case flag :: _ if flag.startsWith("-") => Left(CliParseError.UnknownFlag(flag = flag))
         case v :: rest => model match {

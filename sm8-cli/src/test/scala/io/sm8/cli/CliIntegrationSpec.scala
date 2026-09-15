@@ -500,6 +500,79 @@ class CliIntegrationSpec
     }
   }
 
+  // ==========================================================================
+  // 3b. Flag-value guards on query/explain (issue #422 — mirrors the
+  // validate verb's guard; a value starting with '-' is the next flag,
+  // not this flag's value)
+  // ==========================================================================
+
+  describe("flag-value guards on query/explain") {
+
+    it("query: -d followed by -m is a parse error naming both flags") {
+      val (exit, _, err) = runCli(args("query", "flights", "-d", "-m", "cnt"))
+      exit shouldBe 2
+      err should include("--dim requires a value")
+      err should include("-m")
+    }
+
+    it("query: -m followed by -d is a parse error naming both flags") {
+      val (exit, _, err) = runCli(args("query", "flights", "-m", "-d", "carrier"))
+      exit shouldBe 2
+      err should include("--measure requires a value")
+      err should include("-d")
+    }
+
+    it("query: --dim followed by --measure is a parse error (long forms)") {
+      val (exit, _, err) = runCli(args("query", "flights", "--dim", "--measure", "cnt"))
+      exit shouldBe 2
+      err should include("--dim requires a value")
+      err should include("--measure")
+    }
+
+    it("query: --limit followed by a flag is a parse error") {
+      val (exit, _, err) = runCli(args("query", "flights", "-m", "cnt", "--limit", "-d"))
+      exit shouldBe 2
+      err should include("--limit requires a value")
+    }
+
+    it("query: --engine followed by a flag is a parse error") {
+      val (exit, _, err) = runCli(args("query", "flights", "--engine", "-m"))
+      exit shouldBe 2
+      err should include("--engine requires a value")
+    }
+
+    it("query: -o followed by a flag is a parse error") {
+      val (exit, _, err) = runCli(args("query", "flights", "-o", "-d"))
+      exit shouldBe 2
+      err should include("--order requires a value")
+    }
+
+    it("explain: -d followed by a flag is a parse error too") {
+      val (exit, _, err) = runCli(args("explain", "flights", "-d", "-m"))
+      exit shouldBe 2
+      err should include("--dim requires a value")
+    }
+
+    it("query: still parses normally when values are legit (no regression)") {
+      respondWith("/query", 200, """{
+        |  "status": "ok",
+        |  "data": {"columns": [], "rows": [], "row_count": 0, "truncated": false},
+        |  "warnings": [], "meta": {}
+        |}""".stripMargin)
+      val (exit, _, err) = runCli(args("query", "flights",
+        "-d", "carrier", "-m", "flight_count", "--limit", "5",
+        "-o", "carrier:desc", "--engine", "spark"))
+      exit shouldBe 0
+      err shouldBe ""
+      val sent = received("/query")
+      sent should include("\"dimensions\":[\"carrier\"]")
+      sent should include("\"measures\":[\"flight_count\"]")
+      sent should include("\"limit\":5")
+      sent should include("\"order_by\":[{\"field\":\"carrier\",\"direction\":\"desc\"}]")
+      sent should include("\"engine\":\"spark\"")
+    }
+  }
+
   // ============================================================================
   // 4. Exit codes and global flags
   // ============================================================================
