@@ -123,9 +123,14 @@ object MetricsHttpRoute {
   /** Build the Prometheus text body for the current `QueryMetrics`
     * snapshot. Pure function — exposed package-private for unit
     * tests. */
-  private[query] def renderBody(startedAt: Instant): String = {
+  private[query] def renderBody(startedAt: Instant, nowMsOverride: Option[Long] = None): String = {
     val startEpoch = startedAt.toEpochMilli / 1000L
-    val now        = System.currentTimeMillis / 1000L
+    // One clock tick for the whole body: uptime, and the freshness
+    // age gauges (a scrape straddling a second boundary would
+    // otherwise disagree with itself). Tests pass nowMsOverride to
+    // pin the clock.
+    val nowMs = nowMsOverride.getOrElse(System.currentTimeMillis)
+    val now        = nowMs / 1000L
     val snap = QueryMetrics.snapshot(
       uptimeSeconds = now - startEpoch,
       startedAtIso  = startedAt.toString
@@ -175,6 +180,67 @@ object MetricsHttpRoute {
        |# HELP sm8_process_start_time_seconds sm8 process start time (Unix seconds)
        |# TYPE sm8_process_start_time_seconds gauge
        |sm8_process_start_time_seconds $startEpoch
+       |${freshnessGauges(nowMs)}
        |""".stripMargin
+  }
+
+  /** Render the rollup freshness gauge family.
+    *
+    * Three gauges per declared rollup, only emitted when the
+    * deployment supplied a freshness reader at boot (the connector
+    * on a live deployment; absent for null-spark configurations).
+    * A probe failure degrades to a single `sm8_rollup_freshness_probe_failed`
+    * counter so an operator can detect "the reader is misbehaving"
+    * separately from "no rollups are fresh."
+    *
+    * Gauge naming follows Prometheus conventions:
+    *   - `sm8_rollup_freshness{rollup="<name>"} 0|1` (1 = allFinal)
+    *   - `sm8_rollup_freshness_age_seconds{rollup="<name>"} <n>` (NaN = never)
+    *   - `sm8_rollup_freshness_buckets{rollup="<name>"} <count>`
+    *
+    * Per-rollup isolation: a malformed timestamp on ONE rollup
+    * renders its row as `age = NaN` and `freshness = 0`, without
+    * blanking the family.
+    *
+    * @return the Prometheus text block, "" when no reader is installed
+    */
+  private[query] def freshnessGauges(nowMs: Long = System.currentTimeMillis): String = {
+    try {
+      QueryMetrics.freshnessSnapshot() match {
+        case None => ""
+        case Some(Right(entries)) =>
+            entries.map { e =>
+              val fresh = if (e.allFinal) "1" else "0"
+              val age  = if (e.lastRefreshedAt.isEmpty) "NaN"
+                         else try
+                           java.time.Instant.parse(e.lastRefreshedAt)
+                             .until(java.time.Instant.ofEpochMilli(nowMs),
+                                    java.time.temporal.ChronoUnit.SECONDS)
+                             .toString
+                         catch { case _: java.time.format.DateTimeParseException => "NaN" }
+              s"""|# HELP sm8_rollup_freshness 1 if every bucket row is_final=true, 0 otherwise
+                  |# TYPE sm8_rollup_freshness gauge
+                  |sm8_rollup_freshness{rollup="${e.rollupName}"} $fresh
+                  |# HELP sm8_rollup_freshness_age_seconds Seconds since the most recent bucket refresh (NaN if never)
+                  |# TYPE sm8_rollup_freshness_age_seconds gauge
+                  |sm8_rollup_freshness_age_seconds{rollup="${e.rollupName}"} $age
+                  |# HELP sm8_rollup_freshness_buckets Number of bucket rows in the watermark table
+                  |# TYPE sm8_rollup_freshness_buckets gauge
+                  |sm8_rollup_freshness_buckets{rollup="${e.rollupName}"} ${e.bucketCount}""".stripMargin
+            }.mkString("\n")
+          case Some(Left(reason)) =>
+            try System.err.println(s"sm8: freshness reader failed: $reason")
+            catch { case _: Throwable => () }
+            s"""|# HELP sm8_rollup_freshness_probe_failed 1 if the last freshness probe failed, 0 if it succeeded
+                |# TYPE sm8_rollup_freshness_probe_failed gauge
+                |sm8_rollup_freshness_probe_failed 1""".stripMargin
+      }
+    } catch {
+      // Per-scrape NonFatal: a mid-render failure (malformed Entry from
+      // a connector upgrade, anything from the cache lookup) degrades
+      // to an empty freshness block rather than killing the Vert.x
+      // handler thread (which would 500 /metrics for every verb).
+      case scala.util.control.NonFatal(_) => ""
+    }
   }
 }
