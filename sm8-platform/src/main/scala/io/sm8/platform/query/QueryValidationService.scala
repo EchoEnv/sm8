@@ -119,8 +119,9 @@ final case class ValidationOutcome(
 /** Typed validation failure: which stage failed and why.
   *
   * @param stage  "request" (D1: unknown request dims/measures),
-  *               "model" (model-level integrity), or "build" (query
-  *               well-formedness / resolution)
+  *               "model" (model-level integrity), "build" (query
+  *               well-formedness / resolution), or "drift" (D2:
+  *               warehouse schema drift vs declared schema)
   * @param errors all collected errors for that stage (aggregated,
   *               not first-only)
   */
@@ -233,20 +234,21 @@ object QueryValidationService {
                 }
               }
 
-            // D3: compile SQL via the deployment-supplied callback.
-            // None callback → compiledSql stays None (v1 semantics).
-            // Either → Option conversion: SQL compile failure is not
-            // a validation failure (silently dropped from the outcome).
-            val compiledSql: Option[String] = compiledSqlFn match {
-              case Some(fn) =>
-                fn(model) match {
-                  case Right(sql) => Some(sql)
-                  case Left(_)    => None
-                }
-              case None => None
-            }
-
+            // D3: compile SQL INSIDE the drift-pass branch. When drift
+            // fails, the callback must NEVER be invoked — a SQL
+            // preview generated for a drifted schema would mislead
+            // an operator into thinking the drifted query is OK.
+            // Drift short-circuits the Either chain so the callback
+            // is unreachable in the Left(drift) case.
             driftCheck.flatMap { _ =>
+              val compiledSql: Option[String] = compiledSqlFn match {
+                case Some(fn) =>
+                  fn(model) match {
+                    case Right(sql) => Some(sql)
+                    case Left(_)    => None // silent (compile failure is not validation failure)
+                  }
+                case None => None
+              }
               Right(ValidationOutcome(
                 modelVersion = model.version,
                 rollupDecision = decision,
