@@ -118,6 +118,15 @@ object Main {
     final case class MissingFlagValue(flag: String) extends CliParseError {
       val message: String = s"$flag requires a value"
     }
+    /** A flag's value looked like another flag (`-d -m cnt`). Almost
+      * certainly a dropped value — reject instead of silently
+      * consuming the next flag as the value (validate verb got this
+      * guard first; this closes the same hole for query/explain).
+      * Grouped with [[MissingFlagValue]]: same user-error family
+      * (a value is missing, it just doesn't look like it). */
+    final case class FlagValueLooksLikeFlag(flag: String, value: String) extends CliParseError {
+      val message: String = s"$flag requires a value: got '$value' (looks like a flag)"
+    }
     final case class MissingModel(usage: String) extends CliParseError {
       val message: String = s"missing <model>. $usage"
     }
@@ -129,13 +138,6 @@ object Main {
     }
     final case class UnknownFlag(flag: String) extends CliParseError {
       val message: String = s"unknown flag: $flag"
-    }
-    /** A flag's value looked like another flag (`-d -m cnt`). Almost
-      * certainly a dropped value — reject instead of silently
-      * consuming the next flag as the value (validate verb got this
-      * guard first; this closes the same hole for query/explain). */
-    final case class FlagValueLooksLikeFlag(flag: String, value: String) extends CliParseError {
-      val message: String = s"$flag requires a value: got '$value' (looks like a flag)"
     }
     final case class UnexpectedPositional(value: String, existingModel: String)
         extends CliParseError {
@@ -736,11 +738,13 @@ object Main {
           }
         case ("-o" | "--order") :: v :: _ => Left(CliParseError.FlagValueLooksLikeFlag(flag = "--order", value = v))
         case ("-o" | "--order") :: Nil => Left(CliParseError.MissingFlagValue(flag = "--order"))
-        case "--limit" :: v :: rest if !v.startsWith("-") =>
-          v.toIntOption match {
-            case Some(n) if n >= 0 => loop(rest, model, dims, measures, order, Some(n), engine)
-            case _ => Left(CliParseError.InvalidLimit(value = v))
-          }
+        case "--limit" :: v :: rest if v.toIntOption.exists(_ >= 0) =>
+          loop(rest, model, dims, measures, order, Some(v.toInt), engine)
+        case "--limit" :: v :: _ if v.toIntOption.isDefined =>
+          // A well-formed integer that failed the >= 0 check: the
+          // specific InvalidLimit message beats the generic
+          // looks-like-a-flag one ("-5" IS a value, just invalid).
+          Left(CliParseError.InvalidLimit(value = v))
         case "--limit" :: v :: _ => Left(CliParseError.FlagValueLooksLikeFlag(flag = "--limit", value = v))
         case "--limit" :: Nil => Left(CliParseError.MissingFlagValue(flag = "--limit"))
         // PR #432 (v0.3.1 Step 2): expose the MCP server's engine-routing
