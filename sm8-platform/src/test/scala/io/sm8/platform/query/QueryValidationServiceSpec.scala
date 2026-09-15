@@ -1,6 +1,8 @@
 /*
  * QueryValidationServiceSpec — write-safety + correctness contract
- * for the execute-free validate surface (decision ticket #407, r6).
+ * for the execute-free validate surface (decision ticket #407 r6 +
+ * v2 map #411: D1 request-dim check + D2 drift detection + D3 SQL
+ * preview).
  *
  * Pins:
  *   - Well-formed query → ValidationOutcome with rollupDecision.
@@ -224,9 +226,47 @@ class QueryValidationServiceSpec extends AnyFunSuite with Matchers {
     outcome.left.get.errors.head shouldBe a[EngineError.UnsupportedCapability]
     outcome.left.get.errors.head.asInstanceOf[EngineError.UnsupportedCapability]
       .capability shouldBe "schema-drift"
-  
-
   }
+
+  test("D2+D3 composition: drift fires → outcome is Left, compiledSqlFn never invoked") {
+    // When the drift check fails, the validate outcome is Left at
+    // stage="drift". The compiledSqlFn must NOT have been invoked —
+    // a SQL preview generated for a drifted schema would be
+    // misleading. This test pins the ordering invariant: drift
+    // short-circuits the Either chain, so the callback is never
+    // reached.
+    val m = coveredModel()
+    val driftedFields = List(
+      Field(name = "event_date", dataType = io.sm8.core.schema.SealedDataType.Varchar, nullable = true)
+    )
+    var compiledSqlFnCalled = false
+    val neverCompile = (_: io.sm8.core.model.Model) => {
+      compiledSqlFnCalled = true
+      Left(io.sm8.core.engine.EngineError.ConnectionFailed(
+        engine = "test-stub", reason = "should never be called", message = ""))
+    }
+    val outcome = QueryValidationService.runValidation(
+      m, request("spec_events"), driftedFields, Some(neverCompile))
+    outcome.isLeft shouldBe true
+    outcome.left.get.stage shouldBe "drift"
+    compiledSqlFnCalled shouldBe false
+  }
+
+  test("D2+D3 composition: schema matches → compiledSqlFn fires, populated in outcome") {
+    val m = coveredModel()
+    val liveFields = List(
+      Field(name = "event_date", dataType = io.sm8.core.schema.SealedDataType.Date, nullable = true),
+      Field(name = "region", dataType = io.sm8.core.schema.SealedDataType.Varchar, nullable = true),
+      Field(name = "amount", dataType = io.sm8.core.schema.SealedDataType.Varchar, nullable = true)
+    )
+    val stubSql = "SELECT 1"
+    val stubFn = (_: io.sm8.core.model.Model) => Right(stubSql)
+    val outcome = QueryValidationService.runValidation(
+      m, request("spec_events"), liveFields, Some(stubFn))
+    outcome.isRight shouldBe true
+    outcome.right.get.compiledSql shouldBe Some(stubSql)
+  }
+
   test("D3 compiledSql: callback present + success → ValidationOutcome.compiledSql = Some(sql)") {
     val m = coveredModel()
     val stubSql = "SELECT event_date, region, SUM(amount) AS total FROM events GROUP BY event_date, region"
