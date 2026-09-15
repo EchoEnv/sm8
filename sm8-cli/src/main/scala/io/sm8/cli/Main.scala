@@ -21,6 +21,7 @@ import scala.jdk.CollectionConverters._
   *   "sm8 describe <model>                show a model's dimensions/measures/filters
   *   sm8 query <model> [options]         run a semantic query, print a table
   *   sm8 explain <model> [options]       show the semantic plan (no execution)
+  *   sm8 validate <model> [options]      execute-free query validation + plan preview
   *   sm8 inspect <key>                   read a context.meta key (generic)
   * }}}
   *
@@ -61,6 +62,7 @@ object Main {
     case ("describe" :: rest)   => withGlobalConfig(rest) { (cfg, rem) => safeRun(cmdDescribe(cfg, rem)) }
     case ("query" :: rest)      => withGlobalConfig(rest) { (cfg, rem) => safeRun(cmdQuery(cfg, rem, explain = false)) }
     case ("explain" :: rest)    => withGlobalConfig(rest) { (cfg, rem) => safeRun(cmdQuery(cfg, rem, explain = true)) }
+    case ("validate" :: rest)   => withGlobalConfig(rest) { (cfg, rem) => safeRun(cmdValidate(cfg, rem)) }
     case ("audit-tail" :: rest) => withGlobalConfig(rest) { (cfg, rem) => safeRun(cmdAuditTail(cfg, rem)) }
     case ("inspect" :: rest)    => withGlobalConfig(rest) { (cfg, rem) => safeRun(cmdInspect(cfg, rem)) }
     case ("plugins" :: rest)    => withGlobalConfig(rest) { (cfg, rem) => safeRun(cmdPlugins(cfg)) }
@@ -452,6 +454,170 @@ object Main {
     val truncated = d.field("truncated").text.toBoolean
     println(Table.render(cols, rows))
     println(s"\n$count row${if (count == 1) "" else "s"}${if (truncated) " (TRUNCATED)" else ""}")
+  }
+
+  /** `sm8 validate <model> [--dim <d> ...] [--measure <m> ...] [--plan]`
+    *
+    * Mirrors `cmdQuery`'s request shape (so `validate` and `query` agree
+    * on what "this query" means) and POSTs to
+    * `/QueryValidationService/validate` for an execute-free pass. The
+    * platform returns either a `ValidationOutcome` (well-formed + routing
+    * preview) or a typed `ValidationFailure` with per-stage errors; we
+    * surface both with exit codes 0/1 so scripts can branch without
+    * parsing the output.
+    *
+    * @param cfg deployment config (base URL, token, --json passthrough)
+    * @param args flags after the `validate` subcommand
+    * @return    0 on `VALID`, 1 on typed `ValidationFailure`, 2 on CLI
+    *            parse / connection error (consistent with `cmdQuery`'s
+    *            exit code scheme). `--json` passthrough uses the same
+    *            envelope shape as the MCP wire.
+    */
+  private def cmdValidate(cfg: Config, args: List[String]): Int = {
+    ValidateArgs.parse(args) match {
+      case Left(err) => System.err.println(s"sm8: ${err.message}"); 2
+      case Right(va) =>
+        val body = va.toJson
+        val resp = Client.postJson(cfg, "/QueryValidationService/validate", body)
+        // --json passthrough still returns 1 on a 4xx error envelope so
+        // scripts branching on $? don't silently miss validation
+        // failures (the raw body is printed either way).
+        if (cfg.json) { println(resp.body); return if (resp.status >= 400) 1 else 0 }
+        val root = resp.parseJson
+        if (root.errorPath(cfg)) return 1
+        printValidateOutcome(va, root.dataPath, showPlan = va.showPlan)
+    }
+  }
+
+  /** Pretty-print a `ValidationOutcome` envelope.
+    *
+    * Shape (matching the platform's `ValidationOutcome` case class):
+    *   data.modelVersion       Int
+    *   data.rollupDecision     { rewriteApplied, reason }
+    *   data.engineSelection    String
+    *   data.tablesTouched      [String]
+    *   data.compiledSql        String | null
+    *
+    * Exit code 0 here (caller decides when to return 1 — the platform
+    * would have routed a typed failure through errorPath instead). */
+  private def printValidateOutcome(va: ValidateArgs, d: JsonNode, showPlan: Boolean): Int = {
+    // NullNode.asText(default) does NOT honor the default (returns
+    // null), so missing fields go through textOption (None on
+    // missing/null) with an explicit `?` fallback — a partial
+    // envelope renders visibly instead of looking like a successful
+    // empty validation.
+    def show(name: String): String =
+      d.field(name).textOption.getOrElse("?")
+    def showNested(outer: String, inner: String): String =
+      d.field(outer).field(inner).textOption.getOrElse("?")
+    val name   = va.model
+    val ver    = show("modelVersion")
+    val route  = showNested("rollupDecision", "reason")
+    val applied = showNested("rollupDecision", "rewriteApplied")
+    val engine = show("engineSelection")
+    val tables = d.field("tablesTouched").elemList.map(_.textOption.getOrElse("?"))
+    val plan   = d.field("compiledSql").textOption.getOrElse("")
+
+    println(s"VALID: $name (v$ver)")
+    println(s"  engine:   $engine")
+    println(s"  routing:  ${if (applied == "true") "Rewritten" else "Unchanged"} → $route")
+    if (tables.isEmpty) println(s"  tables:   (none reported)")
+    else println(s"  tables:   ${tables.mkString(", ")}")
+
+    if (showPlan && plan.nonEmpty) {
+      println("\n== compiled plan preview ==")
+      println(plan)
+    } else if (showPlan) {
+      println("\n(no compiled plan: deployment did not supply a compiledSqlFn — v1 semantics)")
+    }
+    0
+  }
+
+  /** CLI arg shape for `validate`. Reuses `QueryArgs.parse` for the
+    * `--dim` / `--measure` semantics so the two verbs agree on what a
+    * "request shape" is, then layers on a `--plan` flag to surface the
+    * D3 compiled preview. */
+  private case class ValidateArgs(
+      model: String,
+      dims: List[String],
+      measures: List[String],
+      showPlan: Boolean
+  ) {
+    def toJson: String = {
+      // Reuse the same JSON shape as QueryArgs (model + dimensions +
+      // measures). The validate server ignores fields it doesn't need
+      // (order/limit/engine); keeping the shape uniform means a request
+      // that's well-formed for `query` is also well-formed for `validate`.
+      val sb = new StringBuilder
+      sb.append('{').append("\"model\":").append(mapper.writeValueAsString(model))
+      if (measures.nonEmpty) sb.append(",\"measures\":").append(mapper.writeValueAsString(measures.toArray))
+      if (dims.nonEmpty)     sb.append(",\"dimensions\":").append(mapper.writeValueAsString(dims.toArray))
+      sb.append('}').toString
+    }
+  }
+
+  private object ValidateArgs {
+    def parse(args: List[String]): Either[CliParseError, ValidateArgs] = {
+      // ValidateArgs is a strict subset of QueryArgs: same -d/-m, no
+      // order/limit/engine, plus --plan. Parse inline so the accepted-
+      // flag surface is explicit (reusing QueryArgs.parse would accept
+      // flags validate doesn't model).
+      @tailrec def loop(
+          in: List[String],
+          model: Option[String],
+          dims: List[String],
+          measures: List[String],
+          showPlan: Boolean,
+          errs: List[String]
+      ): (Option[String], List[String], List[String], Boolean, List[String]) =
+        in match {
+          case Nil => (model, dims.reverse, measures.reverse, showPlan, errs.reverse)
+          case ("--plan" :: t) => loop(t, model, dims, measures, true, errs)
+          case ("-d" :: v :: t) if v.nonEmpty && !v.startsWith("-") => loop(t, model, v :: dims, measures, showPlan, errs)
+          case ("--dim" :: v :: t) if v.nonEmpty && !v.startsWith("-") => loop(t, model, v :: dims, measures, showPlan, errs)
+          case ("-m" :: v :: t) if v.nonEmpty && !v.startsWith("-") => loop(t, model, dims, v :: measures, showPlan, errs)
+          case ("--measure" :: v :: t) if v.nonEmpty && !v.startsWith("-") => loop(t, model, dims, v :: measures, showPlan, errs)
+          case ("--dim" :: Nil) | ("-d" :: Nil) =>
+            (model, dims.reverse, measures.reverse, showPlan, CliParseError.MissingFlagValue(flag = "--dim").message :: errs)
+          case ("--measure" :: Nil) | ("-m" :: Nil) =>
+            (model, dims.reverse, measures.reverse, showPlan, CliParseError.MissingFlagValue(flag = "--measure").message :: errs)
+          case ("-d" :: v :: _) =>
+            // Reaching here means v starts with '-' (the non-flag case
+            // matched earlier) — a flag-shaped value after -d is a
+            // likely missing/typo'd value, not a silent dim name.
+            (model, dims.reverse, measures.reverse, showPlan,
+              s"--dim requires a value: got '$v' (looks like a flag)" :: errs)
+          case ("--dim" :: v :: _) =>
+            (model, dims.reverse, measures.reverse, showPlan,
+              s"--dim requires a value: got '$v' (looks like a flag)" :: errs)
+          case ("-m" :: v :: _) =>
+            (model, dims.reverse, measures.reverse, showPlan,
+              s"--measure requires a value: got '$v' (looks like a flag)" :: errs)
+          case ("--measure" :: v :: _) =>
+            (model, dims.reverse, measures.reverse, showPlan,
+              s"--measure requires a value: got '$v' (looks like a flag)" :: errs)
+          case (other :: t) =>
+            loop(t, model, dims, measures, showPlan, s"unknown flag: $other" :: errs)
+        }
+      // Model is the first positional (same convention as QueryArgs:
+      // flags and their values are consumed by the loop, so anything
+      // not starting with '-' that survives to a flag slot is the
+      // model). Simpler and consistent: run the loop, and treat the
+      // first non-flag token as the model.
+      val nonFlags = args.filterNot(_.startsWith("-"))
+      val model = nonFlags.headOption.filter(_.nonEmpty)
+      val (modelOpt, dims, meas, showPlan, errs) =
+        loop(args.filterNot(a => nonFlags.headOption.contains(a)), model, Nil, Nil, false, Nil)
+      (modelOpt, errs) match {
+        case (None, _) =>
+          Left(CliParseError.MissingModel(
+            "Usage: sm8 validate <model> [--dim <d> ...] [--measure <m> ...] [--plan]"))
+        case (_, h :: _) =>
+          Left(CliParseError.UnknownFlag(flag = h))
+        case (Some(m), Nil) =>
+          Right(ValidateArgs(m, dims, meas, showPlan))
+      }
+    }
   }
 
   private def cellToString(n: JsonNode): String =
@@ -1295,6 +1461,7 @@ object Main {
         |  describe <model>                show a model's dimensions / measures / filters / joins
         |  query <model> [opts]            run a semantic query, print a table
         |  explain <model> [opts]          show the semantic plan (no execution)
+        |  validate <model> [opts]         execute-free validation + plan preview (no run)
         |  audit-tail [opts]               show recent audit events (Restate, durable)
         |  inspect <key>                   read a context.meta key (generic meta-inspector)
         |  plugins                         list discovered plugins (registered flag per plugin)
