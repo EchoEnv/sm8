@@ -17,6 +17,7 @@ package io.sm8.platform.query
 import io.sm8.core.cache.MetricsSink
 import io.sm8.core.engine.{EngineError, EngineIdentity, QueryRequest}
 import io.sm8.core.model.{Dimension, Measure, Model}
+import io.sm8.core.schema.Field
 
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
@@ -191,5 +192,37 @@ class QueryValidationServiceSpec extends AnyFunSuite with Matchers {
   test("engine identity: validate uses the pinned synthetic identity") {
     QueryValidationService.ValidateEngineIdentity.name shouldBe "validate"
     QueryValidationService.ValidateEngineIdentity.engineAdapterVersion should include("validate")
+  }
+
+  test("D2 drift: live schema matches model → Right (no drift)") {
+    val m = coveredModel()
+    val liveFields = List(
+      Field(name = "event_date", dataType = io.sm8.core.schema.SealedDataType.Date, nullable = true),
+      Field(name = "region", dataType = io.sm8.core.schema.SealedDataType.Varchar, nullable = true),
+      Field(name = "amount", dataType = io.sm8.core.schema.SealedDataType.Varchar, nullable = true)
+    )
+    val outcome = QueryValidationService.runValidation(m, request("spec_events"), liveFields)
+    withClue(s"outcome=${outcome}") {
+      outcome.isRight shouldBe true
+    }
+    outcome.right.get.rollupDecision shouldBe a[io.sm8.core.rel.RollupRewriter.RollupRewriteResult.Rewritten]
+  }
+
+  test("D2 drift: live schema missing a model dimension → Left at the drift stage") {
+    // Warehouse dropped the 'region' column; validate catches it
+    // via validateAgainstSchema BEFORE the relop build would have
+    // silently mis-routed.
+    val m = coveredModel()
+    val driftedFields = List(
+      Field(name = "event_date", dataType = io.sm8.core.schema.SealedDataType.Varchar, nullable = true),
+      Field(name = "amount", dataType = io.sm8.core.schema.SealedDataType.Varchar, nullable = true)
+    )
+    val outcome = QueryValidationService.runValidation(m, request("spec_events"), driftedFields)
+    outcome.isLeft shouldBe true
+    outcome.left.get.stage shouldBe "drift"
+    outcome.left.get.errors should have size 1
+    outcome.left.get.errors.head shouldBe a[EngineError.UnsupportedCapability]
+    outcome.left.get.errors.head.asInstanceOf[EngineError.UnsupportedCapability]
+      .capability shouldBe "schema-drift"
   }
 }
