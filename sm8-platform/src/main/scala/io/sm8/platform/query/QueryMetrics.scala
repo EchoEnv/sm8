@@ -75,6 +75,37 @@ object QueryMetrics extends MetricsSink {
   // to BOTH, or collapse them behind one type.
   private val rollupRefusalsByReason = new java.util.concurrent.ConcurrentHashMap[String, AtomicLong]()
 
+  // -- Rollup freshness gauges --
+  //
+  // Freshness is PULLED, not pushed: the deployment supplies a reader
+  // function at boot (the connector reads the ADR-0030 watermark
+  // table; the platform cannot — no Spark). MetricsHttpRoute calls
+  // the reader on each /metrics scrape and renders the result as
+  // gauges. A missing reader (no connector, or null-spark) renders
+  // nothing — the gauge family is simply absent, which is honest:
+  // "no freshness data" and "all fresh" are different answers.
+
+  /** Deployment-supplied freshness reader: returns one entry per
+    * rollup (rollupName / lastRefreshedAt ISO string / allFinal /
+    * bucketCount), or a typed error when the probe cannot run.
+    * Set once at boot via [[installRollupFreshnessReader]]; `None`
+    * = the gauge family is absent from /metrics. */
+  @volatile private var rollupFreshnessReader
+      : Option[() => Either[String, List[RollupFreshnessSnapshot.Entry]]] = None
+
+  /** Install the deployment's freshness reader (called once at boot
+    * from sm8-server's reflective bridge). Idempotent — the last
+    * install wins. Passing `null` uninstalls (used by tests and by
+    * callers holding an Option they flatten). */
+  def installRollupFreshnessReader(
+      reader: () => Either[String, List[RollupFreshnessSnapshot.Entry]]
+  ): Unit = { rollupFreshnessReader = Option(reader) }
+
+  /** The installed reader, for the Prometheus exporter. */
+  def rollupFreshnessReaderFn
+      : Option[() => Either[String, List[RollupFreshnessSnapshot.Entry]]] =
+    rollupFreshnessReader
+
   // -- Per-invocation record methods (called from QueryService.runQuery) --
 
   /** Called at the top of `QueryService.private def runQuery`. */
