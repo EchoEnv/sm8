@@ -128,20 +128,31 @@ object QueryMetrics extends MetricsSink {
     // trade-off: one scrape per TTL window may see data up to
     // TTL-stale; strictly better than serializing every scrape
     // behind a hung reader).
-    def compute(): Option[Either[String, List[RollupFreshnessSnapshot.Entry]]] =
-      rollupFreshnessReader match {
-        case None => None
-        case Some(reader) =>
-          val fresh = reader()
-          freshnessCache = Some((System.currentTimeMillis, fresh))
-          Some(fresh)
+    def compute(): Option[Either[String, List[RollupFreshnessSnapshot.Entry]]] = {
+      // Reader runs OUTSIDE the lock (t-rex final-gate nit): a hung
+      // Spark probe must not hold the monitor and serialize every
+      // concurrent scrape + stall installRollupFreshnessReader.
+      // Cost: two threads racing a miss may both run the reader
+      // (last publish wins) — bounded by the TTL window, and strictly
+      // better than N scrapes serialized behind a hung probe.
+      val fresh = rollupFreshnessReader match {
+        case None        => return None
+        case Some(reader) => reader()
       }
+      freshnessLock.synchronized {
+        freshnessCache = Some((System.currentTimeMillis, fresh))
+      }
+      Some(fresh)
+    }
     freshnessCache match {
       case Some((ts, cached))
         if System.currentTimeMillis - ts < RollupFreshnessTtlMillis =>
         Some(cached)
       case _ =>
         freshnessLock.synchronized {
+          // Re-check inside the lock: another thread may have
+          // published a fresh entry while this one was racing the
+          // monitor. Only a still-missing cache runs the reader.
           freshnessCache match {
             case Some((ts, cached))
               if System.currentTimeMillis - ts < RollupFreshnessTtlMillis =>
