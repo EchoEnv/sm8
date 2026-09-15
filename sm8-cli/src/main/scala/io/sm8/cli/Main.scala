@@ -479,7 +479,10 @@ object Main {
       case Right(va) =>
         val body = va.toJson
         val resp = Client.postJson(cfg, "/QueryValidationService/validate", body)
-        if (cfg.json) { println(resp.body); return 0 }
+        // --json passthrough still returns 1 on a 4xx error envelope so
+        // scripts branching on $? don't silently miss validation
+        // failures (the raw body is printed either way).
+        if (cfg.json) { println(resp.body); return if (resp.status >= 400) 1 else 0 }
         val root = resp.parseJson
         if (root.errorPath(cfg)) return 1
         printValidateOutcome(va, root.dataPath, showPlan = va.showPlan)
@@ -498,13 +501,22 @@ object Main {
     * Exit code 0 here (caller decides when to return 1 — the platform
     * would have routed a typed failure through errorPath instead). */
   private def printValidateOutcome(va: ValidateArgs, d: JsonNode, showPlan: Boolean): Int = {
-    val name  = va.model
-    val ver   = d.field("modelVersion").asText("?")
-    val route = d.field("rollupDecision").field("reason").text
-    val applied = d.field("rollupDecision").field("rewriteApplied").text
-    val engine = d.field("engineSelection").text
-    val tables = d.field("tablesTouched").elemList.map(_.text)
-    val plan   = d.field("compiledSql").text // "" when null/None
+    // NullNode.asText(default) does NOT honor the default (returns
+    // null), so missing fields go through textOption (None on
+    // missing/null) with an explicit `?` fallback — a partial
+    // envelope renders visibly instead of looking like a successful
+    // empty validation.
+    def show(name: String): String =
+      d.field(name).textOption.getOrElse("?")
+    def showNested(outer: String, inner: String): String =
+      d.field(outer).field(inner).textOption.getOrElse("?")
+    val name   = va.model
+    val ver    = show("modelVersion")
+    val route  = showNested("rollupDecision", "reason")
+    val applied = showNested("rollupDecision", "rewriteApplied")
+    val engine = show("engineSelection")
+    val tables = d.field("tablesTouched").elemList.map(_.textOption.getOrElse("?"))
+    val plan   = d.field("compiledSql").textOption.getOrElse("")
 
     println(s"VALID: $name (v$ver)")
     println(s"  engine:   $engine")
@@ -561,14 +573,29 @@ object Main {
         in match {
           case Nil => (model, dims.reverse, measures.reverse, showPlan, errs.reverse)
           case ("--plan" :: t) => loop(t, model, dims, measures, true, errs)
-          case ("-d" :: v :: t) if v.nonEmpty => loop(t, model, v :: dims, measures, showPlan, errs)
-          case ("--dim" :: v :: t) if v.nonEmpty => loop(t, model, v :: dims, measures, showPlan, errs)
-          case ("-m" :: v :: t) if v.nonEmpty => loop(t, model, dims, v :: measures, showPlan, errs)
-          case ("--measure" :: v :: t) if v.nonEmpty => loop(t, model, dims, v :: measures, showPlan, errs)
+          case ("-d" :: v :: t) if v.nonEmpty && !v.startsWith("-") => loop(t, model, v :: dims, measures, showPlan, errs)
+          case ("--dim" :: v :: t) if v.nonEmpty && !v.startsWith("-") => loop(t, model, v :: dims, measures, showPlan, errs)
+          case ("-m" :: v :: t) if v.nonEmpty && !v.startsWith("-") => loop(t, model, dims, v :: measures, showPlan, errs)
+          case ("--measure" :: v :: t) if v.nonEmpty && !v.startsWith("-") => loop(t, model, dims, v :: measures, showPlan, errs)
           case ("--dim" :: Nil) | ("-d" :: Nil) =>
             (model, dims.reverse, measures.reverse, showPlan, CliParseError.MissingFlagValue(flag = "--dim").message :: errs)
           case ("--measure" :: Nil) | ("-m" :: Nil) =>
             (model, dims.reverse, measures.reverse, showPlan, CliParseError.MissingFlagValue(flag = "--measure").message :: errs)
+          case ("-d" :: v :: _) =>
+            // Reaching here means v starts with '-' (the non-flag case
+            // matched earlier) — a flag-shaped value after -d is a
+            // likely missing/typo'd value, not a silent dim name.
+            (model, dims.reverse, measures.reverse, showPlan,
+              s"--dim requires a value: got '$v' (looks like a flag)" :: errs)
+          case ("--dim" :: v :: _) =>
+            (model, dims.reverse, measures.reverse, showPlan,
+              s"--dim requires a value: got '$v' (looks like a flag)" :: errs)
+          case ("-m" :: v :: _) =>
+            (model, dims.reverse, measures.reverse, showPlan,
+              s"--measure requires a value: got '$v' (looks like a flag)" :: errs)
+          case ("--measure" :: v :: _) =>
+            (model, dims.reverse, measures.reverse, showPlan,
+              s"--measure requires a value: got '$v' (looks like a flag)" :: errs)
           case (other :: t) =>
             loop(t, model, dims, measures, showPlan, s"unknown flag: $other" :: errs)
         }
@@ -1434,6 +1461,7 @@ object Main {
         |  describe <model>                show a model's dimensions / measures / filters / joins
         |  query <model> [opts]            run a semantic query, print a table
         |  explain <model> [opts]          show the semantic plan (no execution)
+        |  validate <model> [opts]         execute-free validation + plan preview (no run)
         |  audit-tail [opts]               show recent audit events (Restate, durable)
         |  inspect <key>                   read a context.meta key (generic meta-inspector)
         |  plugins                         list discovered plugins (registered flag per plugin)

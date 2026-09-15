@@ -866,12 +866,26 @@ class CliIntegrationSpec
       err should include("unknown dimension")
     }
 
-    it("--json passthrough prints the raw envelope, exit 0 even on 4xx") {
+    it("--json passthrough prints the raw envelope, exits 1 on 4xx") {
       respondWith("/QueryValidationService/validate", 400,
         """{"status":"error","error":{"code":"TERMINAL","message":"boom"}}""")
       val (exit, out, _) = runCli(args("validate", "flights", "--json"))
-      exit shouldBe 0
+      exit shouldBe 1
       out should include("\"status\":\"error\"")
+    }
+
+    it("--json passthrough exits 0 on a valid outcome") {
+      respondWith("/QueryValidationService/validate", 200, validOutcome)
+      val (exit, out, _) = runCli(args("validate", "flights", "--json"))
+      exit shouldBe 0
+      out should include("ok")
+      out should include("modelVersion")
+    }
+
+    it("flag-shaped value after -d is a parse error (not a silent dim)") {
+      val (exit, _, err) = runCli(args("validate", "flights", "-d", "-m", "cnt"))
+      exit shouldBe 2
+      err should include("--dim requires a value")
     }
 
     it("missing model: exit 2 with usage") {
@@ -890,6 +904,14 @@ class CliIntegrationSpec
       val (exit, _, err) = runCli(args("validate", "flights", "-d"))
       exit shouldBe 2
       err should include("--dim requires a value")
+    }
+
+    it("--plan with compiledSql null: prints the honest v1-semantics message") {
+      respondWith("/QueryValidationService/validate", 200,
+        """{"status":"ok","data":{"modelVersion":1,"rollupDecision":{"rewriteApplied":false,"reason":"none"},"engineSelection":"x","tablesTouched":["t"],"compiledSql":null},"warnings":[]}""")
+      val (exit, out, _) = runCli(args("validate", "flights", "--plan"))
+      exit shouldBe 0
+      out should include ("no compiled plan: deployment did not supply a compiledSqlFn")
     }
   }
 }
