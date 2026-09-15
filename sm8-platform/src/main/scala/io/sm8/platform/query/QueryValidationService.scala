@@ -371,7 +371,7 @@ object QueryValidationService {
     val validateRunner: HandlerRunner[QueryRequest, ValidationOutcome] =
       HandlerRunner.of(
         (_: dev.restate.sdk.Context, req: QueryRequest) =>
-          runValidation(model, req, declaredFields) match {
+          runValidation(model, req, declaredFields, compiledSqlFn) match {
             case Right(outcome) => outcome
             case Left(failure) =>
               // Typed validation failure → the wire error. Restate
