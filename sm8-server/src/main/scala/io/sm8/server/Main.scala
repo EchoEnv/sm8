@@ -693,7 +693,18 @@ object Main {
         val name = m.invoke(raw).asInstanceOf[String]
         val ts = raw.getClass.getDeclaredMethod("lastRefreshedAt").invoke(raw).asInstanceOf[String]
         val fin = raw.getClass.getDeclaredMethod("allFinal").invoke(raw).asInstanceOf[Boolean]
-        val cnt = raw.getClass.getDeclaredMethod("bucketCount").invoke(raw).asInstanceOf[Int]
+        // Reflective copy: the connector's bucketCount is now Long
+        // (multi-year retention overflows Int — see RollupFreshnessReader).
+        // asInstanceOf[Long] against a java.lang.Integer at runtime
+        // throws ClassCastException; if a future connector change ever
+        // narrows the type back, this still survives (Int is a subtype
+        // of Nothing? — no, hence the explicit match). The per-scrape
+        // NonFatal upstream catches the CCE if anything goes wrong.
+        val cntBox = raw.getClass.getDeclaredMethod("bucketCount").invoke(raw)
+        val cnt = cntBox match {
+          case n: java.lang.Number => n.longValue()
+          case other              => other.toString.toLong
+        }
         io.sm8.platform.query.RollupFreshnessSnapshot.Entry(
           rollupName = name, lastRefreshedAt = ts, allFinal = fin, bucketCount = cnt.toLong)
       }
