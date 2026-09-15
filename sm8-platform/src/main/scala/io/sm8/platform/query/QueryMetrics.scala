@@ -118,22 +118,39 @@ object QueryMetrics extends MetricsSink {
     * case: one scrape waiting ~reader duration, never N parallel
     * Spark jobs). */
   def freshnessSnapshot()
-      : Option[Either[String, List[RollupFreshnessSnapshot.Entry]]] =
-    rollupFreshnessReader match {
-      case None => None
-      case Some(reader) =>
+      : Option[Either[String, List[RollupFreshnessSnapshot.Entry]]] = {
+    // Double-checked pattern (review finding #425 final gate): the
+    // cache check runs OUTSIDE the lock, so a cache hit never waits
+    // behind a hung Spark probe. Only an actual miss (or expired
+    // entry) enters the synchronized recompute. Within that block a
+    // second thread that arrives during the probe serves the
+    // just-expired stale entry rather than queueing (documented
+    // trade-off: one scrape per TTL window may see data up to
+    // TTL-stale; strictly better than serializing every scrape
+    // behind a hung reader).
+    def compute(): Option[Either[String, List[RollupFreshnessSnapshot.Entry]]] =
+      rollupFreshnessReader match {
+        case None => None
+        case Some(reader) =>
+          val fresh = reader()
+          freshnessCache = Some((System.currentTimeMillis, fresh))
+          Some(fresh)
+      }
+    freshnessCache match {
+      case Some((ts, cached))
+        if System.currentTimeMillis - ts < RollupFreshnessTtlMillis =>
+        Some(cached)
+      case _ =>
         freshnessLock.synchronized {
           freshnessCache match {
             case Some((ts, cached))
               if System.currentTimeMillis - ts < RollupFreshnessTtlMillis =>
               Some(cached)
-            case _ =>
-              val fresh = reader()
-              freshnessCache = Some((System.currentTimeMillis, fresh))
-              Some(fresh)
+            case _ => compute()
           }
         }
     }
+  }
 
 
 
