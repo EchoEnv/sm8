@@ -224,5 +224,47 @@ class QueryValidationServiceSpec extends AnyFunSuite with Matchers {
     outcome.left.get.errors.head shouldBe a[EngineError.UnsupportedCapability]
     outcome.left.get.errors.head.asInstanceOf[EngineError.UnsupportedCapability]
       .capability shouldBe "schema-drift"
+  
+
+  }
+  test("D3 compiledSql: callback present + success → ValidationOutcome.compiledSql = Some(sql)") {
+    val m = coveredModel()
+    val stubSql = "SELECT event_date, region, SUM(amount) AS total FROM events GROUP BY event_date, region"
+    val outcome = QueryValidationService.runValidation(
+      m,
+      request("spec_events"),
+      declaredFields = Nil,
+      compiledSqlFn = Some((_: io.sm8.core.model.Model) => Right(stubSql))
+    )
+    outcome.isRight shouldBe true
+    outcome.right.get.compiledSql shouldBe Some(stubSql)
+  }
+
+  test("D3 compiledSql: callback absent → compiledSql = None (v1 fallback)") {
+    val m = coveredModel()
+    val outcome = QueryValidationService.runValidation(
+      m,
+      request("spec_events"),
+      declaredFields = Nil,
+      compiledSqlFn = None
+    )
+    outcome.isRight shouldBe true
+    outcome.right.get.compiledSql shouldBe None
+  }
+
+  test("D3 compiledSql: callback returns Left → outcome is still Right, compiledSql = None (compile failure is silent)") {
+    val m = coveredModel()
+    val outcome = QueryValidationService.runValidation(
+      m,
+      request("spec_events"),
+      declaredFields = Nil,
+      compiledSqlFn = Some((_: io.sm8.core.model.Model) => Left(io.sm8.core.engine.EngineError.ConnectionFailed(
+        engine = "spark-connector",
+        reason = "compile failed",
+        message = "no sql generated"
+      )))
+    )
+    outcome.isRight shouldBe true
+    outcome.right.get.compiledSql shouldBe None
   }
 }
