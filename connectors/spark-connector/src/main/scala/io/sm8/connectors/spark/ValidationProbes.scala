@@ -33,6 +33,13 @@ import io.sm8.core.schema.Field
   * lossy type strings. The platform freezes the returned list on
   * the validate service at boot; the service compares it against
   * the model's declared dimensions/measures to detect drift.
+  *
+  * Boot-freeze contract: the probe (and the compiled-SQL preview
+  * below) are bound to the MODEL LOADED AT WIRE() TIME, not to any
+  * live model registry. If the deployment hot-reloads a model,
+  * the probes keep answering for the original boot model until
+  * restart — matching the platform's own boot-time freeze of the
+  * captured `model` reference in HttpTransport.
   */
 object DeclaredSchemaProbe {
 
@@ -127,22 +134,37 @@ object CompiledSqlProbe {
         message    = "null-spark provider configuration has no session to compile against"
       ))
     } else {
-      // Mirror query()'s per-query session pattern: fresh clone,
-      // parent temp views copied, never stopped.
-      val qs = spark.newSession()
-      SparkEngineProvider.copyTempViews(spark, qs)
-      provider.compileModelToDataFrame(model, request, ctx, qs) match {
-        case Right(df) =>
-          Try(df.queryExecution.explainString(
-            org.apache.spark.sql.execution.ExplainMode.fromString("formatted")))
-            .toEither.left.map { case NonFatal(e) =>
-              EngineError.UnsupportedCapability(
-                engine     = "spark",
-                capability = "compiled-sql-preview",
-                message    = s"plan render failed: ${e.getClass.getSimpleName}: ${e.getMessage}"
-              )
-            }
-        case Left(err) => Left(err)
+      // Whole-body NonFatal: any throw in the session clone, the
+      // compile, or the plan render degrades to a typed Left. A
+      // preview gap is never a validation failure — and never a
+      // 500 (the platform maps Left to compiledSql = None).
+      // Covers e.g. spark.newSession() throwing on a stopped
+      // parent context.
+      try {
+        // Mirror query()'s per-query session pattern: fresh clone,
+        // parent temp views copied, never stopped.
+        val qs = spark.newSession()
+        SparkEngineProvider.copyTempViews(spark, qs)
+        provider.compileModelToDataFrame(model, request, ctx, qs) match {
+          case Right(df) =>
+            Try(df.queryExecution.explainString(
+              org.apache.spark.sql.execution.ExplainMode.fromString("formatted")))
+              .toEither.left.map { case NonFatal(e) =>
+                EngineError.UnsupportedCapability(
+                  engine     = "spark",
+                  capability = "compiled-sql-preview",
+                  message    = s"plan render failed: ${e.getClass.getSimpleName}: ${e.getMessage}"
+                )
+              }
+          case Left(err) => Left(err)
+        }
+      } catch {
+        case NonFatal(e) =>
+          Left(EngineError.UnsupportedCapability(
+            engine     = "spark",
+            capability = "compiled-sql-preview",
+            message    = s"preview compile failed: ${e.getClass.getSimpleName}: ${e.getMessage}"
+          ))
       }
     }
   }

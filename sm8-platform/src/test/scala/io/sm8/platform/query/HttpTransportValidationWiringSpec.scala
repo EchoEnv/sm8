@@ -117,6 +117,19 @@ class HttpTransportValidationWiringSpec extends AnyFunSuite with Matchers {
     // endpoint binds (same closure identity propagates).
     transport.compiledSqlFn.isDefined shouldBe true
     transport.endpoint should not be null
+
+    // End-to-end wiring pin: drive the closure through the same
+    // runValidation the bound definition uses and assert its OUTPUT
+    // shows up in the outcome. Catches a regression where the .bind
+    // line silently drops the compiledSqlFn argument (then
+    // compiledSql would be None despite the closure succeeding).
+    val probeFn: Model => Either[EngineError, String] =
+      _ => Right("wiring-pin-plan-42")
+    val outcome = QueryValidationService.runValidation(
+      makeModel, request("wiring-model"), Nil, Some(probeFn))
+    outcome.isRight shouldBe true
+    val Right(o) = outcome
+    o.compiledSql shouldBe Some("wiring-pin-plan-42")
   }
 
   test("compiledSqlFn=None → compiledSql stays absent (v1 fallback preserved)") {

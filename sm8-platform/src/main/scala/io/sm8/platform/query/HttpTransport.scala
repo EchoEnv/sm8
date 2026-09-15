@@ -180,13 +180,20 @@ final class HttpTransport(
     // — the service treats an empty declared set as no-drift-data,
     // matching the v1 path — so boot never fails because the catalog
     // probe failed; the deploy-time stderr warning is the signal.
+    // The NonFatal catch is defense-in-depth: the platform contract
+    // is "boot never fails because the probe failed", which must not
+    // depend on the connector remembering to catch its own throws.
     val liveSchema: List[io.sm8.core.schema.Field] =
       declaredSchemaFn match {
         case None => Nil
         case Some(probe) =>
-          probe() match {
-            case Right(fs) => fs
-            case Left(_)   => Nil
+          try
+            probe() match {
+              case Right(fs) => fs
+              case Left(_)   => Nil
+            }
+          catch {
+            case scala.util.control.NonFatal(_) => Nil
           }
       }
     val baseEndpoint = Endpoint.builder()

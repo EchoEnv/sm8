@@ -626,13 +626,28 @@ object Main {
               measures   = model.measures.map(_.name)
             )
             val previewCtx = io.sm8.core.engine.EngineContext.defaultContext
-            method.invoke(probeMod, provider, model, previewRequest, previewCtx) match {
-              case r: Either[io.sm8.core.engine.EngineError, String @unchecked] => r
-              case other =>
-                Left(io.sm8.core.engine.EngineError.UnsupportedCapability(
-                  engine = "spark", capability = "compiled-sql-preview",
-                  message = s"probe returned an unexpected shape: ${String.valueOf(other)}"))
-            }
+            // Defense-in-depth (same contract as the schema probe):
+            // a THROW from the reflective path must degrade to a
+            // typed Left, not escape as a 500 from the validate
+            // handler. The connector's own Try already catches its
+            // internal failures; this catches what reflection adds
+            // (InvocationTargetException, linkage errors, etc.).
+            val invoked: Either[io.sm8.core.engine.EngineError, String] =
+              try
+                method.invoke(probeMod, provider, model, previewRequest, previewCtx) match {
+                  case r: Either[io.sm8.core.engine.EngineError, String @unchecked] => r
+                  case other =>
+                    Left(io.sm8.core.engine.EngineError.UnsupportedCapability(
+                      engine = "spark", capability = "compiled-sql-preview",
+                      message = s"probe returned an unexpected shape: ${String.valueOf(other)}"))
+                }
+              catch {
+                case scala.util.control.NonFatal(e) =>
+                  Left(io.sm8.core.engine.EngineError.UnsupportedCapability(
+                    engine = "spark", capability = "compiled-sql-preview",
+                    message = s"reflective compile failed: ${e.getClass.getSimpleName}: ${e.getMessage}"))
+              }
+            invoked
           }
         } catch {
           case _: ClassNotFoundException | _: NoSuchMethodException =>

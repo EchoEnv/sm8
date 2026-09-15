@@ -98,6 +98,34 @@ class ValidationProbesSpec extends AnyFunSuite with Matchers with BeforeAndAfter
     plan.nonEmpty shouldBe true
   }
 
+  test("compile: expression-based measure (calculated) compiles or degrades typed — never throws") {
+    // A measure whose AggregateCall references a computed column
+    // still must go through the same Left-degradation contract.
+    val exprModel = model("events_probe").copy(
+      measures = List(io.sm8.core.model.Measure.aggregate(
+        "doubled",
+        io.sm8.core.rel.AggregateFn.Sum,
+        io.sm8.core.expr.Expr.FieldRef("amount"))))
+    val provider = new SparkEngineProvider(spark, SparkTypeBridge)
+    val req = QueryRequest(model = "probe_events", measures = Seq("doubled"))
+    noException should be thrownBy
+      CompiledSqlProbe.compile(provider, exprModel, req, EngineContext.defaultContext)
+  }
+
+  test("compile: stopped session (newSession throws) degrades typed, never throws") {
+    // A non-null parent session whose context is already shut down
+    // makes spark.newSession() throw IllegalStateException; the
+    // probe must surface that as a typed Left, not propagate.
+    val dead = SparkSession.builder().master("local[*]").appName("validation-probes-dead").getOrCreate()
+    val provider = new SparkEngineProvider(dead, SparkTypeBridge)
+    dead.stop()
+    val req = QueryRequest(model = "probe_events")
+    val res = CompiledSqlProbe.compile(provider, model("probe_events"), req, EngineContext.defaultContext)
+    res.isLeft shouldBe true
+    val Left(err) = res
+    err.message should include ("preview compile failed")
+  }
+
   test("compile: null-spark provider → typed Left (UnsupportedCapability)") {
     val provider = new SparkEngineProvider(null, SparkTypeBridge)
     val req = QueryRequest(model = "probe_events")
