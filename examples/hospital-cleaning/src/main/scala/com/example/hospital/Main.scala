@@ -283,7 +283,9 @@ object Refs {
     val dimensions: List[Dimension] = List(
       Dimension.field("encounter_id", "encounter_id"),
       Dimension.field("patient_id", "patient_id"),
-      Dimension.field("admission_date", "admission_date"),
+      // admission_date declares `Date` so it can serve as the ALOS
+      // rollup's grain axis (freshness gating is per time bucket).
+      Dimension.field("admission_date", "admission_date", io.sm8.core.schema.SealedDataType.Date),
       Dimension.field("discharge_date", "discharge_date"),
       Dimension.field("department", "department"),
       Dimension.field("primary_diagnosis", "primary_diagnosis"),
@@ -312,7 +314,7 @@ object Refs {
       CalculatedMeasure(
         name = "avg_los",
         expr = "total_los".measure / "encounter_count".measure))
-    // Declared pre-aggregation (ADR-0026): a department-level ALOS
+    // Declared pre-aggregation (ADR-0026): a daily-department ALOS
     // rollup. `RollupRewriter` (core) routes matching queries to
     // `encounters__alos_by_department` automatically — the rollup
     // is declared HERE, but materialized separately (see
@@ -321,11 +323,17 @@ object Refs {
     // measures (ModelValidator rejects calculated-measure refs:
     // a calculated expression cannot be re-aggregated from
     // pre-aggregated rows). `FinalRequired` freshness = the
-    // rollup serves only once its source window is final.
+    // rollup serves only once its source window is final; the
+    // validator demands BOTH a `timeGrain` ("day" is the unit
+    // the freshness verdict is per bucket of) AND a `grainDimension`
+    // naming the grain axis on the rollup's dimensions (here
+    // `admission_date`, declared `SealedDataType.Date` above).
     val alosRollup = RollupSpec(
       name = "alos_by_department",
-      dimensions = List("department"),
+      dimensions = List("department", "admission_date"),
       measures = List("total_los", "encounter_count"),
+      timeGrain = Some("day"),
+      grainDimension = Some("admission_date"),
       freshness = Some(FreshnessPolicy.FinalRequired))
     ModelBuilder()
       .withName("encounters")
@@ -379,9 +387,9 @@ object Refs {
     }
   }
 
-  /** Example-only MetricsSink: counts queries + rollup-routing
-    * outcomes (the same events the sm8-server /metrics exporter
-    * publishes; here printed as a local summary at the end).
+  /** Example-only MetricsSink: counts rollup-routing outcomes
+    * (the same events the sm8-server /metrics exporter publishes;
+    * here printed as a local summary at the end).
     *
     * Registered via the core `MetricsRegistry` seam so the
     * spark-connector's routing fold (which calls
@@ -389,17 +397,20 @@ object Refs {
     * `.recordRollupRefusal(...)`) flows its counters here without
     * the example importing any platform/server module.
     *
+    * Note: `recordInvocation` / `recordSuccess` fire from
+    * sm8-platform `QueryService.runQuery`, which the connector
+    * `provider.query` path bypasses (no Restate pipeline); the
+    * example therefore publishes only the rollup-routing counters.
+    * A real sm8-server deployment exposes both sets via
+    * `--metrics-port`.
+    *
     * Thread-safety: AtomicLong counters (same discipline as
     * sm8-platform QueryMetrics; invoked from the query call path).
     */
   private final class HospitalMetricsSink extends io.sm8.core.cache.MetricsSink {
-    private val invocations = new java.util.concurrent.atomic.AtomicLong(0)
-    private val successes   = new java.util.concurrent.atomic.AtomicLong(0)
     private val rollupHits  = new java.util.concurrent.atomic.AtomicLong(0)
     private val rollupMisses = new java.util.concurrent.atomic.AtomicLong(0)
 
-    override def recordInvocation(): Unit = { invocations.incrementAndGet(); () }
-    override def recordSuccess(): Unit = { successes.incrementAndGet(); () }
     override def recordRollupRewrite(): Unit = { rollupHits.incrementAndGet(); () }
     override def recordRollupRefusal(
         reason: io.sm8.core.rel.RollupRewriter.RollupRewriteRefusal): Unit = {
@@ -408,13 +419,7 @@ object Refs {
 
     /** One-shot Prometheus-style summary (printed at end of run). */
     def summary: String =
-      s"""# HELP hospital_query_invocations_total example queries issued
-         |# TYPE hospital_query_invocations_total counter
-         |hospital_query_invocations_total ${invocations.get}
-         |# HELP hospital_query_success_total example queries that returned a result
-         |# TYPE hospital_query_success_total counter
-         |hospital_query_success_total ${successes.get}
-         |# HELP hospital_rollup_rewrite_total queries routed to a rollup
+      s"""# HELP hospital_rollup_rewrite_total queries routed to a rollup
          |# TYPE hospital_rollup_rewrite_total counter
          |hospital_rollup_rewrite_total ${rollupHits.get}
          |# HELP hospital_rollup_refusal_total queries NOT routed (typed reason available on the sink API)
@@ -573,8 +578,24 @@ object Refs {
       Logger.info("=" * 70)
       Logger.info("STEP 5a: validate (execute-free) — model check + request cross-check + rollup preview")
       Logger.info("=" * 70)
+      // The rollup-shape request groups by (department +
+      // admission_date) with timeGrain=day, matching the rollup
+      // declaration. The validator still reports it stays on the
+      // base table (typed refusal `NonCanonicalShape`) because
+      // `QueryBuilder.build` aggregates on the FULL declared
+      // dimension set — useful output that the MCP validate_query
+      // tool surfaces to operators before any engine time is spent.
       validateDemo(
-        "good request: dept ALOS (Q2 shape) — expect rollup routing preview",
+        "rollup-shape request: dept ALOS by admission_date day — expect typed refusal on base table (QueryBuilder groups on all dims; the platform's compiled-SqlFn flow or a MaterializePolicy Persist can drive the routing-rewrite path)",
+        encountersModel,
+        QueryRequest(
+          model = encountersModel.name,
+          dimensions = Seq("department", "admission_date"),
+          measures = Seq("encounter_count"),
+          timeGrain = Some("day")),
+        planFor = m => QueryBuilder.build(m, new SparkSourceResolver(spark), EngineIdentity("local-spark", "1", "example")))
+      validateDemo(
+        "good request: dept ALOS (Q2 shape, NO grain) — stay on base table (typed refusal)",
         encountersModel,
         QueryRequest(
           model = encountersModel.name,
@@ -582,7 +603,7 @@ object Refs {
           measures = Seq("encounter_count")),
         planFor = m => QueryBuilder.build(m, new SparkSourceResolver(spark), EngineIdentity("local-spark", "1", "example")))
       validateDemo(
-        "typo'd request: measure 'enconuter_count' — expect stage=request failure",
+        "typo'd request: measure 'enconuter_count' — expect stage=request failure (typed unknown-measure ref)",
         encountersModel,
         QueryRequest(
           model = encountersModel.name,
