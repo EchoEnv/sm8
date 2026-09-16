@@ -270,7 +270,8 @@ object Main {
           // hex/colon (incl. ::1), and "localhost"; anything else is
           // likely a typo and is rejected with a hint.
           val looksLikeHost =
-            value == "localhost" || value.matches("[0-9a-fA-F.:]+")
+            value == "localhost" ||
+              (value.matches("[0-9a-fA-F.:]+") && value.exists(c => c == '.' || c == ':'))
           if (looksLikeHost) loop(rest, acc.copy(metricsHost = value))
           else Left(CliError.BadValue("--metrics-host", value,
             "expected an IP address (e.g. 127.0.0.1, 0.0.0.0, ::1) or 'localhost'"))

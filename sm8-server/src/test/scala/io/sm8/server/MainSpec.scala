@@ -94,6 +94,31 @@ class MainSpec extends AnyFunSuite with Matchers {
       Left(Main.CliError.MissingValue("--metrics-host"))
   }
 
+  test("parseArgs: --metrics-host rejects non-IP garbage at parse time (issue #429)") {
+    // No DNS lookup in the parse path — a typo'd hostname would
+    // hang. Shape-check rejects pure alphabetic input; the bind
+    // itself resolves hostnames if the user really means one.
+    val bad = List("banana", "abc123", "192.168.x.x", "hello-world")
+    bad.foreach { v =>
+      Main.parseArgs(List("--model", "m.yaml", "--metrics-host", v)) match {
+        case Left(e: Main.CliError.BadValue) =>
+          e.flag shouldBe "--metrics-host"
+          e.value shouldBe v
+        case other => fail(s"expected BadValue for '$v', got: $other")
+      }
+    }
+  }
+
+  test("parseArgs: --metrics-host accepts IPv4 / IPv6 / localhost literals") {
+    val ok = List("127.0.0.1", "0.0.0.0", "192.168.1.10", "::1", "::", "localhost")
+    ok.foreach { v =>
+      Main.parseArgs(List("--model", "m.yaml", "--metrics-host", v)) match {
+        case Right(a) => a.metricsHost shouldBe v
+        case Left(e)  => fail(s"expected parse-OK for '$v', got: ${e.reason}")
+      }
+    }
+  }
+
   test("parseArgs: missing --model flag value is a typed error") {
     Main.parseArgs(List("--model")) shouldBe Left(Main.CliError.MissingValue("--model"))
   }
