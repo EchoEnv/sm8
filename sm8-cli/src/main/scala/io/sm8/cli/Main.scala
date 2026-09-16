@@ -1519,16 +1519,19 @@ object Main {
       if (cfg.json) {
         // Machine mode: one JSON object keyed by rollup, plus the
         // aggregate counters. Same conventions as rollup-report --json
-        // (flat, sorted keys, no envelope).
+        // (flat, sorted keys, no envelope). Empty freshness (server up
+        // but no gauges) must still emit valid JSON — hence the
+        // no-leading-comma split.
         val rollups = freshness.keys.toList.sorted
           .map { name =>
             val age = ages.get(name).filter(_ != "NaN").getOrElse("null")
             s"""  "$name": {"fresh": ${freshness.getOrElse(name, "0").toLong}, """ +
               s""""age_seconds": $age, "buckets": ${buckets.getOrElse(name, "0").toLong}}"""
           }
-          .mkString(",\n")
-        println(s"""{$rollups,
-  "_aggregates": {"rewrites": $rewrites, "refusals": $refusals, "probe_failed": $probeFailed}}""")
+        val rollupsBlock =
+          if (rollups.isEmpty) ""
+          else rollups.mkString(",\n") + ",\n"
+        println(s"""{$rollupsBlock  "_aggregates": {"rewrites": $rewrites, "refusals": $refusals, "probe_failed": $probeFailed}}""")
         0
       } else {
         if (probeFailed) {

@@ -960,6 +960,17 @@ class CliIntegrationSpec
       out should include("no rollups are declared")
     }
 
+    it("--json with no freshness gauges: still valid JSON (M1 regression pin)") {
+      respondWith("/metrics", 200, "sm8_invocation_total 5\n")
+      val (exit, out, _) = runCli(args("rollup-status", "--metrics-url", baseUrl, "--json"))
+      exit shouldBe 0
+      out should include("\"_aggregates\"")
+      // The bug this pins: a leading comma ({,"_aggregates"...) is
+      // invalid JSON. Parse the output to prove validity.
+      scala.util.Try(new com.fasterxml.jackson.databind.ObjectMapper()
+        .readTree(out)).isSuccess shouldBe true
+    }
+
     it("metrics endpoint 404: exit 3 (transport — same as rollup-report)") {
       respondWith("/metrics", 404, "not found")
       val (exit, _, err) = runCli(args("rollup-status", "--metrics-url", baseUrl))
