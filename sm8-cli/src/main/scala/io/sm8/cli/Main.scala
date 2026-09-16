@@ -18,18 +18,78 @@ import scala.jdk.CollectionConverters._
   *
   * {{{
   *   sm8 list                            list available models
-  *   "sm8 describe <model>                show a model's dimensions/measures/filters
+  *   sm8 describe <model>                show a model's dimensions/measures/filters
   *   sm8 query <model> [options]         run a semantic query, print a table
   *   sm8 explain <model> [options]       show the semantic plan (no execution)
   *   sm8 validate <model> [options]      execute-free query validation + plan preview
   *   sm8 inspect <key>                   read a context.meta key (generic)
+  *   sm8 audit-tail [options]            show recent audit events (Restate, durable)
+  *   sm8 plugins                         list discovered plugins (registered flag per plugin)
+  *   sm8 hooks                           list registered hooks (stage, priority, origin, plugin)
+  *   sm8 rollup-refresh <model> [opts]   rebuild the model's rollup tables (--tier 0|1|2,
+  *                                       --scope b1,b2,... for tier-2 cascade scope)
+  *   sm8 rollup-report                   ranked rollup refusal report (reads the metrics endpoint)
+  *   sm8 rollup-status                   per-rollup freshness + refusal status (reads the metrics endpoint)
   * }}}
   *
   * == Global options ==
-  *
   *   --url <base>     server base URL (default $SDF_URL or http://localhost:8080)
   *   --json           print the raw JSON response instead of pretty output
   *   -h, --help       show usage
+  *
+  * == Plan surfaces: `explain` vs `validate --plan` ==
+  *
+  * Two verbs produce plan output; they answer DIFFERENT questions at
+  * DIFFERENT layers — pick by question, not preference:
+  *
+  *   sm8 explain <model> [opts]
+  *     The SEMANTIC plan: what the semantic layer would do with the
+  *     model — rollup routing, rewriting, grain decisions. Engine-
+  *     independent (computed before any engine is consulted).
+  *
+  *   sm8 validate <model> [opts] --plan
+  *     The ENGINE-COMPILED plan preview: what the engine would
+  *     compile this query to. Only present when the deployment
+  *     supplies a compiledSqlFn; absent means the deployment did
+  *     not wire one. Currently rendered as a Spark plan string
+  *     (the closure is engine-agnostic — a future engine would
+  *     render its own). Note: it is a PLAN string, not SQL text —
+  *     engines have no general DataFrame/RelOp-to-SQL emitter.
+  *
+  * Rule of thumb: "why did my rollup not get used?" → `explain`.
+  * "what SQL-ish thing will actually run?" → `validate --plan`.
+  *
+  * == `--json` machine-mode contract ==
+  *
+  * `--json` is a stable machine-consumption surface. Three rules:
+  *
+  *   1. Envelope verbs (list, describe, query, explain, validate,
+  *      inspect, hooks, plugins, rollup-refresh) print the server's
+  *      JSON envelope via Jackson canonicalization — semantic content
+  *      is identical to the wire response, but whitespace and key
+  *      ordering may differ from what the server literally sent.
+  *      Parse `{status, data, error, warnings}` at your leisure.
+  *   2. Metrics-backed verbs (rollup-status, rollup-report) emit FLAT
+  *      sorted-key JSON objects — no envelope (they read the metrics
+  *      endpoint, which has no envelope of its own). rollup-status
+  *      keys by rollup name and adds an `_aggregates` object with
+  *      fields `{rewrites, refusals, probe_failed}`; rollup-report is
+  *      a flat counter map.
+  *   3. audit-tail prints the Jackson-serialized Restate response (a
+  *      JSON array of audit rows — Restate's native shape, not the
+  *      {status,...} envelope the other verbs return). Same
+  *      canonicalization caveat as rule 1.
+  *
+  * Exit codes are IDENTICAL in --json and pretty modes (see the
+  * exit-codes table under --help): scripts branch on `$?` without
+  * parsing output, in either mode. Per-verb reachability varies
+  * (e.g. rollup-status reads /metrics and has no domain-failure
+  * path — its reachable codes are 0/2/3); each verb's own
+  * documentation states which codes it can produce.
+  *
+  * Freshness gauges surfaced by rollup-status --json originate from
+  * the server's /metrics endpoint (issue #425/#426); they require
+  * the spark-connector and a model with declared rollups.
   *
   * == Query/explain options ==
   *
