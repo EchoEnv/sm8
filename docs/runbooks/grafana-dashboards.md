@@ -62,11 +62,11 @@ both dashboards refresh every 30s.
 | Panel | Metric | Notes |
 |---|---|---|
 | Rollup freshness (stat grid) | `sm8_rollup_freshness` | 1 = every bucket `is_final`, 0 = some bucket still non-final |
-| Age since last refresh | `sm8_rollup_freshness_age_seconds` | NaN renders as "never refreshed" |
+| Age since last refresh | `sm8_rollup_freshness_age_seconds` | NaN renders as "never refreshed". Panel thresholds (yellow ≥ 1h, red ≥ 24h) are defaults, not an SLA — tune to your freshness expectation |
 | Freshness probe (stat) | `sm8_rollup_freshness_probe_failed` | 1 = the SERVER-side freshness reader failed — check server logs; distinct from per-rollup staleness |
 | Watermark bucket count | `sm8_rollup_freshness_buckets` | Growth = new buckets refreshed; drop = reset |
 | Rewrites / refusals | `sm8_rollup_rewrites_total`, `sm8_rollup_refusals_total`, `sm8_rollup_refusals_permanent_total` | Since startup |
-| Refusals by reason | `sm8_rollup_refusals_total{reason=~".+"}` | Reasons are the `RollupRewriteRefusal` case names (`noGroupSetMatch`, `grainMismatch`, `rollupSchemaStale`, `rollupBucketStale`, `cascadeSourceMissing`, …) |
+| Refusals by reason | `sm8_rollup_refusals_<reason>` family (matched by `__name__` prefix, prefix stripped in the legend) | Reasons are the `RollupRewriteRefusal` case names rendered as snake_case metric suffixes (`noGroupSetMatch` → `_noGroupSetMatch`, `rollupSchemaStale` → `_rollupSchemaStale`, …) |
 
 ### traffic-health.json
 
