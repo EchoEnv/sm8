@@ -61,17 +61,29 @@ object MetricsHttpRoute {
     * Per [[scala-perf-testing-mindset]]: ~70ns per scrape (6
     * `AtomicLong.get()` + 1 `Instant.now()` + 9 string concats).
     *
+    * The endpoint carries NO authentication (documented: auth on
+    * /metrics is out of scope for this layer). The bind host is
+    * therefore a SECURITY control: the default is loopback
+    * (127.0.0.1) so counters are not exposed to the network by
+    * accident; remote scraping requires an explicit
+    * `--metrics-host 0.0.0.0` (or a specific interface address) at
+    * the sm8-server CLI.
+    *
     * @param metricsPort  the port to bind (default 9090 per
     *                      `--metrics-port` CLI flag in sm8-server)
     * @param startedAt    the sm8 process start time (from
     *                      `MetricsService.startedAtInstant`); used
     *                      to compute `sm8_process_uptime_seconds`
     *                      and `sm8_process_start_time_seconds`
+    * @param host         the bind address (default "127.0.0.1";
+    *                      `0.0.0.0` exposes /metrics to the network —
+    *                      opt-in per `--metrics-host` CLI flag in
+    *                      sm8-server, issue #429)
     * @return the running `HttpServer` handle (for shutdown)
     */
-  def start(metricsPort: Int, startedAt: Instant): HttpServer = {
+  def start(metricsPort: Int, startedAt: Instant, host: String = "127.0.0.1"): HttpServer = {
     val server = vertx.createHttpServer(
-      new HttpServerOptions().setPort(metricsPort).setHost("0.0.0.0")
+      new HttpServerOptions().setPort(metricsPort).setHost(host)
     )
     server.requestHandler { req =>
       // Verification criterion #1 + #4 of the design record: only

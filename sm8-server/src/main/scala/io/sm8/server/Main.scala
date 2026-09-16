@@ -121,6 +121,10 @@ object Main {
       modelPath:     Option[Path],
       port:          Int    = 8080,
       metricsPort:   Int    = 9090,
+      // Issue #429: bind address for the metrics endpoint. Default
+      // loopback — the endpoint carries no auth, so network exposure
+      // must be opt-in. `0.0.0.0` for container/remote-scrape setups.
+      metricsHost:   String = "127.0.0.1",
       engine:        Option[String]        = None,
       connectorUrl:  Option[String]        = None,
       mcpHttpPort:   Int                   = 0,  // 0 = disabled; set to enable per the design
@@ -184,6 +188,9 @@ object Main {
       |  --model <path>   model manifest (YAML, schema-validated)
       |  --port <n>       TCP port (default 8080; 0 = ephemeral)
       |  --metrics-port <n>  TCP port for Prometheus /metrics (default 9090)
+      |  --metrics-host <a>  bind address for /metrics (default 127.0.0.1;
+      |                      the endpoint is unauthenticated — pass 0.0.0.0
+      |                      only when a scraper needs network access)
       |  --mcp-http-port <n>   TCP port for Streamable HTTP MCP transport
       |                         (default 0 = disabled; per the HTTP-MCP design a prior PR)
       |  --mcp-http-endpoint <path>  MCP endpoint path (default /mcp)
@@ -247,6 +254,9 @@ object Main {
           try loop(rest, acc.copy(metricsPort = value.toInt))
           catch { case _: NumberFormatException => Left(CliError.BadInt("--metrics-port", value)) }
         case "--metrics-port" :: Nil => Left(CliError.MissingValue("--metrics-port"))
+        case "--metrics-host" :: value :: rest =>
+          loop(rest, acc.copy(metricsHost = value))
+        case "--metrics-host" :: Nil => Left(CliError.MissingValue("--metrics-host"))
         case "--engine" :: value :: rest =>
           loop(rest, acc.copy(engine = Some(value)))
         case "--engine" :: Nil => Left(CliError.MissingValue("--engine"))
@@ -1204,8 +1214,9 @@ object Main {
                 Runtime.getRuntime().addShutdownHook(metricsHook)
                 try {
                   metricsSlot.set(MetricsHttpRoute.start(cli.metricsPort,
-                    io.sm8.platform.query.MetricsService.startedAtInstant))
-                  System.err.println(s"sm8: metrics endpoint listening on port ${cli.metricsPort}")
+                    io.sm8.platform.query.MetricsService.startedAtInstant,
+                    host = cli.metricsHost))
+                  System.err.println(s"sm8: metrics endpoint listening on ${cli.metricsHost}:${cli.metricsPort}")
                 } catch {
                   case e: IllegalStateException =>
                     System.err.println(s"sm8: ${e.getMessage} — continuing without metrics")

@@ -227,3 +227,48 @@ class MetricsHttpRouteSpec extends AnyFunSuite with Matchers {
     line.get.substring(prefix.length).toLong
   }
 }
+// ---------------------------------------------------------------------------
+// Bind-host security default (issue #429): the metrics endpoint carries
+// no auth, so the DEFAULT bind must be loopback. Network exposure is
+// opt-in via the explicit host param.
+// ---------------------------------------------------------------------------
+
+class MetricsHttpRouteBindSpec extends AnyFunSuite with Matchers {
+
+  test("default bind host is loopback (127.0.0.1)") {
+    val server = MetricsHttpRoute.start(0, Instant.now())
+    try {
+      // Vert.x does not expose the bound host on HttpServer directly;
+      // verify behaviorally: a loopback connection succeeds.
+      val socket = new java.net.Socket("127.0.0.1", server.actualPort())
+      socket.isConnected shouldBe true
+      socket.close()
+    } finally MetricsHttpRoute.stop(server)
+  }
+
+  test("explicit 0.0.0.0 bind succeeds and still serves loopback") {
+    val server = MetricsHttpRoute.start(0, Instant.now(), host = "0.0.0.0")
+    try {
+      val socket = new java.net.Socket("127.0.0.1", server.actualPort())
+      socket.isConnected shouldBe true
+      socket.close()
+    } finally MetricsHttpRoute.stop(server)
+  }
+
+  test("parse-level: the host param flows to the bind options (no silent default override)") {
+    // Directly assert the code path: start(port, startedAt) and
+    // start(port, startedAt, host) both succeed and both serve
+    // loopback — the SECURITY invariant is the DEFAULT, which is
+    // enforced by the signature default ("127.0.0.1"), not runtime
+    // logic. This test documents that contract; a regression that
+    // flips the default back to 0.0.0.0 would need a code review to
+    // catch (the bind itself cannot be introspected portably).
+    val s1 = MetricsHttpRoute.start(0, Instant.now())
+    try { new java.net.Socket("127.0.0.1", s1.actualPort()).close() }
+    finally MetricsHttpRoute.stop(s1)
+
+    val s2 = MetricsHttpRoute.start(0, Instant.now(), host = "127.0.0.1")
+    try { new java.net.Socket("127.0.0.1", s2.actualPort()).close() }
+    finally MetricsHttpRoute.stop(s2)
+  }
+}

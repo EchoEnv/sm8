@@ -72,8 +72,26 @@ class MainSpec extends AnyFunSuite with Matchers {
       case Right(a) =>
         a.port shouldBe 8080
         a.engine shouldBe None
+        // Issue #429: metrics bind defaults to loopback (security).
+        a.metricsHost shouldBe "127.0.0.1"
       case Left(e) => fail(s"unexpected: ${e.reason}")
     }
+  }
+
+  test("parseArgs: --metrics-host parses and is honored (issue #429)") {
+    Main.parseArgs(List("--model", "m.yaml", "--metrics-host", "0.0.0.0")) match {
+      case Right(a) => a.metricsHost shouldBe "0.0.0.0"
+      case Left(e)  => fail(s"unexpected parse error: ${e.reason}")
+    }
+    Main.parseArgs(List("--model", "m.yaml", "--metrics-host", "192.168.1.10")) match {
+      case Right(a) => a.metricsHost shouldBe "192.168.1.10"
+      case Left(e)  => fail(s"unexpected parse error: ${e.reason}")
+    }
+  }
+
+  test("parseArgs: --metrics-host without value is a typed error") {
+    Main.parseArgs(List("--model", "m.yaml", "--metrics-host")) shouldBe
+      Left(Main.CliError.MissingValue("--metrics-host"))
   }
 
   test("parseArgs: missing --model flag value is a typed error") {
