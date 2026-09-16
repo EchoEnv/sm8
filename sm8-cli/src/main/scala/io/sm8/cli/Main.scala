@@ -581,14 +581,18 @@ object Main {
       // order/limit/engine, plus --plan. Parse inline so the accepted-
       // flag surface is explicit (reusing QueryArgs.parse would accept
       // flags validate doesn't model).
+      // Error representation: typed CliParseError cases end-to-end
+      // (issue #434 — converges with QueryArgs). First-error-wins:
+      // the head of the accumulated list surfaces; the rest are
+      // usually cascading.
       @tailrec def loop(
           in: List[String],
           model: Option[String],
           dims: List[String],
           measures: List[String],
           showPlan: Boolean,
-          errs: List[String]
-      ): (Option[String], List[String], List[String], Boolean, List[String]) =
+          errs: List[CliParseError]
+      ): (Option[String], List[String], List[String], Boolean, List[CliParseError]) =
         in match {
           case Nil => (model, dims.reverse, measures.reverse, showPlan, errs.reverse)
           case ("--plan" :: t) => loop(t, model, dims, measures, true, errs)
@@ -597,26 +601,26 @@ object Main {
           case ("-m" :: v :: t) if v.nonEmpty && !v.startsWith("-") => loop(t, model, dims, v :: measures, showPlan, errs)
           case ("--measure" :: v :: t) if v.nonEmpty && !v.startsWith("-") => loop(t, model, dims, v :: measures, showPlan, errs)
           case ("--dim" :: Nil) | ("-d" :: Nil) =>
-            (model, dims.reverse, measures.reverse, showPlan, CliParseError.MissingFlagValue(flag = "--dim").message :: errs)
+            (model, dims.reverse, measures.reverse, showPlan, CliParseError.MissingFlagValue(flag = "--dim") :: errs)
           case ("--measure" :: Nil) | ("-m" :: Nil) =>
-            (model, dims.reverse, measures.reverse, showPlan, CliParseError.MissingFlagValue(flag = "--measure").message :: errs)
+            (model, dims.reverse, measures.reverse, showPlan, CliParseError.MissingFlagValue(flag = "--measure") :: errs)
           case ("-d" :: v :: _) =>
             // Reaching here means v starts with '-' (the non-flag case
             // matched earlier) — a flag-shaped value after -d is a
             // likely missing/typo'd value, not a silent dim name.
             (model, dims.reverse, measures.reverse, showPlan,
-              s"--dim requires a value: got '$v' (looks like a flag)" :: errs)
+              CliParseError.FlagValueLooksLikeFlag(flag = "--dim", value = v) :: errs)
           case ("--dim" :: v :: _) =>
             (model, dims.reverse, measures.reverse, showPlan,
-              s"--dim requires a value: got '$v' (looks like a flag)" :: errs)
+              CliParseError.FlagValueLooksLikeFlag(flag = "--dim", value = v) :: errs)
           case ("-m" :: v :: _) =>
             (model, dims.reverse, measures.reverse, showPlan,
-              s"--measure requires a value: got '$v' (looks like a flag)" :: errs)
+              CliParseError.FlagValueLooksLikeFlag(flag = "--measure", value = v) :: errs)
           case ("--measure" :: v :: _) =>
             (model, dims.reverse, measures.reverse, showPlan,
-              s"--measure requires a value: got '$v' (looks like a flag)" :: errs)
+              CliParseError.FlagValueLooksLikeFlag(flag = "--measure", value = v) :: errs)
           case (other :: t) =>
-            loop(t, model, dims, measures, showPlan, s"unknown flag: $other" :: errs)
+            loop(t, model, dims, measures, showPlan, CliParseError.UnknownFlag(flag = other) :: errs)
         }
       // Model is the first positional (same convention as QueryArgs:
       // flags and their values are consumed by the loop, so anything
@@ -632,7 +636,10 @@ object Main {
           Left(CliParseError.MissingModel(
             "Usage: sm8 validate <model> [--dim <d> ...] [--measure <m> ...] [--plan]"))
         case (_, h :: _) =>
-          Left(CliParseError.UnknownFlag(flag = h))
+          // First-error-wins (same as QueryArgs): the head of the
+          // accumulated list is the primary failure; the rest are
+          // usually cascading.
+          Left(h)
         case (Some(m), Nil) =>
           Right(ValidateArgs(m, dims, meas, showPlan))
       }
