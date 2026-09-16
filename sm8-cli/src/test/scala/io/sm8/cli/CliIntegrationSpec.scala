@@ -852,7 +852,7 @@ class CliIntegrationSpec
       out should include("Value:")
     }
 
-    it("returns exit 4 + stderr when the key is absent (present=false)") {
+    it("returns exit 1 + stderr when the key is absent (present=false)") {
       val key = "io.sm8.plugins.unknown:foo"
       respondWith(
         "/MetaInspectorService/getMeta",
@@ -860,7 +860,10 @@ class CliIntegrationSpec
         s"""{"status":"ok","data":{"key":"$key","present":false,"value":null}}"""
       )
       val (exit, _, err) = runCli(args("inspect", key))
-      exit shouldBe 4
+      // Issue #425 audit: key-not-present is a domain answer ("no"),
+      // not a separate exit code. Same exit 1 as any other domain
+      // failure (see cmdValidate + cmdQuery's errorPath path).
+      exit shouldBe 1
       err should include(key)
       err should include("not set")
     }
@@ -879,6 +882,155 @@ class CliIntegrationSpec
       val (exit, out, _) = runCli(args("inspect", key, "--json"))
       exit shouldBe 0
       out should include("\"present\":true")
+    }
+
+    it("--json with present:false exits 1 (contract holds in machine mode)") {
+      val key = "io.sm8.plugins.unknown:foo"
+      val body =
+        s"""{"status":"ok","data":{"key":"$key","present":false,"value":null}}"""
+      respondWith("/MetaInspectorService/getMeta", 200, body)
+      val (exit, out, _) = runCli(args("inspect", key, "--json"))
+      exit shouldBe 1
+      // Raw envelope still printed (scripts may want the body for
+      // context) but the exit code signals the domain failure.
+      out should include("\"present\":false")
+    }
+
+    it("key not present: exit 1 (domain failure — exit-code contract)") {
+      val key = "io.sm8.plugins.semanticgraph:graph-snapshot"
+      val body =
+        s"""{"status":"ok","data":{"key":"$key","present":false,"value":null}}"""
+      respondWith("/MetaInspectorService/getMeta", 200, body)
+      val (exit, _, err) = runCli(args("inspect", key))
+      exit shouldBe 1
+      err should include("not set on the most recent request")
+    }
+
+    it("key not present with --json: exit 1 (contract holds in machine mode)") {
+      val key = "io.sm8.plugins.semanticgraph:graph-snapshot"
+      val body =
+        s"""{"status":"ok","data":{"key":"$key","present":false,"value":null}}"""
+      respondWith("/MetaInspectorService/getMeta", 200, body)
+      val (exit, out, _) = runCli(args("inspect", key, "--json"))
+      exit shouldBe 1
+      out should include("\"present\":false")
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // rollup-status (per-rollup freshness + refusal view, issue #425 PR 2)
+  // -------------------------------------------------------------------------
+
+  describe("rollup-status") {
+    val metricsBody = """# HELP sm8_rollup_freshness 1 if every bucket row is_final=true
+        |# TYPE sm8_rollup_freshness gauge
+        |sm8_rollup_freshness{rollup="by_day"} 1
+        |sm8_rollup_freshness{rollup="by_month"} 0
+        |# HELP sm8_rollup_freshness_age_seconds Seconds since the most recent bucket refresh (NaN if never)
+        |# TYPE sm8_rollup_freshness_age_seconds gauge
+        |sm8_rollup_freshness_age_seconds{rollup="by_day"} 1800
+        |sm8_rollup_freshness_age_seconds{rollup="by_month"} NaN
+        |# HELP sm8_rollup_freshness_buckets Number of bucket rows in the watermark table
+        |# TYPE sm8_rollup_freshness_buckets gauge
+        |sm8_rollup_freshness_buckets{rollup="by_day"} 24
+        |sm8_rollup_freshness_buckets{rollup="by_month"} 3
+        |# HELP sm8_rollup_rewrites_total Total rewrites
+        |# TYPE sm8_rollup_rewrites_total counter
+        |sm8_rollup_rewrites_total 12
+        |# HELP sm8_rollup_refusals_total Total refusals
+        |# TYPE sm8_rollup_refusals_total counter
+        |sm8_rollup_refusals_total 4""".stripMargin
+
+    it("renders the per-rollup FRESH/STALE table") {
+      respondWith("/metrics", 200, metricsBody)
+      val (exit, out, err) = runCli(args("rollup-status", "--metrics-url", baseUrl))
+      exit shouldBe 0
+      err shouldBe ""
+      out should include("by_day")
+      out should include("FRESH")
+      out should include("by_month")
+      out should include("STALE")
+      out should include("1800s")
+      out should include("never")
+      out should include("24")
+    }
+
+    it("--json emits machine-readable keyed output") {
+      respondWith("/metrics", 200, metricsBody)
+      val (exit, out, _) = runCli(args("rollup-status", "--metrics-url", baseUrl, "--json"))
+      exit shouldBe 0
+      out should include("\"by_day\": {\"fresh\": 1")
+      out should include("\"age_seconds\": 1800")
+      out should include("\"age_seconds\": null")  // NaN → null in machine mode
+      out should include("\"_aggregates\"")
+    }
+
+    it("probe failure surfaces a stderr warning") {
+      respondWith("/metrics", 200,
+        """sm8_rollup_freshness_probe_failed 1
+          |sm8_rollup_rewrites_total 0""".stripMargin)
+      val (exit, out, err) = runCli(args("rollup-status", "--metrics-url", baseUrl))
+      exit shouldBe 0
+      err should include("freshness probe failed")
+    }
+
+    it("no freshness gauges at all: honest empty state, exit 0") {
+      respondWith("/metrics", 200, "sm8_invocation_total 5\n")
+      val (exit, out, _) = runCli(args("rollup-status", "--metrics-url", baseUrl))
+      exit shouldBe 0
+      out should include("No rollup freshness data")
+      out should include("no rollups are declared")
+    }
+
+    it("--json with no freshness gauges: still valid JSON (M1 regression pin)") {
+      respondWith("/metrics", 200, "sm8_invocation_total 5\n")
+      val (exit, out, _) = runCli(args("rollup-status", "--metrics-url", baseUrl, "--json"))
+      exit shouldBe 0
+      out should include("\"_aggregates\"")
+      // The bug this pins: a leading comma ({,"_aggregates"...) is
+      // invalid JSON. Parse the output to prove validity.
+      scala.util.Try(new com.fasterxml.jackson.databind.ObjectMapper()
+        .readTree(out)).isSuccess shouldBe true
+    }
+
+    it("metrics endpoint 404: exit 3 (transport — same as rollup-report)") {
+      respondWith("/metrics", 404, "not found")
+      val (exit, _, err) = runCli(args("rollup-status", "--metrics-url", baseUrl))
+      exit shouldBe 3
+      err should include("returned 404")
+    }
+
+    it("metrics endpoint 500: exit 3") {
+      respondWith("/metrics", 500, "boom")
+      val (exit, _, _) = runCli(args("rollup-status", "--metrics-url", baseUrl))
+      exit shouldBe 3
+    }
+
+    it("extra positional: exit 2 (usage)") {
+      val (exit, _, err) = runCli(args("rollup-status", "--metrics-url", baseUrl, "flights"))
+      exit shouldBe 2
+      err should include("unexpected arguments")
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // exit-code contract audit (issue #425): the two misclassified sites
+  // -------------------------------------------------------------------------
+
+  describe("exit-code contract") {
+
+    it("rollup-report: metrics 404 → exit 3 (transport), not 1") {
+      respondWith("/metrics", 404, "not found")
+      val (exit, _, err) = runCli(args("rollup-report", "--metrics-url", baseUrl))
+      exit shouldBe 3
+      err should include("returned 404")
+    }
+
+    it("rollup-report: metrics 200 with no rollup counters → exit 0 + warning") {
+      respondWith("/metrics", 200, "sm8_invocation_total 5\n")
+      val (exit, out, err) = runCli(args("rollup-report", "--metrics-url", baseUrl))
+      exit shouldBe 0
+      err should include("no recognizable sm8_rollup_* counters")
     }
   }
 

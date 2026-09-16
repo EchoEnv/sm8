@@ -69,6 +69,7 @@ object Main {
     case ("hooks" :: rest)      => withGlobalConfig(rest) { (cfg, rem) => safeRun(cmdHooks(cfg)) }
     case ("rollup-refresh" :: rest) => withGlobalConfig(rest) { (cfg, rem) => safeRun(cmdRollupRefresh(cfg, rem)) }
     case ("rollup-report" :: rest)  => withGlobalConfig(rest) { (cfg, rem) => safeRun(cmdRollupReport(cfg, rem)) }
+    case ("rollup-status" :: rest)  => withGlobalConfig(rest) { (cfg, rem) => safeRun(cmdRollupStatus(cfg, rem)) }
     case other :: _ =>
       System.err.println(s"sm8: unknown command '$other'. Run 'sm8 --help'."); 2
   }
@@ -334,15 +335,24 @@ object Main {
     case key :: Nil =>
       val body = s"""{"key":${mapper.writeValueAsString(key)}}"""
       val resp = Client.postJson(cfg, "/MetaInspectorService/getMeta", body)
-      if (cfg.json) { println(resp.body); return 0 }
       val root = resp.parseJson
       if (root.errorPath(cfg)) return 1
       val data = root.dataPath
       val present = data.field("present").booleanValue()
+      // The present check runs BEFORE the --json early-return so the
+      // contract holds in machine mode too (previously `inspect foo
+      // --json` with present:false exited 0 — scripts branching on
+      // $? saw success).
       if (!present) {
-        System.err.println(s"sm8 inspect: key '$key' not set on the most recent request")
-        return 4
+        // Domain failure: the server answered, the answer is "not
+        // present". Per the exit-code contract (see printUsage),
+        // that is 1 — the undocumented exit-4 previously returned
+        // here broke the 0/1/2/3 scheme.
+        if (cfg.json) println(resp.body)
+        else System.err.println(s"sm8 inspect: key '$key' not set on the most recent request")
+        return 1
       }
+      if (cfg.json) { println(resp.body); return 0 }
       val value = data.field("value")
       println(s"Key:   $key")
       println(s"Value: ${mapper.writeValueAsString(value)}")
@@ -1447,8 +1457,12 @@ object Main {
       val resp = Client.get(cfg, "/metrics", metricsBase)
       if (resp.status / 100 == 5) return 3
       if (resp.status != 200) {
+        // Non-200 non-5xx from the metrics endpoint (404, 401, 403):
+        // a reachability/routing failure, not a domain answer. Per the
+        // exit-code contract (see printUsage), that is 3 — transport
+        // — not 1.
         System.err.println(s"sm8 rollup-report: metrics endpoint returned ${resp.status} (expected 200). Is the server running with --metrics-port?")
-        return 1
+        return 3
       }
       val counters = parsePrometheusCounters(resp.body)
       val rollupCounters = counters.filter(_._1.startsWith(RollupMetricPrefix))
@@ -1473,6 +1487,145 @@ object Main {
       System.err.println("sm8 rollup-report: unexpected arguments (global options only). Usage: sm8 rollup-report [--metrics-url <base>]"); 2
   }
 
+  /** `sm8 rollup-status` — per-rollup freshness + refusal status in
+    * one view. Answers the operator's daily question ("can I trust
+    * this rollup right now?") that `rollup-refresh` (make fresh) and
+    * `rollup-report` (what went wrong historically) do not.
+    *
+    * Data source: the /metrics gauges — the freshness family
+    * (the sm8_rollup_freshness / _age_seconds /
+    * _buckets, labeled per rollup) plus the aggregate refusal
+    * counters. Read-only client-side render; no server change.
+    *
+    * Exit codes (see the contract in [[printUsage]]): 0 read OK;
+    * 3 metrics endpoint unreachable; 2 usage error. Domain
+    * failure does not apply — a stale rollup is a successful
+    * status read.
+    */
+  private def cmdRollupStatus(cfg: Config, args: List[String]): Int = args match {
+    case Nil =>
+      val metricsBase = cfg.metricsUrl.getOrElse("http://localhost:9090")
+      val resp = Client.get(cfg, "/metrics", metricsBase)
+      if (resp.status / 100 == 5) return 3
+      if (resp.status != 200) {
+        // Same transport classification as rollup-report (contract).
+        System.err.println(s"sm8 rollup-status: metrics endpoint returned ${resp.status} (expected 200). Is the server running with --metrics-port?")
+        return 3
+      }
+      val counters = parsePrometheusCounters(resp.body)
+      val freshness = parsePrometheusLabeled(resp.body, "sm8_rollup_freshness")
+      val ages      = parsePrometheusLabeled(resp.body, "sm8_rollup_freshness_age_seconds")
+      val buckets   = parsePrometheusLabeled(resp.body, "sm8_rollup_freshness_buckets")
+      val probeFailed = counters.contains("sm8_rollup_freshness_probe_failed")
+      val rewrites  = counters.getOrElse("sm8_rollup_rewrites_total", 0L)
+      val refusals  = counters.getOrElse("sm8_rollup_refusals_total", 0L)
+
+      if (cfg.json) {
+        // Machine mode: one JSON object keyed by rollup, plus the
+        // aggregate counters. Same conventions as rollup-report --json
+        // (flat, sorted keys, no envelope). Empty freshness (server up
+        // but no gauges) must still emit valid JSON — hence the
+        // no-leading-comma split.
+        val rollups = freshness.keys.toList.sorted
+          .map { name =>
+            val age = ages.get(name).filter(_ != "NaN").getOrElse("null")
+            s"""  "$name": {"fresh": ${safeLong(freshness.get(name))}, """ +
+              s""""age_seconds": $age, "buckets": ${safeLong(buckets.get(name))}}"""
+          }
+        val rollupsBlock =
+          if (rollups.isEmpty) ""
+          else rollups.mkString(",\n") + ",\n"
+        println(s"""{$rollupsBlock  "_aggregates": {"rewrites": $rewrites, "refusals": $refusals, "probe_failed": $probeFailed}}""")
+        0
+      } else {
+        if (probeFailed) {
+          System.err.println("sm8 rollup-status: WARNING — the freshness probe failed on the server (see server logs). Freshness data may be missing or stale.")
+        }
+        if (freshness.isEmpty) {
+          println("No rollup freshness data.")
+          if (counters.nonEmpty && !resp.body.trim.isEmpty) {
+            println("(The server is up but reports no freshness gauges — the deployment has no spark-connector, or no rollups are declared.)")
+          }
+          0
+        } else {
+          println(f"rollups: ${freshness.size}  rewrites: $rewrites  refusals: $refusals")
+          println()
+          // Table: rollup | fresh? | age | buckets, sorted by name.
+          // `parsePrometheusLabeled` returns Map[String, String] (the
+          // value is raw on the wire so `NaN` survives); freshness
+          // and buckets are Long on the wire so toLong is safe. Ages
+          // keep the raw string for the "never" NaN handling below.
+          val rows = freshness.keys.toList.sorted.map { name =>
+            // NaN-tolerant: Prometheus allows NaN samples on any
+            // gauge; a NaN freshness/buckets sample reads as "not
+            // fresh / unknown" rather than crashing the verb (same
+            // policy as the ages map's NaN -> "never" above).
+            val fresh = safeLong(freshness.get(name)) == 1L
+            val ageS  = ages.get(name).getOrElse("NaN") match {
+              case "NaN" => "never"
+              case other => other + "s"
+            }
+            val mark = if (fresh) "FRESH" else "STALE"
+            (name, mark, ageS, safeLong(buckets.get(name)).toString)
+          }
+          println(Table.render(List("rollup", "status", "age", "buckets"),
+            rows.map { case (n, m, a, b) => List(n, m, a, b) }))
+          0
+        }
+      }
+    case _ =>
+      System.err.println("sm8 rollup-status: unexpected arguments (global options only). Usage: sm8 rollup-status [--metrics-url <base>]"); 2
+  }
+
+  /** Parse a LABELED Prometheus gauge family into (labelValue, value).
+    *
+    * Handles the freshness family's wire shape:
+    *   sm8_rollup_freshness{rollup="by_day"} 1
+    *
+    * Unlike [[parsePrometheusCounters]] (scalar names only), this
+    * extracts the `rollup` label and tolerates non-integer values
+    * (NaN for never-refreshed, decimals for age) by keeping the raw
+    * string.
+    *
+    * @param body    the raw /metrics response body
+    * @param metric  the metric family name (no labels)
+    * @return        (rollup label value -> raw value string), last-wins
+    */
+  /** NaN-safe Long extraction for Prometheus gauge values: NaN and
+    * unparseable strings read as 0 (the freshness semantics of
+    * "unknown" — the gauge row still renders, marked not-fresh) and
+    * well-formed integers pass through. Prom spec allows NaN on any
+    * gauge; without this a single NaN sample would crash the verb
+    * with NumberFormatException. */
+  private[cli] def safeLong(v: Option[String]): Long = v match {
+    case Some(s) =>
+      try s.toLong
+      catch { case _: NumberFormatException => 0L }
+    case None => 0L
+  }
+
+  private[cli] def parsePrometheusLabeled(body: String, metric: String): Map[String, String] =
+    body.linesIterator.foldLeft(Map.empty[String, String]) { (acc, line) =>
+      val trimmed = line.trim
+      if (trimmed.isEmpty || trimmed.startsWith("#")) acc
+      else {
+        // Shape: <metric>{rollup="<name>"} <value>
+        val prefix = metric + "{"
+        if (!trimmed.startsWith(prefix)) acc
+        else {
+          val close = trimmed.indexOf('}')
+          val space = trimmed.lastIndexOf(' ')
+          if (close < 0 || space < close || space + 1 >= trimmed.length) acc
+          else {
+            val label = trimmed.substring(prefix.length, close)
+              .stripPrefix("rollup=\"").stripSuffix("\"")
+            if (label.isEmpty) acc
+            else acc + (label -> trimmed.substring(space + 1))
+          }
+        }
+      }
+    }
+
   private def printUsage(): Unit = {
     println(
       """sm8 — a command-line client for SM8 REST + Restate APIs.
@@ -1491,6 +1644,13 @@ object Main {
         |  hooks                           list registered hooks (stage, priority, origin, plugin)
         |  rollup-refresh <model>          rebuild the model's rollup tables (Ticket 6 trigger)
         |  rollup-report                   ranked rollup refusal report (reads the metrics endpoint)
+        |  rollup-status                   per-rollup freshness + refusal status (reads the metrics endpoint)
+        |
+        |exit codes (all verbs):
+        |  0  success
+        |  1  domain failure — the server answered "no" (validation failed, refresh had failures, 4xx error envelope)
+        |  2  CLI usage error — bad flags, missing model, unknown verb (nothing was sent)
+        |  3  transport failure — could not reach the server / endpoint
         |
         |query/explain options:
         |  -d, --dim <name>                dimension (repeatable)

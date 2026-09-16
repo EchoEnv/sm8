@@ -186,10 +186,14 @@ class RollupReportSpec
       out should not include ("sm8_invocation_total")
     }
 
-    it("exits 1 with a clear stderr line on a non-200 metrics response") {
+    it("exits 3 with a clear stderr line on a non-200 metrics response") {
       responses("/metrics") = (404, "not found")
       val (exit, _, err) = runCli(reportArgs())
-      exit shouldBe 1
+      // Issue #425 exit-code contract: a metrics-endpoint failure is
+      // transport (3), not domain (1). The server answered 404 — the
+      // endpoint isn't reachable/routed, nothing about the rollups
+      // themselves was answered.
+      exit shouldBe 3
       err should include ("metrics endpoint returned 404")
     }
 
