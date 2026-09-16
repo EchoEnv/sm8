@@ -1,17 +1,19 @@
 package com.example.hospital
 
-import io.sm8.core.model.{TypedDimension, TypedMeasure}
+import io.sm8.core.model.{ModelValidator, TypedDimension, TypedMeasure}
 import io.sm8.core.engine.{
-  EngineContext, EngineError, EngineProvider, QueryRequest, PortableQueryResult,
-  ResultValue
+  EngineContext, EngineError, EngineIdentity, EngineProvider, QueryRequest,
+  PortableQueryResult, ResultValue
 }
 import io.sm8.core.expr.{Expr, LiteralValue}
 import io.sm8.core.expr.ExprSugar._
 import io.sm8.core.model.{
-  CalculatedMeasure, Dimension, FilterSpec, JoinSpec, MaterializePolicy, CachePolicy,
-  AuditPolicy, Measure, Model, ModelPolicyDefaults, ModelStatus, SourceRef
+  CalculatedMeasure, Dimension, FilterSpec, FreshnessPolicy, JoinSpec,
+  MaterializePolicy, CachePolicy, AuditPolicy, Measure, Model, ModelBuilder,
+  ModelPolicyDefaults, ModelStatus, RollupSpec, SourceRef
 }
-import io.sm8.core.query.QueryBuilderDsl
+import io.sm8.core.query.{QueryBuilder, QueryBuilderDsl}
+import io.sm8.connectors.spark.SparkSourceResolver
 import io.sm8.core.model.TypedMeasureBridge._
 import io.sm8.core.rel.{
   AggregateCall, AggregateFn, SortDirection, TypedAggregateCall,
@@ -200,9 +202,11 @@ object Refs {
 
   /** Build the patients `Model` (no DataFrame arg — temp view registered at call site).
     *
-    * Uses `Model.of(.)` directly (the canonical pattern in the
-    * existing sm8 tests like `SparkEngineProviderProductionWiringSpec`).
-    * The model YAML in `models/patients.yml` documents the
+    * Uses the `ModelBuilder` fluent DSL (the modern sm8 construction
+    * pattern): each `with*` method returns a new immutable builder;
+    * `build` returns the validated `Either[ModelValidationError, Model]`
+    * (same smart-constructor contract as `Model.of`, which runs under
+    * the hood). The model YAML in `models/patients.yml` documents the
     * target shape for the future sm8 ModelLoader YAML subset.
     */
   private def buildPatientsModel(): Model = {
@@ -219,14 +223,15 @@ object Refs {
     // (For multi-aggregate measures, construct AggregateCall directly.)
     val measures: List[Measure] = List(
       Measure.aggregate("patient_count", "patient_id".countStar))
-    Model.of(
-      name = "patients",
-      version = 1,
-      source = SourceRef.ByName(table = "patients_clean_csv"),
-      status = ModelStatus.Draft,
-      defaultPolicies = defaultPolicies,
-      dimensions = dimensions,
-      measures = measures) match {
+    ModelBuilder()
+      .withName("patients")
+      .withVersion(1)
+      .withSource(SourceRef.ByName(table = "patients_clean_csv"))
+      .withStatus(ModelStatus.Draft)
+      .withPolicies(defaultPolicies)
+      .withDimensions(dimensions)
+      .withMeasures(measures)
+      .build match {
       case Right(m) => m
       case Left(err) =>
         throw new IllegalStateException(
@@ -307,20 +312,164 @@ object Refs {
       CalculatedMeasure(
         name = "avg_los",
         expr = "total_los".measure / "encounter_count".measure))
-    Model.of(
-      name = "encounters",
-      version = 1,
-      source = SourceRef.ByName(table = "encounters_clean_csv"),
-      status = ModelStatus.Draft,
-      defaultPolicies = defaultPolicies,
-      dimensions = dimensions,
-      measures = measures,
-      calculatedMeasures = calculatedMeasures) match {
+    // Declared pre-aggregation (ADR-0026): a department-level ALOS
+    // rollup. `RollupRewriter` (core) routes matching queries to
+    // `encounters__alos_by_department` automatically — the rollup
+    // is declared HERE, but materialized separately (see
+    // `materializeRollups` in main) so declaration and
+    // materialization stay decoupled. Measures must be BASE
+    // measures (ModelValidator rejects calculated-measure refs:
+    // a calculated expression cannot be re-aggregated from
+    // pre-aggregated rows). `FinalRequired` freshness = the
+    // rollup serves only once its source window is final.
+    val alosRollup = RollupSpec(
+      name = "alos_by_department",
+      dimensions = List("department"),
+      measures = List("total_los", "encounter_count"),
+      freshness = Some(FreshnessPolicy.FinalRequired))
+    ModelBuilder()
+      .withName("encounters")
+      .withVersion(1)
+      .withSource(SourceRef.ByName(table = "encounters_clean_csv"))
+      .withStatus(ModelStatus.Draft)
+      .withPolicies(defaultPolicies)
+      .withDimensions(dimensions)
+      .withMeasures(measures)
+      .withCalculatedMeasures(calculatedMeasures)
+      .withRollup(alosRollup)
+      .build match {
       case Right(m) => m
       case Left(err) =>
         throw new IllegalStateException(
           s"sm8: failed to build encounters Model: $err"
         )
+    }
+  }
+
+  /** Materialize every declared rollup on the model (ADR-0026).
+    *
+    * Declaration (on the Model via `ModelBuilder.withRollup`) is
+    * separate from materialization (physical table build): this
+    * walks `model.rollups` and calls the spark-connector's
+    * `RollupMaterializer` for each. Lazy mode (temp view) keeps the
+    * example self-contained; the sm8-server `POST /rollup/refresh`
+    * path or `eager = true` produces durable tables.
+    *
+    * Prints the routing-preview summary: after materialization,
+    * matching queries are re-pointed at `encounters__alos_by_department`
+    * by `RollupRewriter` inside `provider.query`.
+    */
+  private def materializeRollups(
+      spark: org.apache.spark.sql.SparkSession,
+      model: Model): Unit = {
+    if (model.rollups.isEmpty) {
+      Logger.info("  rollups: none declared")
+      ()
+    } else {
+      model.rollups.foreach { spec =>
+        io.sm8.connectors.spark.RollupMaterializer.materialize(
+          spark, model, spec, eager = false) match {
+          case Right(table) =>
+            Logger.info(s"  rollup '${spec.name}' materialized as: $table")
+          case Left(err) =>
+            throw new IllegalStateException(
+              s"sm8: rollup '${spec.name}' materialization failed: $err")
+        }
+      }
+    }
+  }
+
+  /** Example-only MetricsSink: counts queries + rollup-routing
+    * outcomes (the same events the sm8-server /metrics exporter
+    * publishes; here printed as a local summary at the end).
+    *
+    * Registered via the core `MetricsRegistry` seam so the
+    * spark-connector's routing fold (which calls
+    * `MetricsRegistry.sink().recordRollupRewrite()` /
+    * `.recordRollupRefusal(...)`) flows its counters here without
+    * the example importing any platform/server module.
+    *
+    * Thread-safety: AtomicLong counters (same discipline as
+    * sm8-platform QueryMetrics; invoked from the query call path).
+    */
+  private final class HospitalMetricsSink extends io.sm8.core.cache.MetricsSink {
+    private val invocations = new java.util.concurrent.atomic.AtomicLong(0)
+    private val successes   = new java.util.concurrent.atomic.AtomicLong(0)
+    private val rollupHits  = new java.util.concurrent.atomic.AtomicLong(0)
+    private val rollupMisses = new java.util.concurrent.atomic.AtomicLong(0)
+
+    override def recordInvocation(): Unit = { invocations.incrementAndGet(); () }
+    override def recordSuccess(): Unit = { successes.incrementAndGet(); () }
+    override def recordRollupRewrite(): Unit = { rollupHits.incrementAndGet(); () }
+    override def recordRollupRefusal(
+        reason: io.sm8.core.rel.RollupRewriter.RollupRewriteRefusal): Unit = {
+      rollupMisses.incrementAndGet(); ()
+    }
+
+    /** One-shot Prometheus-style summary (printed at end of run). */
+    def summary: String =
+      s"""# HELP hospital_query_invocations_total example queries issued
+         |# TYPE hospital_query_invocations_total counter
+         |hospital_query_invocations_total ${invocations.get}
+         |# HELP hospital_query_success_total example queries that returned a result
+         |# TYPE hospital_query_success_total counter
+         |hospital_query_success_total ${successes.get}
+         |# HELP hospital_rollup_rewrite_total queries routed to a rollup
+         |# TYPE hospital_rollup_rewrite_total counter
+         |hospital_rollup_rewrite_total ${rollupHits.get}
+         |# HELP hospital_rollup_refusal_total queries NOT routed (typed reason available on the sink API)
+         |# TYPE hospital_rollup_refusal_total counter
+         |hospital_rollup_refusal_total ${rollupMisses.get}""".stripMargin
+  }
+
+  /** Validate-before-execute demo (the core of what `sm8 validate`
+    * and the MCP `validate_query` tool do, minus the HTTP/Restate
+    * plumbing: those live in sm8-platform / sm8-server, which this
+    * example deliberately does not depend on).
+    *
+    * Runs the same pure core checks the platform's
+    * QueryValidationService composes — model integrity
+    * (`ModelValidator.validate`), request-vs-model cross-check, and
+    * the rollup routing preview (`RollupRewriter.rewrite` on the
+    * built plan) — printing a per-stage report. Execute-free: no
+    * `provider.query` call, no DataFrame scan.
+    */
+  private def validateDemo(
+      label: String,
+      model: Model,
+      request: QueryRequest,
+      planFor: Model => Either[EngineError, io.sm8.core.rel.RelOp]): Unit = {
+    Logger.info(s"--- validate: $label ---")
+    // Stage 0: model integrity.
+    ModelValidator.validate(model) match {
+      case Left(errs) =>
+        Logger.info(s"  [model] FAILED: $errs")
+        return
+      case Right(_) =>
+        Logger.info("  [model] ok")
+    }
+    // Stage 1: request-vs-model cross-check (unknown refs).
+    val declaredDims = model.dimensions.map(_.name).toSet
+    val declaredMeas = (model.measures.map(_.name) ++ model.calculatedMeasures.map(_.name)).toSet
+    val unknown = request.dimensions.filterNot(declaredDims).map("dimension:" + _) ++
+      request.measures.filterNot(declaredMeas).map("measure:" + _)
+    if (unknown.nonEmpty) {
+      Logger.info(s"  [request] FAILED: unknown refs $unknown (stage=request, the same typed failure MCP validate_query reports)")
+      return
+    }
+    Logger.info("  [request] ok")
+    // Stage 2: plan build + rollup routing preview.
+    planFor(model) match {
+      case Left(err) =>
+        Logger.info(s"  [build] FAILED: $err")
+      case Right(plan) =>
+        Logger.info("  [build] ok")
+        io.sm8.core.rel.RollupRewriter.rewrite(plan, model, request.timeGrain) match {
+          case rw: io.sm8.core.rel.RollupRewriter.RollupRewriteResult.Rewritten =>
+            Logger.info(s"  [rollup] would route to: ${rw.rollupName}")
+          case un: io.sm8.core.rel.RollupRewriter.RollupRewriteResult.Unchanged =>
+            Logger.info(s"  [rollup] base-table path (typed refusal: ${un.reason})")
+        }
     }
   }
 
@@ -354,6 +503,13 @@ object Refs {
   }
 
   def main(args: Array[String]): Unit = {
+    // ----- Metrics wiring (step 0) -----
+    // Register the example's MetricsSink BEFORE any query runs so
+    // the spark-connector routing fold + invocation counters land
+    // here (core MetricsRegistry is a JVM-global seam).
+    val sink = new HospitalMetricsSink
+    io.sm8.core.cache.MetricsRegistry.register(sink)
+
     // ----- Initialize SparkSession (driver-side, local mode) -----
     val spark = SparkSession.builder().master("local[*]").appName("sm8-hospital-cleaning").config("spark.ui.enabled", "false").config("spark.sql.shuffle.partitions", "2").getOrCreate()
     try {
@@ -399,6 +555,40 @@ object Refs {
       }
       val provider: io.sm8.connectors.spark.SparkEngineProvider =
         realizedProvider.asInstanceOf[io.sm8.connectors.spark.SparkEngineProvider]
+
+      // ----- Materialize the declared rollup (ADR-0026) -----
+      // The declaration on the Model tells sm8 WHAT can be
+      // pre-aggregated; materialization produces the physical
+      // table (`encounters__alos_by_department`) the router reads.
+      // Lazy (`eager = false`) = temp view scoped to this session,
+      // the v1 default; `eager = true` would `saveAsTable` to
+      // Parquet for cross-session reuse.
+      materializeRollups(spark, encountersModel)
+
+      // ----- Validate-before-execute demos (MCP validate_query core) -----
+      // Same request shape as Q2 (below): a good request previews as
+      // "would route to the ALOS rollup". The typo'd request shows the
+      // typed stage=request failure an operator (or an LLM agent via
+      // MCP) gets BEFORE any engine time is spent.
+      Logger.info("=" * 70)
+      Logger.info("STEP 5a: validate (execute-free) — model check + request cross-check + rollup preview")
+      Logger.info("=" * 70)
+      validateDemo(
+        "good request: dept ALOS (Q2 shape) — expect rollup routing preview",
+        encountersModel,
+        QueryRequest(
+          model = encountersModel.name,
+          dimensions = Seq("department"),
+          measures = Seq("encounter_count")),
+        planFor = m => QueryBuilder.build(m, new SparkSourceResolver(spark), EngineIdentity("local-spark", "1", "example")))
+      validateDemo(
+        "typo'd request: measure 'enconuter_count' — expect stage=request failure",
+        encountersModel,
+        QueryRequest(
+          model = encountersModel.name,
+          dimensions = Seq("department"),
+          measures = Seq("enconuter_count")),
+        planFor = m => QueryBuilder.build(m, new SparkSourceResolver(spark), EngineIdentity("local-spark", "1", "example")))
 
       // ----- Q1a: Patient demographics (by gender) -- TYPED DSL -----
       // Per PR-26 (ADR-008-R SSMeasureBridge): the typed Measure
@@ -613,6 +803,9 @@ object Refs {
       Logger.info("resolved -- the queries above run on the cleansed data.")
       Logger.info("Q4 uses the typed QueryBuilderDsl end-to-end (PR-17 + PR-19 + PR-20 + PR-22).")
       Logger.info("=" * 70)
+      Logger.info("Metrics summary (Prometheus text format; the same counters a")
+      Logger.info("real deployment exposes via `sm8-server --metrics-port`):")
+      Logger.info(sink.summary)
     } catch {
       case t: Throwable =>
         Logger.error(s"sm8 hospital example FAILED: ${t.getClass.getSimpleName}: ${t.getMessage}")
