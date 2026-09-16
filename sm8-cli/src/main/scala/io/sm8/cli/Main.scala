@@ -64,10 +64,9 @@ import scala.jdk.CollectionConverters._
   * `--json` is a stable machine-consumption surface. Three rules:
   *
   *   1. Envelope verbs (list, describe, query, explain, validate,
-  *      inspect, hooks, plugins, rollup-refresh) print the server's
-  *      JSON envelope via Jackson canonicalization — semantic content
-  *      is identical to the wire response, but whitespace and key
-  *      ordering may differ from what the server literally sent.
+  *      inspect, hooks, plugins, rollup-refresh) print the RAW server
+  *      envelope verbatim — the wire bytes pass through untouched
+  *      (HttpResponse.BodyHandlers.ofString, no parse/re-serialize).
   *      Parse `{status, data, error, warnings}` at your leisure.
   *   2. Metrics-backed verbs (rollup-status, rollup-report) emit FLAT
   *      sorted-key JSON objects — no envelope (they read the metrics
@@ -75,10 +74,10 @@ import scala.jdk.CollectionConverters._
   *      keys by rollup name and adds an `_aggregates` object with
   *      fields `{rewrites, refusals, probe_failed}`; rollup-report is
   *      a flat counter map.
-  *   3. audit-tail prints the Jackson-serialized Restate response (a
-  *      JSON array of audit rows — Restate's native shape, not the
-  *      {status,...} envelope the other verbs return). Same
-  *      canonicalization caveat as rule 1.
+  *   3. audit-tail prints the RE-SERIALIZED Restate response (a
+  *      Jackson `node.toString` of the parsed audit-row array —
+  *      Restate's native shape, not the {status,...} envelope the
+  *      other verbs return). Unlike rule 1, this IS a re-render.
   *
   * Exit codes are IDENTICAL in --json and pretty modes (see the
   * exit-codes table under --help): scripts branch on `$?` without
