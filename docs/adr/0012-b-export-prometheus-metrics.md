@@ -128,10 +128,13 @@ object MetricsHttpRoute {
 
   private val vertx: Vertx = Vertx.vertx()
 
-  /** Start a dedicated `HttpServer` on `metricsPort` exposing GET /metrics. */
-  def start(metricsPort: Int, startedAt: java.time.Instant): HttpServer = {
+  /** Start a dedicated `HttpServer` on `metricsPort` exposing GET /metrics.
+    * (Bind host defaulted to "0.0.0.0" at ADR time; since the #429
+    * security fix it defaults to "127.0.0.1" — network exposure is
+    * opt-in via `--metrics-host`.) */
+  def start(metricsPort: Int, startedAt: java.time.Instant, host: String = "127.0.0.1"): HttpServer = {
     val server = vertx.createHttpServer(
-      new HttpServerOptions().setPort(metricsPort).setHost("0.0.0.0")
+      new HttpServerOptions().setPort(metricsPort).setHost(host)
     )
     server.requestHandler { ctx =>
       if (ctx.path() == "/metrics" && ctx.request().method().name() == "GET") {

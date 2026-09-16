@@ -117,6 +117,11 @@ final class McpHttpServer(val config: McpHttpRoute.Config) {
       port: Int,
       requestHandler: io.vertx.core.Handler[io.vertx.core.http.HttpServerRequest]
   ): HttpServer = {
+    // 0.0.0.0 is INTENTIONAL here, NOT the same exposure as the
+    // /metrics endpoint. MCP HTTP carries Streamable-HTTP
+    // authentication (bearer token plumbing per [[ADR-0014]]), so the
+    // bind is not a credential-free recon surface. Symmetric loopback
+    // default is tracked separately.
     val server = vertx.createHttpServer(
       new HttpServerOptions().setPort(port).setHost("0.0.0.0")
     )
