@@ -456,10 +456,10 @@ object Refs {
     // Stage 1: request-vs-model cross-check (unknown refs).
     val declaredDims = model.dimensions.map(_.name).toSet
     val declaredMeas = (model.measures.map(_.name) ++ model.calculatedMeasures.map(_.name)).toSet
-    val unknown = request.dimensions.filterNot(declaredDims).map("dimension:" + _) ++
-      request.measures.filterNot(declaredMeas).map("measure:" + _)
+    val unknown = request.dimensions.filterNot(declaredDims).map(n => ("dimension", n)) ++
+      request.measures.filterNot(declaredMeas).map(n => ("measure", n))
     if (unknown.nonEmpty) {
-      Logger.info(s"  [request] FAILED: unknown refs $unknown (stage=request, the same typed failure MCP validate_query reports)")
+      Logger.info(s"  [request] FAILED: unknown refs ${unknown.map { case (k, n) => s"$k=$n" }.mkString(", ")} (stage=request, the same typed failure MCP validate_query reports)")
       return
     }
     Logger.info("  [request] ok")

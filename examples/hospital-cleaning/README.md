@@ -48,7 +48,7 @@ cd examples/hospital-cleaning
 mvn -B -ntp scala:run -DmainClass=com.example.hospital.Main
 ```
 
-You'll see all 5 steps run in sequence:
+You'll see all 7 steps run in sequence:
 
 1. **INGEST** — load the raw CSVs (intentional data quality issues)
 2. **QUALITY REPORT** — print counts of duplicates / missing values
