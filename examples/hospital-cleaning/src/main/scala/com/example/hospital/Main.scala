@@ -571,8 +571,9 @@ object Refs {
       materializeRollups(spark, encountersModel)
 
       // ----- Validate-before-execute demos (MCP validate_query core) -----
-      // Same request shape as Q2 (below): a good request previews as
-      // "would route to the ALOS rollup". The typo'd request shows the
+      // Each request previews the router's typed decision WITHOUT
+      // executing: valid requests report which stages pass and why
+      // routing stays on the base table; the typo'd request shows the
       // typed stage=request failure an operator (or an LLM agent via
       // MCP) gets BEFORE any engine time is spent.
       Logger.info("=" * 70)
@@ -580,13 +581,15 @@ object Refs {
       Logger.info("=" * 70)
       // The rollup-shape request groups by (department +
       // admission_date) with timeGrain=day, matching the rollup
-      // declaration. The validator still reports it stays on the
-      // base table (typed refusal `NonCanonicalShape`) because
-      // `QueryBuilder.build` aggregates on the FULL declared
-      // dimension set — useful output that the MCP validate_query
+      // declaration. The router still keeps it on the base table
+      // (typed refusal `NonCanonicalShape`): the model's calculated
+      // measure (avg_los) projects a non-pass-through expression
+      // above the Aggregate, so the plan does not decompose to the
+      // canonical Scan → Filter* → Aggregate shape the rewriter
+      // requires — the same useful preview the MCP validate_query
       // tool surfaces to operators before any engine time is spent.
       validateDemo(
-        "rollup-shape request: dept ALOS by admission_date day — expect typed refusal on base table (QueryBuilder groups on all dims; the platform's compiled-SqlFn flow or a MaterializePolicy Persist can drive the routing-rewrite path)",
+        "rollup-shape request: dept ALOS by admission_date day — stays on base table (typed refusal: the avg_los calculated projection breaks the canonical shape)",
         encountersModel,
         QueryRequest(
           model = encountersModel.name,
@@ -595,7 +598,7 @@ object Refs {
           timeGrain = Some("day")),
         planFor = m => QueryBuilder.build(m, new SparkSourceResolver(spark), EngineIdentity("local-spark", "1", "example")))
       validateDemo(
-        "good request: dept ALOS (Q2 shape, NO grain) — stay on base table (typed refusal)",
+        "valid request: dept ALOS (Q2 shape, no grain) — stays on base table (same typed refusal)",
         encountersModel,
         QueryRequest(
           model = encountersModel.name,

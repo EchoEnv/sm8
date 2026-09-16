@@ -130,13 +130,12 @@ The 30-day readmission rate is `1 / 2 = 0.50`. P001 has two encounters but they'
 
 ### Honest limitations (per the post-ADR-008-P review)
 
-The example is a **complete end-to-end demo** of the data-quality workflow. The Q1a/Q1b/Q2 grouped queries use **direct Spark** (not sm8's `provider.query`) because:
+The example is a **complete end-to-end demo** of the data-quality workflow. Q1a/Q1b/Q2 run through the sm8 typed DSL (`QueryBuilderDsl` → `provider.query`), so grouping and typed order/limit flow through the engine-portable protocol. Two spots remain deliberately outside the engine:
 
-- **sm8's current spark-connector** returns rows from `provider.query(model, request, ctx)` but does **NOT yet** apply the `dimensions` + `measures` grouping (the `applyAggregations` path in the spark-connector is a known followup; see ADR-008-L GAP 7 / PR-M4 followup).
-- The **`Q1a (sm8 API)`** block in STEP 5 demonstrates that `provider.query` returns the rows correctly through the engine-portable Protocol — the API round-trips, the grouping is the only followup.
-- The Q3 (30-day readmission) example uses **window/lag in Spark** directly because the final aggregation crosses group boundaries (per-patient max is_readmission, then a final ratio across patients). This is the same hybrid pattern the upstream uses.
+- The Q3 (30-day readmission) **rate computation** uses Spark window/lag + a Scala-side ratio, because the final aggregation crosses group boundaries (per-patient max `is_readmission`, then a ratio across patients) — the same hybrid pattern the upstream template uses. Q3a (the per-patient readmission count) is a typed sm8 query.
+- The STEP 5a validate previews stay on the base table (typed refusal below) because the model's `avg_los` calculated measure projects a non-pass-through expression above the Aggregate, which the rollup router's canonical-shape requirement rejects; a model without calculated measures (or with `MaterializePolicy.Persist` on the rollup path in a full sm8-server deployment) routes.
 
-**Note on rollup routing in this example:** the declared rollup is materialized (`encounters__alos_by_department` temp view) and the STEP 5a validate preview shows the router's typed decision for each request shape. The demo requests stay on the base table (typed refusal `NonCanonicalShape`) because `QueryBuilder.build` aggregates over the model's full declared dimension set; in a full sm8-server deployment the same requests ride the platform's routing fold (see `sm8-server` + the `rollup-refusal-observer` plugin) or a `MaterializePolicy.Persist` model policy.
+**Note on rollup routing in this example:** the declared rollup is materialized (`encounters__alos_by_department` temp view) and the STEP 5a validate preview shows the router's typed decision for each request shape. The demo requests stay on the base table (typed refusal `NonCanonicalShape`) because the model's `avg_los` calculated measure projects a non-pass-through expression above the Aggregate, which fails the router's canonical-plan decomposition; in a full sm8-server deployment the same requests ride the platform's routing fold (see `sm8-server` + the `rollup-refusal-observer` plugin) or a `MaterializePolicy.Persist` model policy.
 
 **Once the spark-connector's `applyAggregations` is upgraded** to honor `QueryRequest.dimensions` + `measures` end-to-end (a future PR; per ADR-008-P §"What's Next" + ADR-008-L GAP 7), the Q1/Q2 `runQuery(...)` calls can replace the direct-Spark `groupBy().count()/.agg(...)` blocks — the rest of the example needs no change.
 
@@ -152,7 +151,7 @@ The example is a **complete end-to-end demo** of the data-quality workflow. The 
 | Metrics telemetry through the core `MetricsRegistry` / `MetricsSink` seam (the same events sm8-server publishes on `--metrics-port`) | end-of-run summary |
 | Loading in-memory DataFrames into sm8 via `createOrReplaceTempView` + `SourceRef.ByName` | STEP 4 |
 | `groupBy(dim).aggregate(measure)` per group | Q1, Q2 |
-| Hybrid pattern: per-patient measures via Spark, final rate in Scala | Q3 |
+| Hybrid pattern: per-patient counts via the sm8 typed DSL (Q3a), rate via Spark window + Scala ratio (Q3b) | Q3 |
 | The spark-connector realize-then-query pattern (`SparkEngineProviderDescriptor.realize(url)` then `provider.query(...)`) | STEP 5 |
 
 ## Architecture: where this example fits in the sm8 RFC §3 stack
