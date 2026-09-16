@@ -1125,10 +1125,18 @@ class CliIntegrationSpec
       err should include("unknown flag: --bogus")
     }
 
-    it("missing flag value: exit 2") {
+    it("missing flag value: exit 2 with the typed MissingFlagValue error (not the old 'unknown flag:' wrap)") {
+      // Pre-#434: this would surface as `sm8: unknown flag: --dim
+      // requires a value` — the accumulated string was force-wrapped
+      // as UnknownFlag(flag=h) in the return site. Post-#434 the
+      // head is the typed MissingFlagValue(--dim) and the message is
+      // exactly `--dim requires a value`. The assertion below pins
+      // that the leading token is NOT 'unknown flag:' (regression
+      // guard for the bug vole caught in dual-review).
       val (exit, _, err) = runCli(args("validate", "flights", "-d"))
       exit shouldBe 2
       err should include("--dim requires a value")
+      err should not include "unknown flag"
     }
 
     it("--plan with compiledSql null: prints the honest v1-semantics message") {
