@@ -84,12 +84,6 @@ version: 1
 source:
   byName:
     table: events_demo
-dimensions:
-  - name: region
-measures:
-  - name: count
-    aggregate:
-      count: {}
 YAML
 
 # ---- pre-pull images (cached after first run) ----
