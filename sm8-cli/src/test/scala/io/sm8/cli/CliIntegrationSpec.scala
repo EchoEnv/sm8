@@ -893,6 +893,16 @@ class CliIntegrationSpec
       exit shouldBe 1
       err should include("not set on the most recent request")
     }
+
+    it("key not present with --json: exit 1 (contract holds in machine mode)") {
+      val key = "io.sm8.plugins.semanticgraph:graph-snapshot"
+      val body =
+        s"""{"status":"ok","data":{"key":"$key","present":false,"value":null}}"""
+      respondWith("/MetaInspectorService/getMeta", 200, body)
+      val (exit, out, _) = runCli(args("inspect", key, "--json"))
+      exit shouldBe 1
+      out should include("\"present\":false")
+    }
   }
 
   // -------------------------------------------------------------------------
