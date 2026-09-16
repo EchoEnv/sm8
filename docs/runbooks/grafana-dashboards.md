@@ -113,3 +113,12 @@ both dashboards refresh every 30s.
 - `sm8 rollup-status` reads the same gauges and renders a point-in-time
   text table — use it for a quick check; use Grafana for history and
   alerting.
+---
+
+
+## Metric-name drift guard
+
+`scripts/check-dashboard-metrics.sh` fails if a metric family emitted
+by `MetricsHttpRoute` is not referenced by any dashboard JSON — run it
+after renaming any `sm8_*` metric. (Renaming a metric without updating
+the dashboards leaves panels dark with no runtime error.)
