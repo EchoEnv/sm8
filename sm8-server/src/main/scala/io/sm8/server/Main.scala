@@ -662,6 +662,91 @@ object Main {
     }
   }
 
+  /** Install the rollup-freshness reader so the
+    * metrics surface exposes freshness gauges. Reflectively bridges
+    * to the spark-connector's `RollupFreshnessReader.readAll`
+    * (SparkSession + Model in, engine-portable entries out — same
+    * bridge pattern as the validation probes). The reader runs at
+    * SCRAPE time (each /metrics request), so gauges are never stale
+    * — the pull model, not push-on-refresh.
+    *
+    * Installs via `QueryMetrics.installRollupFreshnessReader` once
+    * at boot. No connector → no gauges (the family is absent, which
+    * is honest: "no freshness data" ≠ "all fresh").
+    *
+    * @return true when the reader was installed, false when the
+    *         connector is absent (stderr carries the reason). */
+  private def installRollupFreshnessReader(model: Model): Boolean = {
+    try {
+      val readerCls = Class.forName("io.sm8.connectors.spark.RollupFreshnessReader$")
+      val readerMod = readerCls.getField("MODULE$").get(null)
+      val sparkCls  = Class.forName("org.apache.spark.sql.SparkSession")
+      val modelCls  = classOf[Model]
+      val method    = readerCls.getMethod("readAll", sparkCls, modelCls)
+      // The adapter: platform Entry shape via structural copy. The
+      // connector's FreshnessEntry has the same 4 fields (String,
+      // String, Boolean, Int); we copy field-by-field rather than
+      // casting, so a future connector-side field addition cannot
+      // break the bridge with a ClassCastException at scrape time.
+      def adaptEntry(raw: Any): io.sm8.platform.query.RollupFreshnessSnapshot.Entry = {
+        val m = raw.getClass.getDeclaredMethod("rollupName")
+        val name = m.invoke(raw).asInstanceOf[String]
+        val ts = raw.getClass.getDeclaredMethod("lastRefreshedAt").invoke(raw).asInstanceOf[String]
+        val fin = raw.getClass.getDeclaredMethod("allFinal").invoke(raw).asInstanceOf[Boolean]
+        // Reflective copy: the connector's bucketCount is now Long
+        // (multi-year retention overflows Int — see RollupFreshnessReader).
+        // asInstanceOf[Long] against a java.lang.Integer at runtime
+        // throws ClassCastException; if a future connector change ever
+        // narrows the type back, this still survives (Int is a subtype
+        // of Nothing? — no, hence the explicit match). The per-scrape
+        // NonFatal upstream catches the CCE if anything goes wrong.
+        val cntBox = raw.getClass.getDeclaredMethod("bucketCount").invoke(raw)
+        val cnt = cntBox match {
+          case n: java.lang.Number => n.longValue()
+          case other              => other.toString.toLong
+        }
+        io.sm8.platform.query.RollupFreshnessSnapshot.Entry(
+          rollupName = name, lastRefreshedAt = ts, allFinal = fin, bucketCount = cnt.toLong)
+      }
+      io.sm8.platform.query.QueryMetrics.installRollupFreshnessReader { () =>
+        try {
+          activeSparkSession() match {
+            case Right(spark) =>
+              method.invoke(readerMod, spark, model) match {
+                case list: java.util.List[?] =>
+                  import scala.jdk.CollectionConverters._
+                  Right(list.asScala.toList.map(adaptEntry))
+                case other =>
+                  Left(s"freshness reader returned an unexpected shape: ${String.valueOf(other)}")
+              }
+            case Left(reason) => Left(reason)
+          }
+        } catch {
+          // Per-scrape NonFatal: the install-time catch only covers
+          // boot wiring. If a connector upgrade renames/removes a
+          // reflective target (NoSuchMethodException from
+          // adaptEntry, InvocationTargetException from readAll),
+          // THIS catch is the one that runs — without it the throw
+          // escapes into the Vert.x handler thread and 500s /metrics
+          // for every verb. Degrade to a typed Left instead; the
+          // platform's probe_failed gauge is the signal.
+          case scala.util.control.NonFatal(e) =>
+            Left(s"freshness reader failed at scrape: ${e.getClass.getSimpleName}: ${e.getMessage}")
+        }
+      }
+      true
+    } catch {
+      case _: ClassNotFoundException | _: NoSuchMethodException =>
+        System.err.println("sm8: rollup freshness gauges unavailable " +
+          "(spark-connector JAR not found) — /metrics has no freshness family")
+        false
+      case NonFatal(e) =>
+        System.err.println(s"sm8: rollup freshness gauge wiring failed: " +
+          s"${e.getClass.getSimpleName}: ${e.getMessage} — /metrics has no freshness family")
+        false
+    }
+  }
+
   /** ADR-0022 Ticket 6: the legacy Tier 0/1 refresh closure. Byte-identical
     * to the pre-cascade behavior — old clients posting {model} (no tier/scope)
     * keep this path. */
@@ -1030,6 +1115,13 @@ object Main {
               case Left(bootErr) =>
                 System.err.println(bootErr); 3
               case Right((_, transport, realized)) =>
+                // Install the freshness reader AFTER
+                // wire() succeeds (the metrics surface is only useful
+                // when the transport is up) and BEFORE transport.start()
+                // so the first scrape already carries the family.
+                // Fires the reflective bridge; stderr carries the
+                // degradation reason when the connector is absent.
+                installRollupFreshnessReader(model)
                 // a prior PR (audit 2026-08-30 L4): install the JVM
                 // shutdown hook BEFORE transport.start() so SIGTERM
                 // arriving during start() or before this point still
