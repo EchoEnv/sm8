@@ -340,15 +340,14 @@ object Main {
       val data = root.dataPath
       val present = data.field("present").booleanValue()
       // The present check runs BEFORE the --json early-return so the
-      // contract holds in machine mode too (monkey review finding:
-      // `inspect foo --json` with present:false used to exit 0 with
-      // a present:false body — scripts branching on $? saw success).
+      // contract holds in machine mode too (previously `inspect foo
+      // --json` with present:false exited 0 — scripts branching on
+      // $? saw success).
       if (!present) {
         // Domain failure: the server answered, the answer is "not
         // present". Per the exit-code contract (see printUsage),
-        // that is 1 — the exit-4 previously returned here was
-        // undocumented and broke the 0/1/2/3 scheme. Fixes the
-        // audit finding in issue #425.
+        // that is 1 — the undocumented exit-4 previously returned
+        // here broke the 0/1/2/3 scheme.
         if (cfg.json) println(resp.body)
         else System.err.println(s"sm8 inspect: key '$key' not set on the most recent request")
         return 1
@@ -1461,7 +1460,7 @@ object Main {
         // Non-200 non-5xx from the metrics endpoint (404, 401, 403):
         // a reachability/routing failure, not a domain answer. Per the
         // exit-code contract (see printUsage), that is 3 — transport
-        // — not 1. Fixes the audit finding in issue #425.
+        // — not 1.
         System.err.println(s"sm8 rollup-report: metrics endpoint returned ${resp.status} (expected 200). Is the server running with --metrics-port?")
         return 3
       }
@@ -1494,7 +1493,7 @@ object Main {
     * `rollup-report` (what went wrong historically) do not.
     *
     * Data source: the /metrics gauges — the freshness family
-    * (issue #425 PR 1: sm8_rollup_freshness / _age_seconds /
+    * (the sm8_rollup_freshness / _age_seconds /
     * _buckets, labeled per rollup) plus the aggregate refusal
     * counters. Read-only client-side render; no server change.
     *
