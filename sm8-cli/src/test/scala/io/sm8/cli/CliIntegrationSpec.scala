@@ -884,6 +884,18 @@ class CliIntegrationSpec
       out should include("\"present\":true")
     }
 
+    it("--json with present:false exits 1 (contract holds in machine mode)") {
+      val key = "io.sm8.plugins.unknown:foo"
+      val body =
+        s"""{"status":"ok","data":{"key":"$key","present":false,"value":null}}"""
+      respondWith("/MetaInspectorService/getMeta", 200, body)
+      val (exit, out, _) = runCli(args("inspect", key, "--json"))
+      exit shouldBe 1
+      // Raw envelope still printed (scripts may want the body for
+      // context) but the exit code signals the domain failure.
+      out should include("\"present\":false")
+    }
+
     it("key not present: exit 1 (domain failure — exit-code contract)") {
       val key = "io.sm8.plugins.semanticgraph:graph-snapshot"
       val body =
