@@ -335,20 +335,25 @@ object Main {
     case key :: Nil =>
       val body = s"""{"key":${mapper.writeValueAsString(key)}}"""
       val resp = Client.postJson(cfg, "/MetaInspectorService/getMeta", body)
-      if (cfg.json) { println(resp.body); return 0 }
       val root = resp.parseJson
       if (root.errorPath(cfg)) return 1
       val data = root.dataPath
       val present = data.field("present").booleanValue()
+      // The present check runs BEFORE the --json early-return so the
+      // contract holds in machine mode too (monkey review finding:
+      // `inspect foo --json` with present:false used to exit 0 with
+      // a present:false body — scripts branching on $? saw success).
       if (!present) {
         // Domain failure: the server answered, the answer is "not
         // present". Per the exit-code contract (see printUsage),
         // that is 1 — the exit-4 previously returned here was
         // undocumented and broke the 0/1/2/3 scheme. Fixes the
         // audit finding in issue #425.
-        System.err.println(s"sm8 inspect: key '$key' not set on the most recent request")
+        if (cfg.json) println(resp.body)
+        else System.err.println(s"sm8 inspect: key '$key' not set on the most recent request")
         return 1
       }
+      if (cfg.json) { println(resp.body); return 0 }
       val value = data.field("value")
       println(s"Key:   $key")
       println(s"Value: ${mapper.writeValueAsString(value)}")
@@ -1525,8 +1530,8 @@ object Main {
         val rollups = freshness.keys.toList.sorted
           .map { name =>
             val age = ages.get(name).filter(_ != "NaN").getOrElse("null")
-            s"""  "$name": {"fresh": ${freshness.getOrElse(name, "0").toLong}, """ +
-              s""""age_seconds": $age, "buckets": ${buckets.getOrElse(name, "0").toLong}}"""
+            s"""  "$name": {"fresh": ${safeLong(freshness.get(name))}, """ +
+              s""""age_seconds": $age, "buckets": ${safeLong(buckets.get(name))}}"""
           }
         val rollupsBlock =
           if (rollups.isEmpty) ""
@@ -1552,13 +1557,17 @@ object Main {
           // and buckets are Long on the wire so toLong is safe. Ages
           // keep the raw string for the "never" NaN handling below.
           val rows = freshness.keys.toList.sorted.map { name =>
-            val fresh = freshness.getOrElse(name, "0").toLong == 1L
+            // NaN-tolerant: Prometheus allows NaN samples on any
+            // gauge; a NaN freshness/buckets sample reads as "not
+            // fresh / unknown" rather than crashing the verb (same
+            // policy as the ages map's NaN -> "never" above).
+            val fresh = safeLong(freshness.get(name)) == 1L
             val ageS  = ages.get(name).getOrElse("NaN") match {
               case "NaN" => "never"
               case other => other + "s"
             }
             val mark = if (fresh) "FRESH" else "STALE"
-            (name, mark, ageS, buckets.getOrElse(name, "0").toLong.toString)
+            (name, mark, ageS, safeLong(buckets.get(name)).toString)
           }
           println(Table.render(List("rollup", "status", "age", "buckets"),
             rows.map { case (n, m, a, b) => List(n, m, a, b) }))
@@ -1583,6 +1592,19 @@ object Main {
     * @param metric  the metric family name (no labels)
     * @return        (rollup label value -> raw value string), last-wins
     */
+  /** NaN-safe Long extraction for Prometheus gauge values: NaN and
+    * unparseable strings read as 0 (the freshness semantics of
+    * "unknown" — the gauge row still renders, marked not-fresh) and
+    * well-formed integers pass through. Prom spec allows NaN on any
+    * gauge; without this a single NaN sample would crash the verb
+    * with NumberFormatException. */
+  private[cli] def safeLong(v: Option[String]): Long = v match {
+    case Some(s) =>
+      try s.toLong
+      catch { case _: NumberFormatException => 0L }
+    case None => 0L
+  }
+
   private[cli] def parsePrometheusLabeled(body: String, metric: String): Map[String, String] =
     body.linesIterator.foldLeft(Map.empty[String, String]) { (acc, line) =>
       val trimmed = line.trim
