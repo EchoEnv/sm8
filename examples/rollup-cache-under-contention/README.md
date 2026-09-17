@@ -11,7 +11,7 @@ examples/rollup-cache-under-contention/
 ├── data/
 │   └── orders.csv                     ← 12 rows: order_id/region/amount
 └── src/main/scala/com/example/contention/
-    └── Main.scala                     ← herd -> steady -> version roll; ~430 lines
+    └── Main.scala                     ← herd -> steady -> version roll; ~490 lines
 ```
 
 ## What "single-flight" means (and why it matters)
@@ -99,7 +99,7 @@ The counter is a **hook-fire count, not a unique-persisted count**. The underlyi
 | Model-version invalidation mid-storm | STEP 4 — new key domain, 1 execution on v2 |
 | Worker-agreement (all threads return the same normalized result) | STEP 2/3/4 — `distinct.size == 1` assertion |
 | `PostHook.runsOnStop` honored by the consumer-side runner | `MinimalHookRunner.run` — post-hook skip gate |
-| `CachePlugin.regionKey` namespaced keys (the executor-direct write and the plugin's read use the SAME key) | `clientQuery` cacheKey construction |
+| `CachePlugin.regionKey` namespaced keys (note: the plugin's hooks and the executor-direct write each apply the regionKey discipline, producing two distinct but internally consistent key spaces) | `clientQuery` cacheKey construction |
 
 ## Architecture: where this example fits in the sm8 RFC §3 stack
 

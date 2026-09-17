@@ -209,11 +209,16 @@ object Main {
       request: QueryRequest,
       cache: InMemoryResultCache,
       engineExecs: AtomicInteger): Vector[String] = {
-    // Mirror the plugin's namespaced cache key (CachePlugin.regionKey)
-    // so the executor-direct write and the plugin's read use the SAME
-    // key — no asymmetric cache state. The region is length-prefixed so
-    // different regions cannot collide (see plugins/cache-plugin/
-    // CachePlugin.regionKey doc).
+    // Pre-namespaced via CachePlugin.regionKey. NOTE: the plugin's own
+    // hooks apply regionKey AGAIN to hookReq.cacheKey when they consult
+    // the cache, so the plugin and the executor-direct
+    // getOrComputeJournaled write operate on two DISTINCT key spaces
+    // (double-prefixed vs single-prefixed). Each store is internally
+    // consistent — the Pre-hook reads what the Post-hook wrote, and the
+    // executor's single-flight coalesces the MISS path — but a reader
+    // must not assume the two key spaces intersect. The region prefix
+    // still keeps different regions from colliding within each space
+    // (see plugins/cache-plugin/CachePlugin.regionKey doc).
     val cacheKey = CachePlugin.regionKey("contention",
       s"${model.name}|v${model.version}|region-aggregate")
     val initial = Context(
