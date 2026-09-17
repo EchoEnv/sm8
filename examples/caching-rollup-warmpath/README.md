@@ -64,16 +64,17 @@ STEP 2: COLD PATH — 20 identical queries, NO cache
   cold[0..19]: 12 rows each
   cold path: 20 queries in 3461ms (~173ms/query)
 STEP 3: WARM PATH — the SAME 20 queries WITH the read-through cache
-  warm[0..19]: 12 rows each
+  warm[0]..warm[19]: 12 rows each (20 separate log lines; range shown)
   warm path: 20 queries in 205ms (~10ms/query)
   row-count parity: cold=12 warm=12 (cache returned the same answer)
 STEP 4: INVALIDATION — bump Model.version 1 -> 2; the next query MISSES
   v2 query after bump: 12 rows (MISSED — new key domain)
+STEP 5: METRICS SUMMARY
 ======================================================================
 Cache + plugin counters (the same counters a real deployment
 exposes on `sm8-server --metrics-port`):
   CachePlugin.reads  = 21
-  CachePlugin.writes = 21
+  CachePlugin.writes = 2
   CachePlugin.hits   = 19
   CachePlugin.misses = 2
   hit ratio          = 0.90
@@ -134,6 +135,7 @@ No `sm8-platform` import — the example's `MinimalHookRunner` is exactly what `
 
 - **`CachePolicy.ReadThrough` would not write** — the plugin's per-case matrix documents: ReadThrough = read-only-by-default, no write-through. The example uses `WriteThrough` so the warm path stays warm. For real deployments the policy choice is "do you want write-through or not"; the cache key domain stays the same either way.
 - **The example's `MinimalHookRunner` is single-stage (Execute only)** — `HookRunnerOrchestration` in sm8-platform fires all 4 pipeline stages (Parse, Resolve, Execute, Format). Bare consumers can ship the single-stage runner; production deployments use the platform's orchestration. Same code shape, different coverage.
+- **`PostHook.runsOnStop` matters.** `CacheWritePostHook` declares `runsOnStop = false` ("a mutator must not re-journal on a HIT"); the platform dispatcher skips such hooks when a pre-hook set `ctx.stop`. The example's `MinimalHookRunner` honors the same gate — without it, every cache HIT would redundantly re-journal the entry (writes=21 instead of writes=2 in this run). If you copy the runner, keep the gate.
 - **The cache key in the example is the consumer-side derivation** (`"sales|v$version|region=product"`) — the actual `sm8-platform/CacheBridge.platformCacheKey` produces a canonical length-prefixed SHA-256 key (`CacheBridge.scala`). Both produce the same HIT/MISS differentiation for a given model + version + request shape; the canonical form is portable across plugin + provider.
 - **Wall-clock 17× speedup at this scale is dominated by Spark job submission overhead**, not by data work. At production scale (multi-second aggregations on millions of rows), the speedup is much larger; at microbenchmark scale the ratio shrinks.
 

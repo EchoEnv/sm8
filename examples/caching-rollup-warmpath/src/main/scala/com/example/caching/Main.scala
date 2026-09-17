@@ -6,10 +6,10 @@ import org.slf4j.{Logger, LoggerFactory}
 import io.sm8.core.engine.{
   EngineContext, EngineError, EngineProvider, QueryRequest, ResultValue
 }
-import io.sm8.core.model.{CachePolicy, Model, ModelBuilder, ModelStatus, SourceRef}
+import io.sm8.core.model.{CachePolicy, Dimension, Measure, Model, ModelBuilder, ModelStatus, SourceRef}
 import io.sm8.core.model.ModelValidator
-import io.sm8.connectors.spark.SparkEngineProvider
-import io.sm8.sdk._
+import io.sm8.core.expr.ExprSugar._
+import io.sm8.sdk.{Context, HookRunner, HookStage, PipelineStage}
 
 /** sm8 caching-rollup-warmpath example — the "my dashboard runs the same
   * aggregate every 5 seconds" story.
@@ -38,9 +38,9 @@ import io.sm8.sdk._
   *     for the new model version). This is the model-version-driven
   *     invalidation contract (`putJournaledWithModelAndVersion`).
   *
-  * A `MetricsSink` is registered so the plugin's own hit/miss counters
-  * (`CachePlugin.hits`/`misses`) and the sink's rollup counters print
-  * as a Prometheus-format summary at end of run.
+  * The plugin's own hit/miss counters (`CachePlugin.hits`/`misses`)
+  * print as a summary at end of run (a real deployment would forward
+  * these to a `MetricsSink` via `MetricsRegistry.register`).
   *
   * Layer discipline: consumer imports sm8-core + spark-
   * connector + cache-plugin (a plugins/ artifact, the documented
@@ -64,6 +64,10 @@ object Main {
       .withVersion(version)
       .withSource(SourceRef.ByName(table = "sales_spark"))
       .withStatus(ModelStatus.Draft)
+      .withDimensions(List(
+        Dimension.field("region", "region")))
+      .withMeasures(List(
+        Measure.aggregate("total_amount", "amount".asField.sum)))
       .withPolicies(io.sm8.core.model.ModelPolicyDefaults(
         materialize = io.sm8.core.model.MaterializePolicy.None,
         cache       = CachePolicy.WriteThrough("dashboard"),
@@ -107,10 +111,11 @@ object Main {
         initial: Context,
         execute: Context => Either[EngineError, Context]
     ): Either[EngineError, Context] = {
-      // --- PreExecute hooks, priority order ---
+      // --- PreExecute hooks, priority order (already sorted by the
+      // manager; see HookManagerImpl.hooksForStage) ---
       var ctx = initial
       var stopped = false
-      val preHooks = hooks.preHooksFor(io.sm8.sdk.HookStage.PreExecute).sortBy(_._2)
+      val preHooks = hooks.preHooksFor(HookStage.PreExecute)
       val it = preHooks.iterator
       while (it.hasNext && !stopped) {
         val (hook, priority) = it.next()
@@ -122,8 +127,9 @@ object Main {
             Thread.currentThread().interrupt()
             return Left(EngineError.HookFailed(
               engine = "example", name = hook.name, priority = priority,
-              stage = "PreExecute", message = s"interrupted: ${e.getMessage}"))
-          case e: Exception =>
+              stage = "PreExecute",
+              message = Option(e.getMessage).getOrElse(e.getClass.getSimpleName)))
+          case scala.util.control.NonFatal(e) =>
             return Left(EngineError.HookFailed(
               engine = "example", name = hook.name, priority = priority,
               stage = "PreExecute", message = e.getMessage))
@@ -136,17 +142,31 @@ object Main {
           case Left(err)   => return Left(err)
         }
       }
-      // --- PostExecute hooks, priority order (fire on HIT too) ---
-      val postHooks = hooks.postHooksFor(io.sm8.sdk.HookStage.PostExecute).sortBy(_._2)
+      // --- PostExecute hooks, priority order. A post-hook whose
+      // runsOnStop = false is SKIPPED when a pre-hook set stop (the
+      // cache HIT path: CacheWritePostHook is a mutator and must not
+      // re-journal an entry the read hook just served). This gate is
+      // what makes writes=2 (one per MISS) instead of writes=21.
+      val postHooks = hooks.postHooksFor(HookStage.PostExecute)
       val pit = postHooks.iterator
       while (pit.hasNext) {
         val (hook, priority) = pit.next()
-        try ctx = hook.run(ctx)
-        catch {
-          case e: Exception =>
-            return Left(EngineError.HookFailed(
-              engine = "example", name = hook.name, priority = priority,
-              stage = "PostExecute", message = e.getMessage))
+        if (stopped && !hook.runsOnStop) {
+          // short-circuit mutator; still count as fired for parity
+        } else {
+          try ctx = hook.run(ctx)
+          catch {
+            case e: InterruptedException =>
+              Thread.currentThread().interrupt()
+              return Left(EngineError.HookFailed(
+                engine = "example", name = hook.name, priority = priority,
+                stage = "PostExecute",
+                message = Option(e.getMessage).getOrElse(e.getClass.getSimpleName)))
+            case scala.util.control.NonFatal(e) =>
+              return Left(EngineError.HookFailed(
+                engine = "example", name = hook.name, priority = priority,
+                stage = "PostExecute", message = e.getMessage))
+          }
         }
       }
       Right(ctx)
@@ -244,6 +264,14 @@ object Main {
         coldRows = runQuery(s"  cold[$i]", provider, modelV1, request)
         i += 1
       }
+      // Capture one cold-path result for the value-parity check below.
+      val coldPqr = provider.query(modelV1, request, EngineContext.defaultContext) match {
+        case Right(pqr) => pqr
+        case Left(err) =>
+          throw new IllegalStateException(
+            s"sm8: cold parity query FAILED: ${"$"}{err.getClass.getSimpleName}: ${"$"}{err.toString}")
+      }
+      val coldNorm = normalizedRows(coldPqr)
       val coldMs = (System.nanoTime() - t0) / 1000000
       Logger.info(s"  cold path: $Refreshes queries in ${coldMs}ms (~${coldMs / Refreshes}ms/query)")
 
@@ -273,11 +301,12 @@ object Main {
 
       val t1 = System.nanoTime()
       var warmRows = 0
+      var warmNorm: Vector[String] = Vector.empty
       i = 0
       while (i < Refreshes) {
         // Seed the policy fold + run through the hooks.
-        val initial = io.sm8.sdk.Context(
-          stage = io.sm8.sdk.PipelineStage.Execute,
+        val initial = Context(
+          stage = PipelineStage.Execute,
           request = io.sm8.core.engine.EngineHookRequest(
             model = modelV1,
             mcpRequest = request,
@@ -299,6 +328,7 @@ object Main {
             ctx.result match {
               case Some(r: io.sm8.core.engine.EngineHookResult) =>
                 warmRows = r.pqr.rows.size
+                warmNorm = normalizedRows(r.pqr)
                 Logger.info(s"  warm[$i]: ${r.pqr.rows.size} rows")
               case Some(other) =>
                 throw new IllegalStateException(
@@ -319,14 +349,18 @@ object Main {
         throw new IllegalStateException(
           s"sm8: cold path returned $coldRows rows but warm path returned $warmRows")
       }
-      Logger.info(s"  row-count parity: cold=$coldRows warm=$warmRows (cache returned the same answer)")
+      if (coldNorm != warmNorm) {
+        throw new IllegalStateException(
+          "sm8: cold and warm results differ in VALUE (normalized row multisets differ)")
+      }
+      Logger.info(s"  value parity: cold and warm normalized row multisets are identical (${coldNorm.size} rows)")
 
       // Invalidation: bump the model version, watch the next miss.
       Logger.info("STEP 4: INVALIDATION — bump Model.version 1 -> 2; the next query MISSES")
       val modelV2 = buildSalesModel(version = 2)
       val requestV2 = request.copy(model = modelV2.name)
-      val initialV2 = io.sm8.sdk.Context(
-        stage = io.sm8.sdk.PipelineStage.Execute,
+      val initialV2 = Context(
+        stage = PipelineStage.Execute,
         request = io.sm8.core.engine.EngineHookRequest(
           model = modelV2,
           mcpRequest = requestV2,
@@ -351,6 +385,7 @@ object Main {
       }
 
       // Counters summary.
+      Logger.info("STEP 5: METRICS SUMMARY")
       Logger.info("=" * 70)
       Logger.info("Cache + plugin counters (the same counters a real deployment")
       Logger.info("exposes on `sm8-server --metrics-port`):")
