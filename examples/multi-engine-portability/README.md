@@ -38,14 +38,14 @@ cd examples/multi-engine-portability
 mvn -B -ntp scala:run -DmainClass=com.example.multiengine.Main
 ```
 
-You'll see all 6 steps run in sequence:
+You'll see all 5 steps run in sequence:
 
 1. **INGEST** — the same `sales.csv` lands in both engines: a Spark temp view (`sales_spark`) and a DuckDB table (`sales_duckdb`) over a file-backed JDBC connection.
 2. **DECLARE** — two `Model`s built via the SAME `ModelBuilder` DSL chain, differing only in `SourceRef.ByName` (each engine resolves its own physical table).
 3. **REALIZE** — `SparkEngineProviderDescriptor.realize("local[*]")` + `DuckdbEngineProviderDescriptor.realize(jdbc:duckdb:...)` — two `EngineProvider`s behind one interface.
 4. **QUERY** — both engines get the same `QueryRequest` shape.
 5. **DIFF** — both results render via the portable `ResultValue` ADT and are compared as normalized row multisets.
-6. **WIRE FORMAT** — the log prints the `Model -> EngineProvider.query -> PortableQueryResult` contract summary with both engine identities.
+The closing block then prints the `Model -> EngineProvider.query -> PortableQueryResult` contract summary with both engine identities (no `STEP 6` prefix — it is the run's closing banner, not a numbered step).
 
 ## Sample output (actual, captured 2026-09-17 from this example)
 
@@ -67,7 +67,17 @@ STEP 4: QUERY both engines with the same QueryRequest shape
   rows: 8
 --- Q-duckdb: sales by product/region ---
   rows: 8
-...
+STEP 5: DIFF the two results (normalized row multiset)
+  spark rows (normalized): 8
+  duckdb rows (normalized): 8
+  note: DuckDB v1 runs SELECT * (no semantic projection yet);
+        Spark runs the full semantic query. The demonstrated
+        portability contract is Model-in/PortableQueryResult-out.
+  spark sample: gadget,north,42 | gadget,south,67 | gadget,west,91
+  duckdb sample: gadget,north,42,49.5 | gadget,south,67,49.5 | gadget,west,91,49.5
+  base rows: 8; spark aggregated rows: 8; duckdb raw rows: 8
+STEP 6: WIRE FORMAT — the EngineProvider.portable contract
+Engine-portable wire format demonstrated:
 ======================================================================
 Engine-portable wire format demonstrated:
   Model (semantic layer)  -> EngineProvider.query -> PortableQueryResult
@@ -88,7 +98,7 @@ Multi-engine portability complete.
 | The SAME `QueryRequest` shape flows into both engines | STEP 4 |
 | Both engines return the SAME `PortableQueryResult` wire type | STEP 4/5 |
 | Portable `ResultValue` ADT rendering (engine-agnostic value decode) | STEP 5 — `normalizedRows` |
-| DuckDB file-backed JDBC lifecycle (lazy re-derive after close) | `seedDuckDb` + provider close path |
+| DuckDB file-backed JDBC seeding (raw-INSERT across the wire; the provider's lazy re-derive path exists in the connector but is not exercised here) | `seedDuckDb` |
 
 ## Architecture: where this example fits in the sm8 RFC §3 stack
 

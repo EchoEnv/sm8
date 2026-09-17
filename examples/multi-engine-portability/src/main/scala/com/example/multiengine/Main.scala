@@ -4,7 +4,7 @@ import org.apache.spark.sql.SparkSession
 import org.slf4j.{Logger, LoggerFactory}
 
 import io.sm8.core.engine.{
-  EngineContext, EngineIdentity, EngineProvider, QueryRequest, ResultValue
+  EngineContext, EngineProvider, QueryRequest, ResultValue
 }
 import io.sm8.core.model.{
   Dimension, Measure, Model, ModelBuilder, ModelStatus, SourceRef
@@ -95,13 +95,15 @@ object Main {
       pqr: io.sm8.core.engine.PortableQueryResult): Vector[String] = {
     val rendered = pqr.rows.map { row =>
       row.values.map {
-        case ResultValue.StringV(s)  => s
-        case ResultValue.IntV(n)     => n.toString
-        case ResultValue.DoubleV(d)  => d.toString
-        case ResultValue.DecimalV(d) => d.toString
-        case ResultValue.NullV       => "null"
-        case ResultValue.BoolV(b)    => b.toString
-        case other                   => other.toString
+        case ResultValue.StringV(s)      => s
+        case ResultValue.IntV(n)         => n.toString
+        case ResultValue.DoubleV(d)      => d.toString
+        case ResultValue.DecimalV(d)     => d.toString
+        case ResultValue.NullV           => "null"
+        case ResultValue.BoolV(b)        => b.toString
+        case ResultValue.TimestampV(t)   => t.toString
+        case ResultValue.DateV(d)        => d.toString
+        case ResultValue.BinaryV(bytes)  => java.util.Base64.getEncoder.encodeToString(bytes)
       }.mkString(",")
     }
     rendered.sorted
@@ -260,8 +262,9 @@ object Main {
           s"sm8: spark aggregated rows (${sparkRows.size}) exceeded base rows (${duckRows.size})")
       }
 
-      // The wire-format contract summary.
+      // The wire-format contract summary (STEP 6 in the README list).
       Logger.info("=" * 70)
+      Logger.info("STEP 6: WIRE FORMAT — the EngineProvider.portable contract")
       Logger.info("Engine-portable wire format demonstrated:")
       Logger.info("  Model (semantic layer)  -> EngineProvider.query -> PortableQueryResult")
       Logger.info("  spark provider:   " + sparkProvider.identity.name + " " + sparkProvider.identity.nativeVersion)
