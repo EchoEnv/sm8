@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.example</groupId>
+    <artifactId>sm8-multi-engine-portability_2.13</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <packaging>jar</packaging>
+
+    <properties>
+        <scala.version>2.13.18</scala.version>
+        <scala.binary.version>2.13</scala.binary.version>
+        <sm8.version>0.1.0-SNAPSHOT</sm8.version>
+        <spark.version>3.5.8</spark.version>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
+        <encoding>UTF-8</encoding>
+        <scala.compat.version>2.13</scala.compat.version>
+        <!--
+          JVM flags for the forked Scala app JVM. Without these,
+          Spark on JDK 17 fails with sun.nio.ch.DirectBuffer access.
+          Same flag set as sm8-core/pom.xml + spark-connector/pom.xml.
+        -->
+        <spark.run.jvmArgs>--add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED</spark.run.jvmArgs>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>io.sm8</groupId>
+            <artifactId>sm8-core_2.13</artifactId>
+            <version>${sm8.version}</version>
+        </dependency>
+        <!-- Two engine connectors — the whole point of this example. -->
+        <dependency>
+            <groupId>io.sm8</groupId>
+            <artifactId>spark-connector_2.13</artifactId>
+            <version>${sm8.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.sm8</groupId>
+            <artifactId>duckdb-connector_2.13</artifactId>
+            <version>${sm8.version}</version>
+        </dependency>
+
+        <!-- Spark 3.5.x — matches the locked tech stack. -->
+        <dependency>
+            <groupId>org.apache.spark</groupId>
+            <artifactId>spark-sql_${scala.binary.version}</artifactId>
+            <version>${spark.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.scala-lang</groupId>
+            <artifactId>scala-library</artifactId>
+            <version>${scala.version}</version>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <sourceDirectory>src/main/scala</sourceDirectory>
+        <plugins>
+            <plugin>
+                <groupId>net.alchim31.maven</groupId>
+                <artifactId>scala-maven-plugin</artifactId>
+                <version>4.9.2</version>
+                <executions>
+                    <execution><goals><goal>compile</goal><goal>run</goal></goals></execution>
+                </executions>
+                <configuration>
+                    <scalaVersion>${scala.version}</scalaVersion>
+                    <args><arg>-deprecation</arg></args>
+                    <jvmArgs>
+                        <arg>--add-opens=java.base/java.lang=ALL-UNNAMED</arg>
+                        <arg>--add-opens=java.base/java.lang.invoke=ALL-UNNAMED</arg>
+                        <arg>--add-opens=java.base/java.lang.reflect=ALL-UNNAMED</arg>
+                        <arg>--add-opens=java.base/java.io=ALL-UNNAMED</arg>
+                        <arg>--add-opens=java.base/java.net=ALL-UNNAMED</arg>
+                        <arg>--add-opens=java.base/java.nio=ALL-UNNAMED</arg>
+                        <arg>--add-opens=java.base/java.util=ALL-UNNAMED</arg>
+                        <arg>--add-opens=java.base/java.util.concurrent=ALL-UNNAMED</arg>
+                        <arg>--add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED</arg>
+                        <arg>--add-opens=java.base/sun.nio.ch=ALL-UNNAMED</arg>
+                        <arg>--add-opens=java.base/sun.nio.cs=ALL-UNNAMED</arg>
+                        <arg>--add-opens=java.base/sun.security.action=ALL-UNNAMED</arg>
+                        <arg>--add-opens=java.base/sun.util.calendar=ALL-UNNAMED</arg>
+                    </jvmArgs>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>
