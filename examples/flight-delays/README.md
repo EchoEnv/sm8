@@ -67,18 +67,32 @@ STEP 2: DECLARE model (ModelBuilder DSL + FinalRequired day-grain rollup)
 STEP 3: MATERIALIZE rollup (Iceberg) + seal past buckets final
   rollup 'daily_delay_by_airline' materialized as Iceberg table: flights__daily_delay_by_airline
   watermark sealed final: 2026-09-09, 2026-09-07, 2026-09-08
-...
+STEP 4: QUERY daily avg delay (all past buckets final)
+--- Q1: avg delay by airline/day, Sep 7-9 ---
+  rows: 14
 STEP 5: INGEST batch 2 (Sep 10, late-arriving) — bucket NOT sealed
   rows now: 19 (batch2 adds 5)
+STEP 5a: QUERY again (Sep 10 bucket open -> RollupBucketStale, base-table fallback)
+--- Q2: avg delay by airline/day WITH the open Sep 10 bucket ---
+  rows: 19
   typed refusal for bucket 2026-09-10: RollupBucketStale(buckets=BucketKey(2026-09-10))
 STEP 6: REFRESH Sep 10 bucket (mergeRefresh + watermark advance)
   mergeRefresh 'daily_delay_by_airline' scope [2026-09-10]: iceberg_cat.flights__daily_delay_by_airline
   watermark advanced final for [2026-09-10]
-...
+STEP 6a: QUERY again (Sep 10 now sealed)
+--- Q3: avg delay by airline/day AFTER refresh ---
+  rows: 19
+======================================================================
+Metrics summary (Prometheus text format; the same counters a
+real deployment exposes via `sm8-server --metrics-port`):
+# HELP flight_rollup_rewrite_total queries routed to a rollup
+# TYPE flight_rollup_rewrite_total counter
+flight_rollup_rewrite_total 0
+# HELP flight_rollup_refusal_total queries NOT routed (typed reason on the sink API)
+# TYPE flight_rollup_refusal_total counter
+flight_rollup_refusal_total 3
 ======================================================================
 Lifecycle complete: seal -> route -> stale refusal -> refresh -> route.
-
-flight_rollup_refusal_total 3
 ```
 
 ## The freshness story (in 4 sentences)

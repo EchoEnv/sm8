@@ -1,6 +1,7 @@
 package com.example.flight
 
 import org.apache.spark.sql.{DataFrame, SparkSession}
+import scala.jdk.CollectionConverters._
 import org.apache.spark.sql.functions._
 import org.slf4j.{Logger, LoggerFactory}
 
@@ -230,6 +231,11 @@ object Main {
   private final class FlightMetricsSink extends io.sm8.core.cache.MetricsSink {
     private val rollupHits   = new java.util.concurrent.atomic.AtomicLong(0)
     private val rollupMisses = new java.util.concurrent.atomic.AtomicLong(0)
+    // Per-reason refusal counters (bounded by the sealed refusal ADT),
+    // mirroring sm8-platform QueryMetrics' per-reason map. The summary
+    // prints the total plus each observed reason as a labeled series.
+    private val refusalsByReason =
+      new java.util.concurrent.ConcurrentHashMap[String, java.util.concurrent.atomic.AtomicLong]
 
     /** Called by the spark-connector routing fold when a query is rewritten to a rollup. */
     override def recordRollupRewrite(): Unit = { rollupHits.incrementAndGet(); () }
@@ -242,21 +248,43 @@ object Main {
       */
     override def recordRollupRefusal(
         reason: io.sm8.core.rel.RollupRewriter.RollupRewriteRefusal): Unit = {
-      rollupMisses.incrementAndGet(); ()
+      rollupMisses.incrementAndGet()
+      val label = io.sm8.core.rel.RollupRewriter.RollupRewriteRefusal.reasonName(reason)
+      refusalsByReason.computeIfAbsent(label,
+        new java.util.function.Function[String, java.util.concurrent.atomic.AtomicLong] {
+          /** Zero-initialized counter for a first-observed refusal reason.
+            *
+            * @param k the refusal reason label (from `reasonName`); unused
+            *          beyond identity — the enclosing map is already keyed by it
+            * @return a fresh zero-valued counter for this reason
+            */
+          override def apply(k: String): java.util.concurrent.atomic.AtomicLong =
+            new java.util.concurrent.atomic.AtomicLong(0)
+        }).incrementAndGet()
+      ()
     }
 
     /** One-shot Prometheus-style summary (printed at end of run).
       *
-      * @return the counters rendered in Prometheus text format, two
-      *         `counter` series plus `# HELP`/`# TYPE` headers.
+      * @return the counters rendered in Prometheus text format: the
+      *         rewrite/total + refusal/total `counter` series, plus a
+      *         labeled `flight_rollup_refusal_total{reason=...}` series
+      *         for every observed refusal reason.
       */
-    def summary: String =
+    def summary: String = {
+      val reasonLines = refusalsByReason.entrySet().asScala
+        .map { (entry: java.util.Map.Entry[String, java.util.concurrent.atomic.AtomicLong]) =>
+          s"flight_rollup_refusal_total{reason=\"${entry.getKey}\"} ${entry.getValue.get}"
+        }
+        .mkString("\n")
+      val reasonBlock = if (reasonLines.isEmpty) "" else reasonLines + "\n"
       s"""# HELP flight_rollup_rewrite_total queries routed to a rollup
          |# TYPE flight_rollup_rewrite_total counter
          |flight_rollup_rewrite_total ${rollupHits.get}
-         |# HELP flight_rollup_refusal_total queries NOT routed (typed reason on the sink API)
+         |# HELP flight_rollup_refusal_total queries NOT routed, broken out by typed reason
          |# TYPE flight_rollup_refusal_total counter
-         |flight_rollup_refusal_total ${rollupMisses.get}""".stripMargin
+         |${reasonBlock}flight_rollup_refusal_total ${rollupMisses.get}""".stripMargin
+    }
   }
 
   // ====== main ======
