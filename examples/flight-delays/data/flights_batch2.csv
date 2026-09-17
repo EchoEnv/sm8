@@ -1,0 +1,6 @@
+flight_id,airline,origin,destination,flight_date,delay_minutes,cancelled
+F1015,UA,SFO,DEN,2026-09-10,18,false
+F1016,AA,JFK,SFO,2026-09-10,240,true
+F1017,DL,ATL,JFK,2026-09-10,2,false
+F1018,WN,OAK,LAX,2026-09-10,41,false
+F1019,UA,SFO,DEN,2026-09-10,77,false

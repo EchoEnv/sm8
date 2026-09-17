@@ -1,0 +1,49 @@
+# Target model shape for the flights example (documentation; the
+# programmatic ModelBuilder DSL in Main.scala is the source of truth —
+# the sm8 YAML loader subset does not yet ingest this file).
+
+model: flights
+version: 1
+source:
+  byName: flights_clean_csv
+
+dimensions:
+  - name: flight_id
+    expr: flight_id
+  - name: airline
+    expr: airline
+  - name: origin
+    expr: origin
+  - name: destination
+    expr: destination
+  - name: flight_date
+    expr: flight_date
+    dataType: Date
+  - name: cancelled
+    expr: cancelled
+
+measures:
+  - name: flight_count
+    aggregate:
+      fn: COUNT
+      arg: flight_id
+  - name: total_delay
+    aggregate:
+      fn: SUM
+      arg: delay_minutes
+  - name: cancelled_count
+    aggregate:
+      fn: SUM
+      arg: "CASE WHEN cancelled = 'true' THEN 1 ELSE 0 END"   # the Scala Main.scala builds this CaseWhen from the boolean CSV column
+
+calculated_measures:
+  - name: avg_delay
+    expr: "total_delay / flight_count"
+
+rollups:
+  - name: daily_delay_by_airline
+    dimensions: [airline, flight_date]
+    measures: [total_delay, flight_count]
+    timeGrain: day
+    grainDimension: flight_date
+    freshness: FinalRequired
