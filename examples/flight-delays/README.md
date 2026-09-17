@@ -88,8 +88,9 @@ real deployment exposes via `sm8-server --metrics-port`):
 # HELP flight_rollup_rewrite_total queries routed to a rollup
 # TYPE flight_rollup_rewrite_total counter
 flight_rollup_rewrite_total 0
-# HELP flight_rollup_refusal_total queries NOT routed (typed reason on the sink API)
+# HELP flight_rollup_refusal_total queries NOT routed, broken out by typed reason
 # TYPE flight_rollup_refusal_total counter
+flight_rollup_refusal_total{reason="nonCanonicalShape"} 3
 flight_rollup_refusal_total 3
 ======================================================================
 Lifecycle complete: seal -> route -> stale refusal -> refresh -> route.
