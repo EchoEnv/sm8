@@ -1,6 +1,8 @@
 # sm8 hospital-cleaning example
 
-Hospital data management + cleansing on top of **sm8** — the **full data-quality workflow** (ingest → profile → cleanse → load → query). Patient demographics, ALOS (Average Length of Stay), 30-day readmission rate.
+Hospital data management + cleansing on top of **sm8** — the **full data-quality workflow** (ingest → profile → cleanse → load → validate → query → metrics). Patient demographics, ALOS (Average Length of Stay), 30-day readmission rate.
+
+This example exercises the **modern sm8 surface**: the `ModelBuilder` fluent DSL, a declared + materialized **ALOS rollup** (with `FinalRequired` freshness), **execute-free validate** (the core of `sm8 validate` and the MCP `validate_query` tool), and a **Prometheus-format metrics summary** via the core `MetricsRegistry` seam.
 
 This is the **first end-to-end example** in the sm8 repo (PR-11). It complements the other consumer templates by showing the **cleansing step** — most templates load clean data; this one starts with messy data and cleanses it in Scala before loading into sm8.
 
@@ -46,13 +48,15 @@ cd examples/hospital-cleaning
 mvn -B -ntp scala:run -DmainClass=com.example.hospital.Main
 ```
 
-You'll see all 5 steps run in sequence:
+You'll see all 7 steps run in sequence:
 
 1. **INGEST** — load the raw CSVs (intentional data quality issues)
 2. **QUALITY REPORT** — print counts of duplicates / missing values
 3. **CLEANSE** — normalize names, dedup patients, fill missing MRNs
-4. **SEMANTIC** — load the sm8 `Model` objects on the cleansed DataFrames
-5. **QUERIES** — Q1 demographics, Q2 ALOS by department, Q3 30-day readmission rate
+4. **SEMANTIC** — build the sm8 `Model` objects via the `ModelBuilder` DSL (the encounters model declares the ALOS rollup) and materialize the rollup table
+5. **VALIDATE** — execute-free validate demos: model integrity, request cross-check (a typo'd measure is caught here), rollup routing preview
+6. **QUERIES** — Q1 demographics, Q2 ALOS by department, Q3 30-day readmission rate
+7. **METRICS SUMMARY** — Prometheus-format rollup-routing counters
 
 ## The data quality issues (and how the cleanser handles them)
 
@@ -65,7 +69,7 @@ You'll see all 5 steps run in sequence:
 
 After cleansing: **11 patients → 9 unique patients**; all MRNs filled; all names in Title Case.
 
-## Sample output (actual, captured 2026-08-18)
+## Sample output (actual, captured 2026-08-18 — pre-modernization; the current run adds STEP 5a validate + the metrics summary)
 
 The example prints a stage-by-stage trace via `Logger.info`. Output on the demo data:
 
@@ -126,11 +130,12 @@ The 30-day readmission rate is `1 / 2 = 0.50`. P001 has two encounters but they'
 
 ### Honest limitations (per the post-ADR-008-P review)
 
-The example is a **complete end-to-end demo** of the data-quality workflow. The Q1a/Q1b/Q2 grouped queries use **direct Spark** (not sm8's `provider.query`) because:
+The example is a **complete end-to-end demo** of the data-quality workflow. Q1a/Q1b/Q2 run through the sm8 typed DSL (`QueryBuilderDsl` → `provider.query`), so grouping and typed order/limit flow through the engine-portable protocol. Two spots remain deliberately outside the engine:
 
-- **sm8's current spark-connector** returns rows from `provider.query(model, request, ctx)` but does **NOT yet** apply the `dimensions` + `measures` grouping (the `applyAggregations` path in the spark-connector is a known followup; see ADR-008-L GAP 7 / PR-M4 followup).
-- The **`Q1a (sm8 API)`** block in STEP 5 demonstrates that `provider.query` returns the rows correctly through the engine-portable Protocol — the API round-trips, the grouping is the only followup.
-- The Q3 (30-day readmission) example uses **window/lag in Spark** directly because the final aggregation crosses group boundaries (per-patient max is_readmission, then a final ratio across patients). This is the same hybrid pattern the upstream uses.
+- The Q3 (30-day readmission) **rate computation** uses Spark window/lag + a Scala-side ratio, because the final aggregation crosses group boundaries (per-patient max `is_readmission`, then a ratio across patients) — the same hybrid pattern the upstream template uses. Q3a (the per-patient readmission count) is a typed sm8 query.
+- The STEP 5a validate previews stay on the base table (typed refusal below) because the model's `avg_los` calculated measure projects a non-pass-through expression above the Aggregate, which the rollup router's canonical-shape requirement rejects; a model without calculated measures (or with `MaterializePolicy.Persist` on the rollup path in a full sm8-server deployment) routes.
+
+**Note on rollup routing in this example:** the declared rollup is materialized (`encounters__alos_by_department` temp view) and the STEP 5a validate preview shows the router's typed decision for each request shape. The demo requests stay on the base table (typed refusal `NonCanonicalShape`) because the model's `avg_los` calculated measure projects a non-pass-through expression above the Aggregate, which fails the router's canonical-plan decomposition; in a full sm8-server deployment the same requests ride the platform's routing fold (see `sm8-server` + the `rollup-refusal-observer` plugin) or a `MaterializePolicy.Persist` model policy.
 
 **Once the spark-connector's `applyAggregations` is upgraded** to honor `QueryRequest.dimensions` + `measures` end-to-end (a future PR; per ADR-008-P §"What's Next" + ADR-008-L GAP 7), the Q1/Q2 `runQuery(...)` calls can replace the direct-Spark `groupBy().count()/.agg(...)` blocks — the rest of the example needs no change.
 
@@ -140,10 +145,13 @@ The example is a **complete end-to-end demo** of the data-quality workflow. The 
 |---|---|
 | Data quality profiling (group counts, null detection) | STEP 2 |
 | In-place Spark cleansing: `initcap`, `dropDuplicates`, `coalesce`, `monotonically_increasing_id` | STEP 3 |
-| Building sm8 `Model` objects via the `Model.of(...)` builder API | STEP 4 |
+| Building sm8 `Model` objects via the `ModelBuilder` fluent DSL (`withName`/`withSource`/`withRollup`...`build`) | STEP 4 |
+| Declared pre-aggregation (`RollupSpec` + `FreshnessPolicy.FinalRequired` + day grain) and materialization via the spark-connector `RollupMaterializer` | STEP 4 → STEP 5 |
+| Execute-free validation (`ModelValidator.validate`, request cross-check, `RollupRewriter` routing preview) | STEP 5a |
+| Metrics telemetry through the core `MetricsRegistry` / `MetricsSink` seam (the same events sm8-server publishes on `--metrics-port`) | end-of-run summary |
 | Loading in-memory DataFrames into sm8 via `createOrReplaceTempView` + `SourceRef.ByName` | STEP 4 |
 | `groupBy(dim).aggregate(measure)` per group | Q1, Q2 |
-| Hybrid pattern: per-patient measures via Spark, final rate in Scala | Q3 |
+| Hybrid pattern: per-patient counts via the sm8 typed DSL (Q3a), rate via Spark window + Scala ratio (Q3b) | Q3 |
 | The spark-connector realize-then-query pattern (`SparkEngineProviderDescriptor.realize(url)` then `provider.query(...)`) | STEP 5 |
 
 ## Architecture: where this example fits in the sm8 RFC §3 stack
@@ -153,10 +161,10 @@ The example is a **complete end-to-end demo** of the data-quality workflow. The 
   │ THIS EXAMPLE (examples/hospital-cleaning)            │  Consumer layer
   │   - reads CSVs                                       │  (per RFC §3)
   │   - does the ETL + cleansing in Spark                │  Imports:
-  │   - builds the sm8 `Model` via Model.of(...)         │  - sm8-core (SDK)
+  │   - builds the sm8 `Model` via ModelBuilder DSL      │  - sm8-core (SDK)
   │   - queries via spark-connector                      │  - spark-connector
   └────────────────────┬────────────────────────────────┘
-                       │ Model.of(), provider.query()
+                       │ ModelBuilder, provider.query()
   ┌────────────────────▼────────────────────────────────┐
   │ spark-connector   (the engine adapter for Spark)     │  Adapter layer
   │   - typed `realize(url)` per RFC `adapters.md` Rule 4│  Imports:
@@ -176,7 +184,10 @@ This example does **NOT** import `sm8-platform` or `sm8-server` (the transport l
 
 ## Related
 
-- **[`sm8-core/.../model/Model.scala`](../../sm8-core/src/main/scala/io/sm8/core/model/Model.scala)** — the `Model.of(...)` builder API used in this example
+- **[`sm8-core/.../model/ModelBuilder.scala`](../../sm8-core/src/main/scala/io/sm8/core/model/ModelBuilder.scala)** — the fluent builder DSL used in this example (wraps `Model.of(...)`)
+- **[`sm8-core/.../model/RollupSpec.scala`](../../sm8-core/src/main/scala/io/sm8/core/model/RollupSpec.scala)** — the rollup declaration ADT (`timeGrain` + `grainDimension` + `freshness`)
+- **[`sm8-core/.../rel/RollupRewriter.scala`](../../sm8-core/src/main/scala/io/sm8/core/rel/RollupRewriter.scala)** — the rollup router whose preview powers STEP 5a
+- **[`sm8-core/.../cache/MetricsSink.scala`](../../sm8-core/src/main/scala/io/sm8/core/cache/MetricsSink.scala)** — the metrics seam the example's sink plugs into
 - **[`spark-connector/.../SparkEngineProvider.scala`](../../connectors/spark-connector/src/main/scala/io/sm8/connectors/spark/SparkEngineProvider.scala)** — the `EngineProvider` implementation invoked in STEP 5
 - **[`sm8-core/.../engine/EngineProvider.scala`](../../sm8-core/src/main/scala/io/sm8/core/engine/EngineProvider.scala)** — the production abstraction (per ADR-001 §P1-3 + ADR-006 Post-#65)
 - **[`docs/adr/0001-0004-engine-portable-architecture.md`](../../docs/adr/0001-0004-engine-portable-architecture.md)** — the architectural foundation
