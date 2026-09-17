@@ -43,13 +43,13 @@ cd examples/flight-delays
 mvn -B -ntp scala:run -DmainClass=com.example.flight.Main
 ```
 
-You'll see all 6 steps run in sequence:
+You'll see all 7 steps run in sequence:
 
 1. **INGEST batch 1** — read `flights_batch1.csv` (Sep 7-9), register `flights_clean_csv` temp view
 2. **DECLARE** — build the `flights` `Model` via `ModelBuilder.withName.withSource.withRollup...build`, with a daily rollup `daily_delay_by_airline` declaring `FreshnessPolicy.FinalRequired`, `timeGrain=day`, `grainDimension=flight_date`. ModelValidator passes.
 3. **MATERIALIZE + SEAL** — Iceberg `saveAsTable` materializes the rollup, then `RollupWatermark.advance(...)` latches final for past days (the v1 finality heuristic: buckets strictly before today latch final; today/future stay open)
 4. **QUERY** — first query runs against the model
-5. **LATE BATCH → STALE BUCKET** — append Sep 10 (a day whose bucket is NOT latched final). The router's freshness gate now produces the typed `RollupBucketStale(buckets=BucketKey(2026-09-10))` refusal — the same refusal the MCP `validate_query` tool and `sm8 rollup-status` surface.
+5. **LATE BATCH → STALE BUCKET** — append Sep 10 (a day whose bucket is NOT latched final). The example then reads the freshness gate DIRECTLY via `RollupWatermark.stalenessRefusal`, printing the typed `RollupBucketStale(buckets=BucketKey(2026-09-10))` refusal — the same refusal the MCP `validate_query` tool and `sm8 rollup-status` surface. (The plain `provider.query` path falls back to the base table on the calculated-measure peel refusal BEFORE the freshness gate — see "Honest limitations".)
 6. **REFRESH** — `RollupMergeRefresher.mergeRefresh` + `RollupWatermark.advance` close out the Sep 10 bucket; subsequent queries route cleanly again.
 7. **METRICS SUMMARY** — Prometheus-format rollup counter summary at end of run (same events a real `sm8-server --metrics-port` exposes)
 
@@ -66,7 +66,7 @@ STEP 2: DECLARE model (ModelBuilder DSL + FinalRequired day-grain rollup)
   model validation: ok
 STEP 3: MATERIALIZE rollup (Iceberg) + seal past buckets final
   rollup 'daily_delay_by_airline' materialized as Iceberg table: flights__daily_delay_by_airline
-  watermark sealed final: 2026-09-07, 2026-09-08, 2026-09-09
+  watermark sealed final: 2026-09-09, 2026-09-07, 2026-09-08
 ...
 STEP 5: INGEST batch 2 (Sep 10, late-arriving) — bucket NOT sealed
   rows now: 19 (batch2 adds 5)

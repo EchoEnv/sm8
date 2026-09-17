@@ -12,7 +12,6 @@ import io.sm8.core.engine.{
 import io.sm8.core.expr.ExprSugar._
 import io.sm8.core.query.QueryBuilder
 import io.sm8.connectors.spark.SparkSourceResolver
-import io.sm8.core.model.TypedMeasureBridge._
 import io.sm8.core.model.{
   CalculatedMeasure, Dimension, FreshnessPolicy, Measure, Model, ModelBuilder,
   ModelStatus, RollupSpec, SourceRef
@@ -353,23 +352,19 @@ object Main {
 
       // The typed refusal, read directly (what `sm8 rollup-status` and
       // the MCP validate_query tool surface to operators):
-      val request = QueryRequest(model = flights.name,
-        dimensions = Seq("airline", "flight_date"),
-        measures = Seq("avg_delay"))
-      QueryBuilder.build(flights, new SparkSourceResolver(spark),
-        EngineIdentity("local-spark", "1", "flight-example")) match {
-        case Right(plan) =>
-          io.sm8.connectors.spark.RollupWatermark.stalenessRefusal(
-            spark, flights, flights.rollups.head,
-            Set("2026-09-10")) match {
-            case Some(refusal) =>
-              Logger.info(s"  typed refusal for bucket 2026-09-10: ${refusal.getClass.getSimpleName}(buckets=${refusal.buckets.mkString(",")})")
-            case None =>
-              Logger.info("  (no staleness refusal — bucket already final)")
-          }
-          val _ = plan
-        case Left(err) =>
-          Logger.error(s"  plan build for refusal demo failed: $err")
+      // The typed refusal read directly (what `sm8 rollup-status` and
+      // the MCP `validate_query` tool surface to operators):
+      // RollupWatermark.stalenessRefusal is the same connector-only seam
+      // the routing fold invokes per query. We probe it explicitly here
+      // (the provider.query path above falls back to the base table on
+      // the avg_los-projection peel refusal before it ever reaches the
+      // freshness gate — see the README's "Honest limitations" note).
+      io.sm8.connectors.spark.RollupWatermark.stalenessRefusal(
+        spark, flights, flights.rollups.head, Set("2026-09-10")) match {
+        case Some(refusal) =>
+          Logger.info(s"  typed refusal for bucket 2026-09-10: ${refusal.getClass.getSimpleName}(buckets=${refusal.buckets.mkString(",")})")
+        case None =>
+          Logger.info("  (no staleness refusal — bucket already final)")
       }
 
       // Driver-side: Tier-2 scoped refresh.
