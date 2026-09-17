@@ -1,0 +1,13 @@
+event_id,region,amount
+E1,north,100
+E2,north,250
+E3,south,80
+E4,south,120
+E5,east,300
+E6,east,95
+E7,west,60
+E8,west,180
+E9,north,140
+E10,south,210
+E11,east,70
+E12,west,55
