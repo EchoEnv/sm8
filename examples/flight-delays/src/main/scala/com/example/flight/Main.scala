@@ -7,12 +7,10 @@ import org.slf4j.{Logger, LoggerFactory}
 
 import io.sm8.core.model.ModelValidator
 import io.sm8.core.engine.{
-  EngineContext, EngineIdentity, EngineProvider, QueryRequest,
+  EngineContext, EngineProvider, QueryRequest,
   ResultValue
 }
 import io.sm8.core.expr.ExprSugar._
-import io.sm8.core.query.QueryBuilder
-import io.sm8.connectors.spark.SparkSourceResolver
 import io.sm8.core.model.{
   CalculatedMeasure, Dimension, FreshnessPolicy, Measure, Model, ModelBuilder,
   ModelStatus, RollupSpec, SourceRef
@@ -379,9 +377,7 @@ object Main {
           measures = Seq("avg_delay")))
 
       // The typed refusal, read directly (what `sm8 rollup-status` and
-      // the MCP validate_query tool surface to operators):
-      // The typed refusal read directly (what `sm8 rollup-status` and
-      // the MCP `validate_query` tool surface to operators):
+      // the MCP `validate_query` tool surface to operators).
       // RollupWatermark.stalenessRefusal is the same connector-only seam
       // the routing fold invokes per query. We probe it explicitly here
       // (the provider.query path above falls back to the base table on
