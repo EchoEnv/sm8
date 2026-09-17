@@ -14,6 +14,8 @@ examples/multi-engine-portability/
     └── Main.scala                     ← ingest into both engines -> same DSL Model -> query both -> diff
 ```
 
+> **Read this first:** DuckDB's v1 provider runs `SELECT * FROM table` (no semantic-layer projection yet), so the two engines' result SHAPES differ — Spark runs the full semantic query, DuckDB returns raw base rows. What the example proves is the WIRE FORMAT (`Model` in → `PortableQueryResult` out through the same `EngineProvider` interface), not result-shape equality. Details in "Honest limitations" at the end.
+
 ## Run it (5 minutes)
 
 ### Prerequisites
@@ -76,8 +78,6 @@ STEP 5: DIFF the two results (normalized row multiset)
   spark sample: gadget,north,42 | gadget,south,67 | gadget,west,91
   duckdb sample: gadget,north,42,49.5 | gadget,south,67,49.5 | gadget,west,91,49.5
   base rows: 8; spark aggregated rows: 8; duckdb raw rows: 8
-STEP 6: WIRE FORMAT — the EngineProvider.portable contract
-Engine-portable wire format demonstrated:
 ======================================================================
 Engine-portable wire format demonstrated:
   Model (semantic layer)  -> EngineProvider.query -> PortableQueryResult
