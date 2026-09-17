@@ -115,9 +115,12 @@ object Main {
     * and so the connection re-derive path (close + lazy re-open)
     * observes the same table.
     *
-    * Resource safety: the JDBC Statement is closed in a `finally`;
-    * the connection itself is owned by the provider (closed at the
-    * end of `main`).
+    * Resource safety (per [[scala-jvm-safety]]): every JDBC resource
+    * (Statement, PreparedStatement, the seed Connection) is closed in
+    * a `finally` block. The seed Connection is opened inline for the
+    * INSERT batch and closed before this method returns; the provider's
+    * own connection lifecycle is separate and is closed in `main`'s
+    * `finally` (R7 H1).
     */
   private def seedDuckDb(jdbcUrl: String, csvPath: String, tableName: String): Unit = {
     Class.forName("org.duckdb.DuckDBDriver")
@@ -172,6 +175,10 @@ object Main {
     java.nio.file.Files.deleteIfExists(duckDbFile)
     val duckDbUrl = s"jdbc:duckdb:$duckDbFile"
 
+    // Declared outside the try so the finally can close it even when
+    // realization itself fails (R7 H1).
+    var duckProvider: EngineProvider = null
+
     try {
       Logger.info("=" * 70)
       Logger.info("sm8 multi-engine-portability example — one Model, two engines")
@@ -201,7 +208,7 @@ object Main {
           case None => throw new IllegalStateException(
             "sm8: SparkEngineProviderDescriptor.realize(local[*]) returned None")
         }
-      val duckProvider: EngineProvider =
+      duckProvider =
         new io.sm8.connectors.duckdb.DuckdbEngineProviderDescriptor().realize(duckDbUrl) match {
           case Some(p) => p
           case None => throw new IllegalStateException(
@@ -268,6 +275,17 @@ object Main {
         Logger.error(s"sm8 multi-engine-portability example FAILED: ${t.getClass.getSimpleName}: ${t.getMessage}")
         throw t
     } finally {
+      // R7 H1/H2: close the DuckDB JDBC connection before deleting the
+      // file (close before unlink so the file isn't locked on Windows
+      // and to let the provider's idempotent close() flush any state);
+      // delete the temp file so repeated runs don't accumulate .duckdb
+      // artifacts in $TMPDIR. Both are idempotent.
+      if (duckProvider != null) {
+        try duckProvider.close()
+        catch { case t: Throwable => Logger.warn(s"DuckDB close failed: ${t.getMessage}") }
+      }
+      try java.nio.file.Files.deleteIfExists(duckDbFile)
+      catch { case t: Throwable => Logger.warn(s"temp file cleanup failed: ${t.getMessage}") }
       spark.stop()
     }
   }
