@@ -61,14 +61,14 @@ STEP 1: INGEST events.csv -> Spark temp view; DECLARE the sales Model (WriteThro
   spark view 'sales_spark' rows: 12
   model v1 validation: ok
 STEP 2: COLD PATH — 20 identical queries, NO cache
-  cold[0..19]: 12 rows each
-  cold path: 20 queries in 3461ms (~173ms/query)
+  cold[0..19]: 4 rows each (region-grouped aggregate)
+  cold path: 20 queries in 4776ms (~238ms/query)
 STEP 3: WARM PATH — the SAME 20 queries WITH the read-through cache
-  warm[0]..warm[19]: 12 rows each (20 separate log lines; range shown)
-  warm path: 20 queries in 205ms (~10ms/query)
-  row-count parity: cold=12 warm=12 (cache returned the same answer)
+  warm[0]..warm[19]: 4 rows each (20 separate log lines; range shown)
+  warm path: 20 queries in 138ms (~6ms/query)
+  value parity: cold and warm normalized row multisets are identical (4 rows)
 STEP 4: INVALIDATION — bump Model.version 1 -> 2; the next query MISSES
-  v2 query after bump: 12 rows (MISSED — new key domain)
+  v2 query after bump: 4 rows (MISSED — new key domain)
 STEP 5: METRICS SUMMARY
 ======================================================================
 Cache + plugin counters (the same counters a real deployment
@@ -82,7 +82,7 @@ exposes on `sm8-server --metrics-port`):
 Caching lifecycle complete: cold -> warm -> invalidate.
 ```
 
-The warm path runs **17× faster** than cold (205ms vs 3461ms — same 20 queries); the cache's hit ratio is **90%** (19 HITs / 21 reads); the version bump forces the next query back to MISS (the old entries are untouched but unreachable).
+The warm path runs **~40× faster** than cold (138ms vs 4776ms — same 20 queries); the cache's hit ratio is **90%** (19 HITs / 21 reads); `writes` is 2 (one per MISS — the write-through hook is a mutator and correctly skips the 19 HITs via the SDK `runsOnStop` contract); the version bump forces the next query back to MISS (the old entries are untouched but unreachable).
 
 ## What this exercises (a checklist for the reader)
 
