@@ -34,7 +34,7 @@ measures:
   - name: cancelled_count
     aggregate:
       fn: SUM
-      arg: cancelled_flag   # per-row 0/1; expressed as CaseWhen in Scala
+      arg: "CASE WHEN cancelled = 'true' THEN 1 ELSE 0 END"   # the Scala Main.scala builds this CaseWhen from the boolean CSV column
 
 calculated_measures:
   - name: avg_delay
