@@ -3,7 +3,7 @@ package com.example.contention
 import org.apache.spark.sql.SparkSession
 import org.slf4j.{Logger, LoggerFactory}
 
-import io.sm8.core.cache.{CachedRowDecoder, MetricsRegistry}
+import io.sm8.core.cache.CachedRowDecoder
 import io.sm8.core.engine.{
   EngineContext, EngineError, EngineProvider, QueryRequest, ResultValue
 }
@@ -44,6 +44,22 @@ import java.util.concurrent.atomic.AtomicInteger
   * engine-execution counter (incremented only inside the compute
   * thunk): the thundering-herd phase must show exactly 1 engine
   * execution (not 4), and the version-roll phase exactly 1 more.
+  *
+  * Why `writes = 8`, not 2: the PreExecute read-hook and the
+  * executor's `getOrComputeJournaled` are two independent gates.
+  * Round-1 of each phase sees the cache empty; the Pre-hook lets all
+  * 4 workers through to the executor (single-flight collapses them to
+  * 1 ACTUAL engine run, but the Post-hook writes once PER worker that
+  * reaches PostExecute, not once per unique compute). Round-2 onward
+  * the cache is warm and the Pre-hook short-circuits (ctx.stop=true;
+  * the mutator Post-hook is skipped via `runsOnStop=false`). Steady
+  * phase: pure HIT, 0 PostExecute fires. 1 cold round of 4 workers
+  * x 2 cold phases (herd + v2) = 8 hook-fire writes. The counter is
+  * a HOOK-FIRE count, not a unique-persisted count — the underlying
+  * `putJournaledWithModelAndVersion` is an upsert, so functional
+  * behavior is unaffected. A production deployment reading the
+  * metrics must interpret `writes` as hook-fire volume, not as
+  * unique-key writes.
   *
   * Layer discipline: consumer imports sm8-core + spark-connector +
   * cache-plugin (io.sm8.plugins). No sm8-platform import — the example
@@ -193,7 +209,13 @@ object Main {
       request: QueryRequest,
       cache: InMemoryResultCache,
       engineExecs: AtomicInteger): Vector[String] = {
-    val cacheKey = s"${model.name}|v${model.version}|region-aggregate"
+    // Mirror the plugin's namespaced cache key (CachePlugin.regionKey)
+    // so the executor-direct write and the plugin's read use the SAME
+    // key — no asymmetric cache state. The region is length-prefixed so
+    // different regions cannot collide (see plugins/cache-plugin/
+    // CachePlugin.regionKey doc).
+    val cacheKey = CachePlugin.regionKey("contention",
+      s"${model.name}|v${model.version}|region-aggregate")
     val initial = Context(
       stage = PipelineStage.Execute,
       request = io.sm8.core.engine.EngineHookRequest(
@@ -204,9 +226,14 @@ object Main {
     )
     val out = runner.run(initial, { ctx =>
       // MISS path: use the single-flight read-through so concurrent
-      // identical calls coalesce into ONE engine execution.
+      // identical calls coalesce into ONE engine execution. The 4-arg
+      // overload threads model + version so the entry is invalidateable
+      // via cache.invalidateModel (the 2-arg form would tag the entry
+      // with model="" and leak it past model-scoped invalidation).
       val row = cache.getOrComputeJournaled(
         cacheKey,
+        model.name,
+        model.version,
         new java.util.function.Supplier[io.sm8.core.cache.RestateCachedRow] {
           /** The engine-compute thunk: runs the provider query and encodes
             * the result to the journaled form. Invoked exactly once per
@@ -304,7 +331,6 @@ object Main {
       Logger.info(s"STEP 2: THUNDERING HERD — $Workers workers x $Rounds rounds = ${Workers * Rounds} concurrent queries against a COLD cache")
       val engineExecs = new AtomicInteger(0)
       val pool: ExecutorService = Executors.newFixedThreadPool(Workers)
-      val expected: Vector[String] = Vector.empty
       try {
         val futures = scala.collection.mutable.ListBuffer[Future[Vector[String]]]()
         for (_ <- 1 to Rounds) {
@@ -395,7 +421,9 @@ object Main {
       // Mid-storm model version bump; new key domain.
       Logger.info("STEP 4: VERSION ROLL — bump Model.version 1 -> 2; storm continues")
       val modelV2 = buildSalesModel(version = 2)
-      val requestV2 = request.copy(model = modelV2.name)
+      // modelV2 flows through the cacheKey (above) and the HookRequest;
+      // QueryRequest.model is the model's NAME (the same String for v1
+      // and v2) so a `.copy(model = ...)` would be a no-op.
       val engineExecsV2 = new AtomicInteger(0)
       val v2Pool: ExecutorService = Executors.newFixedThreadPool(Workers)
       try {
@@ -410,7 +438,7 @@ object Main {
                 *         phase's result if the data did not change).
                 */
               override def call(): Vector[String] =
-                clientQuery(runner, provider, modelV2, requestV2, cache, engineExecsV2)
+                clientQuery(runner, provider, modelV2, request, cache, engineExecsV2)
             })
           }
           Thread.sleep(50)
