@@ -262,9 +262,10 @@ object Main {
           s"sm8: spark aggregated rows (${sparkRows.size}) exceeded base rows (${duckRows.size})")
       }
 
-      // The wire-format contract summary (STEP 6 in the README list).
+      // The wire-format contract summary (the closing banner; not a
+      // numbered step — the README runs 5 numbered steps and prints
+      // this as the final block).
       Logger.info("=" * 70)
-      Logger.info("STEP 6: WIRE FORMAT — the EngineProvider.portable contract")
       Logger.info("Engine-portable wire format demonstrated:")
       Logger.info("  Model (semantic layer)  -> EngineProvider.query -> PortableQueryResult")
       Logger.info("  spark provider:   " + sparkProvider.identity.name + " " + sparkProvider.identity.nativeVersion)
