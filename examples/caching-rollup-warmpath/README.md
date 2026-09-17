@@ -96,7 +96,7 @@ The warm path runs **~40× faster** than cold (138ms vs 4776ms — same 20 queri
 | `Context` carry (stage, request, result, meta, stop) — the single shared data object threads through every hook | the warm-loop block |
 | `EngineHookRequest(model, mcpRequest, cacheKey)` — the typed request that the hooks read | warm-loop + v2 loop |
 | `EngineHookResult(pqr)` — the typed result that the write-through hook journals | warm-loop |
-| `ctx.stop = true` short-circuit from `CacheReadPreHook` | (subtle — observable as the ~17× speedup) |
+| `ctx.stop = true` short-circuit from `CacheReadPreHook` | (subtle — observable as the ~40× speedup) |
 | `Model.version` participates in the cache key domain → version bump invalidates | STEP 4 — 19 HITs → next MISS |
 
 ## Architecture: where this example fits in the sm8 RFC §3 stack
@@ -137,7 +137,7 @@ No `sm8-platform` import — the example's `MinimalHookRunner` is exactly what `
 - **The example's `MinimalHookRunner` is single-stage (Execute only)** — `HookRunnerOrchestration` in sm8-platform fires all 4 pipeline stages (Parse, Resolve, Execute, Format). Bare consumers can ship the single-stage runner; production deployments use the platform's orchestration. Same code shape, different coverage.
 - **`PostHook.runsOnStop` matters.** `CacheWritePostHook` declares `runsOnStop = false` ("a mutator must not re-journal on a HIT"); the platform dispatcher skips such hooks when a pre-hook set `ctx.stop`. The example's `MinimalHookRunner` honors the same gate — without it, every cache HIT would redundantly re-journal the entry (writes=21 instead of writes=2 in this run). If you copy the runner, keep the gate.
 - **The cache key in the example is the consumer-side derivation** (`"sales|v$version|region=product"`) — the actual `sm8-platform/CacheBridge.platformCacheKey` produces a canonical length-prefixed SHA-256 key (`CacheBridge.scala`). Both produce the same HIT/MISS differentiation for a given model + version + request shape; the canonical form is portable across plugin + provider.
-- **Wall-clock 17× speedup at this scale is dominated by Spark job submission overhead**, not by data work. At production scale (multi-second aggregations on millions of rows), the speedup is much larger; at microbenchmark scale the ratio shrinks.
+- **Wall-clock ~40× speedup at this scale is dominated by Spark job submission overhead**, not by data work. At production scale (multi-second aggregations on millions of rows), the speedup is much larger; at microbenchmark scale the ratio shrinks.
 
 ## Related
 
